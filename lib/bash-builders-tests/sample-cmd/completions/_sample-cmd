@@ -1,0 +1,11 @@
+#compdef sample-cmd
+
+_sample-cmd() {
+  _arguments \
+    '(-h --help)'{-h,--help}'[Show help message]' \
+    '(-v --version)'{-v,--version}'[Show version information]' \
+    '(-u --upper)'{-u,--upper}'[Convert output to uppercase]' \
+    ':name:_default'
+}
+
+_sample-cmd "$@"

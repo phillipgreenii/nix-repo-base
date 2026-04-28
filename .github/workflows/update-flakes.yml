@@ -1,0 +1,114 @@
+name: Update Flake Dependencies
+
+on:
+  schedule:
+    # Run every Monday at 09:00 AM UTC
+    - cron: "0 9 * * 1"
+  workflow_dispatch: # Allow manual trigger
+
+concurrency:
+  group: update-flakes
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write # required for FlakeHub Cache OIDC auth
+
+jobs:
+  update-flakes:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Generate token
+        id: generate-token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        with:
+          app-id: ${{ secrets.UPDATE_BOT_APP_ID }}
+          private-key: ${{ secrets.UPDATE_BOT_APP_PRIVATE_KEY }}
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.generate-token.outputs.token || github.token }}
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      # FlakeHub Cache requires the repo to be enrolled (currently needs a
+      # public repo or paid plan). Re-enable once the repo is enrolled.
+      # - name: Setup FlakeHub Cache
+      #   uses: DeterminateSystems/flakehub-cache-action@v3
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run update-locks.sh
+        id: update
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token || github.token }}
+        run: |
+          BEFORE=$(git rev-parse HEAD)
+          echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
+
+          ./update-locks.sh --ci
+
+          AFTER=$(git rev-parse HEAD)
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            echo "No updates available"
+          else
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "changes<<EOF"
+              git log --pretty=format:'- %s' "$BEFORE..$AFTER"
+              echo
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Pull Request
+        if: steps.update.outputs.updated == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0
+        with:
+          token: ${{ steps.generate-token.outputs.token || github.token }}
+          commit-message: "chore: update flake dependencies"
+          title: "chore: Update flake dependencies"
+          body: |
+            ## Automated Flake Update
+
+            This PR updates the flake.lock file with the latest versions of all inputs.
+
+            ### Changes
+            ```
+            ${{ steps.update.outputs.changes }}
+            ```
+
+            ### Verification
+            - CI checks will run automatically
+            - If all checks pass, this PR will be auto-merged
+            - Review the changes and close this PR if updates should not be applied
+
+            ---
+            *This PR was created automatically by the update-flakes workflow*
+          branch: automated/flake-updates
+          delete-branch: true
+          labels: |
+            dependencies
+            automated
+
+      - name: Enable auto-merge
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token || github.token }}
+        run: |
+          gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} \
+            --auto \
+            --squash \
+            --delete-branch
