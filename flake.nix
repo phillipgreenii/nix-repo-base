@@ -64,26 +64,6 @@
             ];
           };
           test-update-locks-lib = checks-lib.testUpdateLocksLib { };
-          test-bash-builders = checks-lib.testBashScripts {
-            package = self.packages.${system}.bash-builders-test-sample-cmd;
-            tests = ./lib/bash-builders-tests/sample-cmd/tests;
-          };
-        };
-
-        packages = {
-          bash-builders-test-sample-cmd =
-            let
-              bashBuilders = packagesLib.mkBashBuilders {
-                inherit pkgs;
-                inherit (pkgs) lib;
-                inherit self;
-              };
-            in
-            bashBuilders.mkBashScript {
-              name = "sample-cmd";
-              src = ./lib/bash-builders-tests/sample-cmd;
-              description = "Sample bash command for testing mkBashBuilders";
-            };
         };
 
         devShells.default = devEnvLib.mkDevShell {
@@ -93,48 +73,48 @@
       }
     )
     // {
-      lib = {
+      lib =
         # Version helpers
-        inherit (import ./lib/version.nix) mkGitHash;
-
-        # Bash builders framework
-        mkBashBuilders = packagesLib.mkBashBuilders;
-
-        # Package building helpers
-        mkManPage = packagesLib.mkManPage;
-
+        (import ./lib/version.nix)
+        # Bash builders framework + package helpers
+        // {
+          inherit (packagesLib) mkBashBuilders mkManPage;
+        }
         # Development environment helpers
-        mkTreefmtConfig = devEnvLib.mkTreefmtConfig;
-        mkPreCommitHooks = devEnvLib.mkPreCommitHooks;
-        mkDevShell = devEnvLib.mkDevShell;
-
-        # Check helpers (returns attrset of check functions)
-        mkChecks = pkgs: import ./nix/checks.nix { inherit pkgs; };
-
+        // {
+          inherit (devEnvLib) mkTreefmtConfig mkPreCommitHooks mkDevShell;
+        }
         # Module generation helpers
-        mkSimplePackageModule = moduleHelpers.mkSimplePackageModule;
-        mkEnableablePackageModule = moduleHelpers.mkEnableablePackageModule;
-        mkDockRegistration = moduleHelpers.mkDockRegistration;
-        mkProgramModule = moduleHelpers.mkProgramModule;
+        // {
+          inherit (moduleHelpers)
+            mkSimplePackageModule
+            mkEnableablePackageModule
+            mkDockRegistration
+            mkProgramModule
+            ;
+        }
+        // {
+          # Check helpers — returns attrset of check functions for a given pkgs
+          mkChecks = pkgs: import ./nix/checks.nix { inherit pkgs; };
 
-        # Overlay factories
-        mkUnstableOverlay = _final: prev: {
-          unstable = import nixpkgs-unstable {
-            inherit (prev.stdenv.hostPlatform) system;
-            config.allowUnfree = true;
+          # Overlay factories
+          mkUnstableOverlay = _final: prev: {
+            unstable = import nixpkgs-unstable {
+              inherit (prev.stdenv.hostPlatform) system;
+              config.allowUnfree = true;
+            };
+          };
+
+          mkLlmAgentsOverlay = _final: prev: {
+            llm-agentsPkgs = llm-agents.packages.${prev.stdenv.hostPlatform.system};
+          };
+
+          mkVscodeExtensionsOverlay = _final: prev: {
+            inherit (nix-vscode-extensions.extensions.${prev.stdenv.hostPlatform.system})
+              vscode-marketplace
+              open-vsx
+              ;
           };
         };
-
-        mkLlmAgentsOverlay = _final: prev: {
-          llm-agentsPkgs = llm-agents.packages.${prev.stdenv.hostPlatform.system};
-        };
-
-        mkVscodeExtensionsOverlay = _final: prev: {
-          inherit (nix-vscode-extensions.extensions.${prev.stdenv.hostPlatform.system})
-            vscode-marketplace
-            open-vsx
-            ;
-        };
-      };
     };
 }

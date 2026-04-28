@@ -1,7 +1,6 @@
 # Module generation helpers
 # Provides mkSimplePackageModule, mkEnableablePackageModule, mkDockRegistration, mkProgramModule
-{ }:
-{
+_: {
   # Creates a simple module that just installs a package
   # Usage: mkSimplePackageModule "nixd" pkgs.nixd
   mkSimplePackageModule = _name: package: _: {

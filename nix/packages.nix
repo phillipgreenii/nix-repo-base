@@ -1,7 +1,6 @@
 # Package building helpers
 # Provides mkManPage, mkBashBuilders
-{ }:
-{
+_: {
   # Generate man page for a command using help2man
   # Usage: mkManPage {
   #   pkgs = pkgs;
