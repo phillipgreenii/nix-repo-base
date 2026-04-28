@@ -1,0 +1,350 @@
+#!/usr/bin/env bats
+
+# Tests for pn-lib shared library
+
+# Resolve lib path
+if [[ -z ${LIB_PATH:-} ]]; then
+  LIB_PATH="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)/pn-lib.bash"
+fi
+
+setup() {
+  TEST_DIR=$(mktemp -d)
+  export TEST_DIR
+  export REAL_HOME="$HOME"
+  export HOME="$TEST_DIR/home"
+  mkdir -p "$HOME"
+  export XDG_CONFIG_HOME="$TEST_DIR/config"
+  mkdir -p "$XDG_CONFIG_HOME/pn"
+  # shellcheck disable=SC1090
+  source "$LIB_PATH"
+}
+
+teardown() {
+  rm -rf "$TEST_DIR"
+}
+
+# ─── Config reading functions ─────────────────────────────────────────────────
+
+_write_store_toml() {
+  cat > "$XDG_CONFIG_HOME/pn/store.toml" <<EOF
+search_dirs = [
+  "$TEST_DIR/projects",
+  "$TEST_DIR/work"
+]
+keep_days = 14
+keep_count = 3
+EOF
+}
+
+@test "discover_search_dirs reads correct paths from store.toml" {
+  _write_store_toml
+  run discover_search_dirs
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "$TEST_DIR/projects"
+  echo "$output" | grep -q "$TEST_DIR/work"
+}
+
+@test "discover_search_dirs returns nothing when config absent" {
+  # No store.toml created
+  run discover_search_dirs
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "read_keep_days returns value from store.toml" {
+  _write_store_toml
+  run read_keep_days
+  [ "$status" -eq 0 ]
+  [ "$output" = "14" ]
+}
+
+@test "read_keep_days returns default 14 when config absent" {
+  run read_keep_days
+  [ "$status" -eq 0 ]
+  [ "$output" = "14" ]
+}
+
+@test "read_keep_count returns value from store.toml" {
+  _write_store_toml
+  run read_keep_count
+  [ "$status" -eq 0 ]
+  [ "$output" = "3" ]
+}
+
+@test "read_keep_count returns default 3 when config absent" {
+  run read_keep_count
+  [ "$status" -eq 0 ]
+  [ "$output" = "3" ]
+}
+
+@test "read_keep_days returns default 14 when key absent from toml" {
+  cat > "$XDG_CONFIG_HOME/pn/store.toml" <<EOF
+search_dirs = []
+EOF
+  run read_keep_days
+  [ "$status" -eq 0 ]
+  [ "$output" = "14" ]
+}
+
+@test "read_keep_count returns default 3 when key absent from toml" {
+  cat > "$XDG_CONFIG_HOME/pn/store.toml" <<EOF
+search_dirs = []
+EOF
+  run read_keep_count
+  [ "$status" -eq 0 ]
+  [ "$output" = "3" ]
+}
+
+@test "discover_search_dirs handles empty search_dirs array" {
+  cat > "$XDG_CONFIG_HOME/pn/store.toml" <<EOF
+search_dirs = []
+keep_days = 14
+keep_count = 3
+EOF
+  run discover_search_dirs
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ─── section_header and format_size ──────────────────────────────────────────
+
+@test "section_header formats with === markers" {
+  run section_header "My Section"
+  [ "$status" -eq 0 ]
+  [ "$output" = "=== My Section ===" ]
+}
+
+@test "format_size converts 500 bytes to '500 B'" {
+  run format_size 500
+  [ "$status" -eq 0 ]
+  [ "$output" = "500 B" ]
+}
+
+@test "format_size converts 1024 bytes to '1.0 KB'" {
+  run format_size 1024
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.0 KB" ]
+}
+
+@test "format_size converts 1048576 bytes to '1.0 MB'" {
+  run format_size 1048576
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.0 MB" ]
+}
+
+@test "format_size converts 1073741824 bytes to '1.0 GB'" {
+  run format_size 1073741824
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.0 GB" ]
+}
+
+# ─── find_workspace_root ─────────────────────────────────────────────────────
+
+@test "find_workspace_root finds pn-workspace.toml in current directory" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  touch "$ws/pn-workspace.toml"
+  cd "$ws"
+  run find_workspace_root
+  [ "$status" -eq 0 ]
+  [ "$output" = "$ws" ]
+}
+
+@test "find_workspace_root returns 1 when no pn-workspace.toml anywhere" {
+  # Use a temp dir with no workspace toml in ancestry
+  local isolated
+  isolated=$(mktemp -d)
+  cd "$isolated"
+  run find_workspace_root
+  [ "$status" -eq 1 ]
+  rmdir "$isolated" 2>/dev/null || true
+}
+
+@test "find_workspace_root walks up from subdirectory to find toml" {
+  local ws="$TEST_DIR/workspace"
+  local subdir="$ws/src/lib/foo"
+  mkdir -p "$subdir"
+  touch "$ws/pn-workspace.toml"
+  cd "$subdir"
+  run find_workspace_root
+  [ "$status" -eq 0 ]
+  [ "$output" = "$ws" ]
+}
+
+@test "find_workspace_root finds toml one level up" {
+  local ws="$TEST_DIR/workspace"
+  local subdir="$ws/myrepo"
+  mkdir -p "$subdir"
+  touch "$ws/pn-workspace.toml"
+  cd "$subdir"
+  run find_workspace_root
+  [ "$status" -eq 0 ]
+  [ "$output" = "$ws" ]
+}
+
+# ─── require_workspace_root ───────────────────────────────────────────────────
+
+@test "require_workspace_root exits 1 with error when no toml found" {
+  local isolated
+  isolated=$(mktemp -d)
+  cd "$isolated"
+  run require_workspace_root
+  [ "$status" -eq 1 ]
+  echo "$stderr" | grep -q "pn-workspace.toml" || echo "$output" | grep -q "pn-workspace.toml"
+  rmdir "$isolated" 2>/dev/null || true
+}
+
+@test "require_workspace_root error message mentions pn-workspace-init" {
+  local isolated
+  isolated=$(mktemp -d)
+  cd "$isolated"
+  run --separate-stderr require_workspace_root
+  [ "$status" -eq 1 ]
+  echo "$stderr" | grep -q "pn-workspace-init"
+  rmdir "$isolated" 2>/dev/null || true
+}
+
+@test "require_workspace_root outputs root path when toml found" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  touch "$ws/pn-workspace.toml"
+  cd "$ws"
+  run require_workspace_root
+  [ "$status" -eq 0 ]
+  [ "$output" = "$ws" ]
+}
+
+@test "require_workspace_root finds root from subdirectory" {
+  local ws="$TEST_DIR/workspace"
+  local subdir="$ws/a/b/c"
+  mkdir -p "$subdir"
+  touch "$ws/pn-workspace.toml"
+  cd "$subdir"
+  run require_workspace_root
+  [ "$status" -eq 0 ]
+  [ "$output" = "$ws" ]
+}
+
+# ─── workspace_get_projects ───────────────────────────────────────────────────
+
+@test "workspace_get_projects reads lock file when use_lock=true and lock exists" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  cat > "$ws/pn-workspace.lock" <<'EOF'
+[
+  {"path": "repo-a", "inputName": "repo-a-input"},
+  {"path": "repo-b"}
+]
+EOF
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  # Paths should be absolute (prefixed with workspace root)
+  echo "$output" | grep -q "\"$ws/repo-a\""
+  echo "$output" | grep -q "\"$ws/repo-b\""
+}
+
+@test "workspace_get_projects converts relative paths to absolute in lock file" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  cat > "$ws/pn-workspace.lock" <<'EOF'
+[
+  {"path": "my-repo", "inputName": "my-input"}
+]
+EOF
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  # Path must be absolute
+  echo "$output" | grep -q "\"path\": \"$ws/my-repo\""
+}
+
+@test "workspace_get_projects calls pn-discover-workspace when use_lock=false" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = false
+EOF
+  cat > "$ws/pn-workspace.lock" <<'EOF'
+[{"path": "should-not-be-used"}]
+EOF
+
+  # Create a mock pn-discover-workspace
+  cat > "$TEST_DIR/pn-discover-workspace" <<'MOCK'
+#!/usr/bin/env bash
+echo '[{"path": "/mock/discovered", "inputName": "mock-input"}]'
+MOCK
+  chmod +x "$TEST_DIR/pn-discover-workspace"
+  export PATH="$TEST_DIR:$PATH"
+
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "mock/discovered"
+  echo "$output" | grep -qv "should-not-be-used"
+}
+
+@test "workspace_get_projects calls pn-discover-workspace when lock file absent" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  # No lock file created
+
+  # Create a mock pn-discover-workspace
+  cat > "$TEST_DIR/pn-discover-workspace" <<'MOCK'
+#!/usr/bin/env bash
+echo '[{"path": "/mock/repo", "inputName": "mock-repo"}]'
+MOCK
+  chmod +x "$TEST_DIR/pn-discover-workspace"
+  export PATH="$TEST_DIR:$PATH"
+
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "mock/repo"
+}
+
+@test "workspace_get_projects defaults to use_lock=true when key absent from toml" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  # toml with no use_lock key
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+[workspace]
+name = "test"
+EOF
+  cat > "$ws/pn-workspace.lock" <<'EOF'
+[{"path": "locked-repo"}]
+EOF
+
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "locked-repo"
+}
+
+# ─── workspace_read_toml ─────────────────────────────────────────────────────
+
+@test "workspace_read_toml reads a simple string key" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+name = "my-workspace"
+EOF
+  run workspace_read_toml "$ws" "name"
+  [ "$status" -eq 0 ]
+  [ "$output" = "my-workspace" ]
+}
+
+@test "workspace_read_toml reads a boolean key" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = false
+EOF
+  run workspace_read_toml "$ws" "use_lock"
+  [ "$status" -eq 0 ]
+  [ "$output" = "false" ]
+}

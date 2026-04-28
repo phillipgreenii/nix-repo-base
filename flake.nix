@@ -50,9 +50,23 @@
           src = ./.;
           treefmtWrapper = treefmtEval.config.build.wrapper;
         };
+
+        bashBuilders = (packagesLib).mkBashBuilders {
+          inherit pkgs self;
+          inherit (pkgs) lib;
+        };
+
+        pnScripts = import ./modules/pn/scripts.nix {
+          inherit pkgs bashBuilders;
+        };
       in
       {
         formatter = treefmtEval.config.build.wrapper;
+
+        packages = {
+          # Test package exposing the full pn script suite check
+          test-pn-scripts = pnScripts.check;
+        };
 
         checks = {
           formatting = treefmtEval.config.build.check self;
@@ -64,7 +78,8 @@
             ];
           };
           test-update-locks-lib = checks-lib.testUpdateLocksLib { };
-        };
+        }
+        // pnScripts.checks;
 
         devShells.default = devEnvLib.mkDevShell {
           inherit pkgs;
@@ -73,6 +88,8 @@
       }
     )
     // {
+      homeModules.pn = import ./home/pn/default.nix;
+
       lib =
         # Version helpers
         (import ./lib/version.nix)
