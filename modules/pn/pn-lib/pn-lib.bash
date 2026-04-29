@@ -553,9 +553,16 @@ workspace_parse_overrides() {
 # Returns the list of workspace projects as JSON array with absolute paths.
 # If use_lock is true (default) and pn-workspace.lock exists, reads from the lock file.
 # Otherwise runs pn-discover-workspace to discover projects dynamically.
-# Usage: workspace_get_projects <workspace_root>
+#
+# When the optional <overrides-json> argument is provided (output of
+# workspace_parse_overrides), each entry whose basename matches an override key
+# has its `path` field swapped. Unknown override keys, missing dirs, or paths
+# without flake.nix produce a fatal error.
+#
+# Usage: workspace_get_projects <workspace_root> [<overrides-json>]
 workspace_get_projects() {
   local workspace_root="$1"
+  local overrides_json="${2:-{\}}"
   local toml="$workspace_root/pn-workspace.toml"
   local lockfile="$workspace_root/pn-workspace.lock"
 
@@ -569,12 +576,51 @@ workspace_get_projects() {
     fi
   fi
 
+  local projects_json
   if [[ $use_lock == "true" && -f $lockfile ]]; then
-    # Convert relative paths to absolute paths
-    jq --arg root "$workspace_root" '[.[] | . + {path: ($root + "/" + .path)}]' "$lockfile"
+    projects_json=$(jq --arg root "$workspace_root" '[.[] | . + {path: ($root + "/" + .path)}]' "$lockfile")
   else
-    pn-discover-workspace "$workspace_root"
+    projects_json=$(pn-discover-workspace "$workspace_root")
   fi
+
+  # Fast-path: no overrides
+  local override_count
+  override_count=$(echo "$overrides_json" | jq 'length')
+  if [[ $override_count == "0" ]]; then
+    echo "$projects_json"
+    return 0
+  fi
+
+  # Validate every override key matches a project basename, paths exist and contain flake.nix
+  local valid_names
+  valid_names=$(echo "$projects_json" | jq -r '[.[] | .path | split("/") | .[-1]] | join(", ")')
+  local key
+  while IFS= read -r key; do
+    [[ -z $key ]] && continue
+    if ! echo "$projects_json" | jq -e --arg k "$key" '[.[] | .path | split("/") | .[-1]] | index($k)' >/dev/null; then
+      echo "error: unknown project \"$key\"; valid projects: $valid_names" >&2
+      return 1
+    fi
+    local path
+    path=$(echo "$overrides_json" | jq -r --arg k "$key" '.[$k]')
+    if [[ ! -d $path ]]; then
+      echo "error: override path does not exist: $path" >&2
+      return 1
+    fi
+    if [[ ! -f "$path/flake.nix" ]]; then
+      echo "error: override path is not a flake (no flake.nix): $path" >&2
+      return 1
+    fi
+  done < <(echo "$overrides_json" | jq -r 'keys[]')
+
+  # Apply swaps
+  echo "$projects_json" | jq --argjson o "$overrides_json" '
+    [ .[] |
+      . as $entry |
+      ($entry.path | split("/") | .[-1]) as $name |
+      if $o[$name] then ($entry | .path = $o[$name]) else $entry end
+    ]
+  '
 }
 
 # Read a value from pn-workspace.toml using yq.

@@ -536,3 +536,87 @@ EOF
   [ "$status" -ne 0 ]
   echo "$stderr" | grep -q "must be absolute"
 }
+
+# ─── workspace_get_projects with overrides ────────────────────────────────────
+
+# Test fixture: build a fake lockfile workspace
+_setup_lockfile_workspace() {
+  mkdir -p "$TEST_DIR/ws/repo-a" "$TEST_DIR/ws/repo-b"
+  touch "$TEST_DIR/ws/repo-a/flake.nix" "$TEST_DIR/ws/repo-b/flake.nix"
+  cat > "$TEST_DIR/ws/pn-workspace.toml" <<'TOML'
+use_lock = true
+TOML
+  cat > "$TEST_DIR/ws/pn-workspace.lock" <<'JSON'
+[
+  {"path": "repo-a", "inputName": "input-a"},
+  {"path": "repo-b"}
+]
+JSON
+}
+
+@test "workspace_get_projects without overrides returns absolute paths" {
+  _setup_lockfile_workspace
+  run workspace_get_projects "$TEST_DIR/ws"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.[0].path == "'"$TEST_DIR/ws/repo-a"'"'
+  echo "$output" | jq -e '.[1].path == "'"$TEST_DIR/ws/repo-b"'"'
+}
+
+@test "workspace_get_projects with empty overrides leaves paths unchanged" {
+  _setup_lockfile_workspace
+  run workspace_get_projects "$TEST_DIR/ws" "{}"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.[0].path == "'"$TEST_DIR/ws/repo-a"'"'
+}
+
+@test "workspace_get_projects swaps path for matching override (non-terminal)" {
+  _setup_lockfile_workspace
+  mkdir -p "$TEST_DIR/wt-a"
+  touch "$TEST_DIR/wt-a/flake.nix"
+  local overrides
+  overrides=$(jq -n --arg p "$TEST_DIR/wt-a" '{"repo-a": $p}')
+  run workspace_get_projects "$TEST_DIR/ws" "$overrides"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.[0].path == "'"$TEST_DIR/wt-a"'"'
+  echo "$output" | jq -e '.[0].inputName == "input-a"'
+  echo "$output" | jq -e '.[1].path == "'"$TEST_DIR/ws/repo-b"'"'
+}
+
+@test "workspace_get_projects swaps path for terminal entry too" {
+  _setup_lockfile_workspace
+  mkdir -p "$TEST_DIR/wt-b"
+  touch "$TEST_DIR/wt-b/flake.nix"
+  local overrides
+  overrides=$(jq -n --arg p "$TEST_DIR/wt-b" '{"repo-b": $p}')
+  run workspace_get_projects "$TEST_DIR/ws" "$overrides"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.[1].path == "'"$TEST_DIR/wt-b"'"'
+  echo "$output" | jq -e '.[1].inputName == null'
+}
+
+@test "workspace_get_projects errors on unknown override key" {
+  _setup_lockfile_workspace
+  local overrides='{"bogus": "/tmp"}'
+  run --separate-stderr workspace_get_projects "$TEST_DIR/ws" "$overrides"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q 'unknown project "bogus"'
+  echo "$stderr" | grep -q "valid projects"
+}
+
+@test "workspace_get_projects errors when override path does not exist" {
+  _setup_lockfile_workspace
+  local overrides='{"repo-a": "/nonexistent/path"}'
+  run --separate-stderr workspace_get_projects "$TEST_DIR/ws" "$overrides"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "does not exist"
+}
+
+@test "workspace_get_projects errors when override path lacks flake.nix" {
+  _setup_lockfile_workspace
+  mkdir -p "$TEST_DIR/no-flake"
+  local overrides
+  overrides=$(jq -n --arg p "$TEST_DIR/no-flake" '{"repo-a": $p}')
+  run --separate-stderr workspace_get_projects "$TEST_DIR/ws" "$overrides"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "is not a flake"
+}
