@@ -620,3 +620,53 @@ JSON
   [ "$status" -ne 0 ]
   echo "$stderr" | grep -q "is not a flake"
 }
+
+# ─── workspace_has_upstream ───────────────────────────────────────────────────
+
+@test "workspace_has_upstream returns 1 when no remotes configured" {
+  local repo="$TEST_DIR/repo-no-remote"
+  mkdir -p "$repo"
+  git -C "$repo" init -q -b main
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q --allow-empty -m init
+  cd "$repo"
+  run workspace_has_upstream
+  [ "$status" -eq 1 ]
+}
+
+@test "workspace_has_upstream returns 1 when remote exists but no tracking branch" {
+  local repo="$TEST_DIR/repo-no-upstream"
+  mkdir -p "$repo"
+  git -C "$repo" init -q -b main
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q --allow-empty -m init
+  git -C "$repo" remote add origin /nonexistent
+  cd "$repo"
+  run workspace_has_upstream
+  [ "$status" -eq 1 ]
+}
+
+@test "workspace_has_upstream returns 0 when remote and tracking branch both present" {
+  local upstream="$TEST_DIR/repo-upstream.git"
+  local repo="$TEST_DIR/repo-tracked"
+  git init -q --bare "$upstream"
+  mkdir -p "$repo"
+  git -C "$repo" init -q -b main
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q --allow-empty -m init
+  git -C "$repo" remote add origin "$upstream"
+  git -C "$repo" push -q -u origin main
+  cd "$repo"
+  run workspace_has_upstream
+  [ "$status" -eq 0 ]
+}
+
+@test "workspace_has_upstream returns 1 in detached HEAD state" {
+  local repo="$TEST_DIR/repo-detached"
+  mkdir -p "$repo"
+  git -C "$repo" init -q -b main
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q --allow-empty -m c1
+  local sha
+  sha=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" checkout -q "$sha"
+  cd "$repo"
+  run workspace_has_upstream
+  [ "$status" -eq 1 ]
+}

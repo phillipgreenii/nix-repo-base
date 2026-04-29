@@ -631,3 +631,12 @@ workspace_read_toml() {
   local toml="$workspace_root/pn-workspace.toml"
   yq -p=toml -oy ".$key" "$toml"
 }
+
+# Returns 0 if the current repo HEAD has a usable upstream (remote exists AND
+# current branch has tracking branch configured). Returns 1 otherwise.
+# Does NOT fetch — purely a local config check. Run from inside the repo
+# working tree.
+workspace_has_upstream() {
+  [[ -n $(git remote 2>/dev/null) ]] || return 1
+  git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 || return 1
+}
