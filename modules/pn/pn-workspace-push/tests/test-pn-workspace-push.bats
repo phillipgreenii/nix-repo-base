@@ -182,7 +182,8 @@ teardown() {
       source '$SCRIPTS_DIR/pn-workspace-push.sh'
     "
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping push"
+    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping push for repo-base"
+    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping push for terminal-flake"
     [[ ! "$output" == *"Mock: git push"* ]]
 }
 
@@ -195,5 +196,6 @@ teardown() {
       source '$SCRIPTS_DIR/pn-workspace-push.sh'
     "
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q "no upstream for branch 'DETACHED HEAD' — skipping push"
+    echo "$output" | grep -q "no upstream for branch 'DETACHED HEAD' — skipping push for repo-base"
+    echo "$output" | grep -q "no upstream for branch 'DETACHED HEAD' — skipping push for terminal-flake"
 }
