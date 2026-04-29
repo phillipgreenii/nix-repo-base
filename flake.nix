@@ -64,6 +64,18 @@
         formatter = treefmtEval.config.build.wrapper;
 
         packages = {
+          # Autofix helper
+          fix-lint = pkgs.writeShellScriptBin "fix-lint" ''
+            ${pkgs.lib.getExe pkgs.statix} fix ${./.}
+          '';
+
+          # Install pre-commit hooks
+          install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
+            ${pre-commit.shellHook}
+            echo "Pre-commit hooks installed successfully!"
+            echo "Run 'pre-commit run --all-files' to test them."
+          '';
+
           # Test package exposing the full pn script suite check
           test-pn-scripts = pnScripts.check;
           # Individual pn scripts (available via nix shell)
