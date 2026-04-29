@@ -35,14 +35,40 @@ EOF
 }
 
 # Create mock git command.
-# Handles `git remote get-url origin` specially — returns $MOCK_GIT_REMOTE_URL
-# (default: https://github.com/example/repo.git).  All other invocations echo
-# "Mock: git <args>" and exit 0.
+# Handles a few subcommands specially:
+#   git remote get-url origin      → echoes $MOCK_GIT_REMOTE_URL
+#                                    (default: https://github.com/example/repo.git)
+#   git remote                     → empty when MOCK_GIT_NO_REMOTE=1, else "origin"
+#   git rev-parse --abbrev-ref --symbolic-full-name @{u}
+#                                  → exits 1 when MOCK_GIT_NO_REMOTE=1
+#                                    or MOCK_GIT_NO_UPSTREAM=1, else echoes
+#                                    "origin/${MOCK_GIT_BRANCH:-main}" and exits 0
+#   git branch --show-current      → echoes ${MOCK_GIT_BRANCH-main}
+#                                    (empty string allowed for detached HEAD)
+# All other invocations echo "Mock: git <args>" and exit 0.
 create_mock_git() {
   cat >"$TEST_DIR/git" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "remote" && "$2" == "get-url" && "$3" == "origin" ]]; then
   echo "${MOCK_GIT_REMOTE_URL:-https://github.com/example/repo.git}"
+  exit 0
+fi
+if [[ "$1" == "remote" && $# -eq 1 ]]; then
+  if [[ -n "${MOCK_GIT_NO_REMOTE:-}" ]]; then
+    exit 0
+  fi
+  echo "origin"
+  exit 0
+fi
+if [[ "$1" == "rev-parse" && "$2" == "--abbrev-ref" && "$3" == "--symbolic-full-name" && "$4" == "@{u}" ]]; then
+  if [[ -n "${MOCK_GIT_NO_REMOTE:-}" || -n "${MOCK_GIT_NO_UPSTREAM:-}" ]]; then
+    exit 1
+  fi
+  echo "origin/${MOCK_GIT_BRANCH:-main}"
+  exit 0
+fi
+if [[ "$1" == "branch" && "$2" == "--show-current" ]]; then
+  printf '%s\n' "${MOCK_GIT_BRANCH-main}"
   exit 0
 fi
 echo "Mock: git $*"
