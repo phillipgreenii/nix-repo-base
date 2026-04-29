@@ -269,6 +269,56 @@ EOF
   [ "$output" = "$ws" ]
 }
 
+# ─── workspace_resolve_root ────────────────────────────────────────────────────
+
+@test "workspace_resolve_root uses flag value when given" {
+  mkdir -p "$TEST_DIR/ws"
+  touch "$TEST_DIR/ws/pn-workspace.toml"
+  run workspace_resolve_root "$TEST_DIR/ws"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/ws" ]
+}
+
+@test "workspace_resolve_root uses PN_WORKSPACE_ROOT env when no flag" {
+  mkdir -p "$TEST_DIR/ws"
+  touch "$TEST_DIR/ws/pn-workspace.toml"
+  PN_WORKSPACE_ROOT="$TEST_DIR/ws" run workspace_resolve_root ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/ws" ]
+}
+
+@test "workspace_resolve_root prefers flag over env" {
+  mkdir -p "$TEST_DIR/ws-flag"
+  mkdir -p "$TEST_DIR/ws-env"
+  touch "$TEST_DIR/ws-flag/pn-workspace.toml"
+  touch "$TEST_DIR/ws-env/pn-workspace.toml"
+  PN_WORKSPACE_ROOT="$TEST_DIR/ws-env" run workspace_resolve_root "$TEST_DIR/ws-flag"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/ws-flag" ]
+}
+
+@test "workspace_resolve_root falls back to walk-up when no flag and no env" {
+  mkdir -p "$TEST_DIR/ws/sub"
+  touch "$TEST_DIR/ws/pn-workspace.toml"
+  cd "$TEST_DIR/ws/sub"
+  unset PN_WORKSPACE_ROOT
+  run workspace_resolve_root ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/ws" ]
+}
+
+@test "workspace_resolve_root errors when flag dir does not exist" {
+  run --separate-stderr workspace_resolve_root "$TEST_DIR/nonexistent"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "workspace directory not found"
+}
+
+@test "workspace_resolve_root errors when env dir does not exist" {
+  PN_WORKSPACE_ROOT="$TEST_DIR/nonexistent" run --separate-stderr workspace_resolve_root ""
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "PN_WORKSPACE_ROOT"
+}
+
 # ─── workspace_get_projects ───────────────────────────────────────────────────
 
 @test "workspace_get_projects reads lock file when use_lock=true and lock exists" {

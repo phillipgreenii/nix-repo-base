@@ -460,6 +460,32 @@ require_workspace_root() {
   echo "$root"
 }
 
+# Resolve the workspace root path.
+# Precedence: $1 (flag) > PN_WORKSPACE_ROOT env > walk up from CWD.
+# Echoes absolute path on success; returns 1 with error on stderr otherwise.
+workspace_resolve_root() {
+  local flag_val="${1:-}"
+  if [[ -n $flag_val ]]; then
+    local resolved
+    if ! resolved=$(cd "$flag_val" 2>/dev/null && pwd); then
+      echo "error: workspace directory not found: $flag_val" >&2
+      return 1
+    fi
+    echo "$resolved"
+    return 0
+  fi
+  if [[ -n ${PN_WORKSPACE_ROOT:-} ]]; then
+    local resolved
+    if ! resolved=$(cd "$PN_WORKSPACE_ROOT" 2>/dev/null && pwd); then
+      echo "error: PN_WORKSPACE_ROOT directory not found: $PN_WORKSPACE_ROOT" >&2
+      return 1
+    fi
+    echo "$resolved"
+    return 0
+  fi
+  require_workspace_root
+}
+
 # Returns the list of workspace projects as JSON array with absolute paths.
 # If use_lock is true (default) and pn-workspace.lock exists, reads from the lock file.
 # Otherwise runs pn-discover-workspace to discover projects dynamically.
