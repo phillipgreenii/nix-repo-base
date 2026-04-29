@@ -126,23 +126,21 @@ main() {
   section_header "System Profiles"
   local sys_profile
   sys_profile=$(discover_system_profile)
-  process_profile "system" "$sys_profile" "system" sudo
+  process_profile "$(format_profile_label "$sys_profile" system)" "$sys_profile" "system" sudo
   echo ""
 
   # ─── Home Manager Profile ────────────────────────────────────────────────────
   section_header "Home Manager"
   local hm_profile
   hm_profile=$(discover_home_manager_profile)
-  process_profile "home-manager" "$hm_profile" "home-manager"
+  process_profile "$(format_profile_label "$hm_profile" home-manager)" "$hm_profile" "home-manager"
   echo ""
 
   # ─── User Profiles ───────────────────────────────────────────────────────────
   section_header "User Profiles"
   local profile
   while IFS= read -r profile; do
-    local name
-    name=$(basename "$profile")
-    process_profile "$name" "$profile" "user-profiles"
+    process_profile "$(format_profile_label "$profile" user-profiles)" "$profile" "user-profiles"
   done < <(discover_user_profiles)
   echo ""
 
@@ -151,7 +149,7 @@ main() {
   local devbox_global
   devbox_global=$(discover_devbox_global_profile)
   if [[ -n $devbox_global ]]; then
-    process_profile "devbox-global" "$devbox_global" "devbox-global"
+    process_profile "$(format_profile_label "$devbox_global" devbox-global)" "$devbox_global" "devbox-global"
   else
     echo "  (not installed)"
   fi
@@ -162,7 +160,7 @@ main() {
   local devbox_util
   devbox_util=$(discover_devbox_util_profile)
   if [[ -n $devbox_util ]]; then
-    process_profile "devbox-util" "$devbox_util" "devbox-util"
+    process_profile "$(format_profile_label "$devbox_util" devbox-util)" "$devbox_util" "devbox-util"
   else
     echo "  (not installed)"
   fi
@@ -177,10 +175,7 @@ main() {
 
   if [[ ${#search_dirs[@]} -gt 0 ]]; then
     while IFS= read -r profile; do
-      local proj_name
-      proj_name=$(dirname "$(dirname "$(dirname "$profile")")")
-      proj_name=$(basename "$proj_name")
-      process_profile "$proj_name" "$profile" "devbox-projects"
+      process_profile "$(format_profile_label "$profile" devbox-projects)" "$profile" "devbox-projects"
     done < <(discover_devbox_projects "${search_dirs[@]}")
   else
     echo "  (no search dirs configured)"

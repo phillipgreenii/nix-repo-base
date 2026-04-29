@@ -364,6 +364,36 @@ EOF
   [ -L "$profiles_dir/old-env-1-link" ]
 }
 
+@test "pn-store-deepclean labels devbox project lines with project path, not '.devbox'" {
+  create_mock_nix_env_clean
+  create_mock_nix_path_info_clean
+  create_mock_df_clean
+  create_mock_sudo
+  create_mock_nix_store_gc
+
+  # Two devbox projects under $HOME so the ~ substitution applies.
+  # Profile symlink targets must exist (process_profile uses -e).
+  local proj_a="$HOME/projects/repo-alpha"
+  local proj_b="$HOME/projects/repo-beta"
+  mkdir -p "$proj_a/.devbox/nix/profile" "$proj_b/.devbox/nix/profile"
+  mkdir -p "$TEST_DIR/fake-store/a" "$TEST_DIR/fake-store/b"
+  ln -s "$TEST_DIR/fake-store/a" "$proj_a/.devbox/nix/profile/default"
+  ln -s "$TEST_DIR/fake-store/b" "$proj_b/.devbox/nix/profile/default"
+
+  cat > "$XDG_CONFIG_HOME/pn/store.toml" <<EOF
+search_dirs = ["$HOME/projects"]
+keep_days = 14
+keep_count = 3
+EOF
+
+  run "$TEST_DIR/run_with_lib" "$SCRIPTS_DIR/pn-store-deepclean.sh" --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE '~/projects/repo-alpha:'
+  echo "$output" | grep -qE '~/projects/repo-beta:'
+  # Must NOT show the bare ".devbox" label (the bug we fixed)
+  ! echo "$output" | grep -qE '^\s+\.devbox:'
+}
+
 @test "pn-store-deepclean shows runtime roots summary after GC" {
   create_mock_nix_env_clean
   create_mock_nix_path_info_clean

@@ -138,6 +138,50 @@ EOF
   [ "$output" = "1.0 GB" ]
 }
 
+# ─── format_profile_label ────────────────────────────────────────────────────
+
+@test "format_profile_label returns category name for system" {
+  run format_profile_label "/nix/var/nix/profiles/system" system
+  [ "$status" -eq 0 ]
+  [ "$output" = "system" ]
+}
+
+@test "format_profile_label returns category name for home-manager" {
+  run format_profile_label "/nix/var/nix/profiles/per-user/me/home-manager" home-manager
+  [ "$status" -eq 0 ]
+  [ "$output" = "home-manager" ]
+}
+
+@test "format_profile_label returns category name for devbox-global" {
+  run format_profile_label "$HOME/.local/share/devbox/global/.devbox/nix/profile/default" devbox-global
+  [ "$status" -eq 0 ]
+  [ "$output" = "devbox-global" ]
+}
+
+@test "format_profile_label returns category name for devbox-util" {
+  run format_profile_label "$HOME/.local/share/devbox/util/.devbox/nix/profile/default" devbox-util
+  [ "$status" -eq 0 ]
+  [ "$output" = "devbox-util" ]
+}
+
+@test "format_profile_label returns basename for user-profiles" {
+  run format_profile_label "/nix/var/nix/profiles/per-user/me/channels" user-profiles
+  [ "$status" -eq 0 ]
+  [ "$output" = "channels" ]
+}
+
+@test "format_profile_label returns ~-relative project dir for devbox-projects under HOME" {
+  run format_profile_label "$HOME/work/repo-alpha/.devbox/nix/profile/default" devbox-projects
+  [ "$status" -eq 0 ]
+  [ "$output" = "~/work/repo-alpha" ]
+}
+
+@test "format_profile_label returns absolute project dir for devbox-projects outside HOME" {
+  run format_profile_label "/opt/projects/repo-beta/.devbox/nix/profile/default" devbox-projects
+  [ "$status" -eq 0 ]
+  [ "$output" = "/opt/projects/repo-beta" ]
+}
+
 # ─── find_workspace_root ─────────────────────────────────────────────────────
 
 @test "find_workspace_root finds pn-workspace.toml in current directory" {

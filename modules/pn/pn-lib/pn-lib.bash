@@ -199,6 +199,37 @@ discover_nh_temp_roots() {
   done < <(find "$tmpdir" -maxdepth 2 -path "*/nh-darwin*/result" 2>/dev/null)
 }
 
+# Returns a short, user-friendly label for a profile in a given category.
+# Used by store-audit/store-deepclean for consistent per-profile output.
+# Usage: format_profile_label <profile_path> <category>
+#   category: system | home-manager | user-profiles |
+#             devbox-global | devbox-util | devbox-projects
+format_profile_label() {
+  local profile="$1"
+  local category="$2"
+  case "$category" in
+  system | home-manager | devbox-global | devbox-util)
+    echo "$category"
+    ;;
+  user-profiles)
+    basename "$profile"
+    ;;
+  devbox-projects)
+    # profile is <project>/.devbox/nix/profile/default — climb 4 dirnames
+    local proj_dir
+    proj_dir=$(dirname "$(dirname "$(dirname "$(dirname "$profile")")")")
+    if [[ -n ${HOME:-} && $proj_dir == "$HOME"* ]]; then
+      echo "~${proj_dir#"$HOME"}"
+    else
+      echo "$proj_dir"
+    fi
+    ;;
+  *)
+    echo "$profile"
+    ;;
+  esac
+}
+
 # ─── Generation functions ─────────────────────────────────────────────────────
 
 # Wraps nix-env --list-generations and outputs: <gen_number> <date> <current|>

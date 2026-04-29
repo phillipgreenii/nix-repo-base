@@ -36,59 +36,54 @@ main() {
     esac
   done
 
+  # Helper: emit per-profile audit block (label header + path + generations + size).
+  audit_profile() {
+    local profile="$1"
+    local category="$2"
+    local sudo_cmd="${3:-}"
+    echo "  $(format_profile_label "$profile" "$category"):"
+    echo "    Profile: $profile"
+    list_generations "$profile" "$sudo_cmd" | sed 's/^/    /'
+    local size
+    size=$(profile_closure_size "$profile")
+    echo "    Closure size: $size"
+    echo ""
+  }
+
   # ─── System Profile ──────────────────────────────────────────────────────────
   section_header "System Profiles"
   local sys_profile
   sys_profile=$(discover_system_profile)
-  echo "Profile: $sys_profile"
-  list_generations "$sys_profile" sudo
-  local sys_size
-  sys_size=$(profile_closure_size "$sys_profile")
-  echo "Closure size: $sys_size"
-  echo ""
+  audit_profile "$sys_profile" "system" sudo
 
   # ─── Home Manager Profile ────────────────────────────────────────────────────
   section_header "Home Manager"
   local hm_profile
   hm_profile=$(discover_home_manager_profile)
-  echo "Profile: $hm_profile"
   if [[ -e $hm_profile ]]; then
-    list_generations "$hm_profile"
-    local hm_size
-    hm_size=$(profile_closure_size "$hm_profile")
-    echo "Closure size: $hm_size"
+    audit_profile "$hm_profile" "home-manager"
   else
-    echo "(not installed)"
+    echo "  (not installed)"
+    echo ""
   fi
-  echo ""
 
   # ─── User Profiles ───────────────────────────────────────────────────────────
   section_header "User Profiles"
   local profile
   while IFS= read -r profile; do
-    echo "Profile: $profile"
-    list_generations "$profile"
-    local psize
-    psize=$(profile_closure_size "$profile")
-    echo "Closure size: $psize"
-    echo ""
+    audit_profile "$profile" "user-profiles"
   done < <(discover_user_profiles)
-  echo ""
 
   # ─── Devbox Global Profile ───────────────────────────────────────────────────
   section_header "Devbox Global"
   local devbox_global
   devbox_global=$(discover_devbox_global_profile)
   if [[ -n $devbox_global ]]; then
-    echo "Profile: $devbox_global"
-    list_generations "$devbox_global"
-    local dg_size
-    dg_size=$(profile_closure_size "$devbox_global")
-    echo "Closure size: $dg_size"
+    audit_profile "$devbox_global" "devbox-global"
   else
-    echo "(not installed)"
+    echo "  (not installed)"
+    echo ""
   fi
-  echo ""
 
   # ─── Devbox Project Profiles ─────────────────────────────────────────────────
   section_header "Devbox Projects"
@@ -99,17 +94,12 @@ main() {
 
   if [[ ${#search_dirs[@]} -gt 0 ]]; then
     while IFS= read -r profile; do
-      echo "Profile: $profile"
-      list_generations "$profile"
-      local dp_size
-      dp_size=$(profile_closure_size "$profile")
-      echo "Closure size: $dp_size"
-      echo ""
+      audit_profile "$profile" "devbox-projects"
     done < <(discover_devbox_projects "${search_dirs[@]}")
   else
-    echo "(no search dirs configured)"
+    echo "  (no search dirs configured)"
+    echo ""
   fi
-  echo ""
 
   # ─── Nix Store ───────────────────────────────────────────────────────────────
   section_header "Nix Store"
