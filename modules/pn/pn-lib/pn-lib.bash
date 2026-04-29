@@ -578,7 +578,7 @@ workspace_get_projects() {
 
   local projects_json
   if [[ $use_lock == "true" && -f $lockfile ]]; then
-    projects_json=$(jq --arg root "$workspace_root" '[.[] | . + {path: ($root + "/" + .path)}]' "$lockfile")
+    projects_json=$(jq --arg root "$workspace_root" '[.[] | . + {path: (if (.path | startswith("/")) then .path else ($root + "/" + .path) end)}]' "$lockfile")
   else
     projects_json=$(pn-discover-workspace "$workspace_root")
   fi
