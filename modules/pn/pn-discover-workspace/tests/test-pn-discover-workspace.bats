@@ -194,8 +194,8 @@ MOCK
   local count
   count=$(echo "$output" | jq 'length')
   [ "$count" -eq 1 ]
-  # Path should be the repo path
-  echo "$output" | jq -e '.[0].path == "'"$ws/repo-a"'"'
+  # Path should be the repo name (relative to workspace)
+  echo "$output" | jq -e '.[0].path == "repo-a"'
 }
 
 @test "discovers two repos with dependency order: base first, terminal last" {
@@ -224,8 +224,8 @@ MOCK
 
   # repo-base should appear before repo-app
   local base_idx app_idx
-  base_idx=$(echo "$output" | jq '[.[].path] | index("'"$ws/repo-base"'")')
-  app_idx=$(echo "$output" | jq '[.[].path] | index("'"$ws/repo-app"'")')
+  base_idx=$(echo "$output" | jq '[.[].path] | index("repo-base")')
+  app_idx=$(echo "$output" | jq '[.[].path] | index("repo-app")')
   [ "$base_idx" -lt "$app_idx" ]
 }
 
@@ -275,7 +275,7 @@ MOCK
 
   # repo-base should have inputName = "my-base-input"
   local base_entry
-  base_entry=$(echo "$output" | jq '.[] | select(.path == "'"$ws/repo-base"'")')
+  base_entry=$(echo "$output" | jq '.[] | select(.path == "repo-base")')
   echo "$base_entry" | jq -e '.inputName == "my-base-input"'
 }
 
@@ -321,9 +321,9 @@ MOCK
   [ "$count" -eq 3 ]
 
   local a_idx b_idx c_idx
-  a_idx=$(echo "$output" | jq '[.[].path] | index("'"$ws/repo-a"'")')
-  b_idx=$(echo "$output" | jq '[.[].path] | index("'"$ws/repo-b"'")')
-  c_idx=$(echo "$output" | jq '[.[].path] | index("'"$ws/repo-c"'")')
+  a_idx=$(echo "$output" | jq '[.[].path] | index("repo-a")')
+  b_idx=$(echo "$output" | jq '[.[].path] | index("repo-b")')
+  c_idx=$(echo "$output" | jq '[.[].path] | index("repo-c")')
 
   # a before b, b before c
   [ "$a_idx" -lt "$b_idx" ]

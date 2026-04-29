@@ -13,10 +13,10 @@ Scan <workspace_root>/*/  for directories containing flake.nix, determine
 their dependency order via flake inputs, and output a JSON array in topological
 order (dependencies first, terminal flake last).
 
-Output format:
+Output format (paths are relative to workspace_root):
   [
-    { "path": "/workspace/repo-a", "inputName": "repo-a-input" },
-    { "path": "/workspace/repo-b" }
+    { "path": "repo-a", "inputName": "repo-a-input" },
+    { "path": "repo-b" }
   ]
 
 The terminal flake (the one no other local flake depends on) has no inputName.
@@ -94,7 +94,7 @@ while IFS= read -r -d '' dir; do
   # could read inputs directly from flake.lock to avoid spawning nix per repo.
   inputs_json=$(nix eval --json --file "$dir/flake.nix" "inputs" 2>/dev/null || echo "{}")
 
-  repo_paths+=("$dir")
+  repo_paths+=("${dir#"$workspace_root/"}")
   repo_slugs+=("$slug")
   repo_inputs_json+=("$inputs_json")
 done < <(find "$workspace_root" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)

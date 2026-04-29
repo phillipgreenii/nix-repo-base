@@ -370,6 +370,24 @@ EOF
   echo "$output" | grep -q "\"path\": \"$ws/my-repo\""
 }
 
+@test "workspace_get_projects passes through absolute paths in lock file unchanged" {
+  local ws="$TEST_DIR/workspace"
+  local other="/tmp/other-repo"
+  mkdir -p "$ws"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  cat > "$ws/pn-workspace.lock" <<EOF
+[
+  {"path": "$other", "inputName": "other-input"}
+]
+EOF
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  # Absolute path must not be double-prefixed
+  echo "$output" | jq -e '.[0].path == "'"$other"'"'
+}
+
 @test "workspace_get_projects calls pn-discover-workspace when use_lock=false" {
   local ws="$TEST_DIR/workspace"
   mkdir -p "$ws"
