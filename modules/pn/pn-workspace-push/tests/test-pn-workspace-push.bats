@@ -158,3 +158,42 @@ teardown() {
     [ "$status" -ne 0 ]
     echo "$output" | grep -q 'unknown project'
 }
+
+@test "pn-workspace-push skips push when project has no remote" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export MOCK_GIT_NO_REMOTE=1
+      export MOCK_GIT_BRANCH=feature-branch
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-push.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "no upstream for branch 'feature-branch' — skipping push for repo-base"
+    echo "$output" | grep -q "no upstream for branch 'feature-branch' — skipping push for terminal-flake"
+    [[ ! "$output" == *"Mock: git push"* ]]
+}
+
+@test "pn-workspace-push skips push when branch has no tracking branch" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export MOCK_GIT_NO_UPSTREAM=1
+      export MOCK_GIT_BRANCH=local-only
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-push.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping push"
+    [[ ! "$output" == *"Mock: git push"* ]]
+}
+
+@test "pn-workspace-push reports DETACHED HEAD when current branch is empty" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export MOCK_GIT_NO_UPSTREAM=1
+      export MOCK_GIT_BRANCH=
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-push.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "no upstream for branch 'DETACHED HEAD' — skipping push"
+}

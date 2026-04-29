@@ -15,6 +15,9 @@ Purpose: Pushes every repo declared in the nearest pn-workspace.toml to its
 remote. Searches ancestor directories from the current working directory to
 find the workspace root.
 
+Projects without a configured upstream are skipped with an informational
+message.
+
 Usage: pn-workspace-push [OPTIONS]
 
 Options:
@@ -84,5 +87,11 @@ while IFS= read -r project_path; do
   project_name=$(basename "$project_path")
   echo "  --== Push $project_name ==--  "
   cd "$project_path" || exit 1
-  git push
+  if workspace_has_upstream; then
+    git push
+  else
+    _branch=$(git branch --show-current)
+    _branch_label="${_branch:-DETACHED HEAD}"
+    echo "no upstream for branch '$_branch_label' — skipping push for $project_name"
+  fi
 done < <(echo "$workspace_json" | jq -r '.[] | .path')
