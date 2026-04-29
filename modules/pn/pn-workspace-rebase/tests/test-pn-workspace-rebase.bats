@@ -158,3 +158,31 @@ teardown() {
     [ "$status" -ne 0 ]
     echo "$output" | grep -q 'unknown project'
 }
+
+@test "pn-workspace-rebase skips rebase when project has no remote" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export MOCK_GIT_NO_REMOTE=1
+      export MOCK_GIT_BRANCH=feature-branch
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-rebase.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "no upstream for branch 'feature-branch' — skipping rebase for repo-base"
+    echo "$output" | grep -q "no upstream for branch 'feature-branch' — skipping rebase for terminal-flake"
+    [[ ! "$output" == *"Mock: git mu"* ]]
+}
+
+@test "pn-workspace-rebase skips rebase when branch has no tracking branch" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export MOCK_GIT_NO_UPSTREAM=1
+      export MOCK_GIT_BRANCH=local-only
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-rebase.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping rebase for repo-base"
+    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping rebase for terminal-flake"
+    [[ ! "$output" == *"Mock: git mu"* ]]
+}
