@@ -1,9 +1,10 @@
 # shellcheck shell=bash
 # pn-workspace-apply: Format and apply workspace configuration
 
+_root_arg=""
 _workspace_arg=""
 _apply_cmd_arg=""
-_terminal_path_arg=""
+_override_specs=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,11 +21,16 @@ changes are picked up without committing.
 Usage: pn-workspace-apply [OPTIONS]
 
 Options:
-  -h, --help                  Show this help message and exit
-  --workspace <dir>           Workspace root directory (default: walk up from CWD)
-  --apply-cmd <template>      Override apply_command from pn-workspace.toml.
-                              Supports {terminal_flake} and {hostname} placeholders.
-  --terminal-path <path>      Override the terminal flake path from workspace discovery.
+  -h, --help                    Show this help message and exit
+  --root <dir>                  Workspace root directory.
+                                Default: PN_WORKSPACE_ROOT env or walk up from CWD.
+  --workspace <dir>             Deprecated alias for --root.
+  --apply-cmd <template>        Override apply_command from pn-workspace.toml.
+                                Supports {terminal_flake} and {hostname} placeholders.
+  --override-path <name>=<path> Override the path used for a workspace project.
+                                Repeatable. Both terminal and non-terminal
+                                projects supported. Also accepts
+                                PN_WORKSPACE_OVERRIDE_PATHS env var.
 
 Example:
   # Apply configuration after making changes
@@ -32,10 +38,18 @@ Example:
 
   # Bootstrap: run directly from nix-repo-base without pn installed
   nix run /path/to/nix-repo-base#pn-workspace-apply -- \
-    --workspace ~/my-workspace \
+    --root ~/my-workspace \
     --apply-cmd "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
 HELP
     exit 0
+    ;;
+  --root)
+    _root_arg="$2"
+    shift 2
+    ;;
+  --root=*)
+    _root_arg="${1#*=}"
+    shift
     ;;
   --workspace)
     _workspace_arg="$2"
@@ -53,12 +67,12 @@ HELP
     _apply_cmd_arg="${1#*=}"
     shift
     ;;
-  --terminal-path)
-    _terminal_path_arg="$2"
+  --override-path)
+    _override_specs+=("$2")
     shift 2
     ;;
-  --terminal-path=*)
-    _terminal_path_arg="${1#*=}"
+  --override-path=*)
+    _override_specs+=("${1#*=}")
     shift
     ;;
   *)
@@ -68,14 +82,19 @@ HELP
   esac
 done
 
-if [[ -n $_workspace_arg ]]; then
-  PN_WORKSPACE_ROOT="$(cd "$_workspace_arg" 2>/dev/null && pwd)" || {
-    echo "error: workspace directory not found: $_workspace_arg" >&2
-    exit 1
-  }
-else
-  PN_WORKSPACE_ROOT=$(require_workspace_root) || exit 1
+if [[ -n $_root_arg && -n $_workspace_arg ]]; then
+  echo "error: --root and --workspace are mutually exclusive (use --root)" >&2
+  exit 1
 fi
+
+if [[ -n $_workspace_arg ]]; then
+  echo "warning: --workspace is deprecated; use --root instead" >&2
+  _root_arg="$_workspace_arg"
+fi
+
+PN_WORKSPACE_ROOT=$(workspace_resolve_root "$_root_arg") || exit 1
+
+overrides_json=$(workspace_parse_overrides "${_override_specs[@]}") || exit 1
 
 _apply_child_pid=""
 
@@ -93,17 +112,10 @@ _apply_cleanup() {
 trap '_apply_cleanup INT' INT
 trap '_apply_cleanup TERM' TERM
 
-workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT")
+workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT" "$overrides_json") || exit 1
 
 # The terminal flake is the entry with no inputName field
-if [[ -n $_terminal_path_arg ]]; then
-  terminal_path="$(cd "$_terminal_path_arg" 2>/dev/null && pwd)" || {
-    echo "error: terminal-path directory not found: $_terminal_path_arg" >&2
-    exit 1
-  }
-else
-  terminal_path=$(echo "$workspace_json" | jq -r '.[] | select(.inputName == null) | .path' | tail -1)
-fi
+terminal_path=$(echo "$workspace_json" | jq -r '.[] | select(.inputName == null) | .path' | tail -1)
 
 if [[ -z $terminal_path ]]; then
   echo "error: could not determine terminal flake path from workspace" >&2
