@@ -16,6 +16,10 @@ without applying changes. For each project in order, it pulls the latest remote
 changes, runs update-locks.sh, and pushes. After all projects are updated,
 regenerates the pn-workspace.lock file.
 
+Projects without a configured upstream are still refreshed locally
+(update-locks.sh runs); pull and push are skipped with an informational
+message.
+
 Usage: pn-workspace-update [OPTIONS]
 
 Options:
@@ -109,20 +113,28 @@ while IFS= read -r project_path; do
   echo "  --== Update $project_name ==--  "
   cd "$project_path" || exit 1
 
-  git pull --rebase --autostash &
-  _child_pid=$!
-  wait "$_child_pid" || exit $?
-  _child_pid=""
+  if workspace_has_upstream; then
+    git pull --rebase --autostash &
+    _child_pid=$!
+    wait "$_child_pid" || exit $?
+    _child_pid=""
+  fi
 
   ./update-locks.sh &
   _child_pid=$!
   wait "$_child_pid" || exit $?
   _child_pid=""
 
-  git push &
-  _child_pid=$!
-  wait "$_child_pid" || exit $?
-  _child_pid=""
+  if workspace_has_upstream; then
+    git push &
+    _child_pid=$!
+    wait "$_child_pid" || exit $?
+    _child_pid=""
+  else
+    _branch=$(git branch --show-current)
+    _branch_label="${_branch:-DETACHED HEAD}"
+    echo "no upstream for branch '$_branch_label' — skipping pull/push for $project_name"
+  fi
 
   echo
 done < <(echo "$workspace_json" | jq -r '.[] | .path')

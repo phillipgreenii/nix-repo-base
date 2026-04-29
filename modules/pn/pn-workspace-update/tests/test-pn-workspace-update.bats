@@ -237,3 +237,34 @@ EOF
     [ "$status" -ne 0 ]
     echo "$output" | grep -q 'unknown project'
 }
+
+@test "pn-workspace-update skips pull/push when project has no remote" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export MOCK_GIT_NO_REMOTE=1
+      export MOCK_GIT_BRANCH=feature-branch
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "no upstream for branch 'feature-branch' — skipping pull/push for repo-base"
+    echo "$output" | grep -q "no upstream for branch 'feature-branch' — skipping pull/push for terminal-flake"
+    echo "$output" | grep -q "update-locks.sh ran"
+    [[ ! "$output" == *"Mock: git pull"* ]]
+    [[ ! "$output" == *"Mock: git push"* ]]
+}
+
+@test "pn-workspace-update skips pull/push when branch has no tracking branch" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export MOCK_GIT_NO_UPSTREAM=1
+      export MOCK_GIT_BRANCH=local-only
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping pull/push"
+    echo "$output" | grep -q "update-locks.sh ran"
+    [[ ! "$output" == *"Mock: git pull"* ]]
+    [[ ! "$output" == *"Mock: git push"* ]]
+}
