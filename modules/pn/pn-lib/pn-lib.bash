@@ -483,7 +483,13 @@ workspace_resolve_root() {
     echo "$resolved"
     return 0
   fi
-  require_workspace_root
+  local resolved
+  if resolved=$(find_workspace_root); then
+    echo "$resolved"
+    return 0
+  fi
+  printf "error: no pn-workspace.toml found in %s or any ancestor directory\n  Run 'pn-workspace-init <dir>' to initialize a workspace.\n" "$(pwd)" >&2
+  return 1
 }
 
 # Returns the list of workspace projects as JSON array with absolute paths.
