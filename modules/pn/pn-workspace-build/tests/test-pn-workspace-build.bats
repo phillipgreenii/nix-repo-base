@@ -125,21 +125,120 @@ teardown() {
     [ "$status" -eq 0 ]
 }
 
-@test "--terminal-path overrides terminal flake discovery" {
-    mkdir -p "$TEST_DIR/workspace/other-terminal"
-    touch "$TEST_DIR/workspace/other-terminal/flake.nix"
-
-    # Discovery returns only non-terminal repos (all have inputName); no null entry
-    export PN_DISCOVER_OUTPUT="[{\"path\":\"$TEST_DIR/workspace/repo-base\",\"inputName\":\"repo-base\"}]"
-
+@test "--root flag works as alias for --workspace" {
     run bash -c "
       source '${LIB_PATH%%:*}'
-      set -- --terminal-path '$TEST_DIR/workspace/other-terminal'
+      set -- --root '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "PN_WORKSPACE_ROOT env resolves workspace" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export PN_WORKSPACE_ROOT='$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "--workspace emits deprecation notice" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --workspace '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    " 2>&1
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "deprecated"
+}
+
+@test "--root and --workspace together is an error" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --root '$TEST_DIR/workspace' --workspace '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -ne 0 ]
+}
+
+@test "--override-path swaps non-terminal repo path" {
+    mkdir -p "$TEST_DIR/wt-base"
+    touch "$TEST_DIR/wt-base/flake.nix"
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --override-path 'repo-base=$TEST_DIR/wt-base'
       cd '$TEST_DIR/workspace'
       source '$SCRIPTS_DIR/pn-workspace-build.sh'
     "
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q "other-terminal"
+    echo "$output" | grep -q -- "--override-input repo-base git+file://$TEST_DIR/wt-base"
+}
+
+@test "--override-path swaps terminal flake path" {
+    mkdir -p "$TEST_DIR/wt-terminal"
+    touch "$TEST_DIR/wt-terminal/flake.nix"
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --override-path 'terminal-flake=$TEST_DIR/wt-terminal'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "$TEST_DIR/wt-terminal"
+}
+
+@test "PN_WORKSPACE_OVERRIDE_PATHS env honored" {
+    mkdir -p "$TEST_DIR/wt-base"
+    touch "$TEST_DIR/wt-base/flake.nix"
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export PN_WORKSPACE_OVERRIDE_PATHS='repo-base=$TEST_DIR/wt-base'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q -- "--override-input repo-base git+file://$TEST_DIR/wt-base"
+}
+
+@test "--override-path flag wins over PN_WORKSPACE_OVERRIDE_PATHS env" {
+    mkdir -p "$TEST_DIR/wt-env" "$TEST_DIR/wt-flag"
+    touch "$TEST_DIR/wt-env/flake.nix" "$TEST_DIR/wt-flag/flake.nix"
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export PN_WORKSPACE_OVERRIDE_PATHS='repo-base=$TEST_DIR/wt-env'
+      set -- --override-path 'repo-base=$TEST_DIR/wt-flag'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "git+file://$TEST_DIR/wt-flag"
+    ! echo "$output" | grep -q "git+file://$TEST_DIR/wt-env"
+}
+
+@test "unknown override-path key errors" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --override-path 'bogus=/tmp'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    " 2>&1
+    [ "$status" -ne 0 ]
+    echo "$output" | grep -q 'unknown project'
+}
+
+@test "--terminal-path is no longer accepted" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --terminal-path '$TEST_DIR/workspace/terminal-flake'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -ne 0 ]
 }
 
 @test "unknown flag exits with error" {

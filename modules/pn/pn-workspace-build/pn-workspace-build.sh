@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 # pn-workspace-build: Format and build workspace configuration without activating
 
+_root_arg=""
 _workspace_arg=""
-_terminal_path_arg=""
+_override_specs=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -18,18 +19,36 @@ succeeds, you can manually apply with 'pn-workspace-apply'.
 Usage: pn-workspace-build [OPTIONS]
 
 Options:
-  -h, --help                  Show this help message and exit
-  --workspace <dir>           Workspace root directory (default: walk up from CWD)
-  --terminal-path <path>      Override the terminal flake path from workspace discovery.
+  -h, --help                    Show this help message and exit
+  --root <dir>                  Workspace root directory.
+                                Default: PN_WORKSPACE_ROOT env or walk up from CWD.
+  --workspace <dir>             Deprecated alias for --root.
+  --override-path <name>=<path> Override the path used for a workspace project.
+                                Repeatable. Both terminal and non-terminal
+                                projects supported. <name> is the workspace
+                                directory name (e.g., "phillipg-nix-repo-base").
+                                Also accepts PN_WORKSPACE_OVERRIDE_PATHS env var
+                                with comma-separated entries.
 
 Example:
   # Build configuration to verify changes
   pn-workspace-build
 
+  # Build using a worktree of repo-base
+  pn-workspace-build --override-path repo-base=/path/to/worktree
+
   # If successful, manually apply
   pn-workspace-apply
 HELP
     exit 0
+    ;;
+  --root)
+    _root_arg="$2"
+    shift 2
+    ;;
+  --root=*)
+    _root_arg="${1#*=}"
+    shift
     ;;
   --workspace)
     _workspace_arg="$2"
@@ -39,12 +58,12 @@ HELP
     _workspace_arg="${1#*=}"
     shift
     ;;
-  --terminal-path)
-    _terminal_path_arg="$2"
+  --override-path)
+    _override_specs+=("$2")
     shift 2
     ;;
-  --terminal-path=*)
-    _terminal_path_arg="${1#*=}"
+  --override-path=*)
+    _override_specs+=("${1#*=}")
     shift
     ;;
   *)
@@ -54,26 +73,24 @@ HELP
   esac
 done
 
-if [[ -n $_workspace_arg ]]; then
-  PN_WORKSPACE_ROOT="$(cd "$_workspace_arg" 2>/dev/null && pwd)" || {
-    echo "error: workspace directory not found: $_workspace_arg" >&2
-    exit 1
-  }
-else
-  PN_WORKSPACE_ROOT=$(require_workspace_root) || exit 1
+if [[ -n $_root_arg && -n $_workspace_arg ]]; then
+  echo "error: --root and --workspace are mutually exclusive (use --root)" >&2
+  exit 1
 fi
 
-workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT")
+if [[ -n $_workspace_arg ]]; then
+  echo "warning: --workspace is deprecated; use --root instead" >&2
+  _root_arg="$_workspace_arg"
+fi
+
+PN_WORKSPACE_ROOT=$(workspace_resolve_root "$_root_arg") || exit 1
+
+overrides_json=$(workspace_parse_overrides "${_override_specs[@]}") || exit 1
+
+workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT" "$overrides_json") || exit 1
 
 # The terminal flake is the entry with no inputName field
-if [[ -n $_terminal_path_arg ]]; then
-  terminal_path="$(cd "$_terminal_path_arg" 2>/dev/null && pwd)" || {
-    echo "error: terminal-path directory not found: $_terminal_path_arg" >&2
-    exit 1
-  }
-else
-  terminal_path=$(echo "$workspace_json" | jq -r '.[] | select(.inputName == null) | .path' | tail -1)
-fi
+terminal_path=$(echo "$workspace_json" | jq -r '.[] | select(.inputName == null) | .path' | tail -1)
 
 if [[ -z $terminal_path ]]; then
   echo "error: could not determine terminal flake path from workspace" >&2
