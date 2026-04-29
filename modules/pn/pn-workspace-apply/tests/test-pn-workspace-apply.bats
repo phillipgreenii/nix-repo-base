@@ -136,31 +136,6 @@ teardown() {
     echo "$output" | grep -q "$TEST_DIR/workspace/terminal-flake"
 }
 
-@test "pn-workspace-apply runs post_apply_hooks" {
-    # Add a post-apply hook to the workspace toml
-    cat >"$TEST_DIR/workspace/pn-workspace.toml" <<TOML
-apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
-pre_apply_hooks = []
-post_apply_hooks = ["my-post-hook"]
-use_lock = false
-TOML
-
-    # Create mock hook command
-    cat >"$TEST_DIR/my-post-hook" <<'EOF'
-#!/usr/bin/env bash
-echo "Mock: my-post-hook ran"
-exit 0
-EOF
-    chmod +x "$TEST_DIR/my-post-hook"
-
-    run bash -c "
-      source '${LIB_PATH%%:*}'
-      cd '$TEST_DIR/workspace'
-      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
-    "
-    [ "$status" -eq 0 ]
-    echo "$output" | grep -q "my-post-hook"
-}
 
 @test "pn-workspace-apply exits 143 on SIGTERM during apply" {
     # Slow darwin-rebuild mock that signals readiness via a FIFO

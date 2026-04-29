@@ -29,6 +29,11 @@ Options:
 Example:
   # Apply configuration after making changes
   pn-workspace-apply
+
+  # Bootstrap: run directly from nix-repo-base without pn installed
+  nix run /path/to/nix-repo-base#pn-workspace-apply -- \
+    --workspace ~/my-workspace \
+    --apply-cmd "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
 HELP
     exit 0
     ;;
@@ -150,14 +155,6 @@ hostname_short=$(hostname -s)
 apply_cmd="${apply_cmd_template/\{terminal_flake\}/$terminal_path}"
 apply_cmd="${apply_cmd/\{hostname\}/$hostname_short}"
 
-# Run pre_apply_hooks
-while IFS= read -r hook; do
-  [[ -z $hook || $hook == "null" ]] && continue
-  echo "  --== Running pre-apply hook: $hook ==--  "
-  $hook
-  echo
-done < <(workspace_read_toml "$PN_WORKSPACE_ROOT" "pre_apply_hooks[]" 2>/dev/null || true)
-
 echo "  --== Formatting flake ==--  "
 cd "$terminal_path" || exit 1
 nix fmt
@@ -188,14 +185,3 @@ if ul_needs_rebuild "${all_paths[@]}"; then
   ul_mark_applied "${all_paths[@]}"
 fi
 echo
-
-# Run post_apply_hooks
-while IFS= read -r hook; do
-  [[ -z $hook || $hook == "null" ]] && continue
-  echo "  --== Running post-apply hook: $hook ==--  "
-  if ul_should_run "$hook"; then
-    $hook
-    ul_mark_done "$hook"
-  fi
-  echo
-done < <(workspace_read_toml "$PN_WORKSPACE_ROOT" "post_apply_hooks[]" 2>/dev/null || true)
