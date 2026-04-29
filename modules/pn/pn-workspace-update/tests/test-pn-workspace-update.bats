@@ -167,3 +167,73 @@ EOF
     "
     [ "$status" -ne 0 ]
 }
+
+@test "--root flag works as alias for --workspace" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --root '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "PN_WORKSPACE_ROOT env resolves workspace" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      export PN_WORKSPACE_ROOT='$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "--workspace emits deprecation notice" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --workspace '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    " 2>&1
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "deprecated"
+}
+
+@test "--root and --workspace together is an error" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --root '$TEST_DIR/workspace' --workspace '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    "
+    [ "$status" -ne 0 ]
+}
+
+@test "--override-path runs against the swapped path" {
+    mkdir -p "$TEST_DIR/wt-base"
+    touch "$TEST_DIR/wt-base/flake.nix"
+    cat >"$TEST_DIR/wt-base/update-locks.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: update-locks.sh ran in $(basename "$PWD")"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/wt-base/update-locks.sh"
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --override-path 'repo-base=$TEST_DIR/wt-base'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "unknown override-path key errors" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --override-path 'bogus=/tmp'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    " 2>&1
+    [ "$status" -ne 0 ]
+    echo "$output" | grep -q 'unknown project'
+}
