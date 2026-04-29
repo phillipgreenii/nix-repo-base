@@ -455,3 +455,75 @@ EOF
   [ "$status" -eq 0 ]
   [ "$output" = "false" ]
 }
+
+# ─── workspace_parse_overrides ────────────────────────────────────────────────
+
+@test "workspace_parse_overrides returns empty object when no flags and no env" {
+  unset PN_WORKSPACE_OVERRIDE_PATHS
+  run workspace_parse_overrides
+  [ "$status" -eq 0 ]
+  [ "$output" = "{}" ]
+}
+
+@test "workspace_parse_overrides parses single env entry" {
+  PN_WORKSPACE_OVERRIDE_PATHS="repo-base=/tmp/foo" run workspace_parse_overrides
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '."repo-base" == "/tmp/foo"'
+}
+
+@test "workspace_parse_overrides parses multiple env entries" {
+  PN_WORKSPACE_OVERRIDE_PATHS="a=/x,b=/y" run workspace_parse_overrides
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.a == "/x" and .b == "/y"'
+}
+
+@test "workspace_parse_overrides tolerates whitespace and trailing commas" {
+  PN_WORKSPACE_OVERRIDE_PATHS=" a = /x , b = /y , " run workspace_parse_overrides
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.a == "/x" and .b == "/y"'
+}
+
+@test "workspace_parse_overrides parses single flag entry" {
+  unset PN_WORKSPACE_OVERRIDE_PATHS
+  run workspace_parse_overrides "repo-base=/tmp/foo"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '."repo-base" == "/tmp/foo"'
+}
+
+@test "workspace_parse_overrides parses multiple flag entries" {
+  unset PN_WORKSPACE_OVERRIDE_PATHS
+  run workspace_parse_overrides "a=/x" "b=/y"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.a == "/x" and .b == "/y"'
+}
+
+@test "workspace_parse_overrides flag wins over env for same key" {
+  PN_WORKSPACE_OVERRIDE_PATHS="a=/env" run workspace_parse_overrides "a=/flag"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.a == "/flag"'
+}
+
+@test "workspace_parse_overrides duplicate flag keys: last wins" {
+  unset PN_WORKSPACE_OVERRIDE_PATHS
+  run workspace_parse_overrides "a=/first" "a=/second"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.a == "/second"'
+}
+
+@test "workspace_parse_overrides errors on missing equals" {
+  run --separate-stderr workspace_parse_overrides "no-equals"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "expected name=path"
+}
+
+@test "workspace_parse_overrides errors on empty name" {
+  run --separate-stderr workspace_parse_overrides "=/path"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "empty name"
+}
+
+@test "workspace_parse_overrides errors on relative path" {
+  run --separate-stderr workspace_parse_overrides "a=relative/path"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "must be absolute"
+}

@@ -492,6 +492,65 @@ workspace_resolve_root() {
   return 1
 }
 
+# Parse override path specs from env var PN_WORKSPACE_OVERRIDE_PATHS and from
+# positional flag values. Flag values override env values per key.
+# Each spec must be of the form <name>=<absolute-path>.
+# Echoes a JSON object: {"<name>": "<path>", ...}
+# Returns 1 on malformed input.
+#
+# Usage: workspace_parse_overrides [<flag-spec> ...]
+workspace_parse_overrides() {
+  local result='{}'
+  local name path
+
+  _add_spec() {
+    local raw="$1"
+    # Trim leading/trailing whitespace
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    [[ -z $raw ]] && return 0
+    if [[ $raw != *"="* ]]; then
+      echo "error: invalid override spec (expected name=path): $raw" >&2
+      return 1
+    fi
+    name="${raw%%=*}"
+    path="${raw#*=}"
+    name="${name#"${name%%[![:space:]]*}"}"
+    name="${name%"${name##*[![:space:]]}"}"
+    path="${path#"${path%%[![:space:]]*}"}"
+    path="${path%"${path##*[![:space:]]}"}"
+    if [[ -z $name ]]; then
+      echo "error: invalid override spec (empty name): $raw" >&2
+      return 1
+    fi
+    if [[ $path != /* ]]; then
+      echo "error: override path must be absolute: $path" >&2
+      return 1
+    fi
+    result=$(echo "$result" | jq --arg k "$name" --arg v "$path" '. + {($k): $v}')
+  }
+
+  # Env first (lower precedence)
+  if [[ -n ${PN_WORKSPACE_OVERRIDE_PATHS:-} ]]; then
+    local IFS=','
+    # shellcheck disable=SC2206
+    local entries=(${PN_WORKSPACE_OVERRIDE_PATHS})
+    local entry
+    for entry in "${entries[@]}"; do
+      _add_spec "$entry" || return 1
+    done
+  fi
+
+  # Flags second (higher precedence — overwrite env)
+  local arg
+  for arg in "$@"; do
+    _add_spec "$arg" || return 1
+  done
+
+  unset -f _add_spec
+  echo "$result"
+}
+
 # Returns the list of workspace projects as JSON array with absolute paths.
 # If use_lock is true (default) and pn-workspace.lock exists, reads from the lock file.
 # Otherwise runs pn-discover-workspace to discover projects dynamically.
