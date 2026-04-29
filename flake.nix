@@ -51,7 +51,7 @@
           treefmtWrapper = treefmtEval.config.build.wrapper;
         };
 
-        bashBuilders = (packagesLib).mkBashBuilders {
+        bashBuilders = packagesLib.mkBashBuilders {
           inherit pkgs self;
           inherit (pkgs) lib;
         };
@@ -66,6 +66,31 @@
         packages = {
           # Test package exposing the full pn script suite check
           test-pn-scripts = pnScripts.check;
+          # Individual pn scripts (available via nix shell)
+          pn-discover-workspace = pnScripts.pn-discover-workspace.script;
+          pn-osx-tcc-check = pnScripts.pn-osx-tcc-check.script;
+          pn-workspace-init = pnScripts.pn-workspace-init.script;
+          pn-workspace-apply = pnScripts.pn-workspace-apply.script;
+          pn-workspace-build = pnScripts.pn-workspace-build.script;
+          pn-workspace-check = pnScripts.pn-workspace-check.script;
+          pn-workspace-push = pnScripts.pn-workspace-push.script;
+          pn-workspace-rebase = pnScripts.pn-workspace-rebase.script;
+          pn-workspace-status = pnScripts.pn-workspace-status.script;
+          pn-workspace-update = pnScripts.pn-workspace-update.script;
+          pn-workspace-upgrade = pnScripts.pn-workspace-upgrade.script;
+          pn-store-audit = pnScripts.pn-store-audit.script;
+          pn-store-deepclean = pnScripts.pn-store-deepclean.script;
+        };
+
+        apps = {
+          pn-workspace-apply = {
+            type = "app";
+            program = "${pnScripts.pn-workspace-apply.script}/bin/pn-workspace-apply";
+          };
+          pn-workspace-build = {
+            type = "app";
+            program = "${pnScripts.pn-workspace-build.script}/bin/pn-workspace-build";
+          };
         };
 
         checks = {

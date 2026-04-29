@@ -114,3 +114,40 @@ teardown() {
     echo "$output" | grep -q "Build successful"
     echo "$output" | grep -q "pn-workspace-apply"
 }
+
+@test "--workspace flag runs from specified directory" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --workspace '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "--terminal-path overrides terminal flake discovery" {
+    mkdir -p "$TEST_DIR/workspace/other-terminal"
+    touch "$TEST_DIR/workspace/other-terminal/flake.nix"
+
+    # Discovery returns only non-terminal repos (all have inputName); no null entry
+    export PN_DISCOVER_OUTPUT="[{\"path\":\"$TEST_DIR/workspace/repo-base\",\"inputName\":\"repo-base\"}]"
+
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --terminal-path '$TEST_DIR/workspace/other-terminal'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "other-terminal"
+}
+
+@test "unknown flag exits with error" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --bogus-flag
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-build.sh'
+    "
+    [ "$status" -ne 0 ]
+}

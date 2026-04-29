@@ -189,3 +189,70 @@ EOF
     # 143 = 128 + 15 (SIGTERM)
     [ "$rc" -eq 143 ]
 }
+
+@test "--workspace flag overrides CWD-based discovery" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --workspace '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "--apply-cmd flag overrides apply_command from TOML" {
+    cat >"$TEST_DIR/mock-apply-override" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: mock-apply-override $*"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/mock-apply-override"
+
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --apply-cmd 'mock-apply-override --flake {terminal_flake}#{hostname}'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "mock-apply-override"
+}
+
+@test "--terminal-path flag overrides terminal flake discovery" {
+    mkdir -p "$TEST_DIR/workspace/other-terminal"
+    touch "$TEST_DIR/workspace/other-terminal/flake.nix"
+
+    # Discovery returns only non-terminal repos (all have inputName); no null entry
+    export PN_DISCOVER_OUTPUT="[{\"path\":\"$TEST_DIR/workspace/repo-base\",\"inputName\":\"repo-base\"}]"
+
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --terminal-path '$TEST_DIR/workspace/other-terminal'
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "other-terminal"
+}
+
+@test "--apply-cmd is required when no pn-workspace.toml and no flag" {
+    mkdir -p "$TEST_DIR/empty-workspace"
+
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --workspace '$TEST_DIR/empty-workspace'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -ne 0 ]
+    echo "$output" | grep -q -- "--apply-cmd"
+}
+
+@test "unknown flag exits with error" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --bogus-flag
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -ne 0 ]
+}

@@ -3,7 +3,6 @@
 {
   pkgs,
   bashBuilders,
-  searchDirs ? [ ],
 }:
 let
   testSupport = ./test-support;
@@ -60,8 +59,12 @@ let
 
   pn-workspace-upgrade = pkgs.callPackage ./pn-workspace-upgrade {
     inherit (bashBuilders) mkBashScript;
-    inherit pn-workspace-update pn-workspace-apply testSupport;
-    pkgs = pkgs;
+    inherit
+      pkgs
+      pn-workspace-update
+      pn-workspace-apply
+      testSupport
+      ;
   };
 
   pn-workspace-check = pkgs.callPackage ./pn-workspace-check {

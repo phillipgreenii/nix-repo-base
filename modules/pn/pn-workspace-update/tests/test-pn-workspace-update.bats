@@ -147,3 +147,23 @@ EOF
     # 143 = 128 + 15 (SIGTERM)
     [ "$rc" -eq 143 ]
 }
+
+@test "--workspace flag uses specified directory" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --workspace '$TEST_DIR/workspace'
+      cd '$TEST_HOME'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "unknown flag exits with error" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --bogus-flag
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-update.sh'
+    "
+    [ "$status" -ne 0 ]
+}

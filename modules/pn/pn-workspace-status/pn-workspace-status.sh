@@ -1,8 +1,12 @@
 # shellcheck shell=bash
 # pn-workspace-status: Show git status for all workspace repos
 
-if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
-  cat <<'HELP'
+_workspace_arg=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h | --help)
+    cat <<'HELP'
 pn-workspace-status: Show git status for all workspace repos
 
 Purpose: Shows git status for every repo declared in the nearest
@@ -12,16 +16,38 @@ directory to find the workspace root.
 Usage: pn-workspace-status [OPTIONS]
 
 Options:
-  -h, --help     Show this help message and exit
+  -h, --help              Show this help message and exit
+  --workspace <dir>       Workspace root directory (default: walk up from CWD)
 
 Example:
   # Show git status for all workspace repos
   pn-workspace-status
 HELP
-  exit 0
-fi
+    exit 0
+    ;;
+  --workspace)
+    _workspace_arg="$2"
+    shift 2
+    ;;
+  --workspace=*)
+    _workspace_arg="${1#*=}"
+    shift
+    ;;
+  *)
+    echo "error: unknown option: $1" >&2
+    exit 1
+    ;;
+  esac
+done
 
-PN_WORKSPACE_ROOT=$(require_workspace_root) || exit 1
+if [[ -n $_workspace_arg ]]; then
+  PN_WORKSPACE_ROOT="$(cd "$_workspace_arg" 2>/dev/null && pwd)" || {
+    echo "error: workspace directory not found: $_workspace_arg" >&2
+    exit 1
+  }
+else
+  PN_WORKSPACE_ROOT=$(require_workspace_root) || exit 1
+fi
 
 workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT")
 

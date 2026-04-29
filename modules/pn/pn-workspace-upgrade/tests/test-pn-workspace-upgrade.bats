@@ -89,3 +89,69 @@ EOF
     [ "$status" -ne 0 ]
     ! (echo "$output" | grep -q "pn-workspace-apply ran") || false
 }
+
+@test "--workspace flag is forwarded to pn-workspace-update" {
+    cat >"$TEST_DIR/pn-workspace-update" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: pn-workspace-update $*"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-update"
+
+    cat >"$TEST_DIR/pn-workspace-apply" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: pn-workspace-apply $*"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-apply"
+
+    run bash "$SCRIPTS_DIR/pn-workspace-upgrade.sh" --workspace "$TEST_DIR/workspace"
+    [ "$status" -eq 0 ]
+    echo "$output" | grep "pn-workspace-update" | grep -q -- "--workspace"
+}
+
+@test "--workspace flag is forwarded to pn-workspace-apply" {
+    cat >"$TEST_DIR/pn-workspace-update" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: pn-workspace-update $*"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-update"
+
+    cat >"$TEST_DIR/pn-workspace-apply" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: pn-workspace-apply $*"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-apply"
+
+    run bash "$SCRIPTS_DIR/pn-workspace-upgrade.sh" --workspace "$TEST_DIR/workspace"
+    [ "$status" -eq 0 ]
+    echo "$output" | grep "pn-workspace-apply" | grep -q -- "--workspace"
+}
+
+@test "--apply-cmd flag is forwarded only to pn-workspace-apply" {
+    cat >"$TEST_DIR/pn-workspace-update" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: pn-workspace-update $*"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-update"
+
+    cat >"$TEST_DIR/pn-workspace-apply" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: pn-workspace-apply $*"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-apply"
+
+    run bash "$SCRIPTS_DIR/pn-workspace-upgrade.sh" --apply-cmd "custom-apply"
+    [ "$status" -eq 0 ]
+    echo "$output" | grep "pn-workspace-apply" | grep -q -- "--apply-cmd"
+    ! (echo "$output" | grep "pn-workspace-update" | grep -q -- "--apply-cmd") || false
+}
+
+@test "unknown flag exits with error" {
+    run bash "$SCRIPTS_DIR/pn-workspace-upgrade.sh" --bogus-flag
+    [ "$status" -ne 0 ]
+}

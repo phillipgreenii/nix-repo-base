@@ -1,8 +1,14 @@
 # shellcheck shell=bash
 # pn-workspace-apply: Format and apply workspace configuration
 
-if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
-  cat <<'HELP'
+_workspace_arg=""
+_apply_cmd_arg=""
+_terminal_path_arg=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h | --help)
+    cat <<'HELP'
 pn-workspace-apply: Format and apply workspace configuration
 
 Purpose: This is the main command for applying configuration changes during
@@ -14,13 +20,56 @@ changes are picked up without committing.
 Usage: pn-workspace-apply [OPTIONS]
 
 Options:
-  -h, --help     Show this help message and exit
+  -h, --help                  Show this help message and exit
+  --workspace <dir>           Workspace root directory (default: walk up from CWD)
+  --apply-cmd <template>      Override apply_command from pn-workspace.toml.
+                              Supports {terminal_flake} and {hostname} placeholders.
+  --terminal-path <path>      Override the terminal flake path from workspace discovery.
 
 Example:
   # Apply configuration after making changes
   pn-workspace-apply
 HELP
-  exit 0
+    exit 0
+    ;;
+  --workspace)
+    _workspace_arg="$2"
+    shift 2
+    ;;
+  --workspace=*)
+    _workspace_arg="${1#*=}"
+    shift
+    ;;
+  --apply-cmd)
+    _apply_cmd_arg="$2"
+    shift 2
+    ;;
+  --apply-cmd=*)
+    _apply_cmd_arg="${1#*=}"
+    shift
+    ;;
+  --terminal-path)
+    _terminal_path_arg="$2"
+    shift 2
+    ;;
+  --terminal-path=*)
+    _terminal_path_arg="${1#*=}"
+    shift
+    ;;
+  *)
+    echo "error: unknown option: $1" >&2
+    exit 1
+    ;;
+  esac
+done
+
+if [[ -n $_workspace_arg ]]; then
+  PN_WORKSPACE_ROOT="$(cd "$_workspace_arg" 2>/dev/null && pwd)" || {
+    echo "error: workspace directory not found: $_workspace_arg" >&2
+    exit 1
+  }
+else
+  PN_WORKSPACE_ROOT=$(require_workspace_root) || exit 1
 fi
 
 _apply_child_pid=""
@@ -39,12 +88,17 @@ _apply_cleanup() {
 trap '_apply_cleanup INT' INT
 trap '_apply_cleanup TERM' TERM
 
-PN_WORKSPACE_ROOT=$(require_workspace_root) || exit 1
-
 workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT")
 
 # The terminal flake is the entry with no inputName field
-terminal_path=$(echo "$workspace_json" | jq -r '.[] | select(.inputName == null) | .path' | tail -1)
+if [[ -n $_terminal_path_arg ]]; then
+  terminal_path="$(cd "$_terminal_path_arg" 2>/dev/null && pwd)" || {
+    echo "error: terminal-path directory not found: $_terminal_path_arg" >&2
+    exit 1
+  }
+else
+  terminal_path=$(echo "$workspace_json" | jq -r '.[] | select(.inputName == null) | .path' | tail -1)
+fi
 
 if [[ -z $terminal_path ]]; then
   echo "error: could not determine terminal flake path from workspace" >&2
@@ -83,7 +137,15 @@ else
 fi
 
 # Read apply_command template and substitute placeholders
-apply_cmd_template=$(workspace_read_toml "$PN_WORKSPACE_ROOT" "apply_command")
+if [[ -n $_apply_cmd_arg ]]; then
+  apply_cmd_template="$_apply_cmd_arg"
+elif [[ -f "$PN_WORKSPACE_ROOT/pn-workspace.toml" ]]; then
+  apply_cmd_template=$(workspace_read_toml "$PN_WORKSPACE_ROOT" "apply_command")
+else
+  echo "error: no --apply-cmd given and no pn-workspace.toml at $PN_WORKSPACE_ROOT" >&2
+  exit 1
+fi
+
 hostname_short=$(hostname -s)
 apply_cmd="${apply_cmd_template/\{terminal_flake\}/$terminal_path}"
 apply_cmd="${apply_cmd/\{hostname\}/$hostname_short}"
