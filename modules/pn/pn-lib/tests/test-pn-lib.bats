@@ -510,6 +510,15 @@ EOF
   echo "$output" | jq -e '.a == "/second"'
 }
 
+@test "workspace_parse_overrides does not glob-expand env values" {
+  cd "$TEST_DIR"
+  mkdir -p decoy
+  touch decoy/a decoy/b
+  PN_WORKSPACE_OVERRIDE_PATHS="x=/tmp/decoy/*" run workspace_parse_overrides
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.x == "/tmp/decoy/*"'
+}
+
 @test "workspace_parse_overrides errors on missing equals" {
   run --separate-stderr workspace_parse_overrides "no-equals"
   [ "$status" -ne 0 ]

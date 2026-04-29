@@ -532,9 +532,8 @@ workspace_parse_overrides() {
 
   # Env first (lower precedence)
   if [[ -n ${PN_WORKSPACE_OVERRIDE_PATHS:-} ]]; then
-    local IFS=','
-    # shellcheck disable=SC2206
-    local entries=(${PN_WORKSPACE_OVERRIDE_PATHS})
+    local entries=()
+    IFS=',' read -ra entries <<<"$PN_WORKSPACE_OVERRIDE_PATHS"
     local entry
     for entry in "${entries[@]}"; do
       _add_spec "$entry" || return 1
