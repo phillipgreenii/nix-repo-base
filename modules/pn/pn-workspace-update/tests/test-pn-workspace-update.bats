@@ -263,7 +263,8 @@ EOF
       source '$SCRIPTS_DIR/pn-workspace-update.sh'
     "
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping pull/push"
+    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping pull/push for repo-base"
+    echo "$output" | grep -q "no upstream for branch 'local-only' — skipping pull/push for terminal-flake"
     echo "$output" | grep -q "update-locks.sh ran"
     [[ ! "$output" == *"Mock: git pull"* ]]
     [[ ! "$output" == *"Mock: git push"* ]]
