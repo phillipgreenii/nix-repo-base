@@ -336,7 +336,8 @@ EOF
 
 @test "workspace_get_projects reads lock file when use_lock=true and lock exists" {
   local ws="$TEST_DIR/workspace"
-  mkdir -p "$ws"
+  mkdir -p "$ws/repo-a" "$ws/repo-b"
+  touch "$ws/repo-a/flake.nix" "$ws/repo-b/flake.nix"
   cat > "$ws/pn-workspace.toml" <<'EOF'
 use_lock = true
 EOF
@@ -355,7 +356,8 @@ EOF
 
 @test "workspace_get_projects converts relative paths to absolute in lock file" {
   local ws="$TEST_DIR/workspace"
-  mkdir -p "$ws"
+  mkdir -p "$ws/my-repo"
+  touch "$ws/my-repo/flake.nix"
   cat > "$ws/pn-workspace.toml" <<'EOF'
 use_lock = true
 EOF
@@ -372,8 +374,9 @@ EOF
 
 @test "workspace_get_projects passes through absolute paths in lock file unchanged" {
   local ws="$TEST_DIR/workspace"
-  local other="/tmp/other-repo"
-  mkdir -p "$ws"
+  local other="$TEST_DIR/other-repo"
+  mkdir -p "$ws" "$other"
+  touch "$other/flake.nix"
   cat > "$ws/pn-workspace.toml" <<'EOF'
 use_lock = true
 EOF
@@ -390,7 +393,8 @@ EOF
 
 @test "workspace_get_projects calls pn-discover-workspace when use_lock=false" {
   local ws="$TEST_DIR/workspace"
-  mkdir -p "$ws"
+  mkdir -p "$ws" "$TEST_DIR/mock-discovered"
+  touch "$TEST_DIR/mock-discovered/flake.nix"
   cat > "$ws/pn-workspace.toml" <<'EOF'
 use_lock = false
 EOF
@@ -398,44 +402,72 @@ EOF
 [{"path": "should-not-be-used"}]
 EOF
 
-  # Create a mock pn-discover-workspace
-  cat > "$TEST_DIR/pn-discover-workspace" <<'MOCK'
+  # Create a mock pn-discover-workspace returning absolute path
+  cat > "$TEST_DIR/pn-discover-workspace" <<MOCK
 #!/usr/bin/env bash
-echo '[{"path": "/mock/discovered", "inputName": "mock-input"}]'
+echo '[{"path": "$TEST_DIR/mock-discovered", "inputName": "mock-input"}]'
 MOCK
   chmod +x "$TEST_DIR/pn-discover-workspace"
   export PATH="$TEST_DIR:$PATH"
 
   run workspace_get_projects "$ws"
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "mock/discovered"
+  echo "$output" | grep -q "mock-discovered"
   echo "$output" | grep -qv "should-not-be-used"
 }
 
 @test "workspace_get_projects calls pn-discover-workspace when lock file absent" {
   local ws="$TEST_DIR/workspace"
-  mkdir -p "$ws"
+  mkdir -p "$ws" "$TEST_DIR/mock-repo"
+  touch "$TEST_DIR/mock-repo/flake.nix"
   cat > "$ws/pn-workspace.toml" <<'EOF'
 use_lock = true
 EOF
   # No lock file created
 
-  # Create a mock pn-discover-workspace
-  cat > "$TEST_DIR/pn-discover-workspace" <<'MOCK'
+  # Create a mock pn-discover-workspace returning absolute path
+  cat > "$TEST_DIR/pn-discover-workspace" <<MOCK
 #!/usr/bin/env bash
-echo '[{"path": "/mock/repo", "inputName": "mock-repo"}]'
+echo '[{"path": "$TEST_DIR/mock-repo", "inputName": "mock-repo"}]'
 MOCK
   chmod +x "$TEST_DIR/pn-discover-workspace"
   export PATH="$TEST_DIR:$PATH"
 
   run workspace_get_projects "$ws"
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "mock/repo"
+  echo "$output" | grep -q "mock-repo"
+}
+
+@test "workspace_get_projects converts relative paths from pn-discover-workspace to absolute" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws/repo-base" "$ws/terminal-flake"
+  touch "$ws/repo-base/flake.nix" "$ws/terminal-flake/flake.nix"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  # No lock file — forces pn-discover-workspace to be called
+
+  # Mock returns RELATIVE paths (matching real pn-discover-workspace behavior)
+  cat > "$TEST_DIR/pn-discover-workspace" <<'MOCK'
+#!/usr/bin/env bash
+echo '[{"path": "repo-base", "inputName": "repo-base-input"}, {"path": "terminal-flake"}]'
+MOCK
+  chmod +x "$TEST_DIR/pn-discover-workspace"
+  export PATH="$TEST_DIR:$PATH"
+
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  # Relative paths must be converted to absolute (prefixed with workspace root)
+  echo "$output" | grep -q "\"$ws/repo-base\""
+  echo "$output" | grep -q "\"$ws/terminal-flake\""
+  # Must not contain bare relative paths
+  ! (echo "$output" | grep -q '"path": "repo-base"') || false
 }
 
 @test "workspace_get_projects defaults to use_lock=true when key absent from toml" {
   local ws="$TEST_DIR/workspace"
-  mkdir -p "$ws"
+  mkdir -p "$ws/locked-repo"
+  touch "$ws/locked-repo/flake.nix"
   # toml with no use_lock key
   cat > "$ws/pn-workspace.toml" <<'EOF'
 [workspace]
@@ -448,6 +480,115 @@ EOF
   run workspace_get_projects "$ws"
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "locked-repo"
+}
+
+@test "workspace_get_projects regenerates lockfile when use_lock=true and lock absent" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws" "$TEST_DIR/discovered-repo"
+  touch "$TEST_DIR/discovered-repo/flake.nix"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  # No lockfile initially
+
+  cat > "$TEST_DIR/pn-discover-workspace" <<MOCK
+#!/usr/bin/env bash
+echo '[{"path": "$TEST_DIR/discovered-repo", "inputName": "discovered"}]'
+MOCK
+  chmod +x "$TEST_DIR/pn-discover-workspace"
+  export PATH="$TEST_DIR:$PATH"
+
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  [ -f "$ws/pn-workspace.lock" ]
+  echo "$output" | grep -q "generated pn-workspace.lock"
+}
+
+@test "workspace_get_projects does not regenerate lockfile when use_lock=false" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws" "$TEST_DIR/discovered-repo"
+  touch "$TEST_DIR/discovered-repo/flake.nix"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = false
+EOF
+  # No lockfile initially
+
+  cat > "$TEST_DIR/pn-discover-workspace" <<MOCK
+#!/usr/bin/env bash
+echo '[{"path": "$TEST_DIR/discovered-repo", "inputName": "discovered"}]'
+MOCK
+  chmod +x "$TEST_DIR/pn-discover-workspace"
+  export PATH="$TEST_DIR:$PATH"
+
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  [ ! -f "$ws/pn-workspace.lock" ]
+}
+
+@test "workspace_get_projects warns when lockfile exists but use_lock=false" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws" "$TEST_DIR/discovered-repo"
+  touch "$TEST_DIR/discovered-repo/flake.nix"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = false
+EOF
+  cat > "$ws/pn-workspace.lock" <<'EOF'
+[{"path": "should-not-be-used"}]
+EOF
+
+  cat > "$TEST_DIR/pn-discover-workspace" <<MOCK
+#!/usr/bin/env bash
+echo '[{"path": "$TEST_DIR/discovered-repo", "inputName": "discovered"}]'
+MOCK
+  chmod +x "$TEST_DIR/pn-discover-workspace"
+  export PATH="$TEST_DIR:$PATH"
+
+  run workspace_get_projects "$ws"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "lockfile is being ignored"
+}
+
+@test "workspace_get_projects errors when project path does not exist" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  cat > "$ws/pn-workspace.lock" <<'EOF'
+[{"path": "nonexistent-repo", "inputName": "some-input"}]
+EOF
+  run --separate-stderr workspace_get_projects "$ws"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "does not exist"
+}
+
+@test "workspace_get_projects errors when project path lacks flake.nix" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws/no-flake-repo"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  cat > "$ws/pn-workspace.lock" <<'EOF'
+[{"path": "no-flake-repo", "inputName": "some-input"}]
+EOF
+  run --separate-stderr workspace_get_projects "$ws"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "is not a flake"
+}
+
+@test "workspace_get_projects errors when project has empty inputName" {
+  local ws="$TEST_DIR/workspace"
+  mkdir -p "$ws/my-repo"
+  touch "$ws/my-repo/flake.nix"
+  cat > "$ws/pn-workspace.toml" <<'EOF'
+use_lock = true
+EOF
+  cat > "$ws/pn-workspace.lock" <<'EOF'
+[{"path": "my-repo", "inputName": ""}]
+EOF
+  run --separate-stderr workspace_get_projects "$ws"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "inputName is empty"
 }
 
 # ─── workspace_read_toml ─────────────────────────────────────────────────────

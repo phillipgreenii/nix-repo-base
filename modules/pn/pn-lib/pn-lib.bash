@@ -550,14 +550,43 @@ workspace_parse_overrides() {
   echo "$result"
 }
 
+# Validates all entries in a JSON array of workspace projects.
+# Each path must be an existing directory containing flake.nix.
+# Each inputName (when the key is present) must be a non-empty string.
+# Usage: _workspace_validate_projects <projects-json>
+_workspace_validate_projects() {
+  local projects_json="$1"
+  local _err=0
+  local path has_name input_name
+  while IFS=$'\t' read -r path has_name input_name; do
+    if [[ ! -d $path ]]; then
+      echo "error: workspace project path does not exist: $path" >&2
+      _err=1
+    elif [[ ! -f "$path/flake.nix" ]]; then
+      echo "error: workspace project is not a flake (no flake.nix): $path" >&2
+      _err=1
+    fi
+    if [[ $has_name == "true" && -z $input_name ]]; then
+      echo "error: workspace project inputName is empty: $path" >&2
+      _err=1
+    fi
+  done < <(echo "$projects_json" | jq -r '.[] | [.path, (has("inputName") | tostring), (.inputName // "")] | @tsv')
+  return $_err
+}
+
 # Returns the list of workspace projects as JSON array with absolute paths.
 # If use_lock is true (default) and pn-workspace.lock exists, reads from the lock file.
 # Otherwise runs pn-discover-workspace to discover projects dynamically.
+# When use_lock=true and no lockfile exists, regenerates it from discover output.
+# Emits a warning when use_lock=false but a lockfile exists (stale lockfile ignored).
 #
 # When the optional <overrides-json> argument is provided (output of
 # workspace_parse_overrides), each entry whose basename matches an override key
 # has its `path` field swapped. Unknown override keys, missing dirs, or paths
 # without flake.nix produce a fatal error.
+#
+# After all path resolution and overrides, validates every project: path must
+# exist, contain flake.nix, and inputName (when present) must be non-empty.
 #
 # Usage: workspace_get_projects <workspace_root> [<overrides-json>]
 workspace_get_projects() {
@@ -576,17 +605,33 @@ workspace_get_projects() {
     fi
   fi
 
-  local projects_json
-  if [[ $use_lock == "true" && -f $lockfile ]]; then
-    projects_json=$(jq --arg root "$workspace_root" '[.[] | . + {path: (if (.path | startswith("/")) then .path else ($root + "/" + .path) end)}]' "$lockfile")
-  else
-    projects_json=$(pn-discover-workspace "$workspace_root")
+  # Warn when lockfile exists but is disabled
+  if [[ $use_lock == "false" && -f $lockfile ]]; then
+    echo "warning: pn-workspace.lock exists but use_lock=false in pn-workspace.toml; lockfile is being ignored" >&2
   fi
+
+  local _raw_json
+  if [[ $use_lock == "true" && -f $lockfile ]]; then
+    _raw_json=$(cat "$lockfile")
+  else
+    _raw_json=$(pn-discover-workspace "$workspace_root")
+    if [[ $use_lock == "true" ]]; then
+      if echo "$_raw_json" >"$lockfile" 2>/dev/null; then
+        echo "info: generated pn-workspace.lock" >&2
+      else
+        echo "warning: could not write pn-workspace.lock" >&2
+      fi
+    fi
+  fi
+
+  local projects_json
+  projects_json=$(echo "$_raw_json" | jq --arg root "$workspace_root" '[.[] | . + {path: (if (.path | startswith("/")) then .path else ($root + "/" + .path) end)}]')
 
   # Fast-path: no overrides
   local override_count
   override_count=$(echo "$overrides_json" | jq 'length')
   if [[ $override_count == "0" ]]; then
+    _workspace_validate_projects "$projects_json" || return 1
     echo "$projects_json"
     return 0
   fi
@@ -613,14 +658,17 @@ workspace_get_projects() {
     fi
   done < <(echo "$overrides_json" | jq -r 'keys[]')
 
-  # Apply swaps
-  echo "$projects_json" | jq --argjson o "$overrides_json" '
+  # Apply swaps and validate final result
+  local result_json
+  result_json=$(echo "$projects_json" | jq --argjson o "$overrides_json" '
     [ .[] |
       . as $entry |
       ($entry.path | split("/") | .[-1]) as $name |
       if $o[$name] then ($entry | .path = $o[$name]) else $entry end
     ]
-  '
+  ')
+  _workspace_validate_projects "$result_json" || return 1
+  echo "$result_json"
 }
 
 # Read a value from pn-workspace.toml using yq.
