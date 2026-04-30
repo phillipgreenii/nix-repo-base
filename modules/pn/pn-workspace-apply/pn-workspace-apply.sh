@@ -5,6 +5,7 @@ _root_arg=""
 _workspace_arg=""
 _apply_cmd_arg=""
 _override_specs=()
+_show_nix_commands_only=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,6 +32,8 @@ Options:
                                 Repeatable. Both terminal and non-terminal
                                 projects supported. Also accepts
                                 PN_WORKSPACE_OVERRIDE_PATHS env var.
+  --show-nix-commands-only      Print nix commands in execution order and exit.
+                                Does not format, check daemon, or apply anything.
 
 Example:
   # Apply configuration after making changes
@@ -73,6 +76,10 @@ HELP
     ;;
   --override-path=*)
     _override_specs+=("${1#*=}")
+    shift
+    ;;
+  --show-nix-commands-only)
+    _show_nix_commands_only=true
     shift
     ;;
   *)
@@ -140,7 +147,7 @@ while IFS= read -r proj_path; do
   fi
 done < <(echo "$workspace_json" | jq -r '.[] | .path')
 
-if [[ -n $UL_LIB ]]; then
+if [[ -n $UL_LIB && $_show_nix_commands_only == false ]]; then
   # shellcheck disable=SC1090
   source "$UL_LIB"
   ul_init "apply"
@@ -166,6 +173,13 @@ fi
 hostname_short=$(hostname -s)
 apply_cmd="${apply_cmd_template/\{terminal_flake\}/$terminal_path}"
 apply_cmd="${apply_cmd/\{hostname\}/$hostname_short}"
+
+if [[ $_show_nix_commands_only == true ]]; then
+  read -ra apply_args <<<"$apply_cmd"
+  echo "cd $terminal_path && nix fmt"
+  echo "${apply_args[*]} ${overrides[*]}"
+  exit 0
+fi
 
 echo "  --== Formatting flake ==--  "
 cd "$terminal_path" || exit 1

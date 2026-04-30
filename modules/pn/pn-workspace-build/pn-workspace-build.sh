@@ -4,6 +4,7 @@
 _root_arg=""
 _workspace_arg=""
 _override_specs=()
+_show_nix_commands_only=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,6 +30,8 @@ Options:
                                 directory name (e.g., "phillipg-nix-repo-base").
                                 Also accepts PN_WORKSPACE_OVERRIDE_PATHS env var
                                 with comma-separated entries.
+  --show-nix-commands-only      Print nix commands in execution order and exit.
+                                Does not format or build anything.
 
 Example:
   # Build configuration to verify changes
@@ -64,6 +67,10 @@ HELP
     ;;
   --override-path=*)
     _override_specs+=("${1#*=}")
+    shift
+    ;;
+  --show-nix-commands-only)
+    _show_nix_commands_only=true
     shift
     ;;
   *)
@@ -104,6 +111,12 @@ while IFS= read -r entry; do
   input_name=$(echo "$entry" | jq -r '.inputName')
   overrides+=(--override-input "$input_name" "git+file://$path")
 done < <(echo "$workspace_json" | jq -c '.[] | select(.inputName != null)')
+
+if [[ $_show_nix_commands_only == true ]]; then
+  echo "cd $terminal_path && nix fmt"
+  echo "darwin-rebuild build --flake $terminal_path ${overrides[*]}"
+  exit 0
+fi
 
 echo "  --== Formatting flake ==--  "
 cd "$terminal_path" || exit 1

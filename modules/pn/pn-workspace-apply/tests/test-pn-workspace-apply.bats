@@ -330,3 +330,55 @@ EOF
     "
     [ "$status" -ne 0 ]
 }
+
+@test "--show-nix-commands-only exits 0 without applying" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --show-nix-commands-only
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -eq 0 ]
+    ! (echo "$output" | grep -q "Mock: darwin-rebuild") || false
+    ! (echo "$output" | grep -q "Mock: nix") || false
+}
+
+@test "--show-nix-commands-only prints nix fmt command" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --show-nix-commands-only
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "nix fmt"
+}
+
+@test "--show-nix-commands-only prints substituted apply command with terminal flake path" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --show-nix-commands-only
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "$TEST_DIR/workspace/terminal-flake"
+    echo "$output" | grep -q "test-host"
+}
+
+@test "--show-nix-commands-only includes --override-input in output" {
+    run bash -c "
+      source '${LIB_PATH%%:*}'
+      set -- --show-nix-commands-only
+      cd '$TEST_DIR/workspace'
+      source '$SCRIPTS_DIR/pn-workspace-apply.sh'
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q -- "--override-input repo-base git+file://$TEST_DIR/workspace/repo-base"
+}
+
+@test "--show-nix-commands-only is shown in --help" {
+    run bash "$SCRIPTS_DIR/pn-workspace-apply.sh" --help
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q -- "--show-nix-commands-only"
+}
