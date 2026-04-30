@@ -780,6 +780,64 @@ JSON
   echo "$stderr" | grep -q "is not a flake"
 }
 
+# ─── workspace_check_follows ─────────────────────────────────────────────────
+
+@test "workspace_check_follows passes when no flake.lock exists" {
+  mkdir -p "$TEST_DIR/terminal"
+  local ws_json='[{"path": "'"$TEST_DIR/terminal"'"},{"path": "'"$TEST_DIR/a"'","inputName":"input-a"},{"path": "'"$TEST_DIR/b"'","inputName":"input-b"}]'
+  run workspace_check_follows "$TEST_DIR/terminal" "$ws_json"
+  [ "$status" -eq 0 ]
+}
+
+@test "workspace_check_follows passes with a single workspace input" {
+  mkdir -p "$TEST_DIR/terminal"
+  printf '{"nodes":{"root":{"inputs":{"input-a":"input-a"}},"input-a":{"inputs":{}}},"root":"root","version":7}\n' \
+    > "$TEST_DIR/terminal/flake.lock"
+  local ws_json='[{"path": "'"$TEST_DIR/terminal"'"},{"path": "'"$TEST_DIR/a"'","inputName":"input-a"}]'
+  run workspace_check_follows "$TEST_DIR/terminal" "$ws_json"
+  [ "$status" -eq 0 ]
+}
+
+@test "workspace_check_follows passes when sub-input follows workspace input (array value)" {
+  mkdir -p "$TEST_DIR/terminal"
+  printf '{"nodes":{"root":{"inputs":{"input-a":"input-a","input-b":"input-b"}},"input-a":{"inputs":{"input-b":["input-b"]}},"input-b":{"inputs":{}}},"root":"root","version":7}\n' \
+    > "$TEST_DIR/terminal/flake.lock"
+  local ws_json='[{"path": "'"$TEST_DIR/terminal"'"},{"path": "'"$TEST_DIR/a"'","inputName":"input-a"},{"path": "'"$TEST_DIR/b"'","inputName":"input-b"}]'
+  run workspace_check_follows "$TEST_DIR/terminal" "$ws_json"
+  [ "$status" -eq 0 ]
+}
+
+@test "workspace_check_follows errors when sub-input is a separate copy (string value)" {
+  mkdir -p "$TEST_DIR/terminal"
+  printf '{"nodes":{"root":{"inputs":{"input-a":"input-a","input-b":"input-b"}},"input-a":{"inputs":{"input-b":"input-b_2"}},"input-b":{"inputs":{}},"input-b_2":{"inputs":{}}},"root":"root","version":7}\n' \
+    > "$TEST_DIR/terminal/flake.lock"
+  local ws_json='[{"path": "'"$TEST_DIR/terminal"'"},{"path": "'"$TEST_DIR/a"'","inputName":"input-a"},{"path": "'"$TEST_DIR/b"'","inputName":"input-b"}]'
+  run --separate-stderr workspace_check_follows "$TEST_DIR/terminal" "$ws_json"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "does not follow"
+  echo "$stderr" | grep -q "input-a"
+  echo "$stderr" | grep -q "input-b"
+}
+
+@test "workspace_check_follows error includes fix instructions" {
+  mkdir -p "$TEST_DIR/terminal"
+  printf '{"nodes":{"root":{"inputs":{"input-a":"input-a","input-b":"input-b"}},"input-a":{"inputs":{"input-b":"input-b_2"}},"input-b":{"inputs":{}},"input-b_2":{"inputs":{}}},"root":"root","version":7}\n' \
+    > "$TEST_DIR/terminal/flake.lock"
+  local ws_json='[{"path": "'"$TEST_DIR/terminal"'"},{"path": "'"$TEST_DIR/a"'","inputName":"input-a"},{"path": "'"$TEST_DIR/b"'","inputName":"input-b"}]'
+  run --separate-stderr workspace_check_follows "$TEST_DIR/terminal" "$ws_json"
+  [ "$status" -ne 0 ]
+  echo "$stderr" | grep -q "inputs.input-a.inputs.input-b.follows"
+}
+
+@test "workspace_check_follows passes when inputs have no cross-dependency (null in lock)" {
+  mkdir -p "$TEST_DIR/terminal"
+  printf '{"nodes":{"root":{"inputs":{"input-a":"input-a","input-b":"input-b"}},"input-a":{"inputs":{}},"input-b":{"inputs":{}}},"root":"root","version":7}\n' \
+    > "$TEST_DIR/terminal/flake.lock"
+  local ws_json='[{"path": "'"$TEST_DIR/terminal"'"},{"path": "'"$TEST_DIR/a"'","inputName":"input-a"},{"path": "'"$TEST_DIR/b"'","inputName":"input-b"}]'
+  run workspace_check_follows "$TEST_DIR/terminal" "$ws_json"
+  [ "$status" -eq 0 ]
+}
+
 # ─── workspace_has_upstream ───────────────────────────────────────────────────
 
 @test "workspace_has_upstream returns 1 when no remotes configured" {

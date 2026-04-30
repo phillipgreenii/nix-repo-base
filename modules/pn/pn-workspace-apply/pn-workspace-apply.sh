@@ -129,6 +129,8 @@ if [[ -z $terminal_path ]]; then
   exit 1
 fi
 
+workspace_check_follows "$terminal_path" "$workspace_json" || exit 1
+
 # Build --override-input args for all non-terminal repos
 overrides=()
 while IFS= read -r entry; do

@@ -680,6 +680,64 @@ workspace_read_toml() {
   yq -p=toml -oy ".$key" "$toml"
 }
 
+# Verify that every non-terminal workspace input follows every other workspace
+# input it depends on.  Without follows, --override-input for the shared dep
+# does not propagate into the sub-flake, so the override is silently ignored.
+# Reads <terminal_path>/flake.lock; exits cleanly when the file is absent.
+# workspace_json is the JSON array returned by workspace_get_projects.
+# Usage: workspace_check_follows <terminal_path> <workspace_json>
+workspace_check_follows() {
+  local terminal_path="$1"
+  local workspace_json="$2"
+  local lockfile="$terminal_path/flake.lock"
+
+  [[ -f $lockfile ]] || return 0
+
+  local input_names_json
+  input_names_json=$(echo "$workspace_json" | jq -c '[.[] | select(.inputName != null) | .inputName]')
+
+  local input_count
+  input_count=$(echo "$input_names_json" | jq 'length')
+  ((input_count < 2)) && return 0
+
+  local lock_json
+  lock_json=$(cat "$lockfile")
+
+  local _err=0
+  local input_name
+  while IFS= read -r input_name; do
+    [[ -z $input_name ]] && continue
+
+    # Resolve node key from root's inputs (string = direct dep)
+    local node_key
+    node_key=$(echo "$lock_json" | jq -r --arg n "$input_name" '
+      .nodes.root.inputs[$n] |
+      if type == "string" then . else empty end
+    ')
+    [[ -z $node_key ]] && continue
+
+    # For each other workspace input, string = unfollowed copy; array = follows
+    local other_input
+    while IFS= read -r other_input; do
+      [[ -z $other_input ]] && continue
+      [[ $other_input == "$input_name" ]] && continue
+
+      local ref_type
+      ref_type=$(echo "$lock_json" | jq -r --arg node "$node_key" --arg sub "$other_input" '
+        .nodes[$node].inputs[$sub] | type
+      ')
+      if [[ $ref_type == "string" ]]; then
+        echo "error: workspace input '$input_name' does not follow '$other_input'" >&2
+        printf "  Fix: add to flake.nix: inputs.%s.inputs.%s.follows = \"%s\"\n" \
+          "$input_name" "$other_input" "$other_input" >&2
+        _err=1
+      fi
+    done < <(echo "$input_names_json" | jq -r '.[]')
+  done < <(echo "$input_names_json" | jq -r '.[]')
+
+  return $_err
+}
+
 # Returns 0 if the current repo HEAD has a usable upstream (remote exists AND
 # current branch has tracking branch configured). Returns 1 otherwise.
 # Does NOT fetch — purely a local config check. Run from inside the repo
