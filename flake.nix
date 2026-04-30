@@ -126,6 +126,10 @@
     )
     // {
       homeModules.pn = import ./home/pn/default.nix;
+      homeModules.install-metadata = (import ./lib/version.nix).mkInstallMetadata {
+        flakeSelf = self;
+        name = "phillipg-nix-repo-base";
+      };
 
       lib =
         # Version helpers
