@@ -30,6 +30,13 @@ setup() {
     export PN_DISCOVER_OUTPUT="[{\"path\":\"$TEST_DIR/workspace/repo-base\",\"inputName\":\"repo-base\"},{\"path\":\"$TEST_DIR/workspace/terminal-flake\"}]"
     create_mock_pn_discover_workspace
 
+    # Mock hostname (used by build_command {hostname} placeholder substitution)
+    cat >"$TEST_DIR/hostname" <<'EOF'
+#!/usr/bin/env bash
+echo "test-host"
+EOF
+    chmod +x "$TEST_DIR/hostname"
+
     export PATH="$TEST_DIR:$PATH"
 }
 
@@ -301,4 +308,65 @@ teardown() {
     run bash "$SCRIPTS_DIR/pn-workspace-build.sh" --help
     [ "$status" -eq 0 ]
     echo "$output" | grep -q -- "--show-nix-commands-only"
+}
+
+@test "pn-workspace-build uses build_command from pn-workspace.toml when present" {
+  cat >"$TEST_DIR/workspace/pn-workspace.toml" <<'EOF'
+apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+build_command = "nixos-rebuild build --flake {terminal_flake}#{hostname}"
+use_lock = true
+EOF
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    set -- --root '$TEST_DIR/workspace' --show-nix-commands-only
+    source '$SCRIPTS_DIR/pn-workspace-build.sh'
+  "
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "nixos-rebuild build --flake $TEST_DIR/workspace/terminal-flake#test-host"
+}
+
+@test "pn-workspace-build falls back to default darwin-rebuild when build_command absent" {
+  cat >"$TEST_DIR/workspace/pn-workspace.toml" <<'EOF'
+apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+use_lock = true
+EOF
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    set -- --root '$TEST_DIR/workspace' --show-nix-commands-only
+    source '$SCRIPTS_DIR/pn-workspace-build.sh'
+  "
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "darwin-rebuild build --flake $TEST_DIR/workspace/terminal-flake"
+}
+
+@test "pn-workspace-build accepts --build-cmd CLI override" {
+  cat >"$TEST_DIR/workspace/pn-workspace.toml" <<'EOF'
+apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+build_command = "darwin-rebuild build --flake {terminal_flake}"
+use_lock = true
+EOF
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    set -- --root '$TEST_DIR/workspace' \
+           --build-cmd 'nixos-rebuild build --flake {terminal_flake}#{hostname}' \
+           --show-nix-commands-only
+    source '$SCRIPTS_DIR/pn-workspace-build.sh'
+  "
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "nixos-rebuild build --flake $TEST_DIR/workspace/terminal-flake#test-host"
+}
+
+@test "pn-workspace-build substitutes both {terminal_flake} and {hostname}" {
+  cat >"$TEST_DIR/workspace/pn-workspace.toml" <<'EOF'
+apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+build_command = "myrebuild --flake {terminal_flake}#{hostname} --extra"
+use_lock = true
+EOF
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    set -- --root '$TEST_DIR/workspace' --show-nix-commands-only
+    source '$SCRIPTS_DIR/pn-workspace-build.sh'
+  "
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "myrebuild --flake $TEST_DIR/workspace/terminal-flake#test-host --extra"
 }

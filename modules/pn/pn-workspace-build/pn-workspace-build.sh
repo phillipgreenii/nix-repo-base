@@ -3,6 +3,7 @@
 
 _root_arg=""
 _workspace_arg=""
+_build_cmd_arg=""
 _override_specs=()
 _show_nix_commands_only=false
 
@@ -24,6 +25,10 @@ Options:
   --root <dir>                  Workspace root directory.
                                 Default: PN_WORKSPACE_ROOT env or walk up from CWD.
   --workspace <dir>             Deprecated alias for --root.
+  --build-cmd <template>        Override build_command from pn-workspace.toml.
+                                Supports {terminal_flake} and {hostname}
+                                placeholders. Default when absent from TOML:
+                                "darwin-rebuild build --flake {terminal_flake}".
   --override-path <name>=<path> Override the path used for a workspace project.
                                 Repeatable. Both terminal and non-terminal
                                 projects supported. <name> is the workspace
@@ -59,6 +64,14 @@ HELP
     ;;
   --workspace=*)
     _workspace_arg="${1#*=}"
+    shift
+    ;;
+  --build-cmd)
+    _build_cmd_arg="$2"
+    shift 2
+    ;;
+  --build-cmd=*)
+    _build_cmd_arg="${1#*=}"
     shift
     ;;
   --override-path)
@@ -114,9 +127,27 @@ while IFS= read -r entry; do
   overrides+=(--override-input "$input_name" "git+file://$path")
 done < <(echo "$workspace_json" | jq -c '.[] | select(.inputName != null)')
 
+# Read build_command template and substitute placeholders.
+# Resolution order: --build-cmd flag > pn-workspace.toml build_command > default.
+hostname_short=$(hostname -s)
+if [[ -n $_build_cmd_arg ]]; then
+  build_cmd_template="$_build_cmd_arg"
+elif [[ -f "$PN_WORKSPACE_ROOT/pn-workspace.toml" ]]; then
+  build_cmd_template=$(workspace_read_toml "$PN_WORKSPACE_ROOT" "build_command")
+  if [[ -z $build_cmd_template || $build_cmd_template == "null" ]]; then
+    build_cmd_template="darwin-rebuild build --flake {terminal_flake}"
+  fi
+else
+  build_cmd_template="darwin-rebuild build --flake {terminal_flake}"
+fi
+
+build_cmd="${build_cmd_template/\{terminal_flake\}/$terminal_path}"
+build_cmd="${build_cmd/\{hostname\}/$hostname_short}"
+
 if [[ $_show_nix_commands_only == true ]]; then
+  read -ra build_args <<<"$build_cmd"
   echo "cd $terminal_path && nix fmt"
-  echo "darwin-rebuild build --flake $terminal_path ${overrides[*]}"
+  echo "${build_args[*]} ${overrides[*]}"
   exit 0
 fi
 
@@ -126,7 +157,8 @@ nix fmt
 echo
 
 echo "  --== Building flake ==--  "
-darwin-rebuild build --flake "$terminal_path" "${overrides[@]}"
+read -ra build_args <<<"$build_cmd"
+"${build_args[@]}" "${overrides[@]}"
 echo
 
 echo "Build successful! To apply, run:"
