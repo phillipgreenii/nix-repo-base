@@ -80,7 +80,7 @@ _: {
         lib.mkMerge [
           { home.packages = [ package ]; }
           (lib.mkIf (dockApp != null && cfg.enablePersistentDockApp or false) {
-            phillipgreenii.darwin.system.persistentDockApps = [ dockApp ];
+            phillipgreenii.system.persistentDockApps = [ dockApp ];
           })
           extraConfig
         ]
