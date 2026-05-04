@@ -42,7 +42,8 @@ jobs:
           send-statistics: false
 
       - name: Check formatting with treefmt
-        run: nix fmt -- --check .
+        run: |
+          nix fmt -- --ci
 
       - name: Run nix flake check
-        run: nix flake check --show-trace
+        run: nix flake check --show-trace -L
