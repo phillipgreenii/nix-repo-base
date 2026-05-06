@@ -86,6 +86,25 @@ teardown() {
   rm -rf "$TEST_DIR"
 }
 
-@test "placeholder passes" {
-  true
+@test "--help exits 0 and shows Usage" {
+  run run_script --help
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Usage"
+}
+
+@test "-h exits 0 and shows Usage" {
+  run run_script -h
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Usage"
+}
+
+@test "unknown flag exits 1 with error" {
+  run run_script --not-a-flag
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "error: unknown option"
+}
+
+@test "--root with nonexistent dir exits nonzero" {
+  run run_script --root /nonexistent/path/xyz
+  [ "$status" -ne 0 ]
 }

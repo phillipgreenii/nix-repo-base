@@ -1,2 +1,53 @@
 # shellcheck shell=bash
 # pn-workspace-tree: Print ASCII dependency tree of workspace flake repos
+
+_root_arg=""
+_all_inputs=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h | --help)
+    cat <<'HELP'
+pn-workspace-tree: Print ASCII dependency tree of workspace flake repos
+
+Purpose: Displays the flake input dependency graph for the workspace,
+rooted at the terminal flake (the repo with no inputName in
+pn-workspace.lock). By default shows only workspace-internal deps.
+
+Usage: pn-workspace-tree [OPTIONS]
+
+Options:
+  -h, --help        Show this help message and exit
+  --root <dir>      Workspace root directory.
+                    Default: PN_WORKSPACE_ROOT env or walk up from CWD.
+  --all-inputs      Show all flake inputs, not just workspace-internal deps.
+
+Example:
+  pn-workspace-tree
+  pn-workspace-tree --all-inputs
+HELP
+    exit 0
+    ;;
+  --root)
+    _root_arg="$2"
+    shift 2
+    ;;
+  --root=*)
+    _root_arg="${1#*=}"
+    shift
+    ;;
+  --all-inputs)
+    _all_inputs=true
+    shift
+    ;;
+  *)
+    echo "error: unknown option: $1" >&2
+    exit 1
+    ;;
+  esac
+done
+
+if [[ -n $_root_arg ]] && [[ ! -d $_root_arg ]]; then
+  echo "error: --root directory does not exist: $_root_arg" >&2
+  exit 1
+fi
