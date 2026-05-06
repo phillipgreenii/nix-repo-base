@@ -176,3 +176,23 @@ EOF
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "error: failed to generate flake.lock"
 }
+
+@test "workspace-only tree correct structure" {
+  run run_script
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "^terminal-flake$"
+  echo "$output" | grep -q "├── repo-base$"
+  echo "$output" | grep -q "└── repo-mid$"
+}
+
+@test "dedup marker shown for repeated dep" {
+  run run_script
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "repo-base \[↑ shown above\]"
+}
+
+@test "nixpkgs not shown in workspace-only mode" {
+  run run_script
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -q "nixpkgs"
+}

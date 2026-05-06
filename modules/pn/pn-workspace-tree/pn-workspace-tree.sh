@@ -78,3 +78,131 @@ if [[ ! -f $_LOCKFILE ]]; then
   fi
 fi
 _LOCK_JSON=$(cat "$_LOCKFILE")
+
+# ─── Global state ─────────────────────────────────────────────────────────────
+
+# JSON array of workspace inputNames (non-terminal repos only)
+_WS_INPUT_NAMES=$(echo "$workspace_json" |
+  jq -c '[.[] | select(has("inputName")) | .inputName]')
+
+# JSON object: inputName -> repo dir basename (display name)
+_WS_DISPLAY_NAMES=$(echo "$workspace_json" | jq -c '
+  [.[] | select(has("inputName")) |
+    {key: .inputName, value: (.path | split("/") | .[-1])}]
+  | from_entries
+')
+
+# Warn for workspace repos whose inputName is absent from the lock
+while IFS= read -r input_name; do
+  [[ -z $input_name ]] && continue
+  if ! jq -e --arg k "$input_name" '.nodes[$k] != null' <<<"$_LOCK_JSON" >/dev/null 2>&1; then
+    echo "warning: workspace input '$input_name' not in flake.lock; skipping" >&2
+  fi
+done < <(echo "$_WS_INPUT_NAMES" | jq -r '.[]')
+
+# Visited associative array for dedup (keyed by node key)
+declare -A _TREE_VISITED=()
+
+# ─── Adjacency map ────────────────────────────────────────────────────────────
+
+# Print dep node keys for node_key, one per line, sorted by display name.
+# "root" = terminal flake root node; any other value = workspace inputName.
+_tree_deps() {
+  local node_key="$1"
+  local inputs_json
+  if [[ $node_key == "root" ]]; then
+    inputs_json=$(jq -c '.nodes.root.inputs // {}' <<<"$_LOCK_JSON")
+  else
+    inputs_json=$(jq -c --arg k "$node_key" '.nodes[$k].inputs // {}' <<<"$_LOCK_JSON")
+  fi
+
+  # Resolve input values to target node keys:
+  #   "string"   -> direct dep (unfollowed copy)
+  #   ["X"]      -> follows top-level node X (single-element = direct dep)
+  #   ["X","Y"]  -> sub-input follow; NOT a direct dep of this node, skip
+  local -a resolved=()
+  while IFS= read -r dep; do
+    [[ -z $dep ]] && continue
+    if [[ $_all_inputs == "false" ]]; then
+      jq -e --arg d "$dep" 'index($d) != null' <<<"$_WS_INPUT_NAMES" >/dev/null 2>&1 || continue
+    fi
+    resolved+=("$dep")
+  done < <(jq -r '
+    to_entries[] |
+    .value as $v |
+    if   ($v | type) == "string"                            then $v
+    elif ($v | type) == "array" and ($v | length) == 1     then $v[0]
+    else empty
+    end
+  ' <<<"$inputs_json")
+
+  [[ ${#resolved[@]} -eq 0 ]] && return 0
+
+  # Sort by display name: emit "display<TAB>key", sort, strip display
+  local -a pairs=()
+  local dep display
+  for dep in "${resolved[@]}"; do
+    display=$(jq -r --arg k "$dep" '.[$k] // $k' <<<"$_WS_DISPLAY_NAMES")
+    pairs+=("${display}"$'\t'"${dep}")
+  done
+  printf '%s\n' "${pairs[@]}" | sort | cut -f2
+}
+
+# ─── Tree renderer ────────────────────────────────────────────────────────────
+
+# render_tree <node_key> [<prefix>] [<is_last>]
+#   node_key : "root" for the terminal flake, otherwise a lock node key
+#   prefix   : string prepended before the connector (blank for root's children)
+#   is_last  : "true" if this node is the last sibling (uses └── vs ├──)
+render_tree() {
+  local node_key="$1"
+  local prefix="${2:-}"
+  local is_last="${3:-true}"
+
+  local display
+  if [[ $node_key == "root" ]]; then
+    display=$(basename "$_TERMINAL_PATH")
+  else
+    display=$(jq -r --arg k "$node_key" '.[$k] // $k' <<<"$_WS_DISPLAY_NAMES")
+  fi
+
+  if [[ $node_key == "root" ]]; then
+    echo "$display"
+  else
+    local connector
+    [[ $is_last == "true" ]] && connector="└── " || connector="├── "
+    if [[ -n ${_TREE_VISITED[$node_key]+x} ]]; then
+      echo "${prefix}${connector}${display} [↑ shown above]"
+      return
+    fi
+    echo "${prefix}${connector}${display}"
+  fi
+
+  _TREE_VISITED[$node_key]=1
+
+  local -a children=()
+  while IFS= read -r child; do
+    [[ -n $child ]] && children+=("$child")
+  done < <(_tree_deps "$node_key")
+
+  local child_prefix
+  if [[ $node_key == "root" ]]; then
+    child_prefix=""
+  elif [[ $is_last == "true" ]]; then
+    child_prefix="${prefix}    "
+  else
+    child_prefix="${prefix}│   "
+  fi
+
+  local n=${#children[@]}
+  local i
+  for ((i = 0; i < n; i++)); do
+    local child_is_last="false"
+    [[ $i -eq $((n - 1)) ]] && child_is_last="true"
+    render_tree "${children[$i]}" "$child_prefix" "$child_is_last"
+  done
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+render_tree "root"
