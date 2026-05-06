@@ -51,3 +51,20 @@ if [[ -n $_root_arg ]] && [[ ! -d $_root_arg ]]; then
   echo "error: --root directory does not exist: $_root_arg" >&2
   exit 1
 fi
+
+PN_WORKSPACE_ROOT=$(workspace_resolve_root "$_root_arg") || exit 1
+workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT") || exit 1
+
+terminal_count=$(echo "$workspace_json" | jq '[.[] | select(has("inputName") | not)] | length')
+if [[ $terminal_count -eq 0 ]]; then
+  echo "error: no terminal flake found (all workspace projects have inputName)" >&2
+  exit 1
+fi
+if [[ $terminal_count -gt 1 ]]; then
+  terminal_names=$(echo "$workspace_json" |
+    jq -r '[.[] | select(has("inputName") | not) | .path | split("/") | .[-1]] | join(", ")')
+  echo "error: multiple terminal flakes: $terminal_names" >&2
+  exit 1
+fi
+
+_TERMINAL_PATH=$(echo "$workspace_json" | jq -r '[.[] | select(has("inputName") | not)] | .[0].path')

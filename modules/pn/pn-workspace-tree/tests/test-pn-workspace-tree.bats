@@ -108,3 +108,30 @@ teardown() {
   run run_script --root /nonexistent/path/xyz
   [ "$status" -ne 0 ]
 }
+
+@test "error when no terminal flake exists" {
+  cat >"$TEST_DIR/workspace/pn-workspace.lock" <<LOCK
+[
+  {"path": "terminal-flake", "inputName": "nix-terminal"},
+  {"path": "repo-base", "inputName": "nix-base"}
+]
+LOCK
+  run run_script
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "no terminal flake"
+}
+
+@test "error when multiple terminal flake candidates" {
+  mkdir -p "$TEST_DIR/workspace/repo-extra"
+  touch "$TEST_DIR/workspace/repo-extra/flake.nix"
+  cat >"$TEST_DIR/workspace/pn-workspace.lock" <<LOCK
+[
+  {"path": "terminal-flake"},
+  {"path": "repo-extra"},
+  {"path": "repo-base", "inputName": "nix-base"}
+]
+LOCK
+  run run_script
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "multiple terminal flakes"
+}
