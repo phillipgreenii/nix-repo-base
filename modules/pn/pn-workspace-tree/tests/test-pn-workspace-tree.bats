@@ -196,3 +196,25 @@ EOF
   [ "$status" -eq 0 ]
   ! echo "$output" | grep -q "nixpkgs"
 }
+
+@test "--all-inputs shows non-workspace inputs" {
+  run run_script --all-inputs
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "nixpkgs"
+}
+
+@test "--all-inputs orders nodes alphabetically by display name" {
+  run run_script --all-inputs
+  [ "$status" -eq 0 ]
+  # nixpkgs (n) must appear before repo-base (r) at the top level
+  # Use $lines array to find top-level entries (avoid ^anchor+multibyte grep issues)
+  nixpkgs_line=""
+  repobase_line=""
+  for i in "${!lines[@]}"; do
+    [[ "${lines[$i]}" == "├── nixpkgs" || "${lines[$i]}" == "└── nixpkgs" ]] && [[ -z $nixpkgs_line ]] && nixpkgs_line=$i
+    [[ "${lines[$i]}" == "├── repo-base" || "${lines[$i]}" == "└── repo-base" ]] && [[ -z $repobase_line ]] && repobase_line=$i
+  done
+  [ -n "$nixpkgs_line" ]
+  [ -n "$repobase_line" ]
+  [ "$nixpkgs_line" -lt "$repobase_line" ]
+}
