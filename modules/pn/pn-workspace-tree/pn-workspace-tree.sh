@@ -68,3 +68,13 @@ if [[ $terminal_count -gt 1 ]]; then
 fi
 
 _TERMINAL_PATH=$(echo "$workspace_json" | jq -r '[.[] | select(has("inputName") | not)] | .[0].path')
+
+_LOCKFILE="$_TERMINAL_PATH/flake.lock"
+if [[ ! -f $_LOCKFILE ]]; then
+  echo "info: generating flake.lock for $(basename "$_TERMINAL_PATH")" >&2
+  if ! nix flake lock "path:$_TERMINAL_PATH"; then
+    echo "error: failed to generate flake.lock: $_LOCKFILE" >&2
+    exit 1
+  fi
+fi
+_LOCK_JSON=$(cat "$_LOCKFILE")

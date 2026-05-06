@@ -135,3 +135,44 @@ LOCK
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "multiple terminal flakes"
 }
+
+# Helper: create mock nix that copies FIXTURE_LOCK to lock_path on "flake lock"
+_setup_mock_nix_lock() {
+  local lock_path="$1"
+  local template="$TEST_DIR/fixture-lock-template.json"
+  echo "$FIXTURE_LOCK" >"$template"
+  cat >"$TEST_DIR/nix" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "flake" && "\$2" == "lock" ]]; then
+  echo "Mock: nix flake lock \$3" >&2
+  cp "${template}" "${lock_path}"
+  exit 0
+fi
+echo "Mock: nix \$*" >&2
+exit 1
+EOF
+  chmod +x "$TEST_DIR/nix"
+  export PATH="$TEST_DIR:$PATH"
+}
+
+@test "auto-generates flake.lock if missing and emits info message" {
+  local lockfile="$TEST_DIR/workspace/terminal-flake/flake.lock"
+  rm -f "$lockfile"
+  _setup_mock_nix_lock "$lockfile"
+  run run_script
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "info: generating flake.lock"
+}
+
+@test "exits 1 when nix flake lock fails" {
+  rm -f "$TEST_DIR/workspace/terminal-flake/flake.lock"
+  cat >"$TEST_DIR/nix" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$TEST_DIR/nix"
+  export PATH="$TEST_DIR:$PATH"
+  run run_script
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "error: failed to generate flake.lock"
+}
