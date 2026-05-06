@@ -218,3 +218,19 @@ EOF
   [ -n "$repobase_line" ]
   [ "$nixpkgs_line" -lt "$repobase_line" ]
 }
+
+@test "warns when workspace repo missing from lock and still exits 0" {
+  mkdir -p "$TEST_DIR/workspace/repo-ghost"
+  touch "$TEST_DIR/workspace/repo-ghost/flake.nix"
+  cat >"$TEST_DIR/workspace/pn-workspace.lock" <<LOCK
+[
+  {"path": "terminal-flake"},
+  {"path": "repo-base", "inputName": "nix-base"},
+  {"path": "repo-mid", "inputName": "nix-mid"},
+  {"path": "repo-ghost", "inputName": "nix-ghost"}
+]
+LOCK
+  run run_script
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "warning.*nix-ghost.*not in flake.lock"
+}
