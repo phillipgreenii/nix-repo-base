@@ -6,7 +6,7 @@
 
 ## Context
 
-Across three Nix configuration repositories (phillipgreenii-nix-personal, phillipg-nix-ziprecruiter, phillipgreenii-nix-support-apps), architectural decisions accumulate over time — technology choices, structural patterns, cross-cutting conventions — but live only in commit history and tribal knowledge. As AI agents increasingly drive development in these repos, the problem intensifies: agents lose conversation context across sessions and cannot recover decision rationale from code alone.
+Across Nix configuration repositories (phillipgreenii-nix-personal, phillipgreenii-nix-support-apps, and other downstream repos), architectural decisions accumulate over time — technology choices, structural patterns, cross-cutting conventions — but live only in commit history and tribal knowledge. As AI agents increasingly drive development in these repos, the problem intensifies: agents lose conversation context across sessions and cannot recover decision rationale from code alone.
 
 We need a lightweight, discoverable way to capture architectural decisions that:
 
@@ -97,6 +97,5 @@ Document decisions directly in the relevant source files.
 
 ## Related Decisions
 
-See also: phillipg-nix-ziprecruiter docs/adr/0000-use-architecture-decision-records.md
 See also: phillipgreenii-nix-support-apps docs/adr/0000-use-architecture-decision-records.md
 See also: phillipgreenii-nix-support-apps packages/work-activity-tracker/docs/adr/0000-use-architecture-decision-records.md

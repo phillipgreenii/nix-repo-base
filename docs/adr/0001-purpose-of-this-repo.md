@@ -6,18 +6,18 @@
 
 ## Context
 
-Multiple personal and work Nix configuration repos (`phillipgreenii-nix-personal`,
-`phillipgreenii-nix-support-apps`, `phillipg-nix-ziprecruiter`) shared common
+Multiple Nix configuration repos (`phillipgreenii-nix-personal`,
+`phillipgreenii-nix-support-apps`, and other downstream repos) shared common
 infrastructure — bash-builders, dev-env helpers, module helpers, and CI workflows —
 that lived exclusively in `phillipgreenii-nix-personal`.
 
 This created two problems:
 
-1. **Wrong dependency direction**: ZR and support-apps config repos imported
+1. **Wrong dependency direction**: Downstream config repos imported
    `phillipgreenii-nix-personal` solely to access infrastructure, coupling
-   work config to personal config.
+   unrelated config to personal config.
 
-2. **Filesystem path hack**: `update-locks.sh` scripts in ZR and support-apps
+2. **Filesystem path hack**: `update-locks.sh` scripts in downstream repos
    sourced `update-locks-lib.bash` via a relative filesystem path
    (`../phillipgreenii-nix-personal/lib/scripts/`) rather than through a proper
    flake input — fragile and breaks outside the co-located workspace.
@@ -35,13 +35,13 @@ Extract shared infrastructure into this dedicated public repository
 - `nix/checks.nix` provides reusable check derivations
 - The `lib` flake output exposes all 14 functions for downstream consumption
 - Overlay factories (`mkUnstableOverlay`, `mkLlmAgentsOverlay`,
-  `mkVscodeExtensionsOverlay`) are co-located here since they are consumed by ZR
+  `mkVscodeExtensionsOverlay`) are co-located here since they are consumed by downstream repos
 
 ## Consequences
 
 ### Positive
 
-- ZR and support-apps no longer depend on `phillipgreenii-nix-personal` for infrastructure
+- Downstream repos no longer depend on `phillipgreenii-nix-personal` for infrastructure
 - `update-locks-lib.bash` is consumed via flake input, eliminating the filesystem hack
 - Single canonical location for shared Nix infrastructure
 - Infrastructure versioned and tested independently
@@ -54,4 +54,3 @@ Extract shared infrastructure into this dedicated public repository
 ## Related Decisions
 
 See also: phillipgreenii-nix-personal docs/adr/0000-use-architecture-decision-records.md
-See also: phillipg-nix-ziprecruiter docs/adr/0013-update-sequence-np-then-sa-then-zr-via-flakeprojects-order.md

@@ -25,14 +25,14 @@ CLI: repeat the flag.
 
 ```bash
 pn-workspace-build \
-  --override-path phillipg-nix-ziprecruiter=$HOME/phillipg_mbp/phillipg-nix-ziprecruiter/.git/worktrees/p \
-  --override-path phillipgreenii-nix-personal=$HOME/phillipg_mbp/phillipgreenii-nix-personal/.git/worktrees/c
+  --override-path my-other-repo=$HOME/worktrees/my-other-repo-feature-foo \
+  --override-path phillipgreenii-nix-personal=$HOME/worktrees/nix-personal-feature-foo
 ```
 
 Env: comma-separated.
 
 ```bash
-export PN_WORKSPACE_OVERRIDE_PATHS=phillipg-nix-ziprecruiter=/path/p,phillipgreenii-nix-personal=/path/c
+export PN_WORKSPACE_OVERRIDE_PATHS=my-other-repo=/path/p,phillipgreenii-nix-personal=/path/c
 ```
 
 Flags win over env per key. Validation rejects unknown project names, missing directories, and paths without `flake.nix`.
@@ -42,11 +42,11 @@ Flags win over env per key. Validation rejects unknown project names, missing di
 When running from inside a worktree, `pn-workspace-*` cannot walk up to find the workspace root. Pass `--root` (preferred) or set `PN_WORKSPACE_ROOT`:
 
 ```bash
-pn-workspace-build --root ~/phillipg_mbp --override-path repo-base=$PWD
+pn-workspace-build --root ~/workspace --override-path repo-base=$PWD
 ```
 
 ```bash
-export PN_WORKSPACE_ROOT=~/phillipg_mbp
+export PN_WORKSPACE_ROOT=~/workspace
 export PN_WORKSPACE_OVERRIDE_PATHS=repo-base=$PWD
 pn-workspace-build
 ```
