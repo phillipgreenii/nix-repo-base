@@ -55,14 +55,20 @@ EOF
   export PATH="$TEST_DIR:$PATH"
 }
 
-# Create mock df
+# Create mock df + diskutil (both needed for store_size)
 create_mock_df_clean() {
   cat > "$TEST_DIR/df" <<'EOF'
 #!/usr/bin/env bash
-echo "Filesystem 512-blocks Used Available Capacity Mounted on"
-echo "/dev/disk1 999999999 2097152 500000000 50% /nix"
+echo "Filesystem     1K-blocks      Used Available Use% Mounted on"
+echo "/dev/disk1   482797652 452124212  30673440  94% /nix"
 EOF
   chmod +x "$TEST_DIR/df"
+  cat > "$TEST_DIR/diskutil" <<'EOF'
+#!/usr/bin/env bash
+echo "   Volume Name:               Nix Store"
+echo "   Volume Used Space:         1.0 GB (1073741824 Bytes) (exactly 2097152 512-Byte-Units)"
+EOF
+  chmod +x "$TEST_DIR/diskutil"
   export PATH="$TEST_DIR:$PATH"
 }
 
@@ -392,6 +398,71 @@ EOF
   echo "$output" | grep -qE '~/projects/repo-beta:'
   # Must NOT show the bare ".devbox" label (the bug we fixed)
   ! echo "$output" | grep -qE '^\s+\.devbox:'
+}
+
+# ─── Orphaned standalone HM profile ──────────────────────────────────────────
+
+_setup_orphaned_hm() {
+  local profiles_dir="$HOME/.local/state/nix/profiles"
+  local gcroots_dir="$HOME/.local/state/home-manager/gcroots"
+  mkdir -p "$profiles_dir" "$gcroots_dir"
+
+  # Standalone HM profile (older target file mtime)
+  local gen_target="$TEST_DIR/fake-store/aaa-hm-gen"
+  mkdir -p "$(dirname "$gen_target")"
+  touch -t 202512081200 "$gen_target"
+  ln -sf "$gen_target" "$profiles_dir/home-manager-195-link"
+  ln -sf "home-manager-195-link" "$profiles_dir/home-manager"
+
+  # Darwin-integrated current-home (newer target file mtime)
+  local current_target="$TEST_DIR/fake-store/bbb-hm-gen"
+  touch -t 202605051200 "$current_target"
+  ln -sf "$current_target" "$gcroots_dir/current-home"
+}
+
+@test "pn-store-deepclean detects and removes orphaned standalone HM profile (live)" {
+  _setup_orphaned_hm
+  create_mock_nix_env_clean
+  create_mock_nix_path_info_clean
+  create_mock_df_clean
+  create_mock_sudo
+  create_mock_nix_store_gc
+
+  run "$TEST_DIR/run_with_lib" "$SCRIPTS_DIR/pn-store-deepclean.sh" --keep-since 0d --keep 1
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "orphaned standalone profile"
+  # Profile symlink and gen link should be gone
+  [ ! -L "$HOME/.local/state/nix/profiles/home-manager" ]
+  [ ! -L "$HOME/.local/state/nix/profiles/home-manager-195-link" ]
+}
+
+@test "pn-store-deepclean --dry-run reports orphaned HM profile without removing" {
+  _setup_orphaned_hm
+  create_mock_nix_env_clean
+  create_mock_nix_path_info_clean
+  create_mock_df_clean
+  create_mock_sudo
+  create_mock_nix_store_gc
+
+  run "$TEST_DIR/run_with_lib" "$SCRIPTS_DIR/pn-store-deepclean.sh" --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "orphaned standalone profile"
+  # Nothing should be deleted in dry-run
+  [ -L "$HOME/.local/state/nix/profiles/home-manager" ]
+  [ -L "$HOME/.local/state/nix/profiles/home-manager-195-link" ]
+}
+
+@test "pn-store-deepclean uses normal HM processing when profile is current (not orphaned)" {
+  create_mock_nix_env_clean
+  create_mock_nix_path_info_clean
+  create_mock_df_clean
+  create_mock_sudo
+  create_mock_nix_store_gc
+
+  # No current-home → not orphaned → normal processing
+  run "$TEST_DIR/run_with_lib" "$SCRIPTS_DIR/pn-store-deepclean.sh" --dry-run
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -q "orphaned standalone profile"
 }
 
 @test "pn-store-deepclean shows runtime roots summary after GC" {

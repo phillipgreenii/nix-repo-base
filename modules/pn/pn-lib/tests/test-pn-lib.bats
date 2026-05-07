@@ -138,6 +138,119 @@ EOF
   [ "$output" = "1.0 GB" ]
 }
 
+# ─── store_size ───────────────────────────────────────────────────────────────
+
+_setup_store_size_mocks() {
+  local device="${1:-/dev/disk3s7}"
+  local used_bytes="${2:-54440673280}"
+
+  cat > "$TEST_DIR/df" <<MOCK
+#!/usr/bin/env bash
+echo "Filesystem     1K-blocks      Used Available Use% Mounted on"
+echo "$device   482797652 452124212  30673440  94% /nix/store"
+MOCK
+  chmod +x "$TEST_DIR/df"
+
+  cat > "$TEST_DIR/diskutil" <<MOCK
+#!/usr/bin/env bash
+# args: info <device>
+echo "   Volume Name:               Nix Store"
+echo "   Volume Used Space:         50.7 GB ($used_bytes Bytes) (exactly 106329440 512-Byte-Units)"
+MOCK
+  chmod +x "$TEST_DIR/diskutil"
+
+  export PATH="$TEST_DIR:$PATH"
+}
+
+@test "store_size returns formatted volume used space from diskutil" {
+  _setup_store_size_mocks "/dev/disk3s7" "54440673280"
+  run store_size
+  [ "$status" -eq 0 ]
+  [ "$output" = "50.7 GB" ]
+}
+
+@test "store_size passes device from df to diskutil" {
+  _setup_store_size_mocks "/dev/disk9s3" "1073741824"
+  local args_file="$TEST_DIR/diskutil_args"
+  cat > "$TEST_DIR/diskutil" <<MOCK
+#!/usr/bin/env bash
+echo "\$@" > "$args_file"
+echo "   Volume Used Space:         1.0 GB (1073741824 Bytes) (exactly 2097152 512-Byte-Units)"
+MOCK
+  chmod +x "$TEST_DIR/diskutil"
+  run store_size
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.0 GB" ]
+  grep -q "/dev/disk9s3" "$args_file"
+}
+
+@test "store_size returns 0 B when diskutil returns no Volume Used Space" {
+  _setup_store_size_mocks "/dev/disk3s7" ""
+  cat > "$TEST_DIR/diskutil" <<'MOCK'
+#!/usr/bin/env bash
+echo "   Volume Name:               Nix Store"
+MOCK
+  chmod +x "$TEST_DIR/diskutil"
+  run store_size
+  [ "$status" -eq 0 ]
+  [ "$output" = "0 B" ]
+}
+
+# ─── is_orphaned_standalone_hm_profile ───────────────────────────────────────
+
+_setup_hm_orphan_scenario() {
+  local standalone_mtime="$1"   # touch -t format applied to the gen target file
+  local current_home_mtime="$2" # touch -t format applied to the current-home target file
+
+  local profiles_dir="$HOME/.local/state/nix/profiles"
+  local gcroots_dir="$HOME/.local/state/home-manager/gcroots"
+  mkdir -p "$profiles_dir" "$gcroots_dir"
+
+  local gen_target="$TEST_DIR/fake-store/aaa-hm-gen"
+  mkdir -p "$(dirname "$gen_target")"
+  touch -t "$standalone_mtime" "$gen_target"
+  ln -sf "$gen_target" "$profiles_dir/home-manager-195-link"
+  ln -sf "home-manager-195-link" "$profiles_dir/home-manager"
+
+  local current_target="$TEST_DIR/fake-store/bbb-hm-gen"
+  touch -t "$current_home_mtime" "$current_target"
+  ln -sf "$current_target" "$gcroots_dir/current-home"
+}
+
+@test "is_orphaned_standalone_hm_profile returns true when current-home is newer" {
+  _setup_hm_orphan_scenario "202512081200" "202605051200"
+  run is_orphaned_standalone_hm_profile "$HOME/.local/state/nix/profiles/home-manager"
+  [ "$status" -eq 0 ]
+}
+
+@test "is_orphaned_standalone_hm_profile returns false when standalone is newer" {
+  _setup_hm_orphan_scenario "202605051200" "202512081200"
+  run is_orphaned_standalone_hm_profile "$HOME/.local/state/nix/profiles/home-manager"
+  [ "$status" -ne 0 ]
+}
+
+@test "is_orphaned_standalone_hm_profile returns false when no standalone profile" {
+  mkdir -p "$HOME/.local/state/home-manager/gcroots"
+  local current_target="$TEST_DIR/fake-store/bbb-hm-gen"
+  mkdir -p "$(dirname "$current_target")"
+  touch "$current_target"
+  ln -s "$current_target" "$HOME/.local/state/home-manager/gcroots/current-home"
+  run is_orphaned_standalone_hm_profile "$HOME/.local/state/nix/profiles/home-manager"
+  [ "$status" -ne 0 ]
+}
+
+@test "is_orphaned_standalone_hm_profile returns false when no current-home" {
+  local profiles_dir="$HOME/.local/state/nix/profiles"
+  mkdir -p "$profiles_dir"
+  local gen_target="$TEST_DIR/fake-store/aaa-hm-gen"
+  mkdir -p "$(dirname "$gen_target")"
+  touch "$gen_target"
+  ln -s "$gen_target" "$profiles_dir/home-manager-195-link"
+  ln -s "home-manager-195-link" "$profiles_dir/home-manager"
+  run is_orphaned_standalone_hm_profile "$HOME/.local/state/nix/profiles/home-manager"
+  [ "$status" -ne 0 ]
+}
+
 # ─── format_profile_label ────────────────────────────────────────────────────
 
 @test "format_profile_label returns category name for system" {

@@ -133,7 +133,29 @@ main() {
   section_header "Home Manager"
   local hm_profile
   hm_profile=$(discover_home_manager_profile)
-  process_profile "$(format_profile_label "$hm_profile" home-manager)" "$hm_profile" "home-manager"
+  if [[ -e $hm_profile ]] && is_orphaned_standalone_hm_profile "$hm_profile"; then
+    local hm_dir hm_name
+    hm_dir=$(dirname "$hm_profile")
+    hm_name=$(basename "$hm_profile")
+    local -a gen_links=()
+    while IFS= read -r link; do
+      gen_links+=("$link")
+    done < <(find "$hm_dir" -maxdepth 1 -name "${hm_name}-*-link" -type l 2>/dev/null)
+    local gen_count=${#gen_links[@]}
+    pruned_counts["home-manager"]=$((${pruned_counts["home-manager"]:-0} + gen_count))
+    echo "  home-manager: orphaned standalone profile (darwin-integrated HM is active)"
+    echo "    Profile: $hm_profile"
+    echo "    Removing: profile symlink + $gen_count generation link(s)"
+    if [[ $dry_run == false ]]; then
+      rm -f "$hm_profile"
+      local link
+      for link in "${gen_links[@]}"; do
+        rm -f "$link"
+      done
+    fi
+  else
+    process_profile "$(format_profile_label "$hm_profile" home-manager)" "$hm_profile" "home-manager"
+  fi
   echo ""
 
   # ─── User Profiles ───────────────────────────────────────────────────────────

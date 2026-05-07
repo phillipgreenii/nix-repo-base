@@ -363,12 +363,16 @@ profile_closure_size() {
   format_size "$bytes"
 }
 
-# Returns human-readable volume usage for /nix/store.
-# Uses df /nix/store and parses 512-byte blocks.
+# Returns human-readable volume usage for the /nix/store APFS volume.
+# Resolves the block device via df then queries diskutil for the volume's own
+# used bytes. df alone reports the APFS container's combined usage, not the
+# individual volume, so diskutil is required for an accurate reading.
 store_size() {
-  local blocks
-  blocks=$(df /nix/store | awk 'NR==2 {print $3}')
-  local bytes=$((blocks * 512))
+  local device bytes
+  device=$(df /nix/store | awk 'NR==2 { print $1 }')
+  bytes=$(diskutil info "$device" 2>/dev/null |
+    awk '/Volume Used Space:/ { gsub(/[^0-9]/, "", $6); print $6 }')
+  [[ -z $bytes ]] && bytes=0
   format_size "$bytes"
 }
 
@@ -426,6 +430,22 @@ runtime_roots_summary() {
 
   echo "$count store $path_word held only by running processes (up to $size reclaimable)"
   echo "  Tip: Restarting applications and re-running may free additional space"
+}
+
+# Returns 0 if the standalone home-manager profile appears orphaned: darwin-
+# integrated HM is active (current-home exists) and its target mtime is strictly
+# newer than the standalone profile's resolved target mtime, meaning HM is no
+# longer managed via `home-manager switch`.
+# Uses bash -nt which follows symlinks and compares target modification times.
+# Returns 1 if not orphaned or if either path is missing.
+is_orphaned_standalone_hm_profile() {
+  local hm_profile="$1"
+  [[ -L $hm_profile ]] || return 1
+
+  local current_home="$HOME/.local/state/home-manager/gcroots/current-home"
+  [[ -L $current_home ]] || return 1
+
+  [[ $current_home -nt $hm_profile ]]
 }
 
 # ─── Workspace functions ──────────────────────────────────────────────────────
