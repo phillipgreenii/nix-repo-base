@@ -198,43 +198,45 @@ MOCK
 
 # ─── is_orphaned_standalone_hm_profile ───────────────────────────────────────
 
-_setup_hm_orphan_scenario() {
-  local standalone_mtime="$1"   # touch -t format applied to the gen target file
-  local current_home_mtime="$2" # touch -t format applied to the current-home target file
-
+_setup_hm_both_exist() {
   local profiles_dir="$HOME/.local/state/nix/profiles"
   local gcroots_dir="$HOME/.local/state/home-manager/gcroots"
   mkdir -p "$profiles_dir" "$gcroots_dir"
-
-  local gen_target="$TEST_DIR/fake-store/aaa-hm-gen"
-  mkdir -p "$(dirname "$gen_target")"
-  touch -t "$standalone_mtime" "$gen_target"
-  ln -sf "$gen_target" "$profiles_dir/home-manager-195-link"
+  local fake_store="$TEST_DIR/fake-store"
+  mkdir -p "$fake_store"
+  touch "$fake_store/standalone-gen" "$fake_store/darwin-gen"
+  ln -sf "$fake_store/standalone-gen" "$profiles_dir/home-manager-195-link"
   ln -sf "home-manager-195-link" "$profiles_dir/home-manager"
-
-  local current_target="$TEST_DIR/fake-store/bbb-hm-gen"
-  touch -t "$current_home_mtime" "$current_target"
-  ln -sf "$current_target" "$gcroots_dir/current-home"
+  ln -sf "$fake_store/darwin-gen" "$gcroots_dir/current-home"
 }
 
-@test "is_orphaned_standalone_hm_profile returns true when current-home is newer" {
-  _setup_hm_orphan_scenario "202512081200" "202605051200"
+@test "is_orphaned_standalone_hm_profile returns true when both standalone and current-home exist" {
+  _setup_hm_both_exist
   run is_orphaned_standalone_hm_profile "$HOME/.local/state/nix/profiles/home-manager"
   [ "$status" -eq 0 ]
 }
 
-@test "is_orphaned_standalone_hm_profile returns false when standalone is newer" {
-  _setup_hm_orphan_scenario "202605051200" "202512081200"
+@test "is_orphaned_standalone_hm_profile returns true even when both point to same target" {
+  # Same target still means coexistence — both managers active simultaneously
+  local profiles_dir="$HOME/.local/state/nix/profiles"
+  local gcroots_dir="$HOME/.local/state/home-manager/gcroots"
+  mkdir -p "$profiles_dir" "$gcroots_dir"
+  local target="$TEST_DIR/fake-store/shared-gen"
+  mkdir -p "$(dirname "$target")"
+  touch "$target"
+  ln -sf "$target" "$profiles_dir/home-manager-195-link"
+  ln -sf "home-manager-195-link" "$profiles_dir/home-manager"
+  ln -sf "$target" "$gcroots_dir/current-home"
   run is_orphaned_standalone_hm_profile "$HOME/.local/state/nix/profiles/home-manager"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
 }
 
 @test "is_orphaned_standalone_hm_profile returns false when no standalone profile" {
   mkdir -p "$HOME/.local/state/home-manager/gcroots"
-  local current_target="$TEST_DIR/fake-store/bbb-hm-gen"
+  local current_target="$TEST_DIR/fake-store/darwin-gen"
   mkdir -p "$(dirname "$current_target")"
   touch "$current_target"
-  ln -s "$current_target" "$HOME/.local/state/home-manager/gcroots/current-home"
+  ln -sf "$current_target" "$HOME/.local/state/home-manager/gcroots/current-home"
   run is_orphaned_standalone_hm_profile "$HOME/.local/state/nix/profiles/home-manager"
   [ "$status" -ne 0 ]
 }
@@ -242,11 +244,11 @@ _setup_hm_orphan_scenario() {
 @test "is_orphaned_standalone_hm_profile returns false when no current-home" {
   local profiles_dir="$HOME/.local/state/nix/profiles"
   mkdir -p "$profiles_dir"
-  local gen_target="$TEST_DIR/fake-store/aaa-hm-gen"
+  local gen_target="$TEST_DIR/fake-store/standalone-gen"
   mkdir -p "$(dirname "$gen_target")"
   touch "$gen_target"
-  ln -s "$gen_target" "$profiles_dir/home-manager-195-link"
-  ln -s "home-manager-195-link" "$profiles_dir/home-manager"
+  ln -sf "$gen_target" "$profiles_dir/home-manager-195-link"
+  ln -sf "home-manager-195-link" "$profiles_dir/home-manager"
   run is_orphaned_standalone_hm_profile "$HOME/.local/state/nix/profiles/home-manager"
   [ "$status" -ne 0 ]
 }

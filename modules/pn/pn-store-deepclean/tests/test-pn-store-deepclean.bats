@@ -407,17 +407,12 @@ _setup_orphaned_hm() {
   local gcroots_dir="$HOME/.local/state/home-manager/gcroots"
   mkdir -p "$profiles_dir" "$gcroots_dir"
 
-  # Standalone HM profile (older target file mtime)
-  local gen_target="$TEST_DIR/fake-store/aaa-hm-gen"
-  mkdir -p "$(dirname "$gen_target")"
-  touch -t 202512081200 "$gen_target"
-  ln -sf "$gen_target" "$profiles_dir/home-manager-195-link"
+  local fake_store="$TEST_DIR/fake-store"
+  mkdir -p "$fake_store"
+  touch "$fake_store/standalone-gen" "$fake_store/darwin-gen"
+  ln -sf "$fake_store/standalone-gen" "$profiles_dir/home-manager-195-link"
   ln -sf "home-manager-195-link" "$profiles_dir/home-manager"
-
-  # Darwin-integrated current-home (newer target file mtime)
-  local current_target="$TEST_DIR/fake-store/bbb-hm-gen"
-  touch -t 202605051200 "$current_target"
-  ln -sf "$current_target" "$gcroots_dir/current-home"
+  ln -sf "$fake_store/darwin-gen" "$gcroots_dir/current-home"
 }
 
 @test "pn-store-deepclean detects and removes orphaned standalone HM profile (live)" {

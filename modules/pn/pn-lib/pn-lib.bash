@@ -432,20 +432,20 @@ runtime_roots_summary() {
   echo "  Tip: Restarting applications and re-running may free additional space"
 }
 
-# Returns 0 if the standalone home-manager profile appears orphaned: darwin-
-# integrated HM is active (current-home exists) and its target mtime is strictly
-# newer than the standalone profile's resolved target mtime, meaning HM is no
-# longer managed via `home-manager switch`.
-# Uses bash -nt which follows symlinks and compares target modification times.
+# Returns 0 if the standalone home-manager profile appears orphaned.
+# Orphaned = both the standalone profile AND darwin-integrated current-home
+# exist simultaneously. These two paths are written by different managers:
+# darwin-integrated HM only writes current-home; standalone `home-manager switch`
+# only writes the profiles/home-manager symlink. Coexistence means the standalone
+# profile is stale. Mtime comparison is unreliable because nix store paths have
+# their mtime normalized to epoch+1 for reproducibility.
 # Returns 1 if not orphaned or if either path is missing.
 is_orphaned_standalone_hm_profile() {
   local hm_profile="$1"
   [[ -L $hm_profile ]] || return 1
 
   local current_home="$HOME/.local/state/home-manager/gcroots/current-home"
-  [[ -L $current_home ]] || return 1
-
-  [[ $current_home -nt $hm_profile ]]
+  [[ -L $current_home ]]
 }
 
 # ─── Workspace functions ──────────────────────────────────────────────────────
