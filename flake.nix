@@ -2,9 +2,13 @@
   description = "Shared Nix infrastructure: bash-builders, dev-env helpers, module helpers, CI workflows";
 
   nixConfig = {
-    extra-substituters = [ "https://cache.numtide.com" ];
+    extra-substituters = [
+      "https://cache.numtide.com"
+      "https://cache.flox.dev"
+    ];
     extra-trusted-public-keys = [
       "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+      "flox-cache-public-1:7F4OyH7ZCnFhcze3fJdfyXYLQw/aV7GEed86nQ7IsOs="
     ];
   };
 
@@ -12,6 +16,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-25.11-darwin";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/master";
     llm-agents.url = "github:numtide/llm-agents.nix";
+    flox.url = "github:flox/flox";
     nix-vscode-extensions.url = "github:nix-community/nix-vscode-extensions";
     nix-vscode-extensions.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
@@ -27,6 +32,7 @@
       nixpkgs,
       nixpkgs-unstable,
       llm-agents,
+      flox,
       nix-vscode-extensions,
       flake-utils,
       git-hooks,
@@ -165,6 +171,10 @@
 
           mkLlmAgentsOverlay = _final: prev: {
             llm-agentsPkgs = llm-agents.packages.${prev.stdenv.hostPlatform.system};
+          };
+
+          mkFloxOverlay = _final: prev: {
+            floxPkgs = flox.packages.${prev.stdenv.hostPlatform.system};
           };
 
           mkVscodeExtensionsOverlay = _final: prev: {
