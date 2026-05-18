@@ -75,11 +75,33 @@ if [[ ${#_remaining_args[@]} -eq 0 ]]; then
   exit 2
 fi
 
-# Identify subcommand: first non-flag arg, plus the second if first is "flake"
-_subcommand="${_remaining_args[0]}"
-if [[ $_subcommand == "flake" && ${#_remaining_args[@]} -ge 2 ]]; then
-  _subcommand="flake ${_remaining_args[1]}"
-fi
+# Identify subcommand: skip leading global flags. We don't try to parse
+# nix global flag arity; if the first positional after any leading flags
+# is "flake", combine with the next positional.
+_subcommand=""
+_idx=0
+while [[ $_idx -lt ${#_remaining_args[@]} ]]; do
+  _arg="${_remaining_args[$_idx]}"
+  if [[ $_arg == -* ]]; then
+    _idx=$((_idx + 1))
+    continue
+  fi
+  _subcommand="$_arg"
+  # Look for the next positional (also skipping flags) to detect
+  # "flake update" / "flake lock".
+  if [[ $_subcommand == "flake" ]]; then
+    _peek=$((_idx + 1))
+    while [[ $_peek -lt ${#_remaining_args[@]} ]]; do
+      _next="${_remaining_args[$_peek]}"
+      if [[ $_next != -* ]]; then
+        _subcommand="flake $_next"
+        break
+      fi
+      _peek=$((_peek + 1))
+    done
+  fi
+  break
+done
 
 # Deny-list: nix subcommands where --override-input is silently ignored.
 _is_deny_listed() {
@@ -102,6 +124,18 @@ if _is_deny_listed "$_subcommand"; then
   esac
   exec nix "${_remaining_args[@]}"
 fi
+
+# Refuse '--' separator: appending --override-input after a -- would hand the
+# overrides to the user's program (nix run, nix shell), not to nix itself.
+# The wrapper can't safely interleave overrides with end-of-options args.
+for _arg in "${_remaining_args[@]}"; do
+  if [[ $_arg == "--" ]]; then
+    echo "error: pn-ws-nix cannot inject overrides when '--' is present in nix args. Either:" >&2
+    echo "  - drop the '--' (e.g. for 'nix run .#tool'), or" >&2
+    echo "  - run bare nix with --override-input manually." >&2
+    exit 2
+  fi
+done
 
 # Resolve workspace root + build override flags
 PN_WORKSPACE_ROOT=$(workspace_resolve_root "") || exit 1

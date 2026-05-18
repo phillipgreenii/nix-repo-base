@@ -103,3 +103,54 @@ teardown() {
     [ "$status" -eq 2 ]
     [[ "$output" == *"--non-override-subcommand-action"* ]]
 }
+
+@test "operates on workspace with no pn-workspace.lock by invoking pn-discover-workspace" {
+    # Remove the lock if setup created one; force regeneration via discover.
+    rm -f "$TEST_DIR/workspace/pn-workspace.lock"
+
+    # The mock pn-discover-workspace emits PN_DISCOVER_OUTPUT (set in setup)
+    # which contains at least one inputName-bearing project, so the script
+    # should still emit at least one --override-input.
+    run run_script eval .#x
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--override-input"* ]]
+}
+
+@test "use_lock=false with stale lockfile emits warning (requires yq)" {
+    # This test exercises yq's TOML parsing: with use_lock=false and a
+    # lockfile present, workspace_get_projects emits a specific warning.
+    # If yq is missing from PATH, use_lock silently defaults to "true",
+    # the lockfile is used, and no warning is emitted — so this test
+    # proves yq is reachable at runtime.
+    cat >"$TEST_DIR/workspace/pn-workspace.toml" <<'TOML'
+apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+pre_apply_hooks = []
+post_apply_hooks = []
+use_lock = false
+TOML
+    # Pre-create a stale lockfile (contents don't matter for the warning).
+    cat >"$TEST_DIR/workspace/pn-workspace.lock" <<EOF
+[{"path":"$TEST_DIR/workspace/repo-base","inputName":"stale-lock-input"}]
+EOF
+
+    run run_script eval .#x
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"warning: pn-workspace.lock exists but use_lock=false"* ]]
+    # The script should still produce overrides from pn-discover-workspace,
+    # not from the stale lockfile.
+    [[ "$output" == *"repo-base-input"* ]]
+    [[ "$output" != *"stale-lock-input"* ]]
+}
+
+@test "deny-list still triggers when global nix flags precede subcommand" {
+    run run_script --verbose flake update
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"pn-ws-nix: overrides not applicable"* ]]
+    [[ "$output" != *"--override-input"* ]]
+}
+
+@test "refuses to append overrides when user args contain --" {
+    run run_script run .#tool -- arg1 arg2
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--"* ]]
+}

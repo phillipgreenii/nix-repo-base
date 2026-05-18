@@ -2,6 +2,7 @@
   mkBashScript,
   pkgs,
   pn-lib,
+  pn-discover-workspace,
   testSupport ? null,
 }:
 
@@ -12,10 +13,13 @@ mkBashScript {
   libraries = [ pn-lib ];
   runtimeDeps = [
     pkgs.jq
+    pkgs.yq-go
     pkgs.nix
+    pn-discover-workspace.script
   ];
   testDeps = [
     pkgs.jq
+    pkgs.yq-go
   ];
   inherit testSupport;
 }

@@ -94,7 +94,12 @@ let
 
   pn-ws-nix = pkgs.callPackage ./pn-ws-nix {
     inherit (bashBuilders) mkBashScript;
-    inherit pkgs pn-lib testSupport;
+    inherit
+      pkgs
+      pn-lib
+      pn-discover-workspace
+      testSupport
+      ;
   };
 
   pn-store-audit = pkgs.callPackage ./pn-store-audit {
