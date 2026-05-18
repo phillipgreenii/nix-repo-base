@@ -91,6 +91,7 @@
           pn-workspace-apply = pnScripts.pn-workspace-apply.script;
           pn-workspace-build = pnScripts.pn-workspace-build.script;
           pn-workspace-pre-commit-check = pnScripts.pn-workspace-pre-commit-check.script;
+          pn-workspace-flake-check = pnScripts.pn-workspace-flake-check.script;
           pn-workspace-push = pnScripts.pn-workspace-push.script;
           pn-workspace-rebase = pnScripts.pn-workspace-rebase.script;
           pn-workspace-status = pnScripts.pn-workspace-status.script;
