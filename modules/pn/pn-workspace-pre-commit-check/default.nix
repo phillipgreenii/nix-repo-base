@@ -6,7 +6,7 @@
 }:
 
 mkBashScript {
-  name = "pn-workspace-check";
+  name = "pn-workspace-pre-commit-check";
   src = ./.;
   description = "Run pre-commit checks for all workspace repos";
   libraries = [ pn-lib ];

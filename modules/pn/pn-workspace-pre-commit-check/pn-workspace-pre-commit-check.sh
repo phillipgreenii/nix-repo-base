@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# pn-workspace-check: Run pre-commit checks for all workspace repos
+# pn-workspace-pre-commit-check: Run pre-commit checks for all workspace repos
 
 _root_arg=""
 _workspace_arg=""
@@ -9,13 +9,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
   -h | --help)
     cat <<'HELP'
-pn-workspace-check: Run pre-commit checks for all workspace repos
+pn-workspace-pre-commit-check: Run pre-commit checks for all workspace repos
 
 Purpose: Runs pre-commit checks (formatting, linting, tests) for every repo
 declared in the nearest pn-workspace.toml. Searches ancestor directories from
 the current working directory to find the workspace root.
 
-Usage: pn-workspace-check [OPTIONS]
+Usage: pn-workspace-pre-commit-check [OPTIONS]
 
 Options:
   -h, --help                    Show this help message and exit
@@ -29,7 +29,7 @@ Options:
 
 Example:
   # Run pre-commit checks for all workspace repos
-  pn-workspace-check
+  pn-workspace-pre-commit-check
 HELP
     exit 0
     ;;

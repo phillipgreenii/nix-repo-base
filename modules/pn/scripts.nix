@@ -67,7 +67,7 @@ let
       ;
   };
 
-  pn-workspace-check = pkgs.callPackage ./pn-workspace-check {
+  pn-workspace-pre-commit-check = pkgs.callPackage ./pn-workspace-pre-commit-check {
     inherit (bashBuilders) mkBashScript;
     inherit pkgs pn-lib testSupport;
   };
@@ -110,7 +110,7 @@ let
     pn-workspace-build
     pn-workspace-update
     pn-workspace-upgrade
-    pn-workspace-check
+    pn-workspace-pre-commit-check
     pn-workspace-push
     pn-workspace-rebase
     pn-workspace-status
@@ -129,7 +129,7 @@ in
     pn-workspace-build
     pn-workspace-update
     pn-workspace-upgrade
-    pn-workspace-check
+    pn-workspace-pre-commit-check
     pn-workspace-push
     pn-workspace-rebase
     pn-workspace-status
@@ -151,7 +151,7 @@ in
     test-pn-workspace-build = pn-workspace-build.check;
     test-pn-workspace-update = pn-workspace-update.check;
     test-pn-workspace-upgrade = pn-workspace-upgrade.check;
-    test-pn-workspace-check = pn-workspace-check.check;
+    test-pn-workspace-pre-commit-check = pn-workspace-pre-commit-check.check;
     test-pn-workspace-push = pn-workspace-push.check;
     test-pn-workspace-rebase = pn-workspace-rebase.check;
     test-pn-workspace-status = pn-workspace-status.check;

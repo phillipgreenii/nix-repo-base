@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 
-# Tests for pn-workspace-check script
+# Tests for pn-workspace-pre-commit-check script
 
 # Resolve scripts directory
 if [[ -z ${SCRIPTS_DIR:-} ]]; then
@@ -19,7 +19,7 @@ LIB_PATH="${LIB_PATH:-$(cd "$(dirname "${BATS_TEST_FILENAME}")/../../pn-lib" && 
 
 run_script() {
   # shellcheck disable=SC1090
-  bash -c "source '${LIB_PATH%%:*}'; source '$SCRIPTS_DIR/pn-workspace-check.sh'" -- "$@"
+  bash -c "source '${LIB_PATH%%:*}'; source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'" -- "$@"
 }
 
 setup() {
@@ -46,44 +46,44 @@ teardown() {
     rm -rf "$TEST_DIR"
 }
 
-@test "pn-workspace-check shows help with --help" {
-    run bash "$SCRIPTS_DIR/pn-workspace-check.sh" --help
+@test "pn-workspace-pre-commit-check shows help with --help" {
+    run bash "$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh" --help
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "Usage"
 }
 
-@test "pn-workspace-check shows help with -h" {
-    run bash "$SCRIPTS_DIR/pn-workspace-check.sh" -h
+@test "pn-workspace-pre-commit-check shows help with -h" {
+    run bash "$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh" -h
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "Usage"
 }
 
-@test "pn-workspace-check iterates all workspace projects" {
+@test "pn-workspace-pre-commit-check iterates all workspace projects" {
     run bash -c "
       source '${LIB_PATH%%:*}'
       cd '$TEST_DIR/workspace'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "Check repo-base"
     echo "$output" | grep -q "Check terminal-flake"
 }
 
-@test "pn-workspace-check runs pre-commit in each project" {
+@test "pn-workspace-pre-commit-check runs pre-commit in each project" {
     run bash -c "
       source '${LIB_PATH%%:*}'
       cd '$TEST_DIR/workspace'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "Mock: pre-commit run --all-files"
 }
 
-@test "pn-workspace-check fails without workspace root" {
+@test "pn-workspace-pre-commit-check fails without workspace root" {
     run bash -c "
       source '${LIB_PATH%%:*}'
       cd '$TEST_HOME'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -ne 0 ]
 }
@@ -93,7 +93,7 @@ teardown() {
       source '${LIB_PATH%%:*}'
       set -- --workspace '$TEST_DIR/workspace'
       cd '$TEST_HOME'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -eq 0 ]
 }
@@ -103,7 +103,7 @@ teardown() {
       source '${LIB_PATH%%:*}'
       set -- --bogus-flag
       cd '$TEST_DIR/workspace'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -ne 0 ]
 }
@@ -113,7 +113,7 @@ teardown() {
       source '${LIB_PATH%%:*}'
       set -- --root '$TEST_DIR/workspace'
       cd '$TEST_HOME'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -eq 0 ]
 }
@@ -123,7 +123,7 @@ teardown() {
       source '${LIB_PATH%%:*}'
       export PN_WORKSPACE_ROOT='$TEST_DIR/workspace'
       cd '$TEST_HOME'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -eq 0 ]
 }
@@ -133,7 +133,7 @@ teardown() {
       source '${LIB_PATH%%:*}'
       set -- --workspace '$TEST_DIR/workspace'
       cd '$TEST_HOME'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     " 2>&1
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "deprecated"
@@ -144,7 +144,7 @@ teardown() {
       source '${LIB_PATH%%:*}'
       set -- --root '$TEST_DIR/workspace' --workspace '$TEST_DIR/workspace'
       cd '$TEST_HOME'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -ne 0 ]
 }
@@ -156,7 +156,7 @@ teardown() {
       source '${LIB_PATH%%:*}'
       set -- --override-path 'repo-base=$TEST_DIR/wt-base'
       cd '$TEST_DIR/workspace'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     "
     [ "$status" -eq 0 ]
 }
@@ -166,7 +166,7 @@ teardown() {
       source '${LIB_PATH%%:*}'
       set -- --override-path 'bogus=/tmp'
       cd '$TEST_DIR/workspace'
-      source '$SCRIPTS_DIR/pn-workspace-check.sh'
+      source '$SCRIPTS_DIR/pn-workspace-pre-commit-check.sh'
     " 2>&1
     [ "$status" -ne 0 ]
     echo "$output" | grep -q 'unknown project'
