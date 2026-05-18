@@ -92,6 +92,11 @@ let
     inherit pkgs pn-lib testSupport;
   };
 
+  pn-ws-nix = pkgs.callPackage ./pn-ws-nix {
+    inherit (bashBuilders) mkBashScript;
+    inherit pkgs pn-lib testSupport;
+  };
+
   pn-store-audit = pkgs.callPackage ./pn-store-audit {
     inherit (bashBuilders) mkBashScript;
     inherit pkgs pn-lib testSupport;
@@ -115,6 +120,7 @@ let
     pn-workspace-rebase
     pn-workspace-status
     pn-workspace-tree
+    pn-ws-nix
     pn-store-audit
     pn-store-deepclean
   ];
@@ -134,6 +140,7 @@ in
     pn-workspace-rebase
     pn-workspace-status
     pn-workspace-tree
+    pn-ws-nix
     pn-store-audit
     pn-store-deepclean
     ;
@@ -156,6 +163,7 @@ in
     test-pn-workspace-rebase = pn-workspace-rebase.check;
     test-pn-workspace-status = pn-workspace-status.check;
     test-pn-workspace-tree = pn-workspace-tree.check;
+    test-pn-ws-nix = pn-ws-nix.check;
     test-pn-store-audit = pn-store-audit.check;
     test-pn-store-deepclean = pn-store-deepclean.check;
   };

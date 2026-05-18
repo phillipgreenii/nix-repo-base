@@ -96,6 +96,7 @@
           pn-workspace-status = pnScripts.pn-workspace-status.script;
           pn-workspace-update = pnScripts.pn-workspace-update.script;
           pn-workspace-upgrade = pnScripts.pn-workspace-upgrade.script;
+          pn-ws-nix = pnScripts.pn-ws-nix.script;
           pn-store-audit = pnScripts.pn-store-audit.script;
           pn-store-deepclean = pnScripts.pn-store-deepclean.script;
         };
