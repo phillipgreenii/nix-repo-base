@@ -111,6 +111,9 @@ ul_setup() {
     git config core.fsmonitor false
     git fsmonitor--daemon stop 2>/dev/null || true
   fi
+  # Remove stale daemon socket regardless of prior config — nix flake import
+  # fails with "unsupported type" if the .ipc socket exists in the source tree.
+  rm -f .git/fsmonitor--daemon.ipc
   trap '_ul_cleanup EXIT' EXIT
   trap '_ul_cleanup INT' INT
   trap '_ul_cleanup TERM' TERM
