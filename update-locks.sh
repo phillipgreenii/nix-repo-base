@@ -22,6 +22,7 @@ esac
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/scripts/update-locks-lib.bash"
+ul_reexec_in_dev_shell "$@"
 ul_setup "phillipgreenii-nix-repo-base" "${SCRIPT_DIR}"
 
 ul_run_step "nix-flake-update" \
