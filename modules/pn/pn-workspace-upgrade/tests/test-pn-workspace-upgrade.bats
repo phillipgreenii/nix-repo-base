@@ -155,3 +155,42 @@ EOF
     run bash "$SCRIPTS_DIR/pn-workspace-upgrade.sh" --bogus-flag
     [ "$status" -ne 0 ]
 }
+
+@test "pn-workspace-upgrade does not run apply when update fails" {
+    cat >"$TEST_DIR/pn-workspace-update" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: pn-workspace-update failing"
+exit 1
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-update"
+
+    cat >"$TEST_DIR/pn-workspace-apply" <<'EOF'
+#!/usr/bin/env bash
+echo "APPLY_RAN"
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-apply"
+
+    run bash "$SCRIPTS_DIR/pn-workspace-upgrade.sh"
+    [ "$status" -ne 0 ]
+    echo "$output" | grep -q "pn-workspace-update failing"
+    ! (echo "$output" | grep -q "APPLY_RAN") || false
+}
+
+@test "pn-workspace-upgrade runs apply when update succeeds" {
+    cat >"$TEST_DIR/pn-workspace-update" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: pn-workspace-update succeeding"
+exit 0
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-update"
+
+    cat >"$TEST_DIR/pn-workspace-apply" <<'EOF'
+#!/usr/bin/env bash
+echo "APPLY_RAN"
+EOF
+    chmod +x "$TEST_DIR/pn-workspace-apply"
+
+    run bash "$SCRIPTS_DIR/pn-workspace-upgrade.sh"
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "APPLY_RAN"
+}
