@@ -3,6 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# WORKSPACE_ROOT is the parent dir; the resolver uses it to find the
+# on-disk lib (this repo's own copy) when present.
+WORKSPACE_ROOT="${SCRIPT_DIR}/.."
 
 case "${1:-}" in
 --ci)
@@ -20,8 +23,12 @@ case "${1:-}" in
   ;;
 esac
 
+# Resolve which update-locks-lib.bash to source via the canonical flake resolver.
+# Pass WORKSPACE_ROOT so the resolver can prefer the on-disk sibling when present.
+export WORKSPACE_ROOT
+UL_LIB_DIR=$(nix run "github:phillipgreenii/nix-repo-base#determine-ul-lib-dir")
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/scripts/update-locks-lib.bash"
+source "${UL_LIB_DIR}/update-locks-lib.bash"
 ul_reexec_in_dev_shell "$@"
 ul_setup "phillipgreenii-nix-repo-base" "${SCRIPT_DIR}"
 
