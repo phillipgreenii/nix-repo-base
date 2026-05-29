@@ -108,6 +108,7 @@ trap '_cleanup TERM' TERM
 workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT" "$overrides_json") || exit 1
 
 failed_projects=()
+skipped_projects=()
 
 # Run a single per-project step, tracking it as the current child so the
 # existing signal traps (_cleanup) still kill it. Returns the command's exit
@@ -135,6 +136,17 @@ while IFS= read -r project_path; do
     echo
     continue
   }
+
+  # Skip the project entirely if the working tree has uncommitted changes.
+  # We do this BEFORE git pull so the autostash dance doesn't touch the WIP.
+  # Check matches ul_setup's: modified + staged only (untracked files allowed).
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "  ⊘ skipping $project_name — working tree has uncommitted changes" >&2
+    git status --short
+    skipped_projects+=("$project_name")
+    echo
+    continue
+  fi
 
   pull_failed=false
   project_failed=false
@@ -179,11 +191,21 @@ echo "  --== Regenerating workspace lock ==--  "
 pn-discover-workspace "$PN_WORKSPACE_ROOT" >"$PN_WORKSPACE_ROOT/pn-workspace.lock"
 echo
 
+if [[ ${#skipped_projects[@]} -gt 0 ]]; then
+  echo "=== Skipped projects (${#skipped_projects[@]}) — dirty working tree ==="
+  for p in "${skipped_projects[@]}"; do
+    echo "  ⊘ $p"
+  done
+fi
+
 if [[ ${#failed_projects[@]} -gt 0 ]]; then
   echo "=== Failed projects (${#failed_projects[@]}) ==="
   for p in "${failed_projects[@]}"; do
     echo "  ✗ $p"
   done
+fi
+
+if [[ ${#skipped_projects[@]} -gt 0 || ${#failed_projects[@]} -gt 0 ]]; then
   exit 1
 fi
 

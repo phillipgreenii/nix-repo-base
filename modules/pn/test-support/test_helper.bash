@@ -71,6 +71,25 @@ if [[ "$1" == "branch" && "$2" == "--show-current" ]]; then
   printf '%s\n' "${MOCK_GIT_BRANCH-main}"
   exit 0
 fi
+# `git diff --quiet` (and `git diff --cached --quiet`) — exit 1 if the
+# current repo (by basename of $PWD) is listed in MOCK_GIT_DIRTY_REPOS
+# (comma-separated). Mirrors ul_setup's "modified + staged" cleanliness check.
+if [[ "$1" == "diff" ]]; then
+  current_repo="$(basename "$PWD")"
+  if [[ ",${MOCK_GIT_DIRTY_REPOS:-}," == *",$current_repo,"* ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+# `git status --short` — print a stub dirty line for dirty repos so output
+# inspection shows the same shape as a real dirty tree.
+if [[ "$1" == "status" && "$2" == "--short" ]]; then
+  current_repo="$(basename "$PWD")"
+  if [[ ",${MOCK_GIT_DIRTY_REPOS:-}," == *",$current_repo,"* ]]; then
+    echo " M mock-modified-file"
+  fi
+  exit 0
+fi
 echo "Mock: git $*"
 exit 0
 EOF

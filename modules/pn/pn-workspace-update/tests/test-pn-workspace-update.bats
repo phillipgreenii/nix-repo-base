@@ -317,3 +317,55 @@ EOF
   echo "$output" | grep -q "All projects updated successfully"
   ! echo "$output" | grep -q "Failed projects"
 }
+
+@test "pn-workspace-update skips a dirty repo without running pull/update-locks/push" {
+  # repo-base is dirty; terminal-flake is clean and should still run.
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    export MOCK_GIT_DIRTY_REPOS=repo-base
+    cd '$TEST_DIR/workspace'
+    source '$SCRIPTS_DIR/pn-workspace-update.sh'
+  "
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "skipping repo-base — working tree has uncommitted changes"
+  echo "$output" | grep -q "Skipped projects"
+  echo "$output" | grep -q "⊘ repo-base"
+  # repo-base's update-locks.sh must NOT have run (terminal-flake's still should)
+  ! (echo "$output" | grep -q "update-locks.sh ran in repo-base") || false
+  echo "$output" | grep -q "update-locks.sh ran in terminal-flake"
+  # The Failed section must not appear when the only problem is dirty-skip
+  ! (echo "$output" | grep -q "Failed projects") || false
+}
+
+@test "pn-workspace-update skips git pull for a dirty repo (no autostash dance)" {
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    export MOCK_GIT_DIRTY_REPOS=repo-base
+    cd '$TEST_DIR/workspace'
+    source '$SCRIPTS_DIR/pn-workspace-update.sh'
+  "
+  # No "Mock: git pull" line for the dirty repo (mock would echo it if invoked).
+  # terminal-flake should still see one.
+  pull_count=$(echo "$output" | grep -c "Mock: git pull" || true)
+  [ "$pull_count" -eq 1 ]
+}
+
+@test "pn-workspace-update reports both Skipped and Failed when both occur" {
+  cat >"$TEST_DIR/workspace/terminal-flake/update-locks.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$TEST_DIR/workspace/terminal-flake/update-locks.sh"
+
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    export MOCK_GIT_DIRTY_REPOS=repo-base
+    cd '$TEST_DIR/workspace'
+    source '$SCRIPTS_DIR/pn-workspace-update.sh'
+  "
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "Skipped projects"
+  echo "$output" | grep -q "⊘ repo-base"
+  echo "$output" | grep -q "Failed projects"
+  echo "$output" | grep -q "✗ terminal-flake"
+}
