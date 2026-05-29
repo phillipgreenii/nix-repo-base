@@ -65,11 +65,24 @@
         pnScripts = import ./modules/pn/scripts.nix {
           inherit pkgs bashBuilders;
         };
+
+        ulScripts = import ./modules/ul/scripts.nix {
+          inherit pkgs bashBuilders;
+          inherit (self.packages.${system}) update-locks-lib;
+        };
       in
       {
         formatter = treefmtEval.config.build.wrapper;
 
         packages = {
+          # Packaged shared bash lib. Consumed by determine-ul-lib-dir and
+          # referenced via flake input by external consumers of update-locks tooling.
+          update-locks-lib = pkgs.runCommand "update-locks-lib" { } ''
+            mkdir -p $out/lib/scripts
+            cp ${./lib/scripts/update-locks-lib.bash} $out/lib/scripts/update-locks-lib.bash
+            cp ${./lib/scripts/update-cache-lib.bash} $out/lib/scripts/update-cache-lib.bash
+          '';
+
           # Autofix helper
           fix-lint = pkgs.writeShellScriptBin "fix-lint" ''
             ${pkgs.lib.getExe pkgs.statix} fix ${./.}
@@ -100,6 +113,9 @@
           pn-ws-nix = pnScripts.pn-ws-nix.script;
           pn-store-audit = pnScripts.pn-store-audit.script;
           pn-store-deepclean = pnScripts.pn-store-deepclean.script;
+
+          # Update-locks resolver
+          determine-ul-lib-dir = ulScripts.determine-ul-lib-dir.script;
         };
 
         apps = {
@@ -124,7 +140,8 @@
           };
           test-update-locks-lib = checks-lib.testUpdateLocksLib { };
         }
-        // pnScripts.checks;
+        // pnScripts.checks
+        // ulScripts.checks;
 
         devShells.default = devEnvLib.mkDevShell {
           inherit pkgs;
