@@ -269,3 +269,51 @@ EOF
     [[ ! "$output" == *"Mock: git pull"* ]]
     [[ ! "$output" == *"Mock: git push"* ]]
 }
+
+@test "pn-workspace-update continues past a failing project and reports it" {
+  cat >"$TEST_DIR/workspace/repo-base/update-locks.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "Mock: repo-base update-locks.sh failed"
+exit 1
+EOF
+  chmod +x "$TEST_DIR/workspace/repo-base/update-locks.sh"
+
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    cd '$TEST_DIR/workspace'
+    source '$SCRIPTS_DIR/pn-workspace-update.sh'
+  "
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "Update repo-base"
+  echo "$output" | grep -q "Update terminal-flake"
+  echo "$output" | grep -q "Failed projects"
+  echo "$output" | grep -q "repo-base"
+}
+
+@test "pn-workspace-update regenerates workspace lock even when a project fails" {
+  cat >"$TEST_DIR/workspace/repo-base/update-locks.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$TEST_DIR/workspace/repo-base/update-locks.sh"
+
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    cd '$TEST_DIR/workspace'
+    source '$SCRIPTS_DIR/pn-workspace-update.sh'
+  "
+  [ "$status" -eq 1 ]
+  [ -f "$TEST_DIR/workspace/pn-workspace.lock" ]
+  echo "$output" | grep -q "Regenerating workspace lock"
+}
+
+@test "pn-workspace-update exits 0 when all projects succeed" {
+  run bash -c "
+    source '${LIB_PATH%%:*}'
+    cd '$TEST_DIR/workspace'
+    source '$SCRIPTS_DIR/pn-workspace-update.sh'
+  "
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "All projects updated successfully"
+  ! echo "$output" | grep -q "Failed projects"
+}

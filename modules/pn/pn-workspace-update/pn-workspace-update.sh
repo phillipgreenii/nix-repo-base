@@ -107,40 +107,84 @@ trap '_cleanup TERM' TERM
 
 workspace_json=$(workspace_get_projects "$PN_WORKSPACE_ROOT" "$overrides_json") || exit 1
 
+failed_projects=()
+
+# Run a single per-project step, tracking it as the current child so the
+# existing signal traps (_cleanup) still kill it. Returns the command's exit
+# code; never exits early.
+_run_step() {
+  local label="$1"
+  shift
+  "$@" &
+  _child_pid=$!
+  local rc=0
+  wait "$_child_pid" || rc=$?
+  _child_pid=""
+  if [[ $rc -ne 0 ]]; then
+    echo "  ✗ $label failed for $_current_project (exit $rc)" >&2
+  fi
+  return $rc
+}
+
 while IFS= read -r project_path; do
   project_name=$(basename "$project_path")
   _current_project="$project_name"
   echo "  --== Update $project_name ==--  "
-  cd "$project_path" || exit 1
+  cd "$project_path" || {
+    failed_projects+=("$project_name (cd failed)")
+    echo
+    continue
+  }
+
+  pull_failed=false
+  project_failed=false
 
   if workspace_has_upstream; then
-    git pull --rebase --autostash &
-    _child_pid=$!
-    wait "$_child_pid" || exit $?
-    _child_pid=""
+    if ! _run_step "git pull" git pull --rebase --autostash; then
+      pull_failed=true
+      project_failed=true
+    fi
   fi
 
-  ./update-locks.sh &
-  _child_pid=$!
-  wait "$_child_pid" || exit $?
-  _child_pid=""
+  # Skip update-locks if pull failed: working tree is suspect.
+  if ! $pull_failed; then
+    if ! _run_step "update-locks" ./update-locks.sh; then
+      project_failed=true
+      # keep going to push the steps that committed successfully
+    fi
+  fi
 
-  if workspace_has_upstream; then
-    git push &
-    _child_pid=$!
-    wait "$_child_pid" || exit $?
-    _child_pid=""
-  else
+  # Push only when pull succeeded. Push even on partial update-locks failure —
+  # each ul_run_step commits atomically, so successful work should land remotely.
+  if workspace_has_upstream && ! $pull_failed; then
+    if ! _run_step "git push" git push; then
+      project_failed=true
+    fi
+  elif ! workspace_has_upstream; then
     _branch=$(git branch --show-current)
     _branch_label="${_branch:-DETACHED HEAD}"
     echo "no upstream for branch '$_branch_label' — skipping pull/push for $project_name"
+  fi
+
+  if $project_failed; then
+    failed_projects+=("$project_name")
   fi
 
   echo
 done < <(echo "$workspace_json" | jq -r '.[] | .path')
 _current_project=""
 
-# Regenerate lock file so pn-workspace.lock reflects any repos added since last update
+# Regenerate lock file even if some projects failed — captures whatever did update.
 echo "  --== Regenerating workspace lock ==--  "
 pn-discover-workspace "$PN_WORKSPACE_ROOT" >"$PN_WORKSPACE_ROOT/pn-workspace.lock"
 echo
+
+if [[ ${#failed_projects[@]} -gt 0 ]]; then
+  echo "=== Failed projects (${#failed_projects[@]}) ==="
+  for p in "${failed_projects[@]}"; do
+    echo "  ✗ $p"
+  done
+  exit 1
+fi
+
+echo "✓ All projects updated successfully"
