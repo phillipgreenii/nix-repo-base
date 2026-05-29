@@ -320,3 +320,76 @@ SCRIPT
   val=$(git config core.fsmonitor)
   [ "$val" = "true" ]
 }
+
+# --- ul_reexec_in_dev_shell ---
+
+@test "ul_reexec_in_dev_shell returns 0 without exec when IN_NIX_SHELL is set" {
+  source "$UL_LOCKS_LIB"
+  export IN_NIX_SHELL=impure
+
+  run bash -c "
+    export IN_NIX_SHELL=impure
+    source '$UL_LOCKS_LIB'
+    ul_reexec_in_dev_shell
+    echo POST_CALL
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "already in nix shell" ]]
+  [[ "$output" =~ "POST_CALL" ]]
+}
+
+@test "ul_reexec_in_dev_shell warns and returns 0 when nix develop probe fails" {
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "develop" ]]; then
+  exit 1
+fi
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  run bash -c "
+    unset IN_NIX_SHELL
+    source '$UL_LOCKS_LIB'
+    ul_reexec_in_dev_shell
+    echo POST_CALL
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "WARNING" ]]
+  [[ "$output" =~ "falling back" ]]
+  [[ "$output" =~ "POST_CALL" ]]
+}
+
+@test "ul_reexec_in_dev_shell execs into nix develop when probe succeeds" {
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "develop" && "$3" == "--command" && "$4" == "true" ]]; then
+  exit 0
+fi
+if [[ "$1" == "develop" && "$3" == "--command" && "$4" == "bash" ]]; then
+  shift 4
+  echo "REEXEC: $*"
+  exit 0
+fi
+exit 99
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  cat > "$TEST_DIR/wrap-test.sh" <<SCRIPT
+#!/usr/bin/env bash
+source "$UL_LOCKS_LIB"
+ul_reexec_in_dev_shell "\$@"
+echo FALLTHROUGH
+SCRIPT
+  _fix_mock_shebang "$TEST_DIR/wrap-test.sh"
+  chmod +x "$TEST_DIR/wrap-test.sh"
+
+  run env -u IN_NIX_SHELL "$TEST_DIR/wrap-test.sh" arg1 arg2
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "entering dev shell" ]]
+  [[ "$output" =~ "REEXEC:" ]]
+  [[ "$output" =~ "wrap-test.sh arg1 arg2" ]]
+  [[ ! "$output" =~ "FALLTHROUGH" ]]
+}

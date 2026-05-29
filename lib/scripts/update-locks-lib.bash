@@ -89,6 +89,32 @@ _ul_ensure_pre_commit_hooks() {
   echo "$drv_path" >"$UL_STATE_DIR/$_UL_PROJECT/pre-commit-drv-path"
 }
 
+# Re-exec the calling script inside its flake's devShells.default if possible.
+# Safe to call from any update-locks.sh as the first thing after sourcing this lib.
+# Behavior:
+#   - If IN_NIX_SHELL is already set, prints a notice and returns 0 (no re-exec).
+#   - Probes `nix develop <script_dir> --command true`; if that fails (broken flake),
+#     prints a warning and returns 0 so the script can still run with host tooling.
+#   - Otherwise execs the script inside `nix develop ... --command bash`. Does not return.
+ul_reexec_in_dev_shell() {
+  local script="$0"
+  local script_dir
+  script_dir="$(cd "$(dirname "$script")" && pwd)"
+
+  if [[ -n ${IN_NIX_SHELL:-} ]]; then
+    echo "==> already in nix shell (IN_NIX_SHELL=$IN_NIX_SHELL); using current shell" >&2
+    return 0
+  fi
+
+  echo "==> entering dev shell at $script_dir..." >&2
+  if ! nix develop "$script_dir" --command true >/dev/null 2>&1; then
+    echo "WARNING: nix develop failed at $script_dir — falling back to system tools" >&2
+    return 0
+  fi
+
+  exec nix develop "$script_dir" --command bash "$script" "$@"
+}
+
 ul_setup() {
   local project_name="$1"
   local script_dir="$2"
