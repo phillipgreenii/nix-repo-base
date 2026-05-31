@@ -56,3 +56,17 @@ func TestRealRunner_RespectsExtraEnv(t *testing.T) {
 		t.Errorf("expected MY_VAR in output, got %q", string(res.Stdout))
 	}
 }
+
+func TestCommandError_IncludesStderr(t *testing.T) {
+	r := NewRealRunner()
+	_, err := r.Run(context.Background(), "sh", []string{"-c", "echo nope >&2; exit 2"}, RunOptions{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Errorf("expected error to include stderr 'nope', got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "exited 2") {
+		t.Errorf("expected error to mention exit code 2, got %q", err.Error())
+	}
+}

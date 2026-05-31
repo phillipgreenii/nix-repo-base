@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // Runner runs external commands.
@@ -90,24 +92,12 @@ type CommandError struct {
 }
 
 func (e *CommandError) Error() string {
-	return e.Name + " exited " + itoa(e.Result.ExitCode)
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+	stderr := strings.TrimSpace(string(e.Result.Stderr))
+	if len(stderr) > 512 {
+		stderr = stderr[:512] + "... (truncated)"
 	}
-	neg := n < 0
-	if neg {
-		n = -n
+	if stderr == "" {
+		return fmt.Sprintf("%s exited %d", e.Name, e.Result.ExitCode)
 	}
-	buf := make([]byte, 0, 12)
-	for n > 0 {
-		buf = append([]byte{byte('0' + n%10)}, buf...)
-		n /= 10
-	}
-	if neg {
-		buf = append([]byte{'-'}, buf...)
-	}
-	return string(buf)
+	return fmt.Sprintf("%s exited %d: %s", e.Name, e.Result.ExitCode, stderr)
 }
