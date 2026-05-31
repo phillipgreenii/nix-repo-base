@@ -1,0 +1,6 @@
+# Compiled binary (built via Nix; do not commit)
+/pn
+
+# Test artifacts
+/coverage.out
+/coverage.html
