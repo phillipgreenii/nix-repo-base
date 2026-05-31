@@ -62,10 +62,6 @@
           inherit (pkgs) lib;
         };
 
-        pnScripts = import ./modules/pn/scripts.nix {
-          inherit pkgs bashBuilders;
-        };
-
         ulScripts = import ./modules/ul/scripts.nix {
           inherit pkgs bashBuilders;
           inherit (self.packages.${system}) update-locks-lib;
@@ -95,42 +91,11 @@
             echo "Run 'pre-commit run --all-files' to test them."
           '';
 
-          # Test package exposing the full pn script suite check
-          test-pn-scripts = pnScripts.check;
-          # Individual pn scripts (available via nix shell)
-          pn-discover-workspace = pnScripts.pn-discover-workspace.script;
-          pn-osx-tcc-check = pnScripts.pn-osx-tcc-check.script;
-          pn-workspace-init = pnScripts.pn-workspace-init.script;
-          pn-workspace-apply = pnScripts.pn-workspace-apply.script;
-          pn-workspace-build = pnScripts.pn-workspace-build.script;
-          pn-workspace-pre-commit-check = pnScripts.pn-workspace-pre-commit-check.script;
-          pn-workspace-flake-check = pnScripts.pn-workspace-flake-check.script;
-          pn-workspace-push = pnScripts.pn-workspace-push.script;
-          pn-workspace-rebase = pnScripts.pn-workspace-rebase.script;
-          pn-workspace-status = pnScripts.pn-workspace-status.script;
-          pn-workspace-update = pnScripts.pn-workspace-update.script;
-          pn-workspace-upgrade = pnScripts.pn-workspace-upgrade.script;
-          pn-ws-nix = pnScripts.pn-ws-nix.script;
-          pn-store-audit = pnScripts.pn-store-audit.script;
-          pn-store-deepclean = pnScripts.pn-store-deepclean.script;
-
           # Update-locks resolver
           determine-ul-lib-dir = ulScripts.determine-ul-lib-dir.script;
 
-          # pn Go binary (replaces the bash pn-* scripts above; both coexist
-          # until the bash artifacts are removed in a follow-up task)
+          # pn Go binary (single tool replacing the former pn-* bash scripts).
           pn = pkgs.callPackage ./modules/pn { inherit self; };
-        };
-
-        apps = {
-          pn-workspace-apply = {
-            type = "app";
-            program = "${pnScripts.pn-workspace-apply.script}/bin/pn-workspace-apply";
-          };
-          pn-workspace-build = {
-            type = "app";
-            program = "${pnScripts.pn-workspace-build.script}/bin/pn-workspace-build";
-          };
         };
 
         checks = {
@@ -150,7 +115,6 @@
           # exercises the Go tests.
           pn-go-tests = pkgs.callPackage ./modules/pn { inherit self; };
         }
-        // pnScripts.checks
         // ulScripts.checks;
 
         devShells.default = devEnvLib.mkDevShell {

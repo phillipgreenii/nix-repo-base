@@ -45,14 +45,14 @@ symbol is missing.
 
 Beyond `name`, `src`, `version`, and `description`, `mkGoBinary` accepts:
 
-| Parameter | Default | Purpose |
-|---|---|---|
-| `runtimeDeps` | `[]` | Runtime deps wrapped onto PATH (e.g., `pkgs.git` for shell-outs). Propagated to consumers. NOT for static linking — Go binaries link statically by default. |
-| `testDeps` | `[]` | Extra packages on PATH during `go test` (e.g., `pkgs.git` for tests that invoke `git`). |
-| `manPage` | `true` | When `false`, skips help2man man-page generation. Useful for binaries without a `--help` that help2man can parse. |
-| `completions` | `{ bash = true; zsh = true; fish = true; }` | Per-shell completion generation. Set e.g. `completions.fish = false` to skip a shell. |
-| `vendorHash` | `null` | Go module vendoring hash. `null` means no vendoring; otherwise set to the sha256 reported by your first `nix build`. |
-| `extraPostInstall` | `""` | Extra shell commands appended to postInstall (escape hatch). |
+| Parameter          | Default                                     | Purpose                                                                                                                                                     |
+| ------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtimeDeps`      | `[]`                                        | Runtime deps wrapped onto PATH (e.g., `pkgs.git` for shell-outs). Propagated to consumers. NOT for static linking — Go binaries link statically by default. |
+| `testDeps`         | `[]`                                        | Extra packages on PATH during `go test` (e.g., `pkgs.git` for tests that invoke `git`).                                                                     |
+| `manPage`          | `true`                                      | When `false`, skips help2man man-page generation. Useful for binaries without a `--help` that help2man can parse.                                           |
+| `completions`      | `{ bash = true; zsh = true; fish = true; }` | Per-shell completion generation. Set e.g. `completions.fish = false` to skip a shell.                                                                       |
+| `vendorHash`       | `null`                                      | Go module vendoring hash. `null` means no vendoring; otherwise set to the sha256 reported by your first `nix build`.                                        |
+| `extraPostInstall` | `""`                                        | Extra shell commands appended to postInstall (escape hatch).                                                                                                |
 
 `description` is fed to `help2man --name=`, so if `manPage = true` and
 `description = ""` the resulting man page will be poorly formed — either set a real
@@ -115,7 +115,7 @@ checks.my-tool-go-tests = pkgs.runCommand "my-tool-go-tests" {
 The actual implementation may differ slightly — for example, a vendored module
 needs `GOFLAGS="-mod=vendor"` and the vendored `vendor/` directory copied in, and a
 module that hits the network during tests needs explicit fixtures. Reference the
-`pn` module's flake wiring (Task 18 of the nix-* refactor plan) once it lands for a
+`pn` module's flake wiring (Task 18 of the nix-\* refactor plan) once it lands for a
 fully worked example.
 
 ## Version format

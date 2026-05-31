@@ -1,24 +1,21 @@
 # PN home-manager module
 #
-# Provides pn-* workspace management scripts.
+# Provides the pn workspace management binary (Go).
 # Workspace root is discovered at runtime (walk up CWD for pn-workspace.toml).
 # Apply command and hooks live in pn-workspace.toml, not here.
+#
+# The consumer is responsible for providing the `pn` package via _module.args:
+#   _module.args.pn = inputs.phillipgreenii-nix-base.packages.${system}.pn;
 {
   config,
   lib,
   pkgs,
-  mkBashBuildersFor,
+  pn,
   ...
 }:
 with lib;
 let
   cfg = config.phillipgreenii.pn;
-
-  bashBuilders = mkBashBuildersFor pkgs;
-
-  pnScripts = import ../../modules/pn/scripts.nix {
-    inherit pkgs bashBuilders;
-  };
 
   storeToml = pkgs.writeText "pn-store.toml" (
     "search_dirs = ["
@@ -32,17 +29,17 @@ let
 in
 {
   options.phillipgreenii.pn = {
-    enable = mkEnableOption "pn-* personal-nix workspace scripts";
+    enable = mkEnableOption "pn personal-nix workspace tool";
 
     store.searchDirs = mkOption {
       type = types.listOf types.str;
       default = [ ];
-      description = "Directories to search for Nix project roots in pn-store-audit and pn-store-deepclean. If empty, scripts default to $HOME.";
+      description = "Directories to search for Nix project roots in pn store-audit and pn store-deepclean. If empty, the tool defaults to $HOME.";
     };
   };
 
   config = mkIf cfg.enable {
-    home.packages = pnScripts.packages;
+    home.packages = [ pn ];
 
     # Install store config only when searchDirs is non-empty
     home.file = mkIf (cfg.store.searchDirs != [ ]) {
