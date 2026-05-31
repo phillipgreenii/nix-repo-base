@@ -161,7 +161,7 @@
         (import ./lib/version.nix)
         # Bash builders framework + package helpers
         // {
-          inherit (packagesLib) mkBashBuilders mkManPage;
+          inherit (packagesLib) mkBashBuilders mkGoBuilders mkManPage;
         }
         # Development environment helpers
         // {

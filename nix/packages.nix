@@ -1,5 +1,5 @@
 # Package building helpers
-# Provides mkManPage, mkBashBuilders
+# Provides mkManPage, mkBashBuilders, mkGoBuilders
 _: {
   # Generate man page for a command using help2man
   # Usage: mkManPage {
@@ -35,4 +35,8 @@ _: {
   # Factory for bash script packaging builders (mkBashLibrary, mkBashScript, mkBashModule)
   # Usage: bashBuilders = mkBashBuilders { inherit pkgs lib self; };
   mkBashBuilders = import ../lib/bash-builders.nix;
+
+  # Factory for Go binary packaging (mkGoBinary)
+  # Usage: goBuilders = mkGoBuilders { inherit pkgs self; };
+  mkGoBuilders = import ../lib/go-builders.nix;
 }
