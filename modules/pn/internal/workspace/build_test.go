@@ -70,3 +70,57 @@ url = "github:owner/foo"
 		t.Fatal("expected error from nix fmt failure; got nil")
 	}
 }
+
+func TestBuild_InjectsOverrideInputForLockedRepos(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+
+[repos.bar]
+url = "github:owner/bar"
+`)
+	// Both repos locked => both should appear as --override-input flags
+	// on the nix build command, in alphabetical order (bar < foo).
+	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"repos":{"foo":{"url":"github:owner/foo","rev":"f"},"bar":{"url":"github:owner/bar","rev":"b"}}}`)
+
+	f := exec.NewFakeRunner()
+	barDir := filepath.Join(root, "bar")
+	fooDir := filepath.Join(root, "foo")
+	overrideArgs := []string{
+		"build",
+		"--override-input", "bar", "path:" + barDir,
+		"--override-input", "foo", "path:" + fooDir,
+		".",
+	}
+	// Per-repo: fmt (no overrides), then build with overrides.
+	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil) // bar fmt
+	f.AddResponse("nix", overrideArgs, exec.Result{}, nil)    // bar build
+	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil) // foo fmt
+	f.AddResponse("nix", overrideArgs, exec.Result{}, nil)    // foo build
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Build(context.Background(), BuildOptions{}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	calls := f.Calls()
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 calls, got %d", len(calls))
+	}
+	// Build calls (indices 1, 3) must carry override flags.
+	for _, idx := range []int{1, 3} {
+		args := calls[idx].Args
+		if len(args) != len(overrideArgs) {
+			t.Errorf("call %d: expected %d args, got %d (%v)", idx, len(overrideArgs), len(args), args)
+			continue
+		}
+		for i, want := range overrideArgs {
+			if args[i] != want {
+				t.Errorf("call %d arg[%d]: %q, want %q", idx, i, args[i], want)
+			}
+		}
+	}
+}

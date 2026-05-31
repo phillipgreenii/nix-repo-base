@@ -22,7 +22,7 @@ type DeepCleanOptions struct {
 // DeepClean prunes old profile generations, stale GC roots, result symlinks,
 // NH temp roots, and (in non-dry-run mode) runs `nix-store --gc`.
 //
-// TODO(tc-perh.6): port full pn-store-deepclean.sh semantics: profile
+// TODO: port full pn-store-deepclean.sh semantics: profile
 // discovery, generation-pruning via `nix-env --delete-generations`, stale
 // nix-profile entries, NH temp roots, result symlinks, runtime-roots summary.
 // The current implementation captures the authoritative GC step so callers

@@ -16,7 +16,7 @@ type AuditOptions struct {
 
 // Audit reports profile generations and Nix store size.
 //
-// TODO(tc-perh.6): port full pn-store-audit.sh semantics: profile discovery
+// TODO: port full pn-store-audit.sh semantics: profile discovery
 // (system / home-manager / user / devbox-global / devbox-projects), per-profile
 // generation listing via `nix-env --list-generations`, per-profile closure size
 // via `nix path-info -S`, and section-header formatted output. The current

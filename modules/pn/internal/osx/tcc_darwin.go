@@ -39,7 +39,7 @@ type CheckOptions struct {
 // Check inspects macOS TCC entries for duplicate Nix-store-path clients and
 // reports stale entries. Mirrors pn-osx-tcc-check.sh.
 //
-// TODO(tc-perh.7): port the awk-based grouping/output logic (group by
+// TODO: port the awk-based grouping/output logic (group by
 // service+binary basename, mark newest as current, format the section
 // headers). The current implementation captures the sqlite3 subprocess
 // seam (probe + query). Integration tests (Task 14) drive parity with
