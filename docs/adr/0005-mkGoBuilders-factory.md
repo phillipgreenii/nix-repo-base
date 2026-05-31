@@ -11,9 +11,9 @@ The bash side has `mkBashBuilders` codifying the equivalent pattern. The Go side
 
 ## Decision
 
-Add `nix-repo-base.lib.mkGoBuilders` with one function: `mkGoBinary`. Consumers pass `{ name, src, version, vendorHash, description, ... }`; the factory returns a `buildGoModule` derivation with standard postInstall.
+Add `phillipgreenii-nix-base.lib.mkGoBuilders` with one function: `mkGoBinary`. Consumers pass `{ name, src, version, vendorHash, description, ... }`; the factory returns a `buildGoModule` derivation with standard postInstall.
 
-The factory enforces a version contract: it rejects the literal `"dev"` string with a `throw`. Consumers compute version via `nix-repo-base.lib.mkVersion self`, which derives `YYYYMMDD-shortRev` from the flake's lastModifiedDate and git rev. This ensures live binaries always carry a non-`dev` version traceable to a git commit (or `dirty` for uncommitted state).
+The factory enforces a version contract: it rejects the literal `"dev"` string with a `throw`. Consumers compute version via `phillipgreenii-nix-base.lib.mkVersion self`, which derives `YYYYMMDD-shortRev` from the flake's lastModifiedDate and git rev. This ensures live binaries always carry a non-`dev` version traceable to a git commit (or `dirty` for uncommitted state).
 
 ## Consequences
 
