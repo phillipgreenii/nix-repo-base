@@ -116,6 +116,10 @@
 
           # Update-locks resolver
           determine-ul-lib-dir = ulScripts.determine-ul-lib-dir.script;
+
+          # pn Go binary (replaces the bash pn-* scripts above; both coexist
+          # until the bash artifacts are removed in a follow-up task)
+          pn = pkgs.callPackage ./modules/pn { inherit self; };
         };
 
         apps = {
@@ -139,6 +143,12 @@
             ];
           };
           test-update-locks-lib = checks-lib.testUpdateLocksLib { };
+
+          # Go test suite for pn. buildGoModule runs `go test ./...` during
+          # the check phase, so building the package is equivalent to running
+          # the tests. Exposing it as a check ensures `nix flake check`
+          # exercises the Go tests.
+          pn-go-tests = pkgs.callPackage ./modules/pn { inherit self; };
         }
         // pnScripts.checks
         // ulScripts.checks;
