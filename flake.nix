@@ -130,6 +130,15 @@
         name = "phillipg-nix-repo-base";
       };
 
+      # Single default overlay for this flake's own packages. Surfaces the pn
+      # workspace tool as pkgs.pn so consumers (and homeModules.pn) consume it
+      # like any other package via mkPackageOption, instead of injecting it
+      # through _module.args. Mirrors overlays.default in the overlay /
+      # support-apps flakes. Add future base packages here.
+      overlays.default = final: _prev: {
+        inherit (self.packages.${final.stdenv.hostPlatform.system}) pn;
+      };
+
       lib =
         # Version helpers
         (import ./lib/version.nix)

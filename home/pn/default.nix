@@ -4,13 +4,13 @@
 # Workspace root is discovered at runtime (walk up CWD for pn-workspace.toml).
 # Apply command and hooks live in pn-workspace.toml, not here.
 #
-# The consumer is responsible for providing the `pn` package via _module.args:
-#   _module.args.pn = inputs.phillipgreenii-nix-base.packages.${system}.pn;
+# The pn package is sourced from pkgs.pn, which consuming flakes make
+# available by adding this flake's overlays.default to nixpkgs.overlays.
+# Override phillipgreenii.pn.package to substitute a different build.
 {
   config,
   lib,
   pkgs,
-  pn,
   ...
 }:
 with lib;
@@ -31,6 +31,8 @@ in
   options.phillipgreenii.pn = {
     enable = mkEnableOption "pn personal-nix workspace tool";
 
+    package = mkPackageOption pkgs "pn" { };
+
     store.searchDirs = mkOption {
       type = types.listOf types.str;
       default = [ ];
@@ -39,7 +41,7 @@ in
   };
 
   config = mkIf cfg.enable {
-    home.packages = [ pn ];
+    home.packages = [ cfg.package ];
 
     # Install store config only when searchDirs is non-empty
     home.file = mkIf (cfg.store.searchDirs != [ ]) {
