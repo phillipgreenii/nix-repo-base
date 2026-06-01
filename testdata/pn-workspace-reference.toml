@@ -1,0 +1,29 @@
+# pn-workspace.toml — reference fixture (ADR 0002)
+# This file lives at workspace root, machine-local, not inside any repo.
+
+[workspace]
+name = "phillipgreenii"
+description = "phillipgreenii's nix workspace"
+
+[repos.nix-repo-base]
+url = "github:phillipgreenii/nix-repo-base"
+branch = "main"
+
+[repos.nix-overlay]
+url = "github:phillipgreenii/nix-overlay"
+
+[repos.nix-personal]
+url = "github:phillipgreenii/nix-personal"
+
+[repos.nix-agent-support]
+url = "github:phillipgreenii/nix-agent-support"
+
+[repos.homelab]
+url = "github:twistcone/homelab"
+
+[hooks.update]
+pre = ["pn-osx-tcc-check", "./hooks/check-vault-ready.sh"]
+post = ["echo update done"]
+
+[hooks.build]
+pre = ["./hooks/preflight.sh"]
