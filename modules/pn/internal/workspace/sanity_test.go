@@ -97,3 +97,36 @@ func TestCheckRemoteAgreement_SingleURL_NoOriginOtherRemotesPass(t *testing.T) {
 		t.Errorf("single-URL with no origin but other remotes should pass: %v", err)
 	}
 }
+
+func TestCheckRemoteAgreement_SingleURL_FlakeURL_AgreesWithSSHRemote(t *testing.T) {
+	// The toml uses the github: flake form; git remote -v reports the same
+	// repo via the ssh-shorthand form. These should be treated as
+	// equivalent (slug-based comparison) — no error.
+	cfg := RepoConfig{URL: "github:o/foo"}
+	gitRemotes := map[string]string{"origin": "git@github.com:o/foo.git"}
+	if err := checkRemoteAgreement("foo", cfg, gitRemotes); err != nil {
+		t.Errorf("github: flake URL should agree with same-slug ssh remote: %v", err)
+	}
+}
+
+func TestCheckRemoteAgreement_Remotes_FlakeURL_AgreesWithHTTPSRemote(t *testing.T) {
+	// Same equivalence for the multi-remote form.
+	cfg := RepoConfig{Remotes: []Remote{
+		{Name: "origin", URL: "github:o/foo"},
+	}}
+	gitRemotes := map[string]string{"origin": "https://github.com/o/foo.git"}
+	if err := checkRemoteAgreement("foo", cfg, gitRemotes); err != nil {
+		t.Errorf("github: flake URL should agree with same-slug https remote: %v", err)
+	}
+}
+
+func TestCheckRemoteAgreement_NonGithubURLs_StillCompareLiterally(t *testing.T) {
+	// For non-github URLs (no slug extractable), we fall back to literal
+	// string comparison. Mismatching Forgejo URLs should still error.
+	cfg := RepoConfig{URL: "ssh://git@synfra.twistcone.us:222/twistcone/foo.git"}
+	gitRemotes := map[string]string{"origin": "ssh://git@synfra.twistcone.us:222/twistcone/BAR.git"}
+	err := checkRemoteAgreement("foo", cfg, gitRemotes)
+	if err == nil {
+		t.Fatal("expected error: mismatched non-github URLs (no slug, literal compare)")
+	}
+}
