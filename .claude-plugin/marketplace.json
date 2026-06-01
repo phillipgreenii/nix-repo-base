@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "name": "pn-workspace",
+  "displayName": "pn-workspace",
+  "description": "Claude plugins for pn-workspace multi-repo tooling",
+  "owner": "phillipgreenii",
+  "plugins": [
+    {
+      "name": "pn-workspace-rules",
+      "path": "pn-workspace-rules",
+      "description": "Workspace-aware rules and context for pn-workspace commands"
+    }
+  ]
+}

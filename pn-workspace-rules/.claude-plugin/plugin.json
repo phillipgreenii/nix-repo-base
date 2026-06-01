@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "1.0",
+  "name": "pn-workspace-rules",
+  "displayName": "pn-workspace Rules",
+  "description": "Workspace-aware rules for phillipgreenii's nix workspace tooling",
+  "version": "1.0.0",
+  "type": "rules",
+  "content": "CLAUDE.md"
+}
