@@ -20,7 +20,7 @@ improvements:
 
 1. **Multi-remote repos are supported.** A workspace repo may have multiple
    git remotes (e.g. `origin` on Forgejo and `bitbucket` as a mirror). A
-   sibling flake input that references *any* of those remote URLs resolves
+   sibling flake input that references _any_ of those remote URLs resolves
    correctly.
 2. **Terminal selection is explicit when ambiguous**, not a silent
    alphabetical tiebreak.
@@ -156,6 +156,7 @@ Used for display / status / identity. One value per repo.
 Used for graph edge matching. Multiple values per repo.
 
 The union of:
+
 - The canonical slug (if non-empty).
 - Slugs derived from EVERY entry in `Remotes` (or from the single `url`).
 - The explicit `Slug` from the toml, if set.
@@ -167,13 +168,13 @@ asking "does this input URL refer to repo X?"
 
 `extract_github_slug(url string) string` returns `owner/repo` for any of:
 
-| Input form | Example |
-|---|---|
-| `github:owner/repo` | `github:phillipgreenii/nix-overlay` |
-| `github:owner/repo/subdir` | `github:phillipgreenii/nix-overlay/main` |
-| `https://github.com/owner/repo` | with optional `.git` and/or trailing path |
-| `git@github.com:owner/repo.git` | SSH shorthand; `.git` optional |
-| `ssh://git@github.com/owner/repo` | full SSH URL; `.git` optional |
+| Input form                        | Example                                   |
+| --------------------------------- | ----------------------------------------- |
+| `github:owner/repo`               | `github:phillipgreenii/nix-overlay`       |
+| `github:owner/repo/subdir`        | `github:phillipgreenii/nix-overlay/main`  |
+| `https://github.com/owner/repo`   | with optional `.git` and/or trailing path |
+| `git@github.com:owner/repo.git`   | SSH shorthand; `.git` optional            |
+| `ssh://git@github.com/owner/repo` | full SSH URL; `.git` optional             |
 
 Anything else returns the empty string. Non-github hosts (Forgejo,
 Bitbucket, GitLab) are intentionally not parsed — they cannot participate
@@ -191,7 +192,7 @@ For each repo:
    `remotes` are named explicitly):
    - The remote must exist in git, with the same URL. Mismatch (URL drift)
      → error: `slug-set mismatch on repo X: toml says origin=A, git says
-     origin=B`.
+origin=B`.
 4. Untracked git remotes (in git but not in toml) → ignored. Users may
    keep personal remotes that pn does not need to know about.
 
@@ -240,7 +241,7 @@ rather than silently picking one.
 3. If `[workspace].terminal` is set:
    - Must name a vertex (graph node, i.e. has `flake.nix`).
    - Must be in `candidates` — else error: `terminal X is depended on by Y
-     (in-degree=1); cannot be the terminal`.
+(in-degree=1); cannot be the terminal`.
    - Use it.
 4. Else if exactly one candidate → use it. Optionally warn if
    `[workspace].terminal` is unset and there are siblings to remind the
@@ -258,7 +259,7 @@ Per non-terminal repo X:
 2. For each input `(name, url)`, extract the slug from url.
 3. If slug is in X's slug-set → record `name` as X's `InputName`.
 4. If multiple input names match X's slug-set → error: `terminal has
-   multiple inputs pointing at workspace repo X: ...`. (Should not happen
+multiple inputs pointing at workspace repo X: ...`. (Should not happen
    in practice; surface as a hard error if it does.)
 5. If zero input names match → leave `InputName` empty and continue. This
    is legal (a workspace sibling that the terminal does not consume) and
@@ -360,16 +361,16 @@ All graph tests use a fake `Runner` returning canned `nix eval` JSON and
 
 ## 16. Files touched
 
-| File | Change |
-|---|---|
-| `internal/workspace/config.go` | Add `Remotes`, `Slug` to `RepoConfig`; add `Terminal` to `WorkspaceSection`; parse-time validation rules (§4). |
-| `internal/workspace/config_test.go` | New parse tests covering the validations. |
-| `internal/workspace/slug.go` (new) | `ExtractGithubSlug` regex menu (§5.3) + `CanonicalSlug` + `SlugSet`. |
-| `internal/workspace/slug_test.go` (new) | Table-driven slug tests. |
-| `internal/workspace/discover.go` | Replace flat alphabetical with graph-aware discovery (§7-§13). |
-| `internal/workspace/discover_test.go` | Major extension; cover graph, terminal selection, inputName resolution. |
-| `internal/exec/workerpool.go` (new) | Bounded concurrent runner pool (§12). Existing `Runner` interface unchanged; `WorkerPool` is a higher-level orchestrator that calls a `Runner`. |
-| `internal/exec/workerpool_test.go` (new) | Verifies bounded concurrency, error aggregation, ordering preservation per-key. |
+| File                                     | Change                                                                                                                                          |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `internal/workspace/config.go`           | Add `Remotes`, `Slug` to `RepoConfig`; add `Terminal` to `WorkspaceSection`; parse-time validation rules (§4).                                  |
+| `internal/workspace/config_test.go`      | New parse tests covering the validations.                                                                                                       |
+| `internal/workspace/slug.go` (new)       | `ExtractGithubSlug` regex menu (§5.3) + `CanonicalSlug` + `SlugSet`.                                                                            |
+| `internal/workspace/slug_test.go` (new)  | Table-driven slug tests.                                                                                                                        |
+| `internal/workspace/discover.go`         | Replace flat alphabetical with graph-aware discovery (§7-§13).                                                                                  |
+| `internal/workspace/discover_test.go`    | Major extension; cover graph, terminal selection, inputName resolution.                                                                         |
+| `internal/exec/workerpool.go` (new)      | Bounded concurrent runner pool (§12). Existing `Runner` interface unchanged; `WorkerPool` is a higher-level orchestrator that calls a `Runner`. |
+| `internal/exec/workerpool_test.go` (new) | Verifies bounded concurrency, error aggregation, ordering preservation per-key.                                                                 |
 
 ## 17. Out-of-scope follow-ups (tc-perh.5.2 remainder)
 

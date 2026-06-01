@@ -16,17 +16,17 @@
 
 ## File map
 
-| Path | Status | Responsibility |
-|---|---|---|
-| `modules/pn/internal/workspace/config.go` | MODIFY | Add `Remote`, `RepoConfig.Remotes`, `RepoConfig.Slug`, `WorkspaceSection.Terminal`; parse-time validation. |
-| `modules/pn/internal/workspace/config_test.go` | MODIFY | Cover new validation rules. |
-| `modules/pn/internal/workspace/slug.go` | NEW | `ExtractGithubSlug`, `CanonicalSlug`, `SlugSet`. |
-| `modules/pn/internal/workspace/slug_test.go` | NEW | Table-driven slug tests. |
-| `modules/pn/internal/exec/workerpool.go` | NEW | Bounded worker pool wrapping a `Runner`. |
-| `modules/pn/internal/exec/workerpool_test.go` | NEW | Bounded concurrency, error aggregation. |
-| `modules/pn/internal/workspace/discover.go` | REWRITE | Topo-graph implementation; replaces alphabetical impl. |
-| `modules/pn/internal/workspace/discover_test.go` | MODIFY | Replace alphabetical-order assertions with graph tests; add multi-remote, terminal-selection, inputName tests. |
-| `modules/pn/internal/workspace/workspace.go` | MODIFY | Construct `WorkerPool` in `Open`, expose via `Workspace`. |
+| Path                                             | Status  | Responsibility                                                                                                 |
+| ------------------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `modules/pn/internal/workspace/config.go`        | MODIFY  | Add `Remote`, `RepoConfig.Remotes`, `RepoConfig.Slug`, `WorkspaceSection.Terminal`; parse-time validation.     |
+| `modules/pn/internal/workspace/config_test.go`   | MODIFY  | Cover new validation rules.                                                                                    |
+| `modules/pn/internal/workspace/slug.go`          | NEW     | `ExtractGithubSlug`, `CanonicalSlug`, `SlugSet`.                                                               |
+| `modules/pn/internal/workspace/slug_test.go`     | NEW     | Table-driven slug tests.                                                                                       |
+| `modules/pn/internal/exec/workerpool.go`         | NEW     | Bounded worker pool wrapping a `Runner`.                                                                       |
+| `modules/pn/internal/exec/workerpool_test.go`    | NEW     | Bounded concurrency, error aggregation.                                                                        |
+| `modules/pn/internal/workspace/discover.go`      | REWRITE | Topo-graph implementation; replaces alphabetical impl.                                                         |
+| `modules/pn/internal/workspace/discover_test.go` | MODIFY  | Replace alphabetical-order assertions with graph tests; add multi-remote, terminal-selection, inputName tests. |
+| `modules/pn/internal/workspace/workspace.go`     | MODIFY  | Construct `WorkerPool` in `Open`, expose via `Workspace`.                                                      |
 
 No changes to `build.go`, `apply.go`, `flake_check.go`, `nix.go`, `tree.go` in this plan — they are deferred follow-ups per the spec §17.
 
@@ -35,6 +35,7 @@ No changes to `build.go`, `apply.go`, `flake_check.go`, `nix.go`, `tree.go` in t
 ### Task 1: Add `Remote`, `Remotes`, `Slug` to `RepoConfig`; add `Terminal` to `WorkspaceSection`; reject mutual exclusion
 
 **Files:**
+
 - Modify: `modules/pn/internal/workspace/config.go`
 - Test: `modules/pn/internal/workspace/config_test.go`
 
@@ -143,6 +144,7 @@ url = "github:o/foo"
 ```
 
 Add this import if not already present:
+
 ```go
 import "strings"
 ```
@@ -302,6 +304,7 @@ EOF
 ### Task 2: GitHub-slug regex menu
 
 **Files:**
+
 - Create: `modules/pn/internal/workspace/slug.go`
 - Create: `modules/pn/internal/workspace/slug_test.go`
 
@@ -433,6 +436,7 @@ EOF
 ### Task 3: Canonical slug + slug set per repo
 
 **Files:**
+
 - Modify: `modules/pn/internal/workspace/slug.go`
 - Modify: `modules/pn/internal/workspace/slug_test.go`
 
@@ -613,6 +617,7 @@ EOF
 ### Task 4: Worker pool
 
 **Files:**
+
 - Create: `modules/pn/internal/exec/workerpool.go`
 - Create: `modules/pn/internal/exec/workerpool_test.go`
 
@@ -844,6 +849,7 @@ EOF
 ### Task 5: Per-repo `nix eval --json --file flake.nix inputs` helper
 
 **Files:**
+
 - Modify: `modules/pn/internal/workspace/discover.go` (private helper only — public Discover() not touched yet)
 - Create: `modules/pn/internal/workspace/inputs_test.go`
 
@@ -1030,6 +1036,7 @@ EOF
 ### Task 6: Parse `git remote -v` output
 
 **Files:**
+
 - Create: `modules/pn/internal/workspace/remotes.go`
 - Create: `modules/pn/internal/workspace/remotes_test.go`
 
@@ -1195,6 +1202,7 @@ EOF
 ### Task 7: Slug-set sanity check (toml vs git)
 
 **Files:**
+
 - Create: `modules/pn/internal/workspace/sanity.go`
 - Create: `modules/pn/internal/workspace/sanity_test.go`
 
@@ -1351,6 +1359,7 @@ EOF
 ### Task 8: Build dep graph (nodes + edges + in-degree)
 
 **Files:**
+
 - Create: `modules/pn/internal/workspace/graph.go`
 - Create: `modules/pn/internal/workspace/graph_test.go`
 
@@ -1554,6 +1563,7 @@ EOF
 ### Task 9: Terminal selection
 
 **Files:**
+
 - Modify: `modules/pn/internal/workspace/graph.go` (add `selectTerminal`)
 - Modify: `modules/pn/internal/workspace/graph_test.go`
 
@@ -1723,6 +1733,7 @@ EOF
 ### Task 10: inputName resolution
 
 **Files:**
+
 - Modify: `modules/pn/internal/workspace/graph.go` (add `resolveInputNames`)
 - Modify: `modules/pn/internal/workspace/graph_test.go`
 
@@ -1881,6 +1892,7 @@ EOF
 ### Task 11: Topological sort (Kahn's algorithm)
 
 **Files:**
+
 - Modify: `modules/pn/internal/workspace/graph.go` (add `topoSort`)
 - Modify: `modules/pn/internal/workspace/graph_test.go`
 
@@ -2057,6 +2069,7 @@ EOF
 ### Task 12: Wire `Discover()` to call all of the above
 
 **Files:**
+
 - Modify: `modules/pn/internal/workspace/workspace.go` (add pool, plumb through Open)
 - Modify: `modules/pn/internal/workspace/discover.go` (rewrite `Discover`)
 - Modify: `modules/pn/internal/workspace/discover_test.go` (replace old tests + add new)
@@ -2610,9 +2623,10 @@ EOF
 ### Task 13: Update /home/tcadmin/workspace/pn-workspace.toml + re-run Phase A discover smoke test from a subdir
 
 **Files:**
+
 - Modify: `/home/tcadmin/workspace/pn-workspace.toml` (workspace root, NOT nix-repo-base)
 
-This is the integration check — confirming the new `Discover` works against the actual nix-* workspace. The toml needs the new `terminal` field.
+This is the integration check — confirming the new `Discover` works against the actual nix-\* workspace. The toml needs the new `terminal` field.
 
 - [ ] **Step 1: Confirm the toml has `terminal = "nix-personal"`**
 
