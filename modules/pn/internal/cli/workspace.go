@@ -277,7 +277,7 @@ func workspaceNixCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.NixCommand(context.Background(), cmd.OutOrStdout(), args)
+			return w.NixCommand(context.Background(), args)
 		},
 	}
 }

@@ -72,3 +72,18 @@ func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir()
 }
+
+// computeOverrideArgsFromRepos emits the --override-input flags for every
+// non-terminal repo with a non-empty InputName, pinning each to its local
+// clone via path:<dir>. Used by the topology-graph Discover-based code path
+// (as opposed to overrideInputArgs which uses ws.config + lock).
+func computeOverrideArgsFromRepos(repos []Repo) []string {
+	out := make([]string, 0, 3*len(repos))
+	for _, r := range repos {
+		if r.IsTerminal || r.InputName == "" {
+			continue
+		}
+		out = append(out, "--override-input", r.InputName, "path:"+r.Path)
+	}
+	return out
+}
