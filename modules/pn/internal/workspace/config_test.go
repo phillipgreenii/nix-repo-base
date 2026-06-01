@@ -96,13 +96,13 @@ pre = ["foo"]
 	}
 }
 
-func TestParseConfig_RejectsMissingRepoURL(t *testing.T) {
+func TestParseConfig_RejectsMissingURLAndRemotes(t *testing.T) {
 	bad := `[repos.foo]
 branch = "main"
 `
 	_, err := ParseConfig([]byte(bad))
 	if err == nil {
-		t.Fatal("expected error for missing url; got nil")
+		t.Fatal("expected error: neither url nor remotes provided")
 	}
 }
 
@@ -309,5 +309,51 @@ url = "github:o/foo"
 `))
 	if err == nil {
 		t.Fatal("expected error: terminal names a repo not in [repos.*]")
+	}
+}
+
+func TestParseConfig_RejectsRemoteWithMissingName(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[repos.foo]
+remotes = [{ url = "github:o/foo" }]
+`))
+	if err == nil {
+		t.Fatal("expected error: remote entry missing name")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Errorf("error should mention missing name: %v", err)
+	}
+}
+
+func TestParseConfig_RejectsRemoteWithMissingURL(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[repos.foo]
+remotes = [{ name = "origin" }]
+`))
+	if err == nil {
+		t.Fatal("expected error: remote missing url")
+	}
+	if !strings.Contains(err.Error(), "url") {
+		t.Errorf("error should mention missing url: %v", err)
+	}
+}
+
+func TestParseConfig_AcceptsSlugWithRemotes(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[repos.foo]
+slug = "o/canonical"
+remotes = [
+  { name = "origin", url = "github:o/foo" },
+  { name = "mirror", url = "github:o/foo-mirror" },
+]
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Repos["foo"].Slug != "o/canonical" {
+		t.Errorf("Slug: got %q", cfg.Repos["foo"].Slug)
+	}
+	if len(cfg.Repos["foo"].Remotes) != 2 {
+		t.Errorf("Remotes: got %d", len(cfg.Repos["foo"].Remotes))
 	}
 }
