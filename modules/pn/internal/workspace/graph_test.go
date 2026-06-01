@@ -142,3 +142,227 @@ func TestBuildGraph_IsolatedRepoIsStillAVertex(t *testing.T) {
 		t.Error("isolated repo must be in inDegree map")
 	}
 }
+
+func TestSelectTerminal_SingleCandidate(t *testing.T) {
+	g := &graph{inDegree: map[string]int{
+		"base":    1,
+		"overlay": 0,
+	}}
+	cfg := &WorkspaceConfig{}
+	got, err := selectTerminal(cfg, g)
+	if err != nil {
+		t.Fatalf("selectTerminal: %v", err)
+	}
+	if got != "overlay" {
+		t.Errorf("got %q, want overlay", got)
+	}
+}
+
+func TestSelectTerminal_ExplicitInToml(t *testing.T) {
+	g := &graph{inDegree: map[string]int{
+		"base":     1,
+		"overlay":  0,
+		"personal": 0,
+	}}
+	cfg := &WorkspaceConfig{Workspace: WorkspaceSection{Terminal: "personal"}}
+	got, err := selectTerminal(cfg, g)
+	if err != nil {
+		t.Fatalf("selectTerminal: %v", err)
+	}
+	if got != "personal" {
+		t.Errorf("got %q, want personal", got)
+	}
+}
+
+func TestSelectTerminal_AmbiguousNoToml_Error(t *testing.T) {
+	g := &graph{inDegree: map[string]int{
+		"a": 0,
+		"b": 0,
+	}}
+	cfg := &WorkspaceConfig{}
+	_, err := selectTerminal(cfg, g)
+	if err == nil {
+		t.Fatal("expected error: multiple terminal candidates without explicit terminal")
+	}
+}
+
+func TestSelectTerminal_ExplicitTerminalIsDependedOn_Error(t *testing.T) {
+	g := &graph{inDegree: map[string]int{
+		"a": 1, // depended on
+		"b": 0,
+	}}
+	cfg := &WorkspaceConfig{Workspace: WorkspaceSection{Terminal: "a"}}
+	_, err := selectTerminal(cfg, g)
+	if err == nil {
+		t.Fatal("expected error: explicit terminal has in-degree > 0")
+	}
+}
+
+func TestSelectTerminal_Cycle_Error(t *testing.T) {
+	// All repos have in-degree > 0 -> cycle.
+	g := &graph{inDegree: map[string]int{
+		"a": 1,
+		"b": 1,
+	}}
+	cfg := &WorkspaceConfig{}
+	_, err := selectTerminal(cfg, g)
+	if err == nil {
+		t.Fatal("expected error: dependency cycle")
+	}
+}
+
+func TestSelectTerminal_ExplicitNotInGraph_Error(t *testing.T) {
+	// ParseConfig validates that workspace.terminal names a declared repo,
+	// but selectTerminal is also reachable via hand-constructed configs
+	// (unit-test fixtures); cover the branch.
+	g := &graph{inDegree: map[string]int{"foo": 0}}
+	cfg := &WorkspaceConfig{Workspace: WorkspaceSection{Terminal: "ghost"}}
+	_, err := selectTerminal(cfg, g)
+	if err == nil {
+		t.Fatal("expected error: terminal names a non-graph repo")
+	}
+}
+
+func TestResolveInputNames_Simple(t *testing.T) {
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"base":     {URL: "github:o/base"},
+		"overlay":  {URL: "github:o/overlay"},
+		"personal": {URL: "github:o/personal"},
+	}}
+	repoInputs := map[string]map[string]string{
+		"personal": {
+			"phillipgreenii-nix-base":    "github:o/base",
+			"phillipgreenii-nix-overlay": "github:o/overlay",
+		},
+	}
+	g, err := buildGraph(cfg, repoInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, err := resolveInputNames(cfg, g, repoInputs, "personal")
+	if err != nil {
+		t.Fatalf("resolveInputNames: %v", err)
+	}
+	if names["base"] != "phillipgreenii-nix-base" {
+		t.Errorf("base inputName = %q", names["base"])
+	}
+	if names["overlay"] != "phillipgreenii-nix-overlay" {
+		t.Errorf("overlay inputName = %q", names["overlay"])
+	}
+}
+
+func TestResolveInputNames_SiblingNotConsumed_Empty(t *testing.T) {
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"base":     {URL: "github:o/base"},
+		"personal": {URL: "github:o/personal"},
+		"sibling":  {URL: "github:o/sibling"}, // not depended on by personal
+	}}
+	repoInputs := map[string]map[string]string{
+		"personal": {"phillipgreenii-nix-base": "github:o/base"},
+		"base":     {},
+		"sibling":  {},
+	}
+	g, err := buildGraph(cfg, repoInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, err := resolveInputNames(cfg, g, repoInputs, "personal")
+	if err != nil {
+		t.Fatalf("resolveInputNames: %v", err)
+	}
+	if got, ok := names["sibling"]; ok && got != "" {
+		t.Errorf("sibling should be empty/missing; got %q", got)
+	}
+}
+
+func TestResolveInputNames_MultipleMatches_Error(t *testing.T) {
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"base":     {URL: "github:o/base"},
+		"personal": {URL: "github:o/personal"},
+	}}
+	repoInputs := map[string]map[string]string{
+		"personal": {
+			"name-one": "github:o/base",
+			"name-two": "github:o/base", // same target twice — illegal
+		},
+	}
+	g, err := buildGraph(cfg, repoInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolveInputNames(cfg, g, repoInputs, "personal")
+	if err == nil {
+		t.Fatal("expected error: terminal has two inputs pointing at the same repo")
+	}
+}
+
+func TestTopoSort_DepsFirstTerminalLast(t *testing.T) {
+	// overlay -> base ; personal -> overlay, personal -> base
+	g := &graph{
+		edges: map[string]map[string]bool{
+			"overlay":  {"base": true},
+			"personal": {"base": true, "overlay": true},
+			"base":     {},
+		},
+		inDegree: map[string]int{
+			"base":     2,
+			"overlay":  1,
+			"personal": 0,
+		},
+	}
+	order, err := topoSort(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 3 {
+		t.Fatalf("len(order)=%d, want 3", len(order))
+	}
+	// "base" must come before "overlay"; both before "personal".
+	pos := map[string]int{}
+	for i, n := range order {
+		pos[n] = i
+	}
+	if pos["base"] >= pos["overlay"] {
+		t.Errorf("base must come before overlay; order=%v", order)
+	}
+	if pos["overlay"] >= pos["personal"] {
+		t.Errorf("overlay must come before personal; order=%v", order)
+	}
+	if pos["base"] >= pos["personal"] {
+		t.Errorf("base must come before personal; order=%v", order)
+	}
+}
+
+func TestTopoSort_StableByNameWithinLevel(t *testing.T) {
+	// Three repos with no edges between them — all at level 0. Should
+	// emerge sorted alphabetically.
+	g := &graph{
+		edges:    map[string]map[string]bool{"a": {}, "b": {}, "c": {}},
+		inDegree: map[string]int{"a": 0, "b": 0, "c": 0},
+	}
+	order, err := topoSort(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a", "b", "c"}
+	for i, n := range order {
+		if n != want[i] {
+			t.Errorf("order[%d]=%q want %q (full: %v)", i, n, want[i], order)
+		}
+	}
+}
+
+func TestTopoSort_Cycle_Error(t *testing.T) {
+	// a -> b -> a
+	g := &graph{
+		edges: map[string]map[string]bool{
+			"a": {"b": true},
+			"b": {"a": true},
+		},
+		inDegree: map[string]int{"a": 1, "b": 1},
+	}
+	_, err := topoSort(g)
+	if err == nil {
+		t.Fatal("expected cycle error")
+	}
+}

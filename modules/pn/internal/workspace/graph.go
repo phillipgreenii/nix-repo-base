@@ -1,6 +1,9 @@
 package workspace
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // graph holds the workspace dependency graph.
 //
@@ -65,4 +68,142 @@ func buildGraph(cfg *WorkspaceConfig, repoInputs map[string]map[string]string) (
 		}
 	}
 	return g, nil
+}
+
+// selectTerminal picks the terminal repo per design §9. Inputs:
+//   - cfg.Workspace.Terminal (optional explicit pick)
+//   - g.inDegree           (computed by buildGraph)
+//
+// Behavior:
+//  1. Compute the set of candidates (in-degree == 0).
+//  2. If cfg.Workspace.Terminal is set:
+//     - it must be in inDegree (graph node); else error.
+//     - it must be in candidates (in-degree 0); else error.
+//     Return it.
+//  3. If exactly one candidate, return it.
+//  4. If multiple candidates and no explicit terminal, return error with
+//     candidate list — user must set [workspace].terminal.
+//  5. If zero candidates, the graph has a cycle — return error.
+func selectTerminal(cfg *WorkspaceConfig, g *graph) (string, error) {
+	candidates := make([]string, 0, len(g.inDegree))
+	for name, d := range g.inDegree {
+		if d == 0 {
+			candidates = append(candidates, name)
+		}
+	}
+	sort.Strings(candidates)
+
+	if explicit := cfg.Workspace.Terminal; explicit != "" {
+		if _, exists := g.inDegree[explicit]; !exists {
+			return "", fmt.Errorf("workspace.terminal %q is not a graph node (no flake.nix?)", explicit)
+		}
+		if g.inDegree[explicit] > 0 {
+			return "", fmt.Errorf("workspace.terminal %q has in-degree %d; cannot be a terminal", explicit, g.inDegree[explicit])
+		}
+		return explicit, nil
+	}
+	switch len(candidates) {
+	case 0:
+		return "", fmt.Errorf("dependency cycle: no repo has in-degree 0")
+	case 1:
+		return candidates[0], nil
+	default:
+		return "", fmt.Errorf("multiple terminal candidates (%v); set [workspace].terminal in pn-workspace.toml", candidates)
+	}
+}
+
+// resolveInputNames returns a map repoName -> inputName, where the input
+// name is what the terminal flake calls each non-terminal workspace repo
+// among its inputs. Repos not consumed by the terminal are absent from the
+// returned map (callers should treat absent == empty inputName).
+//
+// Errors when the terminal has more than one input pointing at the same
+// workspace repo — this would mean the user has two distinct inputs that
+// both resolve to the same on-disk clone, which is a configuration mistake
+// pn cannot silently disambiguate.
+func resolveInputNames(cfg *WorkspaceConfig, g *graph, repoInputs map[string]map[string]string, terminal string) (map[string]string, error) {
+	termInputs := repoInputs[terminal]
+	out := make(map[string]string)
+	for inputName, url := range termInputs {
+		slug := ExtractGithubSlug(url)
+		if slug == "" {
+			continue
+		}
+		repo, ok := g.slugOwner[slug]
+		if !ok || repo == terminal {
+			continue
+		}
+		if existing, dup := out[repo]; dup {
+			return nil, fmt.Errorf("terminal %q has multiple inputs pointing at repo %q: %q and %q",
+				terminal, repo, existing, inputName)
+		}
+		out[repo] = inputName
+	}
+	return out, nil
+}
+
+// topoSort returns repos in Kahn-topological order — dependencies first,
+// terminal last. Within each "level" (set of nodes whose remaining
+// in-degree dropped to 0 in the same iteration), the order is stable
+// alphabetical for determinism.
+//
+// Returns an error when the graph has a cycle (some node never reaches
+// in-degree 0).
+func topoSort(g *graph) ([]string, error) {
+	// Reverse Kahn's: build reverse edges to run standard Kahn's on the inverted graph.
+	// This gives us dependencies first (high in-degree), terminals last (in-degree 0).
+	revEdges := make(map[string]map[string]bool)
+	revInDeg := make(map[string]int)
+	for n := range g.inDegree {
+		revEdges[n] = make(map[string]bool)
+		revInDeg[n] = 0
+	}
+	// Invert edges: if A -> B in original, then B -> A in reversed.
+	for from, targets := range g.edges {
+		for to := range targets {
+			revEdges[to][from] = true
+			revInDeg[from]++
+		}
+	}
+
+	// Standard Kahn's on reversed graph.
+	deg := make(map[string]int)
+	for n, d := range revInDeg {
+		deg[n] = d
+	}
+	out := make([]string, 0, len(deg))
+	for len(out) < len(g.inDegree) {
+		// Collect all zero-in-degree nodes for this level; sort
+		// alphabetically; emit them in that order.
+		level := make([]string, 0)
+		for n, d := range deg {
+			if d == 0 {
+				level = append(level, n)
+			}
+		}
+		if len(level) == 0 {
+			return nil, fmt.Errorf("dependency cycle: cannot topologically sort remaining repos: %v", remaining(deg))
+		}
+		sort.Strings(level)
+		for _, n := range level {
+			out = append(out, n)
+			delete(deg, n)
+			// Decrement in-degree of every node n points at in reversed graph.
+			for to := range revEdges[n] {
+				if _, present := deg[to]; present {
+					deg[to]--
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func remaining(deg map[string]int) []string {
+	r := make([]string, 0, len(deg))
+	for n := range deg {
+		r = append(r, n)
+	}
+	sort.Strings(r)
+	return r
 }

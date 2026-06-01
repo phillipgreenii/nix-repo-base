@@ -85,13 +85,13 @@ func buildDAG(cfg *WorkspaceConfig, declaredInputs map[string][]string) ([]strin
 		}
 	}
 
-	return topoSort(repoKeys, dependsOn), dependsOn
+	return topoSortByDeps(repoKeys, dependsOn), dependsOn
 }
 
 // topoSort returns repoKeys in dependency order (deps first) via Kahn's
 // algorithm, breaking ties alphabetically for determinism. Nodes left over by
 // a cycle are appended alphabetically so the result always contains every key.
-func topoSort(repoKeys []string, dependsOn map[string][]string) []string {
+func topoSortByDeps(repoKeys []string, dependsOn map[string][]string) []string {
 	inDegree := make(map[string]int, len(repoKeys))
 	dependents := make(map[string][]string) // dep -> repos depending on it
 	for _, k := range repoKeys {
