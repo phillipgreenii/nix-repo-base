@@ -15,11 +15,10 @@ import (
 // caller may want a synchronous, prompt subprocess result. Submit is for
 // fan-out; Run is for the single-call path.
 type WorkerPool struct {
-	inner   Runner
-	jobs    chan func()
-	wg      sync.WaitGroup
-	closeMu sync.Mutex
-	closed  bool
+	inner     Runner
+	jobs      chan func()
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // NewWorkerPool returns a WorkerPool with `workers` background goroutines.
@@ -48,21 +47,19 @@ func (p *WorkerPool) worker() {
 
 // Submit schedules `fn` for execution on a worker goroutine. Submit blocks
 // when all workers are busy; this gives natural backpressure.
+//
+// Submit MUST NOT be called after Close — doing so will panic on send to
+// a closed channel. Typical lifecycle is: NewWorkerPool, many Submit, one
+// Close.
 func (p *WorkerPool) Submit(fn func()) {
 	p.jobs <- fn
 }
 
 // Close stops accepting new jobs and waits for the in-flight ones to finish.
-// Safe to call multiple times.
+// Safe to call multiple times — only the first call actually closes the
+// jobs channel; later calls still block on Wait until all workers drain.
 func (p *WorkerPool) Close() {
-	p.closeMu.Lock()
-	if p.closed {
-		p.closeMu.Unlock()
-		return
-	}
-	p.closed = true
-	close(p.jobs)
-	p.closeMu.Unlock()
+	p.closeOnce.Do(func() { close(p.jobs) })
 	p.wg.Wait()
 }
 

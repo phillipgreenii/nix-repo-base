@@ -15,43 +15,44 @@ func TestWorkerPool_RunsJobsInParallelUpToLimit(t *testing.T) {
 	pool := NewWorkerPool(NewFakeRunner(), workers)
 
 	var inFlight, peak int64
-	var mu sync.Mutex
-
 	track := func() {
-		mu.Lock()
-		defer mu.Unlock()
 		cur := atomic.AddInt64(&inFlight, 1)
-		if cur > peak {
-			peak = cur
+		// Race-clean: only swap if cur > current peak.
+		for {
+			old := atomic.LoadInt64(&peak)
+			if cur <= old {
+				break
+			}
+			if atomic.CompareAndSwapInt64(&peak, old, cur) {
+				break
+			}
 		}
 	}
 	release := func() { atomic.AddInt64(&inFlight, -1) }
 
-	results := make([]error, jobs)
 	var wg sync.WaitGroup
 	for i := 0; i < jobs; i++ {
-		i := i
 		wg.Add(1)
 		pool.Submit(func() {
 			defer wg.Done()
 			track()
 			time.Sleep(50 * time.Millisecond)
 			release()
-			results[i] = nil
 		})
 	}
 	wg.Wait()
 	pool.Close()
 
-	if peak > int64(workers) {
-		t.Errorf("peak in-flight = %d; pool size %d; should never exceed", peak, workers)
+	finalPeak := atomic.LoadInt64(&peak)
+	if finalPeak > int64(workers) {
+		t.Errorf("peak in-flight = %d; pool size %d; should never exceed", finalPeak, workers)
 	}
-	if peak < int64(workers) {
-		t.Logf("peak in-flight = %d (workers = %d); expected = workers when jobs ≫ workers", peak, workers)
+	if finalPeak < int64(workers) {
+		t.Logf("peak in-flight = %d (workers = %d); expected = workers when jobs ≫ workers", finalPeak, workers)
 	}
 }
 
-func TestWorkerPool_CollectsErrorsViaCallback(t *testing.T) {
+func TestWorkerPool_ClosureCanCaptureErrors(t *testing.T) {
 	pool := NewWorkerPool(NewFakeRunner(), 2)
 	var collected []error
 	var mu sync.Mutex
@@ -72,6 +73,19 @@ func TestWorkerPool_CollectsErrorsViaCallback(t *testing.T) {
 	pool.Close()
 	if len(collected) != 1 || collected[0].Error() != "job 1 failed" {
 		t.Errorf("collected errors: %v", collected)
+	}
+}
+
+func TestWorkerPool_CloseWaitsForInflight(t *testing.T) {
+	pool := NewWorkerPool(NewFakeRunner(), 2)
+	var jobFinished int64
+	pool.Submit(func() {
+		time.Sleep(100 * time.Millisecond)
+		atomic.StoreInt64(&jobFinished, 1)
+	})
+	pool.Close() // must block until the slow job finishes
+	if atomic.LoadInt64(&jobFinished) != 1 {
+		t.Errorf("Close returned before in-flight job finished")
 	}
 }
 
