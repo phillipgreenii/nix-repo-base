@@ -26,7 +26,6 @@ func addWorkspaceCmd(parent *cobra.Command) {
 	ws.AddCommand(workspacePushCmd())
 	ws.AddCommand(workspaceRebaseCmd())
 	ws.AddCommand(workspaceTreeCmd())
-	ws.AddCommand(workspaceLockCmd())
 	ws.AddCommand(workspaceUpdateCmd())
 	ws.AddCommand(workspaceUpgradeCmd())
 	ws.AddCommand(workspaceDiscoverCmd())
@@ -120,65 +119,31 @@ func workspaceInitCmd() *cobra.Command {
 }
 
 func workspaceBuildCmd() *cobra.Command {
-	var root, buildCmd string
-	var overridePaths []string
-	var showOnly bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "build",
-		Short: "Build the terminal flake with local workspace overrides",
+		Short: "Build all workspace repos",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			w, err := openWorkspaceRoot(root)
+			w, err := openWorkspace()
 			if err != nil {
 				return err
 			}
-			ovr, err := workspace.ParseOverridePaths(overridePaths)
-			if err != nil {
-				return err
-			}
-			return w.Build(context.Background(), cmd.OutOrStdout(), workspace.BuildOptions{
-				BuildCmd:            buildCmd,
-				OverridePaths:       ovr,
-				ShowNixCommandsOnly: showOnly,
-			})
+			return w.Build(context.Background(), cmd.OutOrStdout(), workspace.BuildOptions{})
 		},
 	}
-	cmd.Flags().StringVar(&root, "root", "", "workspace root (default: PN_WORKSPACE_ROOT or walk up from cwd)")
-	cmd.Flags().StringVar(&buildCmd, "build-cmd", "", "override build_command template")
-	cmd.Flags().StringArrayVar(&overridePaths, "override-path", nil, "override a repo path: name=path (repeatable)")
-	cmd.Flags().BoolVar(&showOnly, "show-nix-commands-only", false, "print commands without running")
-	return cmd
 }
 
 func workspaceApplyCmd() *cobra.Command {
-	var root, applyCmd string
-	var overridePaths []string
-	var showOnly, force bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "apply",
-		Short: "Apply (activate) the terminal flake with local workspace overrides",
+		Short: "Apply nix configurations across workspace repos",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			w, err := openWorkspaceRoot(root)
+			w, err := openWorkspace()
 			if err != nil {
 				return err
 			}
-			ovr, err := workspace.ParseOverridePaths(overridePaths)
-			if err != nil {
-				return err
-			}
-			return w.Apply(context.Background(), cmd.OutOrStdout(), workspace.ApplyOptions{
-				ApplyCmd:            applyCmd,
-				OverridePaths:       ovr,
-				ShowNixCommandsOnly: showOnly,
-				Force:               force,
-			})
+			return w.Apply(context.Background(), cmd.OutOrStdout(), workspace.ApplyOptions{})
 		},
 	}
-	cmd.Flags().StringVar(&root, "root", "", "workspace root (default: PN_WORKSPACE_ROOT or walk up from cwd)")
-	cmd.Flags().StringVar(&applyCmd, "apply-cmd", "", "override apply_command template")
-	cmd.Flags().StringArrayVar(&overridePaths, "override-path", nil, "override a repo path: name=path (repeatable)")
-	cmd.Flags().BoolVar(&showOnly, "show-nix-commands-only", false, "print commands without running")
-	cmd.Flags().BoolVar(&force, "force", false, "always rebuild (bypass the unchanged-skip gate)")
-	return cmd
 }
 
 func workspaceFlakeCheckCmd() *cobra.Command {
@@ -238,8 +203,7 @@ func workspaceRebaseCmd() *cobra.Command {
 }
 
 func workspaceTreeCmd() *cobra.Command {
-	var allInputs bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "tree",
 		Short: "Print the workspace repo tree",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -247,34 +211,7 @@ func workspaceTreeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Tree(context.Background(), cmd.OutOrStdout(), workspace.TreeOptions{AllInputs: allInputs})
-		},
-	}
-	cmd.Flags().BoolVar(&allInputs, "all-inputs", false, "show all flake inputs from the terminal flake.lock, not just workspace-internal deps")
-	return cmd
-}
-
-func workspaceLockCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "lock",
-		Short: "Regenerate pn-workspace.lock from each repo's declared flake inputs",
-		Long: "Re-derive the workspace dependency DAG from the inputs declared in " +
-			"each repo's flake.nix and write it to pn-workspace.lock. Performs no " +
-			"clone or reconcile (unlike init), so it is safe to run any time.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			w, err := openWorkspace()
-			if err != nil {
-				return err
-			}
-			if err := w.RefreshLock(context.Background()); err != nil {
-				return err
-			}
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Wrote %s — dependency order:\n", workspace.LockFileName)
-			for _, name := range w.Lock().Order {
-				fmt.Fprintf(out, "  %s\n", name)
-			}
-			return nil
+			return w.Tree(context.Background(), cmd.OutOrStdout(), workspace.TreeOptions{})
 		},
 	}
 }
@@ -288,8 +225,7 @@ func workspaceUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
-			return w.Update(ctx, cmd.OutOrStdout(), workspace.UpdateOptions{ULLibDir: w.ResolveULLibDir(ctx)})
+			return w.Update(context.Background(), cmd.OutOrStdout(), workspace.UpdateOptions{})
 		},
 	}
 }
@@ -303,8 +239,7 @@ func workspaceUpgradeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
-			return w.Upgrade(ctx, cmd.OutOrStdout(), workspace.UpgradeOptions{ULLibDir: w.ResolveULLibDir(ctx)})
+			return w.Upgrade(context.Background(), cmd.OutOrStdout(), workspace.UpgradeOptions{})
 		},
 	}
 }
@@ -312,23 +247,20 @@ func workspaceUpgradeCmd() *cobra.Command {
 func workspaceDiscoverCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "discover",
-		Short: "List workspace repos in dependency order with their input names",
+		Short: "List workspace repos",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
 				return err
 			}
-			repos, err := w.Discover(context.Background())
+			defer w.Close()
+			repos, err := w.Discover()
 			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
 			for _, r := range repos {
-				inputName := r.InputName
-				if inputName == "" {
-					inputName = "(terminal)"
-				}
-				fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", r.Name, inputName, r.URL, r.Path)
+				fmt.Fprintf(out, "%s\t%s\t%s\n", r.Name, r.URL, r.Path)
 			}
 			return nil
 		},

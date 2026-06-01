@@ -3,45 +3,103 @@ package workspace
 import (
 	"context"
 	"path/filepath"
+	"sync"
 )
 
-// Repo is one discovered workspace repo entry.
+// Repo is one workspace repo entry as surfaced by Discover.
 type Repo struct {
-	Name string
-	URL  string
-	Path string
-	// InputName is the flake input this repo overrides — its resolved
-	// input-name (see WorkspaceConfig.InputNameFor). It is empty for the
-	// terminal flake, which overrides nothing.
-	InputName string
+	Name       string
+	URL        string // canonical URL (origin in the multi-remote form)
+	Path       string
+	InputName  string // empty for the terminal repo and for siblings not consumed by the terminal
+	IsTerminal bool
 }
 
-// Discover returns the workspace's repos in dependency order: dependencies
-// first, the terminal flake last, siblings broken alphabetically. The order is
-// derived from the inputs each repo declares in its flake.nix (via deriveDAG),
-// the same source of truth as the lock. Each non-terminal repo carries its
-// resolved inputName; the terminal repo's InputName is empty.
+// Discover returns the workspace's repos in topological order (dependencies
+// first, terminal last). Each repo is enriched with InputName (the name the
+// terminal flake uses for that input) and IsTerminal.
 //
-// This is the Go equivalent of pn-discover-workspace, which emitted the same
-// topologically-ordered [{path, inputName}] shape.
-func (ws *Workspace) Discover(ctx context.Context) ([]Repo, error) {
-	order, _, err := ws.deriveDAG(ctx)
+// Discover performs per-repo subprocess fan-out (nix eval + git remote -v)
+// in parallel via the workspace's worker pool. Per-repo failures are tolerated
+// (the repo simply contributes no out-edges); errors that prevent graph
+// construction (slug conflicts, terminal ambiguity, cycles) are returned.
+func (ws *Workspace) Discover() ([]Repo, error) {
+	ctx := context.Background()
+	names := orderedRepoNames(ws.config.Repos)
+	repoInputs := make(map[string]map[string]string, len(names))
+	gitRemotesByRepo := make(map[string]map[string]string, len(names))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, n := range names {
+		n := n
+		repoDir := filepath.Join(ws.root, n)
+		wg.Add(1)
+		ws.pool.Submit(func() {
+			defer wg.Done()
+			inputs, _ := readFlakeInputs(ctx, ws.runner, repoDir)
+			remotes, _ := readGitRemotes(ctx, ws.runner, repoDir)
+			mu.Lock()
+			repoInputs[n] = inputs
+			gitRemotesByRepo[n] = remotes
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+
+	// Slug-set agreement check (per repo, sequential — fast in-memory).
+	for _, n := range names {
+		if err := checkRemoteAgreement(n, ws.config.Repos[n], gitRemotesByRepo[n]); err != nil {
+			return nil, err
+		}
+	}
+
+	g, err := buildGraph(ws.config, repoInputs)
 	if err != nil {
 		return nil, err
 	}
-	terminal := ws.config.Workspace.Terminal
+	if len(names) == 0 {
+		return []Repo{}, nil
+	}
+	terminal, err := selectTerminal(ws.config, g)
+	if err != nil {
+		return nil, err
+	}
+	inputNames, err := resolveInputNames(ws.config, g, repoInputs, terminal)
+	if err != nil {
+		return nil, err
+	}
+	order, err := topoSort(g)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Repo, 0, len(order))
 	for _, name := range order {
-		inputName := ""
-		if name != terminal {
-			inputName = ws.config.InputNameFor(name)
-		}
 		out = append(out, Repo{
-			Name:      name,
-			URL:       ws.config.Repos[name].URL,
-			Path:      filepath.Join(ws.root, name),
-			InputName: inputName,
+			Name:       name,
+			URL:        canonicalURL(ws.config.Repos[name]),
+			Path:       filepath.Join(ws.root, name),
+			InputName:  inputNames[name],
+			IsTerminal: name == terminal,
 		})
 	}
 	return out, nil
+}
+
+// canonicalURL returns one URL string for display purposes:
+//   - If the toml uses the single-url form, return that URL.
+//   - Else (multi-remote form), return the origin remote's URL when one
+//     exists, otherwise the first remote's URL.
+func canonicalURL(r RepoConfig) string {
+	if r.URL != "" {
+		return r.URL
+	}
+	for _, rm := range r.Remotes {
+		if rm.Name == "origin" {
+			return rm.URL
+		}
+	}
+	if len(r.Remotes) > 0 {
+		return r.Remotes[0].URL
+	}
+	return ""
 }

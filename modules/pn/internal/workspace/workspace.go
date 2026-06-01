@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
@@ -22,12 +23,14 @@ type Workspace struct {
 	lock    *Lock
 	revLock *RevLock
 	runner  exec.Runner
+	pool    *exec.WorkerPool
 }
 
 // Open loads the workspace rooted at dir. Reads pn-workspace.toml (required),
 // pn-workspace.lock (optional, DAG ordering), and pn-workspace.revs.json
-// (optional, per-repo URL+Rev for reproducibility). Returns an error if the
-// TOML is missing or malformed.
+// (optional, per-repo URL+Rev for reproducibility). Constructs a shared
+// WorkerPool sized to runtime.NumCPU() for per-repo subprocess fan-out;
+// callers should call Close() when finished to drain the pool.
 func Open(dir string, runner exec.Runner) (*Workspace, error) {
 	cfgPath := filepath.Join(dir, ConfigFileName)
 	data, err := os.ReadFile(cfgPath)
@@ -46,13 +49,23 @@ func Open(dir string, runner exec.Runner) (*Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
+	pool := exec.NewWorkerPool(runner, runtime.NumCPU())
 	return &Workspace{
 		root:    dir,
 		config:  cfg,
 		lock:    lock,
 		revLock: revLock,
 		runner:  runner,
+		pool:    pool,
 	}, nil
+}
+
+// Close releases the workspace's resources (worker pool, etc.).
+// Safe to call multiple times.
+func (w *Workspace) Close() {
+	if w.pool != nil {
+		w.pool.Close()
+	}
 }
 
 // Root returns the workspace root directory.
