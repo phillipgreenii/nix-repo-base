@@ -99,7 +99,10 @@ func workspaceStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Status(context.Background(), cmd.OutOrStdout())
+			ctx := context.Background()
+			return runWithHooks(ctx, w, "status", func() error {
+				return w.Status(ctx, cmd.OutOrStdout())
+			})
 		},
 	}
 }
@@ -113,7 +116,11 @@ func workspaceInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Init(context.Background(), cmd.OutOrStdout(), workspace.InitOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "init", func() error {
+				return w.Init(ctx, out, workspace.InitOptions{})
+			})
 		},
 	}
 }
@@ -127,7 +134,11 @@ func workspaceBuildCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Build(context.Background(), cmd.OutOrStdout(), workspace.BuildOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "build", func() error {
+				return w.Build(ctx, out, workspace.BuildOptions{})
+			})
 		},
 	}
 }
@@ -141,7 +152,11 @@ func workspaceApplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Apply(context.Background(), cmd.OutOrStdout(), workspace.ApplyOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "apply", func() error {
+				return w.Apply(ctx, out, workspace.ApplyOptions{})
+			})
 		},
 	}
 }
@@ -155,7 +170,11 @@ func workspaceFlakeCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.FlakeCheck(context.Background(), cmd.OutOrStdout(), workspace.FlakeCheckOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "flake-check", func() error {
+				return w.FlakeCheck(ctx, out, workspace.FlakeCheckOptions{})
+			})
 		},
 	}
 }
@@ -169,7 +188,11 @@ func workspacePreCommitCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.PreCommitCheck(context.Background(), cmd.OutOrStdout(), workspace.PreCommitCheckOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "pre-commit-check", func() error {
+				return w.PreCommitCheck(ctx, out, workspace.PreCommitCheckOptions{})
+			})
 		},
 	}
 }
@@ -183,7 +206,11 @@ func workspacePushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Push(context.Background(), cmd.OutOrStdout(), workspace.PushOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "push", func() error {
+				return w.Push(ctx, out, workspace.PushOptions{})
+			})
 		},
 	}
 }
@@ -197,7 +224,11 @@ func workspaceRebaseCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Rebase(context.Background(), cmd.OutOrStdout(), workspace.RebaseOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "rebase", func() error {
+				return w.Rebase(ctx, out, workspace.RebaseOptions{})
+			})
 		},
 	}
 }
@@ -211,7 +242,10 @@ func workspaceTreeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Tree(context.Background(), cmd.OutOrStdout(), workspace.TreeOptions{})
+			ctx := context.Background()
+			return runWithHooks(ctx, w, "tree", func() error {
+				return w.Tree(ctx, cmd.OutOrStdout(), workspace.TreeOptions{})
+			})
 		},
 	}
 }
@@ -225,7 +259,11 @@ func workspaceUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Update(context.Background(), cmd.OutOrStdout(), workspace.UpdateOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "update", func() error {
+				return w.Update(ctx, out, workspace.UpdateOptions{})
+			})
 		},
 	}
 }
@@ -239,7 +277,11 @@ func workspaceUpgradeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Upgrade(context.Background(), cmd.OutOrStdout(), workspace.UpgradeOptions{})
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "upgrade", func() error {
+				return w.Upgrade(ctx, out, workspace.UpgradeOptions{})
+			})
 		},
 	}
 }
