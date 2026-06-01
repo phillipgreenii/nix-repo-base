@@ -61,10 +61,29 @@ func (ws *Workspace) ulSubprocessEnv(ulLibDir string) map[string]string {
 // returned error at the end (like FlakeCheck). Within a single repo, a failed
 // pull marks it failed and skips update-locks and push (the working tree is
 // suspect); a failed update-locks still lets push run, since pull succeeded.
+//
+// After processing, pn-workspace.revs.json is rewritten with each
+// successfully-processed repo's current HEAD revision and canonical URL.
+// Repos that were skipped (dirty) or failed mid-step retain their previous
+// rev-lock entry if any.
+//
+// The provided context is checked between repos and between sub-steps; a
+// cancelled context aborts cleanly with the next ctx.Err() observed.
 func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptions) error {
 	names := ws.updateOrder()
+	// Start from the existing rev-lock so untouched repos keep their entries.
+	revs := make(map[string]LockedRepo, len(names))
+	if ws.revLock != nil {
+		for k, v := range ws.revLock.Repos {
+			revs[k] = v
+		}
+	}
+
 	var failed []string
 	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("update interrupted: %w", err)
+		}
 		repoDir := filepath.Join(ws.root, name)
 
 		// Skip (non-fatal) if the working tree is dirty (modified or staged).
@@ -79,6 +98,9 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 		projectFailed := false
 
 		if hasUp {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("update interrupted: %w", err)
+			}
 			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "pull", "--rebase", "--autostash"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 				pullFailed = true
 				projectFailed = true
@@ -86,6 +108,9 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 		}
 		// Skip update-locks if pull failed: the working tree is suspect.
 		if !pullFailed {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("update interrupted: %w", err)
+			}
 			if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out}); err != nil {
 				projectFailed = true
 				// Keep going to push whatever update-locks committed.
@@ -93,6 +118,9 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 		}
 		// Push only when pull succeeded (even on partial update-locks failure).
 		if hasUp && !pullFailed {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("update interrupted: %w", err)
+			}
 			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 				projectFailed = true
 			}
@@ -100,8 +128,22 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 
 		if projectFailed {
 			failed = append(failed, name)
+		} else {
+			// Capture the new HEAD rev for the rev-lock.
+			rev, err := captureHead(ctx, ws.runner, repoDir)
+			if err == nil && rev != "" {
+				revs[name] = LockedRepo{
+					URL: canonicalURL(ws.config.Repos[name]),
+					Rev: rev,
+				}
+			}
 		}
 	}
+
+	if err := WriteRevLock(filepath.Join(ws.root, RevLockFileName), &RevLock{Repos: revs}); err != nil {
+		return fmt.Errorf("write rev lock: %w", err)
+	}
+
 	if len(failed) > 0 {
 		return fmt.Errorf("update failed in %d project(s): %s", len(failed), strings.Join(failed, ", "))
 	}
@@ -142,4 +184,15 @@ func (ws *Workspace) isDirty(ctx context.Context, repoDir string) bool {
 		return true
 	}
 	return false
+}
+
+// captureHead returns the trimmed SHA of HEAD for repoDir.
+func captureHead(ctx context.Context, runner exec.Runner, repoDir string) (string, error) {
+	res, err := runner.Run(ctx, "git",
+		[]string{"-C", repoDir, "rev-parse", "HEAD"},
+		exec.RunOptions{})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(res.Stdout)), nil
 }

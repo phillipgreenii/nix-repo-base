@@ -3,6 +3,8 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -105,6 +107,8 @@ url = "github:owner/foo"
 	// no upstream → straight to update-locks
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	// rev-parse HEAD for lock capture.
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc0000000000000000000000000000000000000\n")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -161,6 +165,8 @@ url = "github:owner/bar"
 	// succeeded for bar, so its push still runs (matches bash).
 	f.AddResponse("./update-locks.sh", nil, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "./update-locks.sh", Result: exec.Result{ExitCode: 1}})
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	// rev-parse HEAD for foo's lock capture (foo succeeds, bar fails so no capture).
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("aabbccdd0000000000000000000000000000000\n")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -177,9 +183,9 @@ url = "github:owner/bar"
 		t.Errorf("error should not name the passing repo (foo); got %q", err.Error())
 	}
 	// Both repos fully processed: 6 calls each (diff, cached, rev-parse, pull,
-	// update-locks, push).
-	if len(f.Calls()) != 12 {
-		t.Errorf("expected both repos fully attempted (12 calls); got %d", len(f.Calls()))
+	// update-locks, push) + 1 rev-parse HEAD for foo = 13 total.
+	if len(f.Calls()) != 13 {
+		t.Errorf("expected both repos fully attempted (13 calls); got %d", len(f.Calls()))
 	}
 }
 
@@ -240,6 +246,8 @@ url = "github:owner/foo"
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 	// push.
 	f.AddResponse("git", []string{"-C", foo, "push"}, exec.Result{}, nil)
+	// rev-parse HEAD for lock capture.
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("deadbeef0000000000000000000000000000000\n")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -250,9 +258,23 @@ url = "github:owner/foo"
 		t.Fatalf("Update: %v", err)
 	}
 	calls := f.Calls()
-	if len(calls) != 6 {
-		t.Errorf("expected 6 calls, got %d (%+v)", len(calls), calls)
+	if len(calls) != 7 {
+		t.Errorf("expected 7 calls, got %d (%+v)", len(calls), calls)
 	}
+
+	// Verify pn-workspace.revs.json was written with the expected rev.
+	lockBytes, err := os.ReadFile(filepath.Join(root, RevLockFileName))
+	if err != nil {
+		t.Fatalf("read %s: %v", RevLockFileName, err)
+	}
+	var revLock RevLock
+	if err := json.Unmarshal(lockBytes, &revLock); err != nil {
+		t.Fatalf("parse %s: %v", RevLockFileName, err)
+	}
+	if revLock.Repos["foo"].Rev != "deadbeef0000000000000000000000000000000" {
+		t.Errorf("locked rev: got %q, want deadbeef0000000000000000000000000000000", revLock.Repos["foo"].Rev)
+	}
+
 	// Long-running steps stream; the silent --quiet probes stay captured.
 	for _, c := range calls {
 		switch {
@@ -302,6 +324,20 @@ url = "github:owner/foo"
 			}
 		}
 	}
+
+	// Verify pn-workspace.revs.json was still written (with no entries since repo was skipped).
+	lockBytes, err := os.ReadFile(filepath.Join(root, RevLockFileName))
+	if err != nil {
+		t.Fatalf("read %s: %v", RevLockFileName, err)
+	}
+	var revLock RevLock
+	if err := json.Unmarshal(lockBytes, &revLock); err != nil {
+		t.Fatalf("parse %s: %v", RevLockFileName, err)
+	}
+	// Skipped repo should not appear in rev-lock (no prior lock, repo was skipped).
+	if _, exists := revLock.Repos["foo"]; exists {
+		t.Errorf("expected foo not in rev-lock for skipped dirty repo; got %+v", revLock.Repos["foo"])
+	}
 }
 
 func TestUpdate_NoUpstreamRunsLocksOnly(t *testing.T) {
@@ -319,6 +355,8 @@ url = "github:owner/foo"
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	// update-locks still runs.
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	// rev-parse HEAD for lock capture.
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("cafebabe0000000000000000000000000000000\n")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -333,5 +371,41 @@ url = "github:owner/foo"
 				t.Errorf("expected no pull/push without upstream; got %v", c.Args)
 			}
 		}
+	}
+
+	// Verify pn-workspace.revs.json was written with the new rev.
+	lockBytes, err := os.ReadFile(filepath.Join(root, RevLockFileName))
+	if err != nil {
+		t.Fatalf("read %s: %v", RevLockFileName, err)
+	}
+	var revLock RevLock
+	if err := json.Unmarshal(lockBytes, &revLock); err != nil {
+		t.Fatalf("parse %s: %v", RevLockFileName, err)
+	}
+	if revLock.Repos["foo"].Rev != "cafebabe0000000000000000000000000000000" {
+		t.Errorf("locked rev: got %q, want cafebabe0000000000000000000000000000000", revLock.Repos["foo"].Rev)
+	}
+}
+
+func TestUpdate_RespectsCancelledContext(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+	f := exec.NewFakeRunner()
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer w.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled
+	err = w.Update(ctx, &bytes.Buffer{}, UpdateOptions{})
+	if err == nil {
+		t.Fatal("expected error on pre-cancelled context")
+	}
+	if !strings.Contains(err.Error(), "interrupted") && !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error should reflect cancellation; got %q", err.Error())
 	}
 }
