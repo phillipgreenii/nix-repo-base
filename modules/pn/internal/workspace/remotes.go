@@ -34,12 +34,18 @@ func readGitRemotes(ctx context.Context, runner exec.Runner, repoDir string) (ma
 		}
 		name := line[:nameTab]
 		rest := line[nameTab+1:]
-		// Strip the trailing " (fetch)" or " (push)".
-		sp := strings.LastIndexByte(rest, ' ')
-		if sp < 0 {
+		// Strip the trailing " (fetch)" or " (push)". Doing this by exact
+		// suffix-match (rather than LastIndexByte(' ')) is robust to URLs
+		// that contain spaces themselves (e.g. file:// paths).
+		var url string
+		switch {
+		case strings.HasSuffix(rest, " (fetch)"):
+			url = strings.TrimSuffix(rest, " (fetch)")
+		case strings.HasSuffix(rest, " (push)"):
+			url = strings.TrimSuffix(rest, " (push)")
+		default:
 			continue
 		}
-		url := rest[:sp]
 		// First fetch entry per name wins.
 		if _, exists := out[name]; !exists {
 			out[name] = url
