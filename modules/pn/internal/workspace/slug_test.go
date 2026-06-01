@@ -21,6 +21,11 @@ func TestExtractGithubSlug(t *testing.T) {
 		// ssh url
 		{"ssh://git@github.com/owner/repo", "owner/repo"},
 		{"ssh://git@github.com/owner/repo.git", "owner/repo"},
+		// Query-string / fragment do not leak into the slug
+		{"https://github.com/owner/repo?foo=bar", "owner/repo"},
+		{"https://github.com/owner/repo#section", "owner/repo"},
+		{"ssh://git@github.com/owner/repo?q=1", "owner/repo"},
+		{"github:owner/repo?ref=main", "owner/repo"},
 		// Non-matches
 		{"git@bitbucket.org:phillipgreenii/homelab.git", ""},
 		{"ssh://git@synfra.twistcone.us:222/twistcone/homelab.git", ""},

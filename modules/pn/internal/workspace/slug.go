@@ -4,13 +4,13 @@ import "regexp"
 
 var (
 	// github:owner/repo  OR  github:owner/repo/anything
-	reGithubFlake = regexp.MustCompile(`^github:([^/]+)/([^/]+?)(?:/.*)?$`)
+	reGithubFlake = regexp.MustCompile(`^github:([^/]+)/([^/?#]+?)(?:\.git)?(?:/[^?#]*)?(?:[?#].*)?$`)
 	// https://github.com/owner/repo  with optional .git and/or trailing /...
-	reGithubHTTPS = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/.]+?)(?:\.git)?(?:/.*)?$`)
+	reGithubHTTPS = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/?#]+?)(?:\.git)?(?:/[^?#]*)?(?:[?#].*)?$`)
 	// git@github.com:owner/repo  with optional .git
-	reGithubSSHShorthand = regexp.MustCompile(`^git@github\.com:([^/]+)/([^/.]+?)(?:\.git)?$`)
+	reGithubSSHShorthand = regexp.MustCompile(`^git@github\.com:([^/]+)/([^/?#]+?)(?:\.git)?(?:[?#].*)?$`)
 	// ssh://git@github.com/owner/repo  with optional .git and trailing path
-	reGithubSSHURL = regexp.MustCompile(`^ssh://git@github\.com/([^/]+)/([^/.]+?)(?:\.git)?(?:/.*)?$`)
+	reGithubSSHURL = regexp.MustCompile(`^ssh://git@github\.com/([^/]+)/([^/?#]+?)(?:\.git)?(?:/[^?#]*)?(?:[?#].*)?$`)
 )
 
 // ExtractGithubSlug returns the "owner/repo" form for any github URL form
