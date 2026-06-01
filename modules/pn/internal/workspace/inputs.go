@@ -14,8 +14,8 @@ import (
 // input). Returns an empty map (and no error) when:
 //   - flake.nix is missing — the repo isn't a flake host (e.g. a vendored
 //     non-flake repo in the workspace).
-//   - nix eval fails for any reason — we log nothing (caller may surface a
-//     warning); the repo simply contributes no out-edges to the dep graph.
+//   - nix eval fails or returns malformed JSON — the repo contributes no
+//     out-edges to the dep graph. Errors are not logged.
 //
 // Higher layers turn the input URLs into github slugs via ExtractGithubSlug
 // and match them against workspace repos' SlugSets.
