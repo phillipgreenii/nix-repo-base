@@ -18,8 +18,10 @@ type graph struct {
 
 // buildGraph constructs the dep graph from the parsed config and a per-repo
 // map of inputName -> URL (typically produced by readFlakeInputs across all
-// repos). Returns an error when two distinct repos have overlapping slug
-// sets (which would be a misconfiguration — two repos cannot share a github
+// repos in cfg.Repos). Keys in repoInputs that are not declared in
+// cfg.Repos are silently ignored (the config is the authoritative membership
+// set). Returns an error when two distinct repos have overlapping slug sets
+// (which would be a misconfiguration — two repos cannot share a github
 // identity).
 func buildGraph(cfg *WorkspaceConfig, repoInputs map[string]map[string]string) (*graph, error) {
 	g := &graph{
@@ -41,8 +43,12 @@ func buildGraph(cfg *WorkspaceConfig, repoInputs map[string]map[string]string) (
 			g.slugOwner[slug] = name
 		}
 	}
-	// Add edges.
+	// Add edges. Skip stray repoInputs keys (not in cfg.Repos) so a caller
+	// that hands us a superset doesn't panic on a nil edges map.
 	for from, inputs := range repoInputs {
+		if _, ok := g.edges[from]; !ok {
+			continue
+		}
 		for _, url := range inputs {
 			slug := ExtractGithubSlug(url)
 			if slug == "" {

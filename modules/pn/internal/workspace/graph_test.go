@@ -82,3 +82,63 @@ func TestBuildGraph_AmbiguousSlugSets_Error(t *testing.T) {
 		t.Fatal("expected error: two repos share a slug")
 	}
 }
+
+func TestBuildGraph_StrayRepoInputsKey_Ignored(t *testing.T) {
+	// repoInputs has a key for a repo not in cfg.Repos; should be ignored
+	// without panic.
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"foo": {URL: "github:o/foo"},
+	}}
+	repoInputs := map[string]map[string]string{
+		"foo":     {},
+		"unknown": {"some-input": "github:o/foo"}, // stray
+	}
+	g, err := buildGraph(cfg, repoInputs)
+	if err != nil {
+		t.Fatalf("buildGraph: %v", err)
+	}
+	if _, exists := g.edges["unknown"]; exists {
+		t.Error("stray repo should not appear in edges")
+	}
+}
+
+func TestBuildGraph_DuplicateInputsToSameSibling_OneEdge(t *testing.T) {
+	// Two distinct input names in the same repo both resolving to the same
+	// sibling should result in one edge (in-degree=1), not two.
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"lib":      {URL: "github:o/lib"},
+		"consumer": {URL: "github:o/consumer"},
+	}}
+	repoInputs := map[string]map[string]string{
+		"consumer": {
+			"lib-primary": "github:o/lib",
+			"lib-alias":   "github:o/lib",
+		},
+	}
+	g, err := buildGraph(cfg, repoInputs)
+	if err != nil {
+		t.Fatalf("buildGraph: %v", err)
+	}
+	if g.inDegree["lib"] != 1 {
+		t.Errorf("duplicate inputs to same sibling should produce in-degree 1; got %d", g.inDegree["lib"])
+	}
+}
+
+func TestBuildGraph_IsolatedRepoIsStillAVertex(t *testing.T) {
+	// A repo with no in-edges and no out-edges must still appear in both
+	// edges and inDegree maps so callers (selectTerminal, topoSort) see
+	// it as a graph node.
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"loner": {URL: "github:o/loner"},
+	}}
+	g, err := buildGraph(cfg, map[string]map[string]string{})
+	if err != nil {
+		t.Fatalf("buildGraph: %v", err)
+	}
+	if _, ok := g.edges["loner"]; !ok {
+		t.Error("isolated repo must be in edges map")
+	}
+	if _, ok := g.inDegree["loner"]; !ok {
+		t.Error("isolated repo must be in inDegree map")
+	}
+}
