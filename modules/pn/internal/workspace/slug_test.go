@@ -123,3 +123,43 @@ func TestSlugSet_SingleURL(t *testing.T) {
 		t.Errorf("SlugSet: got %v, want {o/foo}", got)
 	}
 }
+
+func TestCanonicalSlug_ExplicitSlugWinsOverRemotes(t *testing.T) {
+	// Explicit Slug field wins even when Remotes are populated.
+	r := RepoConfig{
+		Slug: "override/wins",
+		Remotes: []Remote{
+			{Name: "origin", URL: "github:o/foo"},
+		},
+	}
+	if got := CanonicalSlug(r); got != "override/wins" {
+		t.Errorf("CanonicalSlug: got %q, want override/wins", got)
+	}
+}
+
+func TestCanonicalSlug_NonGithubOrigin_NoFallthrough(t *testing.T) {
+	// Documented behavior: origin remote with a non-GitHub URL returns ""
+	// without falling through to a github mirror in the same Remotes list.
+	r := RepoConfig{
+		Remotes: []Remote{
+			{Name: "origin", URL: "ssh://git@synfra.twistcone.us:222/twistcone/foo.git"},
+			{Name: "mirror", URL: "github:o/foo"},
+		},
+	}
+	if got := CanonicalSlug(r); got != "" {
+		t.Errorf("CanonicalSlug: got %q, want empty (no fallthrough from non-GitHub origin)", got)
+	}
+}
+
+func TestCanonicalSlug_ZeroValue_Empty(t *testing.T) {
+	if got := CanonicalSlug(RepoConfig{}); got != "" {
+		t.Errorf("CanonicalSlug(empty RepoConfig): got %q, want empty", got)
+	}
+}
+
+func TestSlugSet_ZeroValue_Empty(t *testing.T) {
+	got := SlugSet(RepoConfig{})
+	if len(got) != 0 {
+		t.Errorf("SlugSet(empty RepoConfig): got %v, want empty map", got)
+	}
+}

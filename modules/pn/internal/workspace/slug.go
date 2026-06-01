@@ -37,8 +37,12 @@ func ExtractGithubSlug(url string) string {
 // in the design doc §5.1:
 //
 //  1. RepoConfig.Slug wins if set.
-//  2. Else if Remotes has an entry named "origin", derive from its URL.
-//  3. Else if Remotes is non-empty, derive from the first entry.
+//  2. Else if Remotes has an entry named "origin", return the slug derived
+//     from origin's URL. Note: if origin's URL is non-GitHub (Forgejo, etc.),
+//     this step returns the empty string WITHOUT falling through to step 3.
+//     Use SlugSet (which unions all remotes' slugs) if you need a slug for
+//     a non-GitHub-origin repo to participate in graph matching.
+//  3. Else if Remotes is non-empty (no origin), derive from the first entry.
 //  4. Else (URL set) derive from URL.
 //  5. Else (derivation fails) return empty string.
 func CanonicalSlug(r RepoConfig) string {
