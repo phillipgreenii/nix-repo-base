@@ -213,3 +213,101 @@ url = "github:owner/leaf"
 		t.Error("expected error when apply_command unset")
 	}
 }
+
+func TestParseConfig_RejectsBothUrlAndRemotes(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[repos.foo]
+url = "github:o/foo"
+remotes = [{ name = "origin", url = "github:o/foo" }]
+`))
+	if err == nil {
+		t.Fatal("expected error: url + remotes are mutually exclusive")
+	}
+	if !strings.Contains(err.Error(), "foo") || !strings.Contains(err.Error(), "remotes") {
+		t.Errorf("error should name the repo and remotes: %v", err)
+	}
+}
+
+func TestParseConfig_RejectsEmptyRemotes(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[repos.foo]
+remotes = []
+`))
+	if err == nil {
+		t.Fatal("expected error: empty remotes is invalid")
+	}
+}
+
+func TestParseConfig_RejectsMultipleOriginRemotes(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[repos.foo]
+remotes = [
+  { name = "origin", url = "github:o/foo" },
+  { name = "origin", url = "github:o/bar" },
+]
+`))
+	if err == nil {
+		t.Fatal("expected error: at most one remote may be named origin")
+	}
+}
+
+func TestParseConfig_AcceptsRemotesWithoutOrigin(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[repos.foo]
+remotes = [
+  { name = "bitbucket", url = "git@bitbucket.org:o/foo.git" },
+  { name = "gitlab",    url = "git@gitlab.com:o/foo.git" },
+]
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if len(cfg.Repos["foo"].Remotes) != 2 {
+		t.Errorf("expected 2 remotes, got %d", len(cfg.Repos["foo"].Remotes))
+	}
+}
+
+func TestParseConfig_AcceptsExplicitSlug(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[repos.foo]
+url = "github:o/foo"
+slug = "o/canonical"
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Repos["foo"].Slug != "o/canonical" {
+		t.Errorf("Slug: got %q", cfg.Repos["foo"].Slug)
+	}
+}
+
+func TestParseConfig_AcceptsWorkspaceTerminal(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[workspace]
+name = "x"
+terminal = "foo"
+
+[repos.foo]
+url = "github:o/foo"
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Workspace.Terminal != "foo" {
+		t.Errorf("Terminal: got %q", cfg.Workspace.Terminal)
+	}
+}
+
+func TestParseConfig_RejectsTerminalPointingAtUnknownRepo(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[workspace]
+name = "x"
+terminal = "nonexistent"
+
+[repos.foo]
+url = "github:o/foo"
+`))
+	if err == nil {
+		t.Fatal("expected error: terminal names a repo not in [repos.*]")
+	}
+}

@@ -28,17 +28,26 @@ type WorkspaceSection struct {
 	ApplyCommand string `toml:"apply_command,omitempty"`
 }
 
+// Remote is one named git remote that publishes a workspace repo.
+type Remote struct {
+	Name string `toml:"name"`
+	URL  string `toml:"url"`
+}
+
 // RepoConfig describes one entry under [repos.<name>].
+//
+// Two complementary mechanisms for resolving a repo's upstream flake input:
+//  1. Explicit override via InputName (simpler, opt-in per repo).
+//  2. Topology-graph derivation via Remotes + Slug (auto-discovery; see
+//     graph.go + checkRemoteAgreement, added by later commits).
+//
+// Default (both unset): the repo's key (directory name) is used as InputName.
 type RepoConfig struct {
-	URL    string `toml:"url"`
-	Branch string `toml:"branch"`
-	// InputName is the flake input this repo overrides. Optional; when empty
-	// it defaults to the repo's key (its on-disk directory name). Set it when
-	// the upstream flake input is named differently from the workspace
-	// directory (e.g. directory "phillipg-nix-repo-base" overriding the input
-	// "phillipgreenii-nix-base"). A repo whose key already matches its input
-	// name — or a terminal/leaf flake that overrides nothing — can omit it.
-	InputName string `toml:"input-name,omitempty"`
+	URL       string   `toml:"url"`
+	Branch    string   `toml:"branch"`
+	InputName string   `toml:"input-name,omitempty"`
+	Remotes   []Remote `toml:"remotes,omitempty"`
+	Slug      string   `toml:"slug,omitempty"`
 }
 
 // HookCommand describes one entry under [hooks.<command>]; Pre/Post are
@@ -124,13 +133,39 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 	}
 	// Apply repo defaults + validate each repo.
 	for name, r := range cfg.Repos {
-		if r.URL == "" {
-			return nil, fmt.Errorf("repo %q: url is required", name)
+		if r.URL != "" && len(r.Remotes) > 0 {
+			return nil, fmt.Errorf("repo %q: url and remotes are mutually exclusive", name)
+		}
+		if r.URL == "" && len(r.Remotes) == 0 {
+			return nil, fmt.Errorf("repo %q: must specify url or remotes", name)
+		}
+		if len(r.Remotes) > 0 {
+			originCount := 0
+			for _, rm := range r.Remotes {
+				if rm.Name == "origin" {
+					originCount++
+				}
+				if rm.Name == "" {
+					return nil, fmt.Errorf("repo %q: remote entry missing name", name)
+				}
+				if rm.URL == "" {
+					return nil, fmt.Errorf("repo %q: remote %q missing url", name, rm.Name)
+				}
+			}
+			if originCount > 1 {
+				return nil, fmt.Errorf("repo %q: at most one remote may be named origin (found %d)", name, originCount)
+			}
 		}
 		if r.Branch == "" {
 			r.Branch = "main"
 		}
 		cfg.Repos[name] = r
+	}
+	// Validate workspace.terminal points at a declared repo.
+	if cfg.Workspace.Terminal != "" {
+		if _, ok := cfg.Repos[cfg.Workspace.Terminal]; !ok {
+			return nil, fmt.Errorf("workspace.terminal %q is not a declared repo", cfg.Workspace.Terminal)
+		}
 	}
 	// Validate hook command names.
 	for cmd := range cfg.Hooks {
