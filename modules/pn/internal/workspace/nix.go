@@ -28,6 +28,12 @@ var denyListedNixSubcommands = [][]string{
 //
 // Subcommands in denyListedNixSubcommands are refused with a clear error.
 func (ws *Workspace) NixCommand(ctx context.Context, args []string) error {
+	// The CLI passes through any "--" separator (cobra DisableFlagParsing
+	// mode); strip a leading "--" so the deny-list and the eventual nix
+	// invocation see the bare subcommand.
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
 	if denied, match := matchesDeniedSubcommand(args); denied {
 		return fmt.Errorf("nix %s is incompatible with workspace overrides; refused", strings.Join(match, " "))
 	}

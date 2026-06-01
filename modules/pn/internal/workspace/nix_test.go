@@ -100,3 +100,29 @@ url = "github:o/foo"
 		t.Fatalf("NixCommand should allow `nix flake show`: %v", err)
 	}
 }
+
+func TestNixCommand_StripsLeadingDoubleDash(t *testing.T) {
+	cfg := `
+[workspace]
+name = "test"
+terminal = "foo"
+
+[repos.foo]
+url = "github:o/foo"
+`
+	w := newTestWorkspace(t, cfg, map[string]struct {
+		flakeInputs string
+		gitRemotes  string
+		createFlake bool
+	}{
+		"foo": {flakeInputs: `{}`, gitRemotes: "origin\tgithub:o/foo (fetch)\norigin\tgithub:o/foo (push)\n", createFlake: true},
+	})
+	// `-- flake update` should be treated as `flake update` and refused.
+	err := w.NixCommand(context.Background(), []string{"--", "flake", "update"})
+	if err == nil {
+		t.Fatal("expected refusal of `nix -- flake update`")
+	}
+	if !strings.Contains(err.Error(), "flake update") {
+		t.Errorf("error should name the denied subcommand: %v", err)
+	}
+}
