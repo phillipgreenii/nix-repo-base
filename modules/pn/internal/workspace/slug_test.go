@@ -42,3 +42,84 @@ func TestExtractGithubSlug(t *testing.T) {
 		})
 	}
 }
+
+func TestCanonicalSlug_ExplicitOverride(t *testing.T) {
+	r := RepoConfig{
+		URL:  "github:o/foo",
+		Slug: "o/canonical",
+	}
+	if got := CanonicalSlug(r); got != "o/canonical" {
+		t.Errorf("CanonicalSlug: got %q, want %q", got, "o/canonical")
+	}
+}
+
+func TestCanonicalSlug_SingleURL(t *testing.T) {
+	r := RepoConfig{URL: "github:o/foo"}
+	if got := CanonicalSlug(r); got != "o/foo" {
+		t.Errorf("CanonicalSlug: got %q, want %q", got, "o/foo")
+	}
+}
+
+func TestCanonicalSlug_RemotesWithOrigin(t *testing.T) {
+	r := RepoConfig{
+		Remotes: []Remote{
+			{Name: "bitbucket", URL: "git@bitbucket.org:o/foo.git"},
+			{Name: "origin", URL: "github:o/foo"},
+		},
+	}
+	if got := CanonicalSlug(r); got != "o/foo" {
+		t.Errorf("CanonicalSlug: got %q, want %q", got, "o/foo")
+	}
+}
+
+func TestCanonicalSlug_RemotesWithoutOrigin_FirstWins(t *testing.T) {
+	r := RepoConfig{
+		Remotes: []Remote{
+			{Name: "github", URL: "github:o/foo"},
+			{Name: "mirror", URL: "https://github.com/o/foo-mirror"},
+		},
+	}
+	if got := CanonicalSlug(r); got != "o/foo" {
+		t.Errorf("CanonicalSlug: got %q, want %q", got, "o/foo")
+	}
+}
+
+func TestCanonicalSlug_NonGithubURL_Empty(t *testing.T) {
+	r := RepoConfig{URL: "ssh://git@synfra.twistcone.us:222/twistcone/homelab.git"}
+	if got := CanonicalSlug(r); got != "" {
+		t.Errorf("CanonicalSlug: got %q, want empty", got)
+	}
+}
+
+func TestSlugSet_UnionOfAllRemotesPlusExplicit(t *testing.T) {
+	r := RepoConfig{
+		Slug: "explicit/slug",
+		Remotes: []Remote{
+			{Name: "origin", URL: "github:o/foo"},
+			{Name: "mirror", URL: "https://github.com/o/foo-mirror"},
+			{Name: "forgejo", URL: "ssh://git@synfra.twistcone.us:222/twistcone/homelab.git"}, // no slug
+		},
+	}
+	got := SlugSet(r)
+	want := map[string]bool{
+		"explicit/slug": true,
+		"o/foo":         true,
+		"o/foo-mirror":  true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("SlugSet size: got %d, want %d (got: %v)", len(got), len(want), got)
+	}
+	for s := range want {
+		if !got[s] {
+			t.Errorf("SlugSet missing %q (got: %v)", s, got)
+		}
+	}
+}
+
+func TestSlugSet_SingleURL(t *testing.T) {
+	r := RepoConfig{URL: "github:o/foo"}
+	got := SlugSet(r)
+	if !got["o/foo"] || len(got) != 1 {
+		t.Errorf("SlugSet: got %v, want {o/foo}", got)
+	}
+}

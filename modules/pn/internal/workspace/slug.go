@@ -32,3 +32,47 @@ func ExtractGithubSlug(url string) string {
 	}
 	return ""
 }
+
+// CanonicalSlug returns the single canonical slug for a repo, per the rules
+// in the design doc §5.1:
+//
+//  1. RepoConfig.Slug wins if set.
+//  2. Else if Remotes has an entry named "origin", derive from its URL.
+//  3. Else if Remotes is non-empty, derive from the first entry.
+//  4. Else (URL set) derive from URL.
+//  5. Else (derivation fails) return empty string.
+func CanonicalSlug(r RepoConfig) string {
+	if r.Slug != "" {
+		return r.Slug
+	}
+	if len(r.Remotes) > 0 {
+		for _, rm := range r.Remotes {
+			if rm.Name == "origin" {
+				return ExtractGithubSlug(rm.URL)
+			}
+		}
+		return ExtractGithubSlug(r.Remotes[0].URL)
+	}
+	return ExtractGithubSlug(r.URL)
+}
+
+// SlugSet returns the set of all slugs that identify a repo. Used for graph
+// edge matching: any input URL whose slug is in some repo's SlugSet refers
+// to that repo. Per design §5.2 the set is the union of slugs from every
+// remote (or the single URL) plus the explicit Slug override if set.
+func SlugSet(r RepoConfig) map[string]bool {
+	out := make(map[string]bool, 4)
+	if r.Slug != "" {
+		out[r.Slug] = true
+	}
+	if len(r.Remotes) > 0 {
+		for _, rm := range r.Remotes {
+			if s := ExtractGithubSlug(rm.URL); s != "" {
+				out[s] = true
+			}
+		}
+	} else if s := ExtractGithubSlug(r.URL); s != "" {
+		out[s] = true
+	}
+	return out
+}
