@@ -62,12 +62,12 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		return err
 	}
 
-	fmt.Fprintln(out, "  --== Formatting flake ==--  ")
-	if _, err := ws.runner.Run(ctx, "nix", []string{"fmt"}, exec.RunOptions{Dir: terminalDir}); err != nil {
+	fmt.Fprintf(out, "  --== %s: formatting flake ==--  \n", terminal)
+	if _, err := ws.runner.Run(ctx, "nix", []string{"fmt"}, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out}); err != nil {
 		return fmt.Errorf("nix fmt in %s: %w", terminalDir, err)
 	}
 
-	fmt.Fprintln(out, "  --== Applying flake ==--  ")
+	fmt.Fprintf(out, "  --== %s: applying flake ==--  \n", terminal)
 	allDirs := ws.allRepoDirs(opts.OverridePaths)
 	rebuild, err := ws.needsRebuild(ctx, allDirs, opts.Force, out)
 	if err != nil {
@@ -79,13 +79,13 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 
 	oldProfile := readSystemProfile()
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
-	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalDir}); err != nil {
+	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out}); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
 	newProfile := readSystemProfile()
 	if oldProfile != newProfile && newProfile != "" && commandExists("nvd") {
 		fmt.Fprintln(out, "  --== Package changes ==--  ")
-		_, _ = ws.runner.Run(ctx, "nvd", []string{"diff", oldProfile, newProfile}, exec.RunOptions{Dir: terminalDir})
+		_, _ = ws.runner.Run(ctx, "nvd", []string{"diff", oldProfile, newProfile}, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out})
 	}
 
 	return ws.markApplied(ctx, allDirs)

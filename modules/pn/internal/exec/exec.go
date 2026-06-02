@@ -29,6 +29,13 @@ type RunOptions struct {
 	Env map[string]string
 	// Stdin provides standard input. Nil = empty.
 	Stdin io.Reader
+	// Stdout, if set, receives the command's standard output live as it runs,
+	// in addition to being captured in Result.Stdout. Use for long-running
+	// commands (build/apply) so their full output reaches the terminal.
+	Stdout io.Writer
+	// Stderr, if set, receives the command's standard error live as it runs,
+	// in addition to being captured in Result.Stderr.
+	Stderr io.Writer
 }
 
 // Result captures the outcome of a Run call.
@@ -61,8 +68,17 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 		cmd.Stdin = opts.Stdin
 	}
 	var stdout, stderr bytes.Buffer
+	// Capture into buffers (for callers that parse output) and, when a live
+	// sink is provided, tee to it so the full output reaches the terminal as
+	// the command runs rather than being withheld until completion.
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if opts.Stdout != nil {
+		cmd.Stdout = io.MultiWriter(&stdout, opts.Stdout)
+	}
+	if opts.Stderr != nil {
+		cmd.Stderr = io.MultiWriter(&stderr, opts.Stderr)
+	}
 	err := cmd.Run()
 	res := Result{
 		Stdout: stdout.Bytes(),

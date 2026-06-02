@@ -1,11 +1,35 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRealRunner_StreamsLiveWhileCapturing(t *testing.T) {
+	r := NewRealRunner()
+	var live bytes.Buffer
+	res, err := r.Run(context.Background(), "sh", []string{"-c", "echo out; echo err 1>&2"}, RunOptions{
+		Stdout: &live,
+		Stderr: &live,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Live sink receives both streams as the command runs.
+	if !strings.Contains(live.String(), "out") || !strings.Contains(live.String(), "err") {
+		t.Errorf("expected live sink to receive full output, got %q", live.String())
+	}
+	// Result still captures stdout/stderr for callers that parse them.
+	if !strings.Contains(string(res.Stdout), "out") {
+		t.Errorf("expected captured stdout, got %q", string(res.Stdout))
+	}
+	if !strings.Contains(string(res.Stderr), "err") {
+		t.Errorf("expected captured stderr, got %q", string(res.Stderr))
+	}
+}
 
 func TestRealRunner_RunsCommand(t *testing.T) {
 	r := NewRealRunner()
