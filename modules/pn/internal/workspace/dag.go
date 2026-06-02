@@ -1,110 +1,91 @@
 package workspace
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-// deriveDAG computes the workspace dependency DAG from the terminal flake's
-// resolved lock graph (terminalLock = contents of the terminal repo's
-// flake.lock).
+// deriveDAG computes the workspace dependency DAG from the source of truth:
+// the inputs each repo declares in its flake.nix. It deliberately does NOT
+// read flake.lock, which is a derived artifact that may be absent or stale.
 //
-// Returns:
-//   - order: every workspace repo key in topological order (dependencies
-//     first, the terminal last), with siblings broken alphabetically.
-//   - dependsOn: adjacency map repoKey -> sorted workspace repoKeys it depends
-//     on. Repos with no workspace dependencies are omitted.
-//
-// Edges come from the resolved input graph: a workspace input node's inputs
-// that resolve (directly, or via a single-element follows path) to another
-// workspace input node become a dependency edge. Multi-element follows paths
-// are sub-input follows, not direct deps, and are ignored.
-func deriveDAG(cfg *WorkspaceConfig, terminalLock []byte) ([]string, map[string][]string, error) {
-	terminal, err := cfg.TerminalRepo()
+// Returns the topological order (dependencies first, terminal last, siblings
+// alphabetical) and the adjacency map repoKey -> sorted workspace deps.
+func (ws *Workspace) deriveDAG(ctx context.Context) ([]string, map[string][]string, error) {
+	declared, err := ws.gatherDeclaredInputs(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
+	order, dependsOn := buildDAG(ws.config, declared)
+	return order, dependsOn, nil
+}
 
+// gatherDeclaredInputs returns, for each workspace repo present on disk, the
+// names of the inputs declared in its flake.nix. It evaluates the declared
+// `inputs` attrset (`nix eval --file flake.nix inputs --apply attrNames`) — a
+// pure read of the source that does not consult the lock and does not fetch or
+// evaluate the inputs themselves.
+func (ws *Workspace) gatherDeclaredInputs(ctx context.Context) (map[string][]string, error) {
+	declared := make(map[string][]string)
+	for _, key := range orderedRepoNames(ws.config.Repos) {
+		flakePath := filepath.Join(ws.root, key, "flake.nix")
+		if _, err := os.Stat(flakePath); err != nil {
+			continue // repo not cloned, or not a flake
+		}
+		res, err := ws.runner.Run(ctx, "nix",
+			[]string{"eval", "--json", "--file", flakePath, "inputs", "--apply", "builtins.attrNames"},
+			exec.RunOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("read declared inputs of %s: %w", key, err)
+		}
+		var names []string
+		if err := json.Unmarshal(res.Stdout, &names); err != nil {
+			return nil, fmt.Errorf("parse declared inputs of %s: %w", key, err)
+		}
+		declared[key] = names
+	}
+	return declared, nil
+}
+
+// buildDAG turns each repo's declared input names into the workspace dependency
+// DAG. Repo A depends on repo B when A declares an input named B's input-name —
+// the same name `--override-input` targets, so the edge mirrors what the build
+// actually overrides. Returns the topological order and the adjacency map
+// (repos with no workspace deps omitted).
+func buildDAG(cfg *WorkspaceConfig, declaredInputs map[string][]string) ([]string, map[string][]string) {
 	repoKeys := orderedRepoNames(cfg.Repos)
 
-	// inputName -> repoKey for the non-terminal repos.
+	// input-name -> repoKey for every workspace repo.
 	repoByInputName := make(map[string]string, len(repoKeys))
 	for _, k := range repoKeys {
-		if k == terminal {
-			continue
-		}
 		repoByInputName[cfg.InputNameFor(k)] = k
 	}
 
-	var lf lockFile
-	if err := json.Unmarshal(terminalLock, &lf); err != nil {
-		return nil, nil, fmt.Errorf("parse terminal flake.lock: %w", err)
-	}
-	root, ok := lf.Nodes["root"]
-	if !ok {
-		return nil, nil, fmt.Errorf("terminal flake.lock has no root node")
-	}
-
-	// nodeKey -> repoKey. The terminal's direct inputs (root.inputs) give the
-	// authoritative inputName -> nodeKey mapping for every workspace repo; root
-	// itself maps to the terminal repo.
-	nodeToRepo := map[string]string{"root": terminal}
-	for inputName, raw := range root.Inputs {
-		repoKey, isWorkspace := repoByInputName[inputName]
-		if !isWorkspace {
-			continue
-		}
-		if nodeKey, ok := resolveFollow(raw); ok {
-			nodeToRepo[nodeKey] = repoKey
-		}
-	}
-
-	// Build adjacency: a workspace node's inputs resolving to another workspace
-	// node are dependency edges.
 	dependsOn := make(map[string][]string)
-	for nodeKey, repoKey := range nodeToRepo {
-		node, ok := lf.Nodes[nodeKey]
-		if !ok {
-			continue
-		}
-		var deps []string
+	for _, a := range repoKeys {
 		seen := make(map[string]bool)
-		for _, raw := range node.Inputs {
-			target, ok := resolveFollow(raw)
-			if !ok {
+		var deps []string
+		for _, name := range declaredInputs[a] {
+			b, ok := repoByInputName[name]
+			if !ok || b == a || seen[b] {
 				continue
 			}
-			depRepo, isWorkspace := nodeToRepo[target]
-			if !isWorkspace || depRepo == repoKey || seen[depRepo] {
-				continue
-			}
-			seen[depRepo] = true
-			deps = append(deps, depRepo)
+			seen[b] = true
+			deps = append(deps, b)
 		}
 		if len(deps) > 0 {
 			sort.Strings(deps)
-			dependsOn[repoKey] = deps
+			dependsOn[a] = deps
 		}
 	}
 
-	return topoSort(repoKeys, dependsOn), dependsOn, nil
-}
-
-// resolveFollow resolves a flake.lock input value to a target node key:
-//
-//	"X"          -> X         (direct dependency)
-//	["X"]        -> X         (follows a top-level node = direct dependency)
-//	["X","Y"...] -> "", false (sub-input follow; not a direct dep)
-func resolveFollow(raw json.RawMessage) (string, bool) {
-	if s, ok := asString(raw); ok {
-		return s, true
-	}
-	var arr []string
-	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) == 1 {
-		return arr[0], true
-	}
-	return "", false
+	return topoSort(repoKeys, dependsOn), dependsOn
 }
 
 // topoSort returns repoKeys in dependency order (deps first) via Kahn's

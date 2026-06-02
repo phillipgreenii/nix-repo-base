@@ -62,11 +62,7 @@ func (w *Workspace) Init(ctx context.Context, opts InitOptions) error {
 // refreshLock derives the workspace dependency DAG from the terminal flake's
 // lock and writes it to pn-workspace.lock.
 func (w *Workspace) refreshLock(ctx context.Context) error {
-	lockBytes, err := w.terminalFlakeLock(ctx)
-	if err != nil {
-		return err
-	}
-	order, dependsOn, err := deriveDAG(w.config, lockBytes)
+	order, dependsOn, err := w.deriveDAG(ctx)
 	if err != nil {
 		return err
 	}

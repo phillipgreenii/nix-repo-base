@@ -28,37 +28,39 @@ func TestRenderTree_DedupAndConnectors(t *testing.T) {
 	}
 }
 
-// TestTree_RendersGraphFromTerminalFlakeLock exercises Tree end-to-end: it
-// derives the DAG from the terminal flake.lock and renders the hierarchy.
-func TestTree_RendersGraphFromTerminalFlakeLock(t *testing.T) {
+// TestTree_RendersGraphFromDeclaredInputs exercises Tree end-to-end: it derives
+// the DAG from each repo's declared flake inputs (not the lock) and renders it.
+func TestTree_RendersGraphFromDeclaredInputs(t *testing.T) {
 	root := t.TempDir()
-	mkRepoDir(t, root, "term")
-	mkRepoDir(t, root, "base")
-	mkRepoDir(t, root, "overlay")
+	for _, r := range []string{"term", "base", "overlay"} {
+		mkRepoDir(t, root, r)
+		writeFile(t, filepath.Join(root, r, "flake.nix"), "{ inputs = {}; }")
+	}
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
 terminal = "term"
 
 [repos.term]
-url = "github:owner/term"
+url = "github:o/term"
 
 [repos.base]
-url = "github:owner/base"
+url = "github:o/base"
 input-name = "nb"
 
 [repos.overlay]
-url = "github:owner/overlay"
+url = "github:o/overlay"
 input-name = "ovl"
 `)
-	writeFile(t, filepath.Join(root, "term", "flake.lock"), `{
-	  "nodes": {
-	    "root": {"inputs": {"nb": "nb", "ovl": "ovl"}},
-	    "nb": {"inputs": {}},
-	    "ovl": {"inputs": {"nb": ["nb"]}}
-	  }
-	}`)
 
-	w, err := Open(root, exec.NewFakeRunner())
+	f := exec.NewFakeRunner()
+	evalArgs := func(repo string) []string {
+		return []string{"eval", "--json", "--file", filepath.Join(root, repo, "flake.nix"), "inputs", "--apply", "builtins.attrNames"}
+	}
+	f.AddResponse("nix", evalArgs("base"), exec.Result{Stdout: []byte(`["nixpkgs"]`)}, nil)
+	f.AddResponse("nix", evalArgs("overlay"), exec.Result{Stdout: []byte(`["nixpkgs","nb"]`)}, nil)
+	f.AddResponse("nix", evalArgs("term"), exec.Result{Stdout: []byte(`["nb","ovl"]`)}, nil)
+
+	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
