@@ -38,8 +38,12 @@ input-name = "dep-input"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Build(context.Background(), &bytes.Buffer{}, BuildOptions{}); err != nil {
+	var out bytes.Buffer
+	if err := w.Build(context.Background(), &out, BuildOptions{}); err != nil {
 		t.Fatalf("Build: %v", err)
+	}
+	if !strings.Contains(out.String(), "leaf") {
+		t.Errorf("build output should name the terminal project %q; got:\n%s", "leaf", out.String())
 	}
 	calls := f.Calls()
 	if len(calls) != 2 {

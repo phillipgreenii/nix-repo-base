@@ -50,12 +50,12 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 		return nil
 	}
 
-	fmt.Fprintln(out, "  --== Formatting flake ==--  ")
+	fmt.Fprintf(out, "  --== %s: formatting flake ==--  \n", terminal)
 	if _, err := ws.runner.Run(ctx, "nix", []string{"fmt"}, exec.RunOptions{Dir: terminalDir}); err != nil {
 		return fmt.Errorf("nix fmt in %s: %w", terminalDir, err)
 	}
 
-	fmt.Fprintln(out, "  --== Building flake ==--  ")
+	fmt.Fprintf(out, "  --== %s: building flake ==--  \n", terminal)
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
 	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalDir}); err != nil {
 		return fmt.Errorf("build failed: %w", err)
