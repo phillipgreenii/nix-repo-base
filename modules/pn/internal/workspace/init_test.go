@@ -30,13 +30,13 @@ url = "github:owner/foo"
 		t.Fatalf("Init: %v", err)
 	}
 
-	// Lock should now exist with foo at abc1234.
+	// With no terminal configured, init writes an empty DAG lock (no revs).
 	lock, err := ReadLock(filepath.Join(root, "pn-workspace.lock"))
 	if err != nil {
 		t.Fatalf("ReadLock: %v", err)
 	}
-	if lock.Repos["foo"].Rev != "abc1234" {
-		t.Errorf("expected lock rev abc1234, got %q", lock.Repos["foo"].Rev)
+	if len(lock.Order) != 0 || len(lock.DependsOn) != 0 {
+		t.Errorf("expected empty DAG lock, got order=%v dependsOn=%v", lock.Order, lock.DependsOn)
 	}
 }
 

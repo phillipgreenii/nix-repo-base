@@ -3,15 +3,17 @@ package workspace
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestLock_WriteAndRead_RoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	original := &Lock{
-		Repos: map[string]LockedRepo{
-			"nix-repo-base": {URL: "github:phillipgreenii/nix-repo-base", Rev: "abc1234567890"},
-			"nix-overlay":   {URL: "github:phillipgreenii/nix-overlay", Rev: "deadbeef00000"},
+		Order: []string{"base", "overlay", "ziprecruiter"},
+		DependsOn: map[string][]string{
+			"overlay":      {"base"},
+			"ziprecruiter": {"base", "overlay"},
 		},
 	}
 	path := filepath.Join(tmp, "pn-workspace.lock")
@@ -22,11 +24,38 @@ func TestLock_WriteAndRead_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadLock: %v", err)
 	}
-	if len(loaded.Repos) != 2 {
-		t.Errorf("expected 2 entries, got %d", len(loaded.Repos))
+	if len(loaded.Order) != 3 || loaded.Order[0] != "base" || loaded.Order[2] != "ziprecruiter" {
+		t.Errorf("order round-trip mismatch: %v", loaded.Order)
 	}
-	if loaded.Repos["nix-repo-base"].Rev != "abc1234567890" {
-		t.Errorf("rev mismatch: %q", loaded.Repos["nix-repo-base"].Rev)
+	got := loaded.DependsOn["ziprecruiter"]
+	if len(got) != 2 || got[0] != "base" || got[1] != "overlay" {
+		t.Errorf("dependsOn[ziprecruiter] = %v, want [base overlay]", got)
+	}
+}
+
+func TestWriteLock_OmitsURLsAndRevs(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "pn-workspace.lock")
+	if err := WriteLock(path, &Lock{
+		Order:     []string{"base", "term"},
+		DependsOn: map[string][]string{"term": {"base"}},
+	}); err != nil {
+		t.Fatalf("WriteLock: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(data)
+	for _, banned := range []string{"url", "rev", "github", "git@"} {
+		if strings.Contains(s, banned) {
+			t.Errorf("lock must not contain %q; got:\n%s", banned, s)
+		}
+	}
+	for _, want := range []string{"order", "dependsOn"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("lock should contain %q; got:\n%s", want, s)
+		}
 	}
 }
 
@@ -40,25 +69,21 @@ func TestReadLock_MissingFile(t *testing.T) {
 	if lock == nil {
 		t.Fatal("expected non-nil empty lock")
 	}
-	if len(lock.Repos) != 0 {
-		t.Errorf("expected empty Repos, got %d entries", len(lock.Repos))
+	if len(lock.Order) != 0 || len(lock.DependsOn) != 0 {
+		t.Errorf("expected empty lock, got order=%v dependsOn=%v", lock.Order, lock.DependsOn)
 	}
 }
 
 func TestWriteLock_DeterministicOrdering(t *testing.T) {
 	tmp := t.TempDir()
 	lock := &Lock{
-		Repos: map[string]LockedRepo{
-			"z": {URL: "u", Rev: "r"},
-			"a": {URL: "u", Rev: "r"},
-			"m": {URL: "u", Rev: "r"},
-		},
+		Order:     []string{"a", "m", "z"},
+		DependsOn: map[string][]string{"z": {"a"}, "m": {"a"}},
 	}
 	path := filepath.Join(tmp, "pn-workspace.lock")
 	if err := WriteLock(path, lock); err != nil {
 		t.Fatalf("WriteLock: %v", err)
 	}
-	// Re-write and confirm byte-identical (deterministic ordering).
 	path2 := filepath.Join(tmp, "pn-workspace.2.lock")
 	if err := WriteLock(path2, lock); err != nil {
 		t.Fatalf("WriteLock: %v", err)

@@ -4,50 +4,73 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-func TestTree_PrintsWorkspaceAndRepos(t *testing.T) {
+// TestRenderTree_DedupAndConnectors checks the pure renderer: connectors,
+// indentation, and that a repeated dependency is shown once then marked.
+func TestRenderTree_DedupAndConnectors(t *testing.T) {
+	var buf bytes.Buffer
+	dependsOn := map[string][]string{
+		"term":    {"base", "overlay"},
+		"overlay": {"base"},
+	}
+	renderTree(&buf, "term", dependsOn)
+
+	want := "term\n" +
+		"├── base\n" +
+		"└── overlay\n" +
+		"    └── base [↑ shown above]\n"
+	if buf.String() != want {
+		t.Errorf("renderTree mismatch:\n got:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+// TestTree_RendersGraphFromTerminalFlakeLock exercises Tree end-to-end: it
+// derives the DAG from the terminal flake.lock and renders the hierarchy.
+func TestTree_RendersGraphFromTerminalFlakeLock(t *testing.T) {
 	root := t.TempDir()
+	mkRepoDir(t, root, "term")
+	mkRepoDir(t, root, "base")
+	mkRepoDir(t, root, "overlay")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
-name = "phillipg"
+terminal = "term"
 
-[repos.foo]
-url = "github:owner/foo"
+[repos.term]
+url = "github:owner/term"
 
-[repos.bar]
-url = "github:owner/bar"
+[repos.base]
+url = "github:owner/base"
+input-name = "nb"
+
+[repos.overlay]
+url = "github:owner/overlay"
+input-name = "ovl"
 `)
-	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"repos":{"foo":{"url":"github:owner/foo","rev":"abc1234"}}}`)
+	writeFile(t, filepath.Join(root, "term", "flake.lock"), `{
+	  "nodes": {
+	    "root": {"inputs": {"nb": "nb", "ovl": "ovl"}},
+	    "nb": {"inputs": {}},
+	    "ovl": {"inputs": {"nb": ["nb"]}}
+	  }
+	}`)
 
 	w, err := Open(root, exec.NewFakeRunner())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-
 	var buf bytes.Buffer
 	if err := w.Tree(context.Background(), &buf, TreeOptions{}); err != nil {
 		t.Fatalf("Tree: %v", err)
 	}
-	out := buf.String()
-	if !strings.Contains(out, "phillipg\n") {
-		t.Errorf("expected workspace name as root; got:\n%s", out)
-	}
-	if !strings.Contains(out, "bar") {
-		t.Errorf("expected bar in output; got:\n%s", out)
-	}
-	if !strings.Contains(out, "foo") {
-		t.Errorf("expected foo in output; got:\n%s", out)
-	}
-	if !strings.Contains(out, "abc1234") {
-		t.Errorf("expected locked rev abc1234 to appear; got:\n%s", out)
-	}
-	// last line uses └── connector
-	if !strings.Contains(out, "└── ") {
-		t.Errorf("expected └── connector for last entry; got:\n%s", out)
+	want := "term\n" +
+		"├── base\n" +
+		"└── overlay\n" +
+		"    └── base [↑ shown above]\n"
+	if buf.String() != want {
+		t.Errorf("Tree mismatch:\n got:\n%s\nwant:\n%s", buf.String(), want)
 	}
 }

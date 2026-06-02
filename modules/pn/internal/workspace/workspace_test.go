@@ -17,7 +17,7 @@ name = "test"
 [repos.foo]
 url = "github:owner/foo"
 `)
-	writeFile(t, filepath.Join(dir, "pn-workspace.lock"), `{"repos":{"foo":{"url":"github:owner/foo","rev":"abc"}}}`)
+	writeFile(t, filepath.Join(dir, "pn-workspace.lock"), `{"order":["foo"],"dependsOn":{}}`)
 
 	w, err := Open(dir, exec.NewFakeRunner())
 	if err != nil {
@@ -26,8 +26,8 @@ url = "github:owner/foo"
 	if w.Config().Workspace.Name != "test" {
 		t.Errorf("config name: %q", w.Config().Workspace.Name)
 	}
-	if w.Lock().Repos["foo"].Rev != "abc" {
-		t.Errorf("lock rev: %q", w.Lock().Repos["foo"].Rev)
+	if len(w.Lock().Order) != 1 || w.Lock().Order[0] != "foo" {
+		t.Errorf("lock order: %v", w.Lock().Order)
 	}
 	if w.Root() != dir {
 		t.Errorf("root: %q want %q", w.Root(), dir)
@@ -51,8 +51,8 @@ name = "x"
 	if err != nil {
 		t.Fatalf("Open should tolerate missing lock, got %v", err)
 	}
-	if len(w.Lock().Repos) != 0 {
-		t.Errorf("expected empty lock, got %d entries", len(w.Lock().Repos))
+	if len(w.Lock().Order) != 0 || len(w.Lock().DependsOn) != 0 {
+		t.Errorf("expected empty lock, got order=%v dependsOn=%v", w.Lock().Order, w.Lock().DependsOn)
 	}
 }
 

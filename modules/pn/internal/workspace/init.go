@@ -44,20 +44,35 @@ func (w *Workspace) Init(ctx context.Context, opts InitOptions) error {
 		}
 	}
 
-	// 3. Write pn-workspace.lock with resolved revs (alphabetical order).
-	lock := &Lock{Repos: make(map[string]LockedRepo, len(w.config.Repos))}
-	for _, name := range names {
-		r := w.config.Repos[name]
-		repoDir := filepath.Join(w.root, name)
-		res, err := w.runner.Run(ctx, "git", []string{"-C", repoDir, "rev-parse", "HEAD"}, exec.RunOptions{})
-		if err != nil {
-			return fmt.Errorf("init: rev-parse %s: %w", name, err)
+	// 3. Write pn-workspace.lock with the derived dependency DAG. This needs a
+	// terminal flake to derive from; with none configured, write an empty lock.
+	if w.config.Workspace.Terminal == "" {
+		if err := WriteLock(filepath.Join(w.root, LockFileName), &Lock{}); err != nil {
+			return fmt.Errorf("init: write lock: %w", err)
 		}
-		rev := strings.TrimSpace(string(res.Stdout))
-		lock.Repos[name] = LockedRepo{URL: r.URL, Rev: rev}
+		w.lock = &Lock{DependsOn: make(map[string][]string)}
+		return nil
 	}
+	if err := w.refreshLock(ctx); err != nil {
+		return fmt.Errorf("init: %w", err)
+	}
+	return nil
+}
+
+// refreshLock derives the workspace dependency DAG from the terminal flake's
+// lock and writes it to pn-workspace.lock.
+func (w *Workspace) refreshLock(ctx context.Context) error {
+	lockBytes, err := w.terminalFlakeLock(ctx)
+	if err != nil {
+		return err
+	}
+	order, dependsOn, err := deriveDAG(w.config, lockBytes)
+	if err != nil {
+		return err
+	}
+	lock := &Lock{Order: order, DependsOn: dependsOn}
 	if err := WriteLock(filepath.Join(w.root, LockFileName), lock); err != nil {
-		return fmt.Errorf("init: write lock: %w", err)
+		return fmt.Errorf("write lock: %w", err)
 	}
 	w.lock = lock
 	return nil
