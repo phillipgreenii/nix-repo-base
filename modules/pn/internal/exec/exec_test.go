@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -38,9 +39,20 @@ func TestRealRunner_RespectsWorkingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// Compare with symlinks resolved: on macOS t.TempDir() yields /tmp/... but
+	// pwd reports the canonical /private/tmp/... form. Resolving both sides
+	// makes the assertion robust to any tmp-directory layout.
 	got := strings.TrimSpace(string(res.Stdout))
-	if got != dir {
-		t.Errorf("expected pwd=%q, got %q", dir, got)
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(got %q): %v", got, err)
+	}
+	wantResolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(dir %q): %v", dir, err)
+	}
+	if gotResolved != wantResolved {
+		t.Errorf("expected pwd %q (resolved %q), got %q (resolved %q)", dir, wantResolved, got, gotResolved)
 	}
 }
 
