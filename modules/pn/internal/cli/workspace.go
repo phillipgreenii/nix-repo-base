@@ -93,7 +93,7 @@ func workspaceApplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Apply(context.Background(), workspace.ApplyOptions{})
+			return w.Apply(context.Background(), cmd.OutOrStdout(), workspace.ApplyOptions{})
 		},
 	}
 }

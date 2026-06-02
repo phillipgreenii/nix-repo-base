@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 )
 
 // UpgradeOptions configures Upgrade.
@@ -17,7 +18,7 @@ func (ws *Workspace) Upgrade(ctx context.Context, opts UpgradeOptions) error {
 	if err := ws.Update(ctx, UpdateOptions{Recreate: true}); err != nil {
 		return fmt.Errorf("upgrade: update: %w", err)
 	}
-	if err := ws.Apply(ctx, ApplyOptions{ApplyCmd: opts.ApplyCmd}); err != nil {
+	if err := ws.Apply(ctx, io.Discard, ApplyOptions{ApplyCmd: opts.ApplyCmd}); err != nil {
 		return fmt.Errorf("upgrade: apply: %w", err)
 	}
 	return nil

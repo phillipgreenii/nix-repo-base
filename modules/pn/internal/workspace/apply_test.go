@@ -1,97 +1,94 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-func TestApply_PerRepoInOrder(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
-[repos.foo]
-url = "github:owner/foo"
+const applyTOML = `
+[workspace]
+terminal = "leaf"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
 
-[repos.bar]
-url = "github:owner/bar"
-`)
+[repos.leaf]
+url = "github:owner/leaf"
+
+[repos.dep]
+url = "github:owner/dep"
+input-name = "dep-input"
+`
+
+func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	mkRepoDir(t, root, "dep")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
+	leafDir := filepath.Join(root, "leaf")
+	depDir := filepath.Join(root, "dep")
 
 	f := exec.NewFakeRunner()
-	// Alphabetical: bar then foo.
+	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
 	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil)
-	f.AddResponse("nix", []string{"build", "."}, exec.Result{}, nil)
-	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil)
-	f.AddResponse("nix", []string{"build", "."}, exec.Result{}, nil)
+	f.AddResponse("sudo", []string{
+		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
+		"--override-input", "dep-input", "git+file://" + depDir,
+	}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", depDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("d\n")}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Apply(context.Background(), ApplyOptions{}); err != nil {
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
 		t.Fatalf("Apply: %v", err)
-	}
-	calls := f.Calls()
-	if len(calls) != 4 {
-		t.Fatalf("expected 4 calls, got %d", len(calls))
-	}
-	if calls[0].Opts.Dir != filepath.Join(root, "bar") {
-		t.Errorf("first repo should be bar, got dir %q", calls[0].Opts.Dir)
-	}
-	if calls[2].Opts.Dir != filepath.Join(root, "foo") {
-		t.Errorf("second repo should be foo, got dir %q", calls[2].Opts.Dir)
 	}
 }
 
-func TestApply_InjectsOverrideInputForLockedRepos(t *testing.T) {
+func TestApply_ErrorsWhenApplyCommandMissing(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
-[repos.foo]
-url = "github:owner/foo"
+[workspace]
+terminal = "leaf"
 
-[repos.bar]
-url = "github:owner/bar"
+[repos.leaf]
+url = "github:owner/leaf"
 `)
-	// Both repos locked => both must appear as --override-input flags
-	// on every rebuild invocation, in alphabetical order (bar < foo).
-	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"repos":{"foo":{"url":"github:owner/foo","rev":"f"},"bar":{"url":"github:owner/bar","rev":"b"}}}`)
-
-	f := exec.NewFakeRunner()
-	barDir := filepath.Join(root, "bar")
-	fooDir := filepath.Join(root, "foo")
-	overrideArgs := []string{
-		"build",
-		"--override-input", "bar", "path:" + barDir,
-		"--override-input", "foo", "path:" + fooDir,
-		".",
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
-	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil) // bar fmt
-	f.AddResponse("nix", overrideArgs, exec.Result{}, nil)    // bar build (apply)
-	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil) // foo fmt
-	f.AddResponse("nix", overrideArgs, exec.Result{}, nil)    // foo build (apply)
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{}); err == nil {
+		t.Fatal("expected error when apply_command unset")
+	}
+}
 
+func TestApply_ShowNixCommandsOnly(t *testing.T) {
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	mkRepoDir(t, root, "dep")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Apply(context.Background(), ApplyOptions{}); err != nil {
+	out := &bytes.Buffer{}
+	if err := w.Apply(context.Background(), out, ApplyOptions{ShowNixCommandsOnly: true}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	calls := f.Calls()
-	if len(calls) != 4 {
-		t.Fatalf("expected 4 calls, got %d", len(calls))
+	if len(f.Calls()) != 0 {
+		t.Errorf("dry-run must not run anything; got %d calls", len(f.Calls()))
 	}
-	for _, idx := range []int{1, 3} {
-		args := calls[idx].Args
-		if len(args) != len(overrideArgs) {
-			t.Errorf("call %d: expected %d args, got %d (%v)", idx, len(overrideArgs), len(args), args)
-			continue
-		}
-		for i, want := range overrideArgs {
-			if args[i] != want {
-				t.Errorf("call %d arg[%d]: %q, want %q", idx, i, args[i], want)
-			}
-		}
+	if !strings.Contains(out.String(), "sudo darwin-rebuild switch --flake "+filepath.Join(root, "leaf")) {
+		t.Errorf("dry-run output missing apply command:\n%s", out.String())
 	}
 }
