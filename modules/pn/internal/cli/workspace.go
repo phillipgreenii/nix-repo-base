@@ -79,7 +79,7 @@ func workspaceBuildCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Build(context.Background(), workspace.BuildOptions{})
+			return w.Build(context.Background(), cmd.OutOrStdout(), workspace.BuildOptions{})
 		},
 	}
 }
