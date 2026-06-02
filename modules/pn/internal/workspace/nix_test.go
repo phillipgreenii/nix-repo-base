@@ -84,3 +84,32 @@ url = "github:owner/bar"
 		t.Fatalf("NixCommand: %v", err)
 	}
 }
+
+// When a repo declares an explicit input-name that differs from its directory
+// name, the --override-input NAME must be the input-name while the path stays
+// pinned to the on-disk directory. This is the case the old pn-workspace.lock
+// captured via its inputName field and the Go port originally dropped.
+func TestNixCommand_UsesConfiguredInputName(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.phillipg-nix-repo-base]
+url = "github:phillipgreenii/nix-repo-base"
+input-name = "phillipgreenii-nix-base"
+`)
+	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"repos":{"phillipg-nix-repo-base":{"url":"github:phillipgreenii/nix-repo-base","rev":"abc"}}}`)
+
+	f := exec.NewFakeRunner()
+	expected := []string{
+		"flake", "check",
+		"--override-input", "phillipgreenii-nix-base", "path:" + filepath.Join(root, "phillipg-nix-repo-base"),
+	}
+	f.AddResponse("nix", expected, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.NixCommand(context.Background(), []string{"flake", "check"}); err != nil {
+		t.Fatalf("NixCommand: %v", err)
+	}
+}

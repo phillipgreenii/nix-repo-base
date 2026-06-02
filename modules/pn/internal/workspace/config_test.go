@@ -116,6 +116,32 @@ func TestParseConfig_EmptyConfig(t *testing.T) {
 	}
 }
 
+func TestParseConfig_RepoInputName(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[repos.phillipg-nix-repo-base]
+url = "github:phillipgreenii/nix-repo-base"
+input-name = "phillipgreenii-nix-base"
+
+[repos.nix-overlay]
+url = "github:phillipgreenii/nix-overlay"
+`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Explicit input-name is honored.
+	if got := cfg.InputNameFor("phillipg-nix-repo-base"); got != "phillipgreenii-nix-base" {
+		t.Errorf("explicit input-name: got %q want phillipgreenii-nix-base", got)
+	}
+	// Omitted input-name defaults to the repo key (the on-disk directory name).
+	if got := cfg.InputNameFor("nix-overlay"); got != "nix-overlay" {
+		t.Errorf("default input-name: got %q want nix-overlay", got)
+	}
+	// Unknown repo falls back to the key itself.
+	if got := cfg.InputNameFor("does-not-exist"); got != "does-not-exist" {
+		t.Errorf("unknown repo: got %q want does-not-exist", got)
+	}
+}
+
 func TestKnownHookCommands(t *testing.T) {
 	want := []string{"apply", "build", "flake-check", "init", "pre-commit-check", "push", "rebase", "status", "tree", "update", "upgrade"}
 	for _, c := range want {
@@ -125,5 +151,65 @@ func TestKnownHookCommands(t *testing.T) {
 	}
 	if IsKnownHookCommand("not-a-real-command") {
 		t.Error("not-a-real-command should not be known")
+	}
+}
+
+func TestParseConfig_WorkspaceCommands(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[workspace]
+terminal = "leaf"
+build_command = "darwin-rebuild build --flake {terminal_flake}"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+
+[repos.leaf]
+url = "github:owner/leaf"
+
+[repos.dep]
+url = "github:owner/dep"
+`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	term, err := cfg.TerminalRepo()
+	if err != nil || term != "leaf" {
+		t.Fatalf("TerminalRepo: got %q, %v", term, err)
+	}
+	if got := cfg.BuildCommandTemplate(); got != "darwin-rebuild build --flake {terminal_flake}" {
+		t.Errorf("BuildCommandTemplate: got %q", got)
+	}
+	ac, err := cfg.ApplyCommandTemplate()
+	if err != nil || ac != "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}" {
+		t.Errorf("ApplyCommandTemplate: got %q, %v", ac, err)
+	}
+}
+
+func TestParseConfig_TerminalMustNameRepo(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[workspace]
+terminal = "nope"
+
+[repos.leaf]
+url = "github:owner/leaf"
+`))
+	if err == nil {
+		t.Fatal("expected error for terminal not matching a repo")
+	}
+}
+
+func TestParseConfig_DefaultsWhenCommandsAbsent(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`[repos.leaf]
+url = "github:owner/leaf"
+`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.BuildCommandTemplate(); got != "darwin-rebuild build --flake {terminal_flake}" {
+		t.Errorf("default build command: got %q", got)
+	}
+	if _, err := cfg.TerminalRepo(); err == nil {
+		t.Error("expected error when terminal unset")
+	}
+	if _, err := cfg.ApplyCommandTemplate(); err == nil {
+		t.Error("expected error when apply_command unset")
 	}
 }
