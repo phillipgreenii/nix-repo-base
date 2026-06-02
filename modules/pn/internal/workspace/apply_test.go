@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -90,5 +91,26 @@ func TestApply_ShowNixCommandsOnly(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "sudo darwin-rebuild switch --flake "+filepath.Join(root, "leaf")) {
 		t.Errorf("dry-run output missing apply command:\n%s", out.String())
+	}
+}
+
+func TestAllRepoDirs_SkipsMissingClones(t *testing.T) {
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf") // cloned
+	// "dep" declared but NOT cloned on disk.
+	w := openWS(t, root, `
+[workspace]
+terminal = "leaf"
+
+[repos.leaf]
+url = "github:owner/leaf"
+
+[repos.dep]
+url = "github:owner/dep"
+`)
+	got := w.allRepoDirs(nil)
+	want := []string{filepath.Join(root, "leaf")}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("allRepoDirs should skip missing clones: got %#v want %#v", got, want)
 	}
 }

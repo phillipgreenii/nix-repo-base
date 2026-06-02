@@ -10,7 +10,7 @@ import (
 // --override-input flag for each repo in the workspace lock so the local
 // clone is used in place of the upstream input.
 //
-// Override flags are emitted in alphabetical order by input name for
+// Override flags are emitted in alphabetical order by repo key for
 // deterministic command construction.
 //
 // TODO: port the full pn-ws-nix subcommand-allow/deny list and

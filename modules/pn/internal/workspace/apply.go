@@ -91,13 +91,18 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	return ws.markApplied(ctx, allDirs)
 }
 
-// allRepoDirs returns the clone dir for every declared repo, honoring overrides.
+// allRepoDirs returns the clone dir for every declared repo that exists on
+// disk, honoring overrides. Missing clones are skipped so the rebuild gate and
+// mark-applied don't fail on a repo that hasn't been cloned yet.
 func (ws *Workspace) allRepoDirs(overrides map[string]string) []string {
 	var dirs []string
 	for _, key := range orderedRepoNames(ws.config.Repos) {
 		dir := filepath.Join(ws.root, key)
 		if ov, ok := overrides[key]; ok {
 			dir = ov
+		}
+		if !dirExists(dir) {
+			continue
 		}
 		dirs = append(dirs, dir)
 	}
