@@ -17,7 +17,7 @@ import (
 // --non-override-subcommand-action behavior; currently every subcommand
 // receives overrides unconditionally.
 func (ws *Workspace) NixCommand(ctx context.Context, args []string) error {
-	overrides := computeOverrideArgs(ws)
+	overrides := ws.overrideInputArgs(overrideOpts{})
 	full := append([]string{}, args...)
 	full = append(full, overrides...)
 	_, err := ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root})

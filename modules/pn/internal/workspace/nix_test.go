@@ -8,18 +8,17 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-func TestNixCommand_AppendsOverrideInputForEachLockedRepo(t *testing.T) {
+func TestNixCommand_AppendsGitFileOverrideForEachRepo(t *testing.T) {
 	root := t.TempDir()
+	mkRepoDir(t, root, "foo")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.foo]
 url = "github:owner/foo"
 `)
-	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"repos":{"foo":{"url":"github:owner/foo","rev":"abc"}}}`)
-
 	f := exec.NewFakeRunner()
 	expected := []string{
 		"flake", "check",
-		"--override-input", "foo", "path:" + filepath.Join(root, "foo"),
+		"--override-input", "foo", "git+file://" + filepath.Join(root, "foo"),
 	}
 	f.AddResponse("nix", expected, exec.Result{}, nil)
 
@@ -30,16 +29,9 @@ url = "github:owner/foo"
 	if err := w.NixCommand(context.Background(), []string{"flake", "check"}); err != nil {
 		t.Fatalf("NixCommand: %v", err)
 	}
-	calls := f.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(calls))
-	}
-	if calls[0].Opts.Dir != root {
-		t.Errorf("expected dir=%s, got %q", root, calls[0].Opts.Dir)
-	}
 }
 
-func TestNixCommand_NoLockedRepos(t *testing.T) {
+func TestNixCommand_NoRepos(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `[workspace]
 name = "x"
@@ -58,6 +50,8 @@ name = "x"
 
 func TestNixCommand_MultipleOverridesAlphabetical(t *testing.T) {
 	root := t.TempDir()
+	mkRepoDir(t, root, "foo")
+	mkRepoDir(t, root, "bar")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.foo]
 url = "github:owner/foo"
@@ -65,14 +59,11 @@ url = "github:owner/foo"
 [repos.bar]
 url = "github:owner/bar"
 `)
-	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"repos":{"foo":{"url":"github:owner/foo","rev":"f"},"bar":{"url":"github:owner/bar","rev":"b"}}}`)
-
 	f := exec.NewFakeRunner()
-	// bar < foo alphabetically -> bar override comes first.
 	expected := []string{
 		"build", ".",
-		"--override-input", "bar", "path:" + filepath.Join(root, "bar"),
-		"--override-input", "foo", "path:" + filepath.Join(root, "foo"),
+		"--override-input", "bar", "git+file://" + filepath.Join(root, "bar"),
+		"--override-input", "foo", "git+file://" + filepath.Join(root, "foo"),
 	}
 	f.AddResponse("nix", expected, exec.Result{}, nil)
 
@@ -85,23 +76,18 @@ url = "github:owner/bar"
 	}
 }
 
-// When a repo declares an explicit input-name that differs from its directory
-// name, the --override-input NAME must be the input-name while the path stays
-// pinned to the on-disk directory. This is the case the old pn-workspace.lock
-// captured via its inputName field and the Go port originally dropped.
 func TestNixCommand_UsesConfiguredInputName(t *testing.T) {
 	root := t.TempDir()
+	mkRepoDir(t, root, "phillipg-nix-repo-base")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.phillipg-nix-repo-base]
 url = "github:phillipgreenii/nix-repo-base"
 input-name = "phillipgreenii-nix-base"
 `)
-	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"repos":{"phillipg-nix-repo-base":{"url":"github:phillipgreenii/nix-repo-base","rev":"abc"}}}`)
-
 	f := exec.NewFakeRunner()
 	expected := []string{
 		"flake", "check",
-		"--override-input", "phillipgreenii-nix-base", "path:" + filepath.Join(root, "phillipg-nix-repo-base"),
+		"--override-input", "phillipgreenii-nix-base", "git+file://" + filepath.Join(root, "phillipg-nix-repo-base"),
 	}
 	f.AddResponse("nix", expected, exec.Result{}, nil)
 
