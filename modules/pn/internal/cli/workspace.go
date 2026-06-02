@@ -191,7 +191,7 @@ func workspaceUpgradeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Upgrade(context.Background(), workspace.UpgradeOptions{})
+			return w.Upgrade(context.Background(), cmd.OutOrStdout(), workspace.UpgradeOptions{})
 		},
 	}
 }

@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,7 +72,7 @@ url = "github:owner/dep"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Upgrade(context.Background(), UpgradeOptions{}); err != nil {
+	if err := w.Upgrade(context.Background(), io.Discard, UpgradeOptions{}); err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}
 	// Ensure both nix fmt and the apply command were invoked, indicating Apply ran after Update.
