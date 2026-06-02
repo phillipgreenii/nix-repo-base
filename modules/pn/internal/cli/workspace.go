@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -32,14 +33,56 @@ func addWorkspaceCmd(parent *cobra.Command) {
 	parent.AddCommand(ws)
 }
 
-// openWorkspace finds the workspace root and opens it.
-func openWorkspace() (*workspace.Workspace, error) {
-	root, err := os.Getwd()
+// openWorkspace opens the workspace by walking up from cwd (or PN_WORKSPACE_ROOT).
+func openWorkspace() (*workspace.Workspace, error) { return openWorkspaceRoot("") }
+
+// openWorkspaceRoot opens the workspace rooted via resolveWorkspaceRoot(rootFlag).
+func openWorkspaceRoot(rootFlag string) (*workspace.Workspace, error) {
+	root, err := resolveWorkspaceRoot(rootFlag)
 	if err != nil {
 		return nil, err
 	}
-	// TODO: walk up from cwd to find pn-workspace.toml. For now, require cwd to be the workspace root.
 	return workspace.Open(root, exec.NewRealRunner())
+}
+
+// resolveWorkspaceRoot resolves the workspace root: --root flag, then
+// PN_WORKSPACE_ROOT, then the nearest ancestor of cwd containing pn-workspace.toml.
+func resolveWorkspaceRoot(rootFlag string) (string, error) {
+	check := func(dir string) (string, error) {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return "", err
+		}
+		if !fileExists(filepath.Join(abs, workspace.ConfigFileName)) {
+			return "", fmt.Errorf("no %s in %s", workspace.ConfigFileName, abs)
+		}
+		return abs, nil
+	}
+	if rootFlag != "" {
+		return check(rootFlag)
+	}
+	if env := os.Getenv("PN_WORKSPACE_ROOT"); env != "" {
+		return check(env)
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if fileExists(filepath.Join(dir, workspace.ConfigFileName)) {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no %s found in cwd or any ancestor", workspace.ConfigFileName)
+		}
+		dir = parent
+	}
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
 }
 
 func workspaceStatusCmd() *cobra.Command {
@@ -71,31 +114,65 @@ func workspaceInitCmd() *cobra.Command {
 }
 
 func workspaceBuildCmd() *cobra.Command {
-	return &cobra.Command{
+	var root, buildCmd string
+	var overridePaths []string
+	var showOnly bool
+	cmd := &cobra.Command{
 		Use:   "build",
-		Short: "Build all workspace repos",
+		Short: "Build the terminal flake with local workspace overrides",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			w, err := openWorkspace()
+			w, err := openWorkspaceRoot(root)
 			if err != nil {
 				return err
 			}
-			return w.Build(context.Background(), cmd.OutOrStdout(), workspace.BuildOptions{})
+			ovr, err := workspace.ParseOverridePaths(overridePaths)
+			if err != nil {
+				return err
+			}
+			return w.Build(context.Background(), cmd.OutOrStdout(), workspace.BuildOptions{
+				BuildCmd:            buildCmd,
+				OverridePaths:       ovr,
+				ShowNixCommandsOnly: showOnly,
+			})
 		},
 	}
+	cmd.Flags().StringVar(&root, "root", "", "workspace root (default: PN_WORKSPACE_ROOT or walk up from cwd)")
+	cmd.Flags().StringVar(&buildCmd, "build-cmd", "", "override build_command template")
+	cmd.Flags().StringArrayVar(&overridePaths, "override-path", nil, "override a repo path: name=path (repeatable)")
+	cmd.Flags().BoolVar(&showOnly, "show-nix-commands-only", false, "print commands without running")
+	return cmd
 }
 
 func workspaceApplyCmd() *cobra.Command {
-	return &cobra.Command{
+	var root, applyCmd string
+	var overridePaths []string
+	var showOnly, force bool
+	cmd := &cobra.Command{
 		Use:   "apply",
-		Short: "Apply nix configurations across workspace repos",
+		Short: "Apply (activate) the terminal flake with local workspace overrides",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			w, err := openWorkspace()
+			w, err := openWorkspaceRoot(root)
 			if err != nil {
 				return err
 			}
-			return w.Apply(context.Background(), cmd.OutOrStdout(), workspace.ApplyOptions{})
+			ovr, err := workspace.ParseOverridePaths(overridePaths)
+			if err != nil {
+				return err
+			}
+			return w.Apply(context.Background(), cmd.OutOrStdout(), workspace.ApplyOptions{
+				ApplyCmd:            applyCmd,
+				OverridePaths:       ovr,
+				ShowNixCommandsOnly: showOnly,
+				Force:               force,
+			})
 		},
 	}
+	cmd.Flags().StringVar(&root, "root", "", "workspace root (default: PN_WORKSPACE_ROOT or walk up from cwd)")
+	cmd.Flags().StringVar(&applyCmd, "apply-cmd", "", "override apply_command template")
+	cmd.Flags().StringArrayVar(&overridePaths, "override-path", nil, "override a repo path: name=path (repeatable)")
+	cmd.Flags().BoolVar(&showOnly, "show-nix-commands-only", false, "print commands without running")
+	cmd.Flags().BoolVar(&force, "force", false, "always rebuild (bypass the unchanged-skip gate)")
+	return cmd
 }
 
 func workspaceFlakeCheckCmd() *cobra.Command {

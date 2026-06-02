@@ -48,3 +48,6 @@ func parseOverridePaths(specs []string) (map[string]string, error) {
 	}
 	return out, nil
 }
+
+// ParseOverridePaths is the exported entry point for CLI flag parsing.
+func ParseOverridePaths(specs []string) (map[string]string, error) { return parseOverridePaths(specs) }
