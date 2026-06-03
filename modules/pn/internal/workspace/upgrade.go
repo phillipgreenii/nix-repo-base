@@ -10,12 +10,14 @@ import (
 type UpgradeOptions struct {
 	// ApplyCmd is forwarded to Apply.
 	ApplyCmd string
+	// ULLibDir is forwarded to Update (resolve once via ResolveULLibDir).
+	ULLibDir string
 }
 
 // Upgrade runs Update followed by Apply. Equivalent to the bash one-liner
 // `pn-workspace-update && pn-workspace-apply`. Apply progress is written to out.
 func (ws *Workspace) Upgrade(ctx context.Context, out io.Writer, opts UpgradeOptions) error {
-	if err := ws.Update(ctx, out, UpdateOptions{Recreate: true}); err != nil {
+	if err := ws.Update(ctx, out, UpdateOptions{Recreate: true, ULLibDir: opts.ULLibDir}); err != nil {
 		return fmt.Errorf("upgrade: update: %w", err)
 	}
 	if err := ws.Apply(ctx, out, ApplyOptions{ApplyCmd: opts.ApplyCmd}); err != nil {

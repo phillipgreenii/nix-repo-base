@@ -10,11 +10,46 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
+// ulLibResolverRef is the flake app that prints the update-locks lib dir. It
+// mirrors the one-liner each update-locks.sh uses; pn resolves it once per run
+// and injects the result so the per-repo scripts skip the (remote) evaluation.
+const ulLibResolverRef = "github:phillipgreenii/nix-repo-base#determine-ul-lib-dir"
+
 // UpdateOptions configures Update.
 type UpdateOptions struct {
 	// Recreate forces full lock recreation (currently treated as an
 	// indicator for Upgrade; see upgrade.go).
 	Recreate bool
+	// ULLibDir, when set, is exported as UL_LIB_DIR to each update-locks.sh so
+	// it skips its own determine-ul-lib-dir resolution. Resolve it once per run
+	// via ResolveULLibDir. Empty leaves each script to resolve for itself.
+	ULLibDir string
+}
+
+// ResolveULLibDir runs the update-locks lib resolver once and returns the path
+// it prints (with WORKSPACE_ROOT set so its on-disk sibling tier can fire).
+// Best-effort: any failure returns "" so callers fall back to the per-repo
+// resolution baked into each update-locks.sh.
+func (ws *Workspace) ResolveULLibDir(ctx context.Context) string {
+	res, err := ws.runner.Run(ctx, "nix", []string{"run", ulLibResolverRef},
+		exec.RunOptions{Env: map[string]string{"WORKSPACE_ROOT": ws.root}})
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(res.Stdout))
+}
+
+// ulSubprocessEnv builds the env for an update-locks.sh invocation: the
+// workspace-root markers plus UL_LIB_DIR when one was resolved.
+func (ws *Workspace) ulSubprocessEnv(ulLibDir string) map[string]string {
+	env := map[string]string{
+		"PN_WORKSPACE_ROOT": ws.root,
+		"WORKSPACE_ROOT":    ws.root,
+	}
+	if ulLibDir != "" {
+		env["UL_LIB_DIR"] = ulLibDir
+	}
+	return env
 }
 
 // Update pulls each workspace repo, runs its ./update-locks.sh, and pushes.
@@ -51,7 +86,7 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 		}
 		// Skip update-locks if pull failed: the working tree is suspect.
 		if !pullFailed {
-			if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out}); err != nil {
+			if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out}); err != nil {
 				projectFailed = true
 				// Keep going to push whatever update-locks committed.
 			}

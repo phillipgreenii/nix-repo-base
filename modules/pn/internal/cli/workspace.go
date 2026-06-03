@@ -38,11 +38,16 @@ func addWorkspaceCmd(parent *cobra.Command) {
 func openWorkspace() (*workspace.Workspace, error) { return openWorkspaceRoot("") }
 
 // openWorkspaceRoot opens the workspace rooted via resolveWorkspaceRoot(rootFlag).
+// It also exports the resolved root as PN_WORKSPACE_ROOT and WORKSPACE_ROOT so
+// every subprocess pn spawns (update-locks.sh, hooks, determine-ul-lib-dir, …)
+// can locate the workspace without recomputing or guessing.
 func openWorkspaceRoot(rootFlag string) (*workspace.Workspace, error) {
 	root, err := resolveWorkspaceRoot(rootFlag)
 	if err != nil {
 		return nil, err
 	}
+	_ = os.Setenv("PN_WORKSPACE_ROOT", root)
+	_ = os.Setenv("WORKSPACE_ROOT", root)
 	return workspace.Open(root, exec.NewRealRunner())
 }
 
@@ -283,7 +288,8 @@ func workspaceUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Update(context.Background(), cmd.OutOrStdout(), workspace.UpdateOptions{})
+			ctx := context.Background()
+			return w.Update(ctx, cmd.OutOrStdout(), workspace.UpdateOptions{ULLibDir: w.ResolveULLibDir(ctx)})
 		},
 	}
 }
@@ -297,7 +303,8 @@ func workspaceUpgradeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Upgrade(context.Background(), cmd.OutOrStdout(), workspace.UpgradeOptions{})
+			ctx := context.Background()
+			return w.Upgrade(ctx, cmd.OutOrStdout(), workspace.UpgradeOptions{ULLibDir: w.ResolveULLibDir(ctx)})
 		},
 	}
 }

@@ -58,6 +58,82 @@ url = "github:o/lib"
 	}
 }
 
+// TestResolveULLibDir runs the resolver once and returns its path; on any
+// error it returns "" so callers fall back to per-repo resolution.
+func TestResolveULLibDir(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:o/foo"
+`)
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"run", "github:phillipgreenii/nix-repo-base#determine-ul-lib-dir"},
+		exec.Result{Stdout: []byte("/nix/store/abc/lib/scripts\n")}, nil)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := w.ResolveULLibDir(context.Background()); got != "/nix/store/abc/lib/scripts" {
+		t.Errorf("ResolveULLibDir = %q, want trimmed path", got)
+	}
+	// The resolver must run with WORKSPACE_ROOT set so its sibling tier can fire.
+	if f.Calls()[0].Opts.Env["WORKSPACE_ROOT"] != root {
+		t.Errorf("resolver should run with WORKSPACE_ROOT=%q, got env %v", root, f.Calls()[0].Opts.Env)
+	}
+
+	// On error (no scripted response), returns empty so callers fall back.
+	f2 := exec.NewFakeRunner()
+	w2, _ := Open(root, f2)
+	if got := w2.ResolveULLibDir(context.Background()); got != "" {
+		t.Errorf("ResolveULLibDir on error = %q, want empty", got)
+	}
+}
+
+// TestUpdate_InjectsULLibDirAndWorkspaceEnv: the update-locks subprocess gets
+// UL_LIB_DIR (when supplied) plus the workspace-root env vars, so it skips its
+// own resolver call and tools can locate the workspace.
+func TestUpdate_InjectsULLibDirAndWorkspaceEnv(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+	f := exec.NewFakeRunner()
+	foo := filepath.Join(root, "foo")
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	// no upstream → straight to update-locks
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/xyz/lib/scripts"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	var found bool
+	for _, c := range f.Calls() {
+		if c.Name != "./update-locks.sh" {
+			continue
+		}
+		found = true
+		if c.Opts.Env["UL_LIB_DIR"] != "/nix/store/xyz/lib/scripts" {
+			t.Errorf("UL_LIB_DIR not injected; env=%v", c.Opts.Env)
+		}
+		if c.Opts.Env["WORKSPACE_ROOT"] != root {
+			t.Errorf("WORKSPACE_ROOT not injected; env=%v", c.Opts.Env)
+		}
+		if c.Opts.Env["PN_WORKSPACE_ROOT"] != root {
+			t.Errorf("PN_WORKSPACE_ROOT not injected; env=%v", c.Opts.Env)
+		}
+	}
+	if !found {
+		t.Fatal("update-locks.sh was not called")
+	}
+}
+
 // TestUpdate_ContinuesPastFailureAndAggregates: when one repo's update-locks
 // fails, Update must still process the remaining repos and report the failure
 // at the end (naming the failing repo), instead of aborting on first error.
