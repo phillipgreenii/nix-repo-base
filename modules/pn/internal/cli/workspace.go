@@ -302,16 +302,23 @@ func workspaceUpgradeCmd() *cobra.Command {
 func workspaceDiscoverCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "discover",
-		Short: "List workspace repos",
+		Short: "List workspace repos in dependency order with their input names",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
 				return err
 			}
-			repos := w.Discover()
+			repos, err := w.Discover(context.Background())
+			if err != nil {
+				return err
+			}
 			out := cmd.OutOrStdout()
 			for _, r := range repos {
-				fmt.Fprintf(out, "%s\t%s\t%s\n", r.Name, r.URL, r.Path)
+				inputName := r.InputName
+				if inputName == "" {
+					inputName = "(terminal)"
+				}
+				fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", r.Name, inputName, r.URL, r.Path)
 			}
 			return nil
 		},
