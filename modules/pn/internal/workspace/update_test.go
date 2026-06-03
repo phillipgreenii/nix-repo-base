@@ -4,11 +4,59 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+// TestUpdateOrder_PrefersLockTopoOrder: Update iterates the lock's topological
+// order (dependencies first, terminal last) when the lock covers the repo set —
+// here [lib, app], not the alphabetical [app, lib].
+func TestUpdateOrder_PrefersLockTopoOrder(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.app]
+url = "github:o/app"
+
+[repos.lib]
+url = "github:o/lib"
+`)
+	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"order":["lib","app"],"dependsOn":{"app":["lib"]}}`)
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got := w.updateOrder()
+	want := []string{"lib", "app"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("updateOrder = %v, want %v (lock topo order)", got, want)
+	}
+}
+
+// TestUpdateOrder_FallsBackAlphabeticalWhenLockStale: when the lock doesn't
+// cover the configured repo set (stale/empty), fall back to alphabetical.
+func TestUpdateOrder_FallsBackAlphabeticalWhenLockStale(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.app]
+url = "github:o/app"
+
+[repos.lib]
+url = "github:o/lib"
+`)
+	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"order":["lib"],"dependsOn":{}}`)
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got := w.updateOrder()
+	want := []string{"app", "lib"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("updateOrder = %v, want alphabetical fallback %v", got, want)
+	}
+}
 
 // TestUpdate_ContinuesPastFailureAndAggregates: when one repo's update-locks
 // fails, Update must still process the remaining repos and report the failure

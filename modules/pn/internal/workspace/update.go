@@ -27,7 +27,7 @@ type UpdateOptions struct {
 // pull marks it failed and skips update-locks and push (the working tree is
 // suspect); a failed update-locks still lets push run, since pull succeeded.
 func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptions) error {
-	names := orderedRepoNames(ws.config.Repos)
+	names := ws.updateOrder()
 	var failed []string
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
@@ -71,6 +71,29 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 		return fmt.Errorf("update failed in %d project(s): %s", len(failed), strings.Join(failed, ", "))
 	}
 	return nil
+}
+
+// updateOrder returns the repo iteration order for Update: the lock's
+// topological order (dependencies first, terminal last) when the lock covers
+// exactly the configured repo set, so a downstream repo re-locks against its
+// already-updated upstream. Falls back to alphabetical when the lock is empty
+// or stale (doesn't match the configured repos), which is always safe.
+func (ws *Workspace) updateOrder() []string {
+	alpha := orderedRepoNames(ws.config.Repos)
+	order := ws.lock.Order
+	if len(order) != len(alpha) {
+		return alpha
+	}
+	inLock := make(map[string]bool, len(order))
+	for _, n := range order {
+		inLock[n] = true
+	}
+	for _, n := range alpha {
+		if !inLock[n] {
+			return alpha
+		}
+	}
+	return order
 }
 
 // isDirty reports whether repoDir has uncommitted changes — modified or staged
