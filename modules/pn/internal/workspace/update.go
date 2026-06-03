@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
@@ -17,39 +18,67 @@ type UpdateOptions struct {
 
 // Update pulls each workspace repo, runs its ./update-locks.sh, and pushes.
 // Repos without an upstream skip pull/push but still attempt update-locks.
-// Repos with a dirty working tree are skipped.
+// Repos with a dirty working tree are skipped (non-fatal).
 //
-// TODO(tc-perh.5): port the full pn-workspace-update.sh signal-handling and
-// partial-failure aggregation. The current implementation aborts on the
-// first error in any step, which is stricter than bash.
+// Per-repo failures are aggregated rather than aborting the whole sweep on the
+// first error: every repo is attempted and the failing repos are named in the
+// returned error at the end (like FlakeCheck). Within a single repo, a failed
+// pull marks it failed and skips update-locks and push (the working tree is
+// suspect); a failed update-locks still lets push run, since pull succeeded.
 func (ws *Workspace) Update(ctx context.Context, opts UpdateOptions) error {
 	names := orderedRepoNames(ws.config.Repos)
+	var failed []string
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
-		// Skip if dirty.
-		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "diff", "--quiet"}, exec.RunOptions{}); err != nil {
-			// dirty — skip
-			continue
-		}
-		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "diff", "--cached", "--quiet"}, exec.RunOptions{}); err != nil {
+
+		// Skip (non-fatal) if the working tree is dirty (modified or staged).
+		if ws.isDirty(ctx, repoDir) {
 			continue
 		}
 
 		hasUp := ws.hasUpstream(ctx, repoDir)
+		pullFailed := false
+		projectFailed := false
+
 		if hasUp {
 			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "pull", "--rebase", "--autostash"}, exec.RunOptions{}); err != nil {
-				return fmt.Errorf("git pull in %s: %w", name, err)
+				pullFailed = true
+				projectFailed = true
 			}
 		}
-		// Run update-locks.sh — it must be present in the repo.
-		if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir}); err != nil {
-			return fmt.Errorf("update-locks in %s: %w", name, err)
+		// Skip update-locks if pull failed: the working tree is suspect.
+		if !pullFailed {
+			if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir}); err != nil {
+				projectFailed = true
+				// Keep going to push whatever update-locks committed.
+			}
 		}
-		if hasUp {
+		// Push only when pull succeeded (even on partial update-locks failure).
+		if hasUp && !pullFailed {
 			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{}); err != nil {
-				return fmt.Errorf("git push in %s: %w", name, err)
+				projectFailed = true
 			}
+		}
+
+		if projectFailed {
+			failed = append(failed, name)
 		}
 	}
+	if len(failed) > 0 {
+		return fmt.Errorf("update failed in %d project(s): %s", len(failed), strings.Join(failed, ", "))
+	}
 	return nil
+}
+
+// isDirty reports whether repoDir has uncommitted changes — modified or staged
+// (untracked files are allowed). Probes are ordered so a dirty modified tree
+// short-circuits before the staged check.
+func (ws *Workspace) isDirty(ctx context.Context, repoDir string) bool {
+	if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "diff", "--quiet"}, exec.RunOptions{}); err != nil {
+		return true
+	}
+	if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "diff", "--cached", "--quiet"}, exec.RunOptions{}); err != nil {
+		return true
+	}
+	return false
 }
