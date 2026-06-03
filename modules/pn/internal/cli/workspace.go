@@ -26,6 +26,7 @@ func addWorkspaceCmd(parent *cobra.Command) {
 	ws.AddCommand(workspacePushCmd())
 	ws.AddCommand(workspaceRebaseCmd())
 	ws.AddCommand(workspaceTreeCmd())
+	ws.AddCommand(workspaceLockCmd())
 	ws.AddCommand(workspaceUpdateCmd())
 	ws.AddCommand(workspaceUpgradeCmd())
 	ws.AddCommand(workspaceDiscoverCmd())
@@ -241,6 +242,31 @@ func workspaceTreeCmd() *cobra.Command {
 				return err
 			}
 			return w.Tree(context.Background(), cmd.OutOrStdout(), workspace.TreeOptions{})
+		},
+	}
+}
+
+func workspaceLockCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "lock",
+		Short: "Regenerate pn-workspace.lock from each repo's declared flake inputs",
+		Long: "Re-derive the workspace dependency DAG from the inputs declared in " +
+			"each repo's flake.nix and write it to pn-workspace.lock. Performs no " +
+			"clone or reconcile (unlike init), so it is safe to run any time.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			if err := w.RefreshLock(context.Background()); err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Wrote %s — dependency order:\n", workspace.LockFileName)
+			for _, name := range w.Lock().Order {
+				fmt.Fprintf(out, "  %s\n", name)
+			}
+			return nil
 		},
 	}
 }

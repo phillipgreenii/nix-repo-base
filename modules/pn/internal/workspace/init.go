@@ -53,15 +53,17 @@ func (w *Workspace) Init(ctx context.Context, opts InitOptions) error {
 		w.lock = &Lock{DependsOn: make(map[string][]string)}
 		return nil
 	}
-	if err := w.refreshLock(ctx); err != nil {
+	if err := w.RefreshLock(ctx); err != nil {
 		return fmt.Errorf("init: %w", err)
 	}
 	return nil
 }
 
-// refreshLock derives the workspace dependency DAG from the terminal flake's
-// lock and writes it to pn-workspace.lock.
-func (w *Workspace) refreshLock(ctx context.Context) error {
+// RefreshLock re-derives the workspace dependency DAG from each repo's declared
+// flake inputs and writes it to pn-workspace.lock. It performs no clone or
+// reconcile, so it is safe to run any time to regenerate the lock; it backs the
+// `pn workspace lock` command and the lock write at the end of init.
+func (w *Workspace) RefreshLock(ctx context.Context) error {
 	order, dependsOn, err := w.deriveDAG(ctx)
 	if err != nil {
 		return err

@@ -117,3 +117,49 @@ input-name = "ovl"
 		t.Errorf("dependsOn[overlay] = %v, want [base]", got)
 	}
 }
+
+// TestRefreshLock_WritesDAGLock verifies `pn workspace lock`'s core: re-derive
+// the DAG and write it to pn-workspace.lock (no clone/reconcile).
+func TestRefreshLock_WritesDAGLock(t *testing.T) {
+	root := t.TempDir()
+	for _, r := range []string{"term", "base"} {
+		mkRepoDir(t, root, r)
+		writeFile(t, filepath.Join(root, r, "flake.nix"), "{ inputs = {}; }")
+	}
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "term"
+
+[repos.term]
+url = "github:o/term"
+
+[repos.base]
+url = "github:o/base"
+input-name = "nb"
+`)
+	evalArgs := func(repo string) []string {
+		return []string{"eval", "--json", "--file", filepath.Join(root, repo, "flake.nix"), "inputs", "--apply", "builtins.attrNames"}
+	}
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", evalArgs("base"), exec.Result{Stdout: []byte(`["nixpkgs"]`)}, nil)
+	f.AddResponse("nix", evalArgs("term"), exec.Result{Stdout: []byte(`["nb"]`)}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.RefreshLock(context.Background()); err != nil {
+		t.Fatalf("RefreshLock: %v", err)
+	}
+
+	lock, err := ReadLock(filepath.Join(root, "pn-workspace.lock"))
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+	if want := []string{"base", "term"}; !reflect.DeepEqual(lock.Order, want) {
+		t.Errorf("lock.Order = %v, want %v", lock.Order, want)
+	}
+	if got := lock.DependsOn["term"]; !reflect.DeepEqual(got, []string{"base"}) {
+		t.Errorf("lock.DependsOn[term] = %v, want [base]", got)
+	}
+}

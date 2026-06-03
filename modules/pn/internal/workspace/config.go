@@ -54,6 +54,7 @@ var knownHookCommands = map[string]struct{}{
 	"build":            {},
 	"flake-check":      {},
 	"init":             {},
+	"lock":             {},
 	"pre-commit-check": {},
 	"push":             {},
 	"rebase":           {},
