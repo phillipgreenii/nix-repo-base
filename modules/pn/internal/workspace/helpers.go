@@ -23,6 +23,9 @@ type overrideOpts struct {
 	// ExcludeTerminal omits the terminal repo (build/apply build it, so it must
 	// not override itself).
 	ExcludeTerminal bool
+	// ExcludeRepo omits one specific repo key. Used by flake-check, where the
+	// repo under test is the flake being evaluated and must not override itself.
+	ExcludeRepo string
 	// OverridePaths maps repo key -> absolute path, replacing the default clone
 	// location for that repo.
 	OverridePaths map[string]string
@@ -41,6 +44,9 @@ func (ws *Workspace) overrideInputArgs(opts overrideOpts) []string {
 	out := make([]string, 0, 3*len(names))
 	for _, name := range names {
 		if opts.ExcludeTerminal && name == terminal {
+			continue
+		}
+		if opts.ExcludeRepo != "" && name == opts.ExcludeRepo {
 			continue
 		}
 		dir := filepath.Join(ws.root, name)

@@ -12,20 +12,24 @@ import (
 // FlakeCheckOptions configures FlakeCheck.
 type FlakeCheckOptions struct{}
 
-// FlakeCheck runs `nix flake check` in every workspace repo. Per-repo failures
-// are collected; the overall call returns non-nil if any failed. Matches the
-// bash "full sweep" behavior — does not short-circuit on first failure.
+// FlakeCheck runs `nix flake check` in every workspace repo, injecting
+// --override-input flags that pin the repo's local workspace siblings to their
+// on-disk clones — so each repo is checked against your local changes, not its
+// locked inputs. The terminal (the build target) and the repo under test (the
+// flake being evaluated) are excluded from its own override set, matching how
+// the bash ran each check via pn-ws-nix.
 //
-// TODO(tc-perh.5): the bash version invokes via pn-ws-nix which injects
-// --override-input flags. The Go port runs bare `nix flake check` for
-// simplicity; integration tests will catch any cases where the missing
-// overrides matter.
+// Per-repo failures are collected; the overall call returns non-nil if any
+// failed. Matches the bash "full sweep" behavior — does not short-circuit on
+// first failure.
 func (ws *Workspace) FlakeCheck(ctx context.Context, opts FlakeCheckOptions) error {
 	names := orderedRepoNames(ws.config.Repos)
 	var failed []string
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
-		if _, err := ws.runner.Run(ctx, "nix", []string{"flake", "check"}, exec.RunOptions{Dir: repoDir}); err != nil {
+		overrides := ws.overrideInputArgs(overrideOpts{ExcludeTerminal: true, ExcludeRepo: name})
+		args := append([]string{"flake", "check"}, overrides...)
+		if _, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: repoDir}); err != nil {
 			failed = append(failed, name)
 		}
 	}
