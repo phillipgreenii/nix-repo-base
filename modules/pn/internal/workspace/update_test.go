@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.Update(context.Background(), UpdateOptions{})
+	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{})
 	if err == nil {
 		t.Fatal("expected error reporting failures, got nil")
 	}
@@ -79,7 +80,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.Update(context.Background(), UpdateOptions{})
+	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{})
 	if err == nil {
 		t.Fatal("expected error for failed pull, got nil")
 	}
@@ -120,12 +121,34 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Update(context.Background(), UpdateOptions{}); err != nil {
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if len(f.Calls()) != 6 {
-		t.Errorf("expected 6 calls, got %d (%+v)", len(f.Calls()), f.Calls())
+	calls := f.Calls()
+	if len(calls) != 6 {
+		t.Errorf("expected 6 calls, got %d (%+v)", len(calls), calls)
 	}
+	// Long-running steps stream; the silent --quiet probes stay captured.
+	for _, c := range calls {
+		switch {
+		case lastArg(c.Args) == "--autostash", c.Name == "./update-locks.sh", lastArg(c.Args) == "push":
+			if c.Opts.Stdout == nil {
+				t.Errorf("%s %v should stream (Opts.Stdout set)", c.Name, c.Args)
+			}
+		case lastArg(c.Args) == "--quiet":
+			if c.Opts.Stdout != nil {
+				t.Errorf("dirty probe %v should stay captured (Opts.Stdout nil)", c.Args)
+			}
+		}
+	}
+}
+
+func lastArg(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[len(args)-1]
 }
 
 func TestUpdate_SkipsDirtyRepo(t *testing.T) {
@@ -144,7 +167,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Update(context.Background(), UpdateOptions{}); err != nil {
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	// Only the dirty probe should be called; no pull/locks/push.
@@ -177,7 +200,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Update(context.Background(), UpdateOptions{}); err != nil {
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	for _, c := range f.Calls() {

@@ -109,7 +109,7 @@ func workspaceInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Init(context.Background(), workspace.InitOptions{})
+			return w.Init(context.Background(), cmd.OutOrStdout(), workspace.InitOptions{})
 		},
 	}
 }
@@ -185,7 +185,7 @@ func workspaceFlakeCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.FlakeCheck(context.Background(), workspace.FlakeCheckOptions{})
+			return w.FlakeCheck(context.Background(), cmd.OutOrStdout(), workspace.FlakeCheckOptions{})
 		},
 	}
 }
@@ -199,7 +199,7 @@ func workspacePreCommitCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.PreCommitCheck(context.Background(), workspace.PreCommitCheckOptions{})
+			return w.PreCommitCheck(context.Background(), cmd.OutOrStdout(), workspace.PreCommitCheckOptions{})
 		},
 	}
 }
@@ -213,7 +213,7 @@ func workspacePushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Push(context.Background(), workspace.PushOptions{})
+			return w.Push(context.Background(), cmd.OutOrStdout(), workspace.PushOptions{})
 		},
 	}
 }
@@ -227,7 +227,7 @@ func workspaceRebaseCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Rebase(context.Background(), workspace.RebaseOptions{})
+			return w.Rebase(context.Background(), cmd.OutOrStdout(), workspace.RebaseOptions{})
 		},
 	}
 }
@@ -283,7 +283,7 @@ func workspaceUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Update(context.Background(), workspace.UpdateOptions{})
+			return w.Update(context.Background(), cmd.OutOrStdout(), workspace.UpdateOptions{})
 		},
 	}
 }
@@ -338,7 +338,7 @@ func workspaceNixCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.NixCommand(context.Background(), args)
+			return w.NixCommand(context.Background(), cmd.OutOrStdout(), args)
 		},
 	}
 }

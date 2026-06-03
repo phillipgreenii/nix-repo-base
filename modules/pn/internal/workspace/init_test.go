@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -26,8 +27,16 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Init(context.Background(), InitOptions{}); err != nil {
+	var out bytes.Buffer
+	if err := w.Init(context.Background(), &out, InitOptions{}); err != nil {
 		t.Fatalf("Init: %v", err)
+	}
+
+	// git clone streams its progress live (Opts.Stdout set).
+	for _, c := range f.Calls() {
+		if len(c.Args) > 0 && c.Args[0] == "clone" && c.Opts.Stdout == nil {
+			t.Errorf("git clone should stream output (Opts.Stdout set); got %v", c.Args)
+		}
 	}
 
 	// With no terminal configured, init writes an empty DAG lock (no revs).
@@ -59,7 +68,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Init(context.Background(), InitOptions{}); err != nil {
+	if err := w.Init(context.Background(), &bytes.Buffer{}, InitOptions{}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
@@ -95,7 +104,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Init(context.Background(), InitOptions{}); err != nil {
+	if err := w.Init(context.Background(), &bytes.Buffer{}, InitOptions{}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 

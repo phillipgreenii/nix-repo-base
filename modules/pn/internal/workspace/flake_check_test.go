@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"reflect"
@@ -28,7 +29,8 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.FlakeCheck(context.Background(), FlakeCheckOptions{}); err != nil {
+	var out bytes.Buffer
+	if err := w.FlakeCheck(context.Background(), &out, FlakeCheckOptions{}); err != nil {
 		t.Fatalf("FlakeCheck: %v", err)
 	}
 	calls := f.Calls()
@@ -40,6 +42,12 @@ url = "github:owner/bar"
 	}
 	if calls[1].Opts.Dir != filepath.Join(root, "foo") {
 		t.Errorf("second dir: got %q", calls[1].Opts.Dir)
+	}
+	// Each check streams its output live (Opts.Stdout set).
+	for i, c := range calls {
+		if c.Opts.Stdout == nil {
+			t.Errorf("call %d: flake check should stream output (Opts.Stdout set)", i)
+		}
 	}
 }
 
@@ -89,7 +97,7 @@ url = "github:o/overlay"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.FlakeCheck(context.Background(), FlakeCheckOptions{}); err != nil {
+	if err := w.FlakeCheck(context.Background(), &bytes.Buffer{}, FlakeCheckOptions{}); err != nil {
 		t.Fatalf("FlakeCheck: %v", err)
 	}
 
@@ -127,7 +135,7 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.FlakeCheck(context.Background(), FlakeCheckOptions{})
+	err = w.FlakeCheck(context.Background(), &bytes.Buffer{}, FlakeCheckOptions{})
 	if err == nil {
 		t.Fatal("expected error reporting failures, got nil")
 	}

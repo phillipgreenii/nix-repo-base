@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"testing"
@@ -26,7 +27,8 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.PreCommitCheck(context.Background(), PreCommitCheckOptions{}); err != nil {
+	var out bytes.Buffer
+	if err := w.PreCommitCheck(context.Background(), &out, PreCommitCheckOptions{}); err != nil {
 		t.Fatalf("PreCommitCheck: %v", err)
 	}
 	calls := f.Calls()
@@ -38,6 +40,11 @@ url = "github:owner/bar"
 	}
 	if calls[1].Opts.Dir != filepath.Join(root, "foo") {
 		t.Errorf("expected foo second; dir=%q", calls[1].Opts.Dir)
+	}
+	for i, c := range calls {
+		if c.Opts.Stdout == nil {
+			t.Errorf("call %d: pre-commit should stream output (Opts.Stdout set)", i)
+		}
 	}
 }
 
@@ -59,7 +66,7 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.PreCommitCheck(context.Background(), PreCommitCheckOptions{}); err == nil {
+	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, PreCommitCheckOptions{}); err == nil {
 		t.Fatal("expected combined error from per-repo failure")
 	}
 	if len(f.Calls()) != 2 {

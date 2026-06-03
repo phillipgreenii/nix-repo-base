@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"reflect"
@@ -148,8 +149,14 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.NixCommand(context.Background(), []string{"flake", "check"}); err != nil {
+	var out bytes.Buffer
+	if err := w.NixCommand(context.Background(), &out, []string{"flake", "check"}); err != nil {
 		t.Fatalf("NixCommand: %v", err)
+	}
+	// The nix invocation streams its output live (Opts.Stdout set).
+	calls := f.Calls()
+	if len(calls) != 1 || calls[0].Opts.Stdout == nil {
+		t.Errorf("nix should stream output (Opts.Stdout set); calls=%+v", calls)
 	}
 }
 
@@ -165,7 +172,7 @@ name = "x"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.NixCommand(context.Background(), []string{"flake", "show"}); err != nil {
+	if err := w.NixCommand(context.Background(), &bytes.Buffer{}, []string{"flake", "show"}); err != nil {
 		t.Fatalf("NixCommand: %v", err)
 	}
 }
@@ -193,7 +200,7 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.NixCommand(context.Background(), []string{"build", "."}); err != nil {
+	if err := w.NixCommand(context.Background(), &bytes.Buffer{}, []string{"build", "."}); err != nil {
 		t.Fatalf("NixCommand: %v", err)
 	}
 }
@@ -214,7 +221,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.NixCommand(context.Background(), []string{"flake", "update"}); err != nil {
+	if err := w.NixCommand(context.Background(), &bytes.Buffer{}, []string{"flake", "update"}); err != nil {
 		t.Fatalf("NixCommand: %v", err)
 	}
 	calls := f.Calls()
@@ -241,7 +248,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.NixCommand(context.Background(), []string{"--non-override-subcommand-action", "error", "flake", "update"})
+	err = w.NixCommand(context.Background(), &bytes.Buffer{}, []string{"--non-override-subcommand-action", "error", "flake", "update"})
 	if err == nil {
 		t.Fatal("expected error for deny-listed subcommand under action=error")
 	}
@@ -263,7 +270,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.NixCommand(context.Background(), []string{"run", ".#tool", "--", "arg"})
+	err = w.NixCommand(context.Background(), &bytes.Buffer{}, []string{"run", ".#tool", "--", "arg"})
 	if err == nil {
 		t.Fatal("expected error refusing to inject overrides past '--'")
 	}
@@ -294,7 +301,7 @@ input-name = "phillipgreenii-nix-base"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.NixCommand(context.Background(), []string{"flake", "check"}); err != nil {
+	if err := w.NixCommand(context.Background(), &bytes.Buffer{}, []string{"flake", "check"}); err != nil {
 		t.Fatalf("NixCommand: %v", err)
 	}
 }

@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -25,7 +26,7 @@ type UpdateOptions struct {
 // returned error at the end (like FlakeCheck). Within a single repo, a failed
 // pull marks it failed and skips update-locks and push (the working tree is
 // suspect); a failed update-locks still lets push run, since pull succeeded.
-func (ws *Workspace) Update(ctx context.Context, opts UpdateOptions) error {
+func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptions) error {
 	names := orderedRepoNames(ws.config.Repos)
 	var failed []string
 	for _, name := range names {
@@ -33,29 +34,31 @@ func (ws *Workspace) Update(ctx context.Context, opts UpdateOptions) error {
 
 		// Skip (non-fatal) if the working tree is dirty (modified or staged).
 		if ws.isDirty(ctx, repoDir) {
+			fmt.Fprintf(out, "  ⊘ skipping %s — working tree has uncommitted changes\n", name)
 			continue
 		}
 
+		fmt.Fprintf(out, "  --== update %s ==--  \n", name)
 		hasUp := ws.hasUpstream(ctx, repoDir)
 		pullFailed := false
 		projectFailed := false
 
 		if hasUp {
-			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "pull", "--rebase", "--autostash"}, exec.RunOptions{}); err != nil {
+			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "pull", "--rebase", "--autostash"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 				pullFailed = true
 				projectFailed = true
 			}
 		}
 		// Skip update-locks if pull failed: the working tree is suspect.
 		if !pullFailed {
-			if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir}); err != nil {
+			if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out}); err != nil {
 				projectFailed = true
 				// Keep going to push whatever update-locks committed.
 			}
 		}
 		// Push only when pull succeeded (even on partial update-locks failure).
 		if hasUp && !pullFailed {
-			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{}); err != nil {
+			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 				projectFailed = true
 			}
 		}

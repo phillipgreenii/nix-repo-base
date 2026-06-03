@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"testing"
@@ -29,11 +30,23 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Push(context.Background(), PushOptions{}); err != nil {
+	var out bytes.Buffer
+	if err := w.Push(context.Background(), &out, PushOptions{}); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	if len(f.Calls()) != 4 {
-		t.Errorf("expected 4 calls (check+push per repo), got %d", len(f.Calls()))
+	calls := f.Calls()
+	if len(calls) != 4 {
+		t.Errorf("expected 4 calls (check+push per repo), got %d", len(calls))
+	}
+	// The push streams; the upstream probe stays captured (silent).
+	for _, c := range calls {
+		last := c.Args[len(c.Args)-1]
+		if last == "push" && c.Opts.Stdout == nil {
+			t.Errorf("git push should stream output (Opts.Stdout set); got %v", c.Args)
+		}
+		if last == "@{u}" && c.Opts.Stdout != nil {
+			t.Errorf("upstream probe should stay captured (Opts.Stdout nil); got %v", c.Args)
+		}
 	}
 }
 
@@ -52,7 +65,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Push(context.Background(), PushOptions{}); err != nil {
+	if err := w.Push(context.Background(), &bytes.Buffer{}, PushOptions{}); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 	for _, c := range f.Calls() {

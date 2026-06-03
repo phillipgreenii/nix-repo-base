@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -39,8 +40,8 @@ const nonOverrideActionEnv = "PN_WS_NIX_NON_OVERRIDE_SUBCOMMAND_ACTION"
 // (--non-override-subcommand-action flag > PN_WS_NIX_NON_OVERRIDE_SUBCOMMAND_ACTION
 // env > warn). A `--` end-of-options separator is refused, because the wrapper
 // cannot safely append overrides past it (they would reach the user's program,
-// not nix).
-func (ws *Workspace) NixCommand(ctx context.Context, args []string) error {
+// not nix). The nix invocation's output is streamed live to out.
+func (ws *Workspace) NixCommand(ctx context.Context, out io.Writer, args []string) error {
 	action, rest, err := parseNonOverrideAction(args)
 	if err != nil {
 		return err
@@ -61,7 +62,7 @@ func (ws *Workspace) NixCommand(ctx context.Context, args []string) error {
 	if d.injectOverrides {
 		full = append(full, ws.overrideInputArgs(overrideOpts{})...)
 	}
-	_, err = ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root})
+	_, err = ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root, Stdout: out, Stderr: out})
 	return err
 }
 

@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -21,15 +22,16 @@ type FlakeCheckOptions struct{}
 //
 // Per-repo failures are collected; the overall call returns non-nil if any
 // failed. Matches the bash "full sweep" behavior — does not short-circuit on
-// first failure.
-func (ws *Workspace) FlakeCheck(ctx context.Context, opts FlakeCheckOptions) error {
+// first failure. Each check's output is streamed live to out.
+func (ws *Workspace) FlakeCheck(ctx context.Context, out io.Writer, opts FlakeCheckOptions) error {
 	names := orderedRepoNames(ws.config.Repos)
 	var failed []string
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
 		overrides := ws.overrideInputArgs(overrideOpts{ExcludeTerminal: true, ExcludeRepo: name})
 		args := append([]string{"flake", "check"}, overrides...)
-		if _, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: repoDir}); err != nil {
+		fmt.Fprintf(out, "  --== flake-check %s ==--  \n", name)
+		if _, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out}); err != nil {
 			failed = append(failed, name)
 		}
 	}

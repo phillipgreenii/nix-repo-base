@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 	"path/filepath"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -18,16 +19,17 @@ func (ws *Workspace) hasUpstream(ctx context.Context, repoDir string) bool {
 	return err == nil
 }
 
-// Push runs `git push` in each workspace repo that has a configured upstream.
-// Repos without an upstream branch are skipped.
-func (ws *Workspace) Push(ctx context.Context, opts PushOptions) error {
+// Push runs `git push` in each workspace repo that has a configured upstream,
+// streaming push output to out. Repos without an upstream branch are skipped.
+func (ws *Workspace) Push(ctx context.Context, out io.Writer, opts PushOptions) error {
 	names := orderedRepoNames(ws.config.Repos)
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
 		if !ws.hasUpstream(ctx, repoDir) {
 			continue
 		}
-		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{}); err != nil {
+		fmt.Fprintf(out, "  --== push %s ==--  \n", name)
+		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 			return fmt.Errorf("git push in %s: %w", name, err)
 		}
 	}

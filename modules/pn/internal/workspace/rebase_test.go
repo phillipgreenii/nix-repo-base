@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"testing"
@@ -28,11 +29,23 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Rebase(context.Background(), RebaseOptions{}); err != nil {
+	var out bytes.Buffer
+	if err := w.Rebase(context.Background(), &out, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
-	if len(f.Calls()) != 4 {
-		t.Errorf("expected 4 calls (check+mu per repo), got %d", len(f.Calls()))
+	calls := f.Calls()
+	if len(calls) != 4 {
+		t.Errorf("expected 4 calls (check+mu per repo), got %d", len(calls))
+	}
+	// The rebase (git mu) streams; the upstream probe stays captured.
+	for _, c := range calls {
+		last := c.Args[len(c.Args)-1]
+		if last == "mu" && c.Opts.Stdout == nil {
+			t.Errorf("git mu should stream output (Opts.Stdout set); got %v", c.Args)
+		}
+		if last == "@{u}" && c.Opts.Stdout != nil {
+			t.Errorf("upstream probe should stay captured (Opts.Stdout nil); got %v", c.Args)
+		}
 	}
 }
 
@@ -50,7 +63,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Rebase(context.Background(), RebaseOptions{}); err != nil {
+	if err := w.Rebase(context.Background(), &bytes.Buffer{}, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
 	for _, c := range f.Calls() {

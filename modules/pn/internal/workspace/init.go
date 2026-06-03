@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,8 +20,8 @@ type InitOptions struct {
 
 // Init clones missing repos from the TOML's [repos.*] entries, regenerates
 // pn-workspace.lock with resolved revs, and reconciles existing on-disk repos
-// not yet present in the TOML.
-func (w *Workspace) Init(ctx context.Context, opts InitOptions) error {
+// not yet present in the TOML. Clone progress is streamed to out.
+func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) error {
 	// 1. Reconcile: add on-disk repos missing from TOML.
 	if err := w.reconcileFromFilesystem(ctx); err != nil {
 		return fmt.Errorf("init: reconcile: %w", err)
@@ -39,7 +40,8 @@ func (w *Workspace) Init(ctx context.Context, opts InitOptions) error {
 			continue
 		}
 		cloneURL := flakeURLToHTTPS(r.URL)
-		if _, err := w.runner.Run(ctx, "git", []string{"clone", "--branch", r.Branch, cloneURL, repoDir}, exec.RunOptions{Dir: w.root}); err != nil {
+		fmt.Fprintf(out, "  --== clone %s ==--  \n", name)
+		if _, err := w.runner.Run(ctx, "git", []string{"clone", "--branch", r.Branch, cloneURL, repoDir}, exec.RunOptions{Dir: w.root, Stdout: out, Stderr: out}); err != nil {
 			return fmt.Errorf("init: clone %s: %w", name, err)
 		}
 	}
