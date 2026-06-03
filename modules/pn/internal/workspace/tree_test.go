@@ -5,10 +5,94 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+const allInputsLock = `{
+  "nodes": {
+    "root": {"inputs": {"nb": "nb", "ovl": "ovl", "nixpkgs": "nixpkgs"}},
+    "nb": {"inputs": {"nixpkgs": "nixpkgs"}},
+    "ovl": {"inputs": {"nixpkgs": "nixpkgs", "nb": ["nb"]}},
+    "nixpkgs": {"inputs": {"flake-utils": "flake-utils"}},
+    "flake-utils": {}
+  },
+  "root": "root",
+  "version": 7
+}`
+
+// TestBuildAllInputsGraph: the full flake.lock node graph is translated into
+// display-name space — workspace inputNames become their repo basenames, the
+// root becomes the terminal basename, everything else keeps its lock key. A
+// single-element follow ([X]) is a direct dep; multi-element follows are skipped.
+func TestBuildAllInputsGraph(t *testing.T) {
+	wsDisplay := map[string]string{"nb": "base", "ovl": "overlay"}
+	root, dependsOn, err := buildAllInputsGraph([]byte(allInputsLock), "term", wsDisplay)
+	if err != nil {
+		t.Fatalf("buildAllInputsGraph: %v", err)
+	}
+	if root != "term" {
+		t.Errorf("root = %q, want term", root)
+	}
+	want := map[string][]string{
+		"term":    {"base", "nixpkgs", "overlay"},
+		"base":    {"nixpkgs"},
+		"overlay": {"base", "nixpkgs"},
+		"nixpkgs": {"flake-utils"},
+	}
+	if !reflect.DeepEqual(dependsOn, want) {
+		t.Errorf("dependsOn mismatch:\n got %#v\nwant %#v", dependsOn, want)
+	}
+}
+
+// TestTree_AllInputs renders the full input graph from the terminal flake.lock,
+// including external inputs (nixpkgs, flake-utils) that the default
+// workspace-internal view omits. Output to a buffer uses the no-color "*" form.
+func TestTree_AllInputs(t *testing.T) {
+	root := t.TempDir()
+	for _, r := range []string{"term", "base", "overlay"} {
+		mkRepoDir(t, root, r)
+	}
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "term"
+
+[repos.term]
+url = "github:o/term"
+
+[repos.base]
+url = "github:o/base"
+input-name = "nb"
+
+[repos.overlay]
+url = "github:o/overlay"
+input-name = "ovl"
+`)
+	// Terminal flake.lock present on disk: Tree reads it directly, no nix calls.
+	writeFile(t, filepath.Join(root, "term", "flake.lock"), allInputsLock)
+
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := w.Tree(context.Background(), &buf, TreeOptions{AllInputs: true}); err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+	want := "term\n" +
+		"├── base\n" +
+		"│   └── nixpkgs\n" +
+		"│       └── flake-utils\n" +
+		"├── *nixpkgs\n" +
+		"└── overlay\n" +
+		"    ├── *base\n" +
+		"    └── *nixpkgs\n"
+	if buf.String() != want {
+		t.Errorf("Tree --all-inputs mismatch:\n got:\n%q\nwant:\n%q", buf.String(), want)
+	}
+}
 
 // TestColorEnabled covers the non-terminal cases (the only ones unit-testable
 // without a PTY): plain output for non-file writers, regular files, and when

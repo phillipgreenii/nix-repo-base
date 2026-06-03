@@ -233,7 +233,8 @@ func workspaceRebaseCmd() *cobra.Command {
 }
 
 func workspaceTreeCmd() *cobra.Command {
-	return &cobra.Command{
+	var allInputs bool
+	cmd := &cobra.Command{
 		Use:   "tree",
 		Short: "Print the workspace repo tree",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -241,9 +242,11 @@ func workspaceTreeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Tree(context.Background(), cmd.OutOrStdout(), workspace.TreeOptions{})
+			return w.Tree(context.Background(), cmd.OutOrStdout(), workspace.TreeOptions{AllInputs: allInputs})
 		},
 	}
+	cmd.Flags().BoolVar(&allInputs, "all-inputs", false, "show all flake inputs from the terminal flake.lock, not just workspace-internal deps")
+	return cmd
 }
 
 func workspaceLockCmd() *cobra.Command {
