@@ -338,10 +338,13 @@ SCRIPT
   [[ "$output" =~ "POST_CALL" ]]
 }
 
-@test "ul_reexec_in_dev_shell warns and returns 0 when nix develop probe fails" {
+@test "ul_reexec_in_dev_shell falls back to host tools when the dev shell cannot start" {
+  # nix develop exits non-zero WITHOUT running the --command, so the sentinel
+  # survives -> ul_reexec treats the shell as broken and returns 0 (host tools).
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "$1" == "develop" ]]; then
+  echo "nix: broken flake" >&2
   exit 1
 fi
 exit 0
@@ -361,15 +364,14 @@ MOCK
   [[ "$output" =~ "POST_CALL" ]]
 }
 
-@test "ul_reexec_in_dev_shell execs into nix develop when probe succeeds" {
+@test "ul_reexec_in_dev_shell enters the shell once, propagates success, exports UL_LIB_DIR" {
+  # A real entry removes the sentinel and runs the command. The mock simulates
+  # that (single 'develop' call), echoes the UL_LIB_DIR it inherited, exits 0.
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
-if [[ "$1" == "develop" && "$3" == "--command" && "$4" == "true" ]]; then
-  exit 0
-fi
-if [[ "$1" == "develop" && "$3" == "--command" && "$4" == "bash" ]]; then
-  shift 4
-  echo "REEXEC: $*"
+if [[ "$1" == "develop" ]]; then
+  rm -f "$UL_DEVSHELL_SENTINEL"
+  echo "ENTERED uldir=$UL_LIB_DIR"
   exit 0
 fi
 exit 99
@@ -386,10 +388,39 @@ SCRIPT
   _fix_mock_shebang "$TEST_DIR/wrap-test.sh"
   chmod +x "$TEST_DIR/wrap-test.sh"
 
-  run env -u IN_NIX_SHELL "$TEST_DIR/wrap-test.sh" arg1 arg2
+  run env -u IN_NIX_SHELL UL_LIB_DIR=/resolved/lib/scripts "$TEST_DIR/wrap-test.sh" arg1
   [ "$status" -eq 0 ]
   [[ "$output" =~ "entering dev shell" ]]
-  [[ "$output" =~ "REEXEC:" ]]
-  [[ "$output" =~ "wrap-test.sh arg1 arg2" ]]
+  [[ "$output" =~ "ENTERED uldir=/resolved/lib/scripts" ]]
+  [[ ! "$output" =~ "WARNING" ]]
+  [[ ! "$output" =~ "FALLTHROUGH" ]]
+}
+
+@test "ul_reexec_in_dev_shell propagates a non-zero status from inside the shell" {
+  # Entry succeeds (sentinel removed) but the in-shell run fails -> that status
+  # must propagate, not be masked by the host-tools fallback.
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "develop" ]]; then
+  rm -f "$UL_DEVSHELL_SENTINEL"
+  exit 7
+fi
+exit 99
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  cat > "$TEST_DIR/wrap-test.sh" <<SCRIPT
+#!/usr/bin/env bash
+source "$UL_LOCKS_LIB"
+ul_reexec_in_dev_shell "\$@"
+echo FALLTHROUGH
+SCRIPT
+  _fix_mock_shebang "$TEST_DIR/wrap-test.sh"
+  chmod +x "$TEST_DIR/wrap-test.sh"
+
+  run env -u IN_NIX_SHELL "$TEST_DIR/wrap-test.sh"
+  [ "$status" -eq 7 ]
+  [[ ! "$output" =~ "WARNING" ]]
   [[ ! "$output" =~ "FALLTHROUGH" ]]
 }

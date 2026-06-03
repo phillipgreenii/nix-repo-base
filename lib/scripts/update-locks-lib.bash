@@ -93,9 +93,14 @@ _ul_ensure_pre_commit_hooks() {
 # Safe to call from any update-locks.sh as the first thing after sourcing this lib.
 # Behavior:
 #   - If IN_NIX_SHELL is already set, prints a notice and returns 0 (no re-exec).
-#   - Probes `nix develop <script_dir> --command true`; if that fails (broken flake),
-#     prints a warning and returns 0 so the script can still run with host tooling.
-#   - Otherwise execs the script inside `nix develop ... --command bash`. Does not return.
+#   - Otherwise makes a SINGLE `nix develop ... --command bash` entry. A sentinel
+#     file distinguishes the outcomes once nix returns:
+#       * sentinel still present -> the dev shell never started (e.g. broken
+#         flake); prints a warning and returns 0 so the script can still run
+#         with host tooling (and the user can fix the flake).
+#       * sentinel gone -> the script ran inside the shell; exits with its status.
+#   - Exports UL_LIB_DIR (when set) so the in-shell re-run reuses it instead of
+#     resolving determine-ul-lib-dir a second time.
 ul_reexec_in_dev_shell() {
   local script="$0"
   local script_dir
@@ -106,13 +111,29 @@ ul_reexec_in_dev_shell() {
     return 0
   fi
 
+  if [[ -n ${UL_LIB_DIR:-} ]]; then
+    export UL_LIB_DIR
+  fi
+
   echo "==> entering dev shell at $script_dir..." >&2
-  if ! nix develop "$script_dir" --command true >/dev/null 2>&1; then
+
+  local sentinel
+  sentinel="$(mktemp)"
+  # The in-shell command removes the sentinel as its first act, so its presence
+  # afterward means we never entered the shell. nix's own stderr is left visible
+  # (not suppressed) so a broken flake's real error is reported.
+  # shellcheck disable=SC2016  # $UL_DEVSHELL_SENTINEL and $@ are expanded by the inner shell, intentionally
+  UL_DEVSHELL_SENTINEL="$sentinel" \
+    nix develop "$script_dir" --command bash -c 'rm -f "$UL_DEVSHELL_SENTINEL"; exec bash "$@"' ul-reexec "$script" "$@"
+  local rc=$?
+
+  if [[ -e $sentinel ]]; then
+    rm -f "$sentinel"
     echo "WARNING: nix develop failed at $script_dir — falling back to system tools" >&2
     return 0
   fi
-
-  exec nix develop "$script_dir" --command bash "$script" "$@"
+  rm -f "$sentinel"
+  exit "$rc"
 }
 
 ul_setup() {
