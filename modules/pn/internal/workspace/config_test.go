@@ -143,7 +143,7 @@ url = "github:phillipgreenii/nix-overlay"
 }
 
 func TestKnownHookCommands(t *testing.T) {
-	want := []string{"apply", "build", "flake-check", "init", "pre-commit-check", "push", "rebase", "status", "tree", "update", "upgrade"}
+	want := []string{"apply", "build", "flake-check", "init", "lock", "pre-commit-check", "push", "rebase", "status", "tree", "update", "upgrade"}
 	for _, c := range want {
 		if !IsKnownHookCommand(c) {
 			t.Errorf("expected %q to be a known hook command", c)

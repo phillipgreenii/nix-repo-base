@@ -3,11 +3,35 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+// TestColorEnabled covers the non-terminal cases (the only ones unit-testable
+// without a PTY): plain output for non-file writers, regular files, and when
+// NO_COLOR is set. The char-device "true" path is a standard OS check.
+func TestColorEnabled(t *testing.T) {
+	if colorEnabled(&bytes.Buffer{}) {
+		t.Error("colorEnabled should be false for a non-*os.File writer (pipe/buffer)")
+	}
+
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if colorEnabled(f) {
+		t.Error("colorEnabled should be false for a regular file (not a char device)")
+	}
+
+	t.Setenv("NO_COLOR", "1")
+	if colorEnabled(f) {
+		t.Error("colorEnabled should be false when NO_COLOR is set")
+	}
+}
 
 // TestRenderTree_NoColor_AsteriskOnDuplicate: without color, a repeated
 // dependency is printed the same but prefixed with "*".

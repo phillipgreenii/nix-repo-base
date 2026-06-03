@@ -47,8 +47,23 @@ func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+	out := &bytes.Buffer{}
+	if err := w.Apply(context.Background(), out, ApplyOptions{Force: true}); err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	// Output names the terminal project.
+	if !strings.Contains(out.String(), "leaf") {
+		t.Errorf("apply output should name the terminal project %q; got:\n%s", "leaf", out.String())
+	}
+	// The apply command streams its output live (Opts.Stdout set).
+	var streamed bool
+	for _, c := range f.Calls() {
+		if c.Name == "sudo" {
+			streamed = c.Opts.Stdout != nil
+		}
+	}
+	if !streamed {
+		t.Errorf("apply command should stream output (Opts.Stdout set)")
 	}
 }
 

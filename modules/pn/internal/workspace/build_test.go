@@ -52,6 +52,10 @@ input-name = "dep-input"
 	if calls[0].Opts.Dir != leafDir || calls[1].Opts.Dir != leafDir {
 		t.Errorf("commands must run in terminal dir; got %q,%q", calls[0].Opts.Dir, calls[1].Opts.Dir)
 	}
+	// Both commands stream their output live (Opts.Stdout set).
+	if calls[0].Opts.Stdout == nil || calls[1].Opts.Stdout == nil {
+		t.Errorf("build should stream subprocess output (Opts.Stdout set on fmt + build)")
+	}
 }
 
 func TestBuild_ShowNixCommandsOnly(t *testing.T) {

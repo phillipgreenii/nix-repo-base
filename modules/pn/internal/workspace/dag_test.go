@@ -67,6 +67,62 @@ func TestBuildDAG_SiblingsAlphabeticalTiebreak(t *testing.T) {
 	}
 }
 
+// TestBuildDAG_CycleFallback: a dependency cycle still yields every repo in the
+// order (the topo-sort fallback appends the cyclic nodes alphabetically).
+func TestBuildDAG_CycleFallback(t *testing.T) {
+	cfg := &WorkspaceConfig{
+		Workspace: WorkspaceSection{Terminal: "z"},
+		Repos: map[string]RepoConfig{
+			"a": {InputName: "a"},
+			"b": {InputName: "b"},
+			"z": {},
+		},
+	}
+	declared := map[string][]string{
+		"a": {"b"}, // a <-> b cycle
+		"b": {"a"},
+		"z": {"a"},
+	}
+	order, _ := buildDAG(cfg, declared)
+	if len(order) != 3 {
+		t.Fatalf("order should contain all repos despite the cycle; got %v", order)
+	}
+	seen := map[string]bool{}
+	for _, k := range order {
+		seen[k] = true
+	}
+	for _, k := range []string{"a", "b", "z"} {
+		if !seen[k] {
+			t.Errorf("order missing %q: %v", k, order)
+		}
+	}
+}
+
+// TestGatherDeclaredInputs_ErrorsOnBadEvalOutput: non-JSON eval output is a
+// hard error, not silently ignored.
+func TestGatherDeclaredInputs_ErrorsOnBadEvalOutput(t *testing.T) {
+	root := t.TempDir()
+	mkRepoDir(t, root, "term")
+	writeFile(t, filepath.Join(root, "term", "flake.nix"), "{ inputs = {}; }")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "term"
+
+[repos.term]
+url = "github:o/term"
+`)
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"eval", "--json", "--file", filepath.Join(root, "term", "flake.nix"), "inputs", "--apply", "builtins.attrNames"}, exec.Result{Stdout: []byte("not json")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := w.gatherDeclaredInputs(context.Background()); err == nil {
+		t.Fatal("expected an error on non-JSON eval output")
+	}
+}
+
 // TestDeriveDAG_ReadsDeclaredInputsFromFlakeNix exercises the IO path: each
 // repo's declared inputs come from `nix eval --file flake.nix`, not the lock.
 func TestDeriveDAG_ReadsDeclaredInputsFromFlakeNix(t *testing.T) {
@@ -115,6 +171,44 @@ input-name = "ovl"
 	}
 	if got := dependsOn["overlay"]; !reflect.DeepEqual(got, []string{"base"}) {
 		t.Errorf("dependsOn[overlay] = %v, want [base]", got)
+	}
+}
+
+// TestGatherDeclaredInputs_SkipsRepoWithoutFlakeNix verifies a declared repo
+// that isn't cloned (no flake.nix on disk) is skipped, not evaluated.
+func TestGatherDeclaredInputs_SkipsRepoWithoutFlakeNix(t *testing.T) {
+	root := t.TempDir()
+	mkRepoDir(t, root, "term")
+	writeFile(t, filepath.Join(root, "term", "flake.nix"), "{ inputs = {}; }")
+	mkRepoDir(t, root, "base") // dir exists but NO flake.nix -> skipped
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "term"
+
+[repos.term]
+url = "github:o/term"
+
+[repos.base]
+url = "github:o/base"
+input-name = "nb"
+`)
+	f := exec.NewFakeRunner()
+	// Only term is evaluated; base has no flake.nix so no eval is scripted.
+	f.AddResponse("nix", []string{"eval", "--json", "--file", filepath.Join(root, "term", "flake.nix"), "inputs", "--apply", "builtins.attrNames"}, exec.Result{Stdout: []byte(`["nb"]`)}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	declared, err := w.gatherDeclaredInputs(context.Background())
+	if err != nil {
+		t.Fatalf("gatherDeclaredInputs: %v", err)
+	}
+	if _, ok := declared["base"]; ok {
+		t.Errorf("base has no flake.nix and must be skipped; got %v", declared)
+	}
+	if got := declared["term"]; !reflect.DeepEqual(got, []string{"nb"}) {
+		t.Errorf("term declared inputs = %v, want [nb]", got)
 	}
 }
 
