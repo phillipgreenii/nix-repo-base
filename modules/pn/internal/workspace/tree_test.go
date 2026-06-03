@@ -9,27 +9,47 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-// TestRenderTree_DedupAndConnectors checks the pure renderer: connectors,
-// indentation, and that a repeated dependency is shown once then marked.
-func TestRenderTree_DedupAndConnectors(t *testing.T) {
+// TestRenderTree_NoColor_AsteriskOnDuplicate: without color, a repeated
+// dependency is printed the same but prefixed with "*".
+func TestRenderTree_NoColor_AsteriskOnDuplicate(t *testing.T) {
 	var buf bytes.Buffer
 	dependsOn := map[string][]string{
 		"term":    {"base", "overlay"},
 		"overlay": {"base"},
 	}
-	renderTree(&buf, "term", dependsOn)
+	renderTree(&buf, "term", dependsOn, false)
 
 	want := "term\n" +
 		"├── base\n" +
 		"└── overlay\n" +
-		"    └── base [↑ shown above]\n"
+		"    └── *base\n"
 	if buf.String() != want {
-		t.Errorf("renderTree mismatch:\n got:\n%s\nwant:\n%s", buf.String(), want)
+		t.Errorf("renderTree(no color) mismatch:\n got:\n%q\nwant:\n%q", buf.String(), want)
+	}
+}
+
+// TestRenderTree_Color_DimOnDuplicate: with color, the first listing is
+// untouched and a repeat is dimmed (ANSI 2m … 0m).
+func TestRenderTree_Color_DimOnDuplicate(t *testing.T) {
+	var buf bytes.Buffer
+	dependsOn := map[string][]string{
+		"term":    {"base", "overlay"},
+		"overlay": {"base"},
+	}
+	renderTree(&buf, "term", dependsOn, true)
+
+	want := "term\n" +
+		"├── base\n" +
+		"└── overlay\n" +
+		"    └── \x1b[2mbase\x1b[0m\n"
+	if buf.String() != want {
+		t.Errorf("renderTree(color) mismatch:\n got:\n%q\nwant:\n%q", buf.String(), want)
 	}
 }
 
 // TestTree_RendersGraphFromDeclaredInputs exercises Tree end-to-end: it derives
 // the DAG from each repo's declared flake inputs (not the lock) and renders it.
+// Output goes to a bytes.Buffer (not a TTY), so the no-color "*" form is used.
 func TestTree_RendersGraphFromDeclaredInputs(t *testing.T) {
 	root := t.TempDir()
 	for _, r := range []string{"term", "base", "overlay"} {
@@ -71,8 +91,8 @@ input-name = "ovl"
 	want := "term\n" +
 		"├── base\n" +
 		"└── overlay\n" +
-		"    └── base [↑ shown above]\n"
+		"    └── *base\n"
 	if buf.String() != want {
-		t.Errorf("Tree mismatch:\n got:\n%s\nwant:\n%s", buf.String(), want)
+		t.Errorf("Tree mismatch:\n got:\n%q\nwant:\n%q", buf.String(), want)
 	}
 }
