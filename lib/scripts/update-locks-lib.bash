@@ -224,26 +224,16 @@ ul_run_step() {
   $_ul_restore_e
 
   if [[ $rc -eq 0 ]]; then
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-      if ! nix fmt; then
-        echo "  ✗ Step '${step_name}' nix fmt failed"
-        git reset --hard HEAD 2>/dev/null || true
-        git clean -fd 2>/dev/null || true
-        _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
-        _UL_FAILED_STEPS+=("$step_name")
-        return 0
-      fi
-      if ! git add -A || ! git commit -m "$commit_msg"; then
-        echo "  ✗ Step '${step_name}' commit failed"
-        git reset --hard HEAD 2>/dev/null || true
-        git clean -fd 2>/dev/null || true
-        _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
-        _UL_FAILED_STEPS+=("$step_name")
-        return 0
-      fi
+    if _ul_commit_updated "$step_name" "$commit_msg"; then
+      _UL_STEPS_SUCCEEDED=$((_UL_STEPS_SUCCEEDED + 1))
     fi
-    ul_mark_done "$step_name"
-    _UL_STEPS_SUCCEEDED=$((_UL_STEPS_SUCCEEDED + 1))
+  elif [[ $rc -eq $UL_RC_ATTEMPTED ]]; then
+    git reset --hard HEAD 2>/dev/null || true
+    git clean -fd 2>/dev/null || true
+    if _ul_commit_stamp_only "$step_name"; then
+      echo "  ⊘ Step '${step_name}' attempted — no update applied (deferred)"
+      _UL_STEPS_DEFERRED=$((_UL_STEPS_DEFERRED + 1))
+    fi
   else
     echo "  ✗ Step '${step_name}' failed (exit code ${rc})"
     git reset --hard HEAD 2>/dev/null || true
@@ -251,6 +241,49 @@ ul_run_step() {
     _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
     _UL_FAILED_STEPS+=("$step_name")
   fi
+}
+
+# Commit a successful step: format content if any changed, write the stamp,
+# and commit everything in one commit (content + stamp, or stamp-only on a
+# no-op success). On fmt/commit failure: roll back, record failure, return 1.
+_ul_commit_updated() {
+  local step_name="$1" commit_msg="$2"
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    if ! nix fmt; then
+      echo "  ✗ Step '${step_name}' nix fmt failed"
+      git reset --hard HEAD 2>/dev/null || true
+      git clean -fd 2>/dev/null || true
+      _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
+      _UL_FAILED_STEPS+=("$step_name")
+      return 1
+    fi
+  fi
+  ul_write_stamp "$step_name"
+  if ! git add -A || ! git commit -m "$commit_msg" >/dev/null; then
+    echo "  ✗ Step '${step_name}' commit failed"
+    git reset --hard HEAD 2>/dev/null || true
+    git clean -fd 2>/dev/null || true
+    _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
+    _UL_FAILED_STEPS+=("$step_name")
+    return 1
+  fi
+  return 0
+}
+
+# Commit only the step's stamp (used after a deferral rolled back content).
+_ul_commit_stamp_only() {
+  local step_name="$1"
+  ul_write_stamp "$step_name"
+  if ! git add -- "$_UL_STAMP_DIR/$step_name" || \
+     ! git commit -m "update-locks: ${step_name} attempted, no update applied" >/dev/null; then
+    echo "  ✗ Step '${step_name}' stamp commit failed"
+    git reset --hard HEAD 2>/dev/null || true
+    git clean -fd 2>/dev/null || true
+    _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
+    _UL_FAILED_STEPS+=("$step_name")
+    return 1
+  fi
+  return 0
 }
 
 ul_finalize() {

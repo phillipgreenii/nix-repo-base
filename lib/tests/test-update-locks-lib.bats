@@ -86,7 +86,7 @@ teardown() {
   [ "$msg" = "update: test step" ]
 }
 
-@test "ul_run_step with no changes does not create commit" {
+@test "ul_run_step with no content change creates a stamp-only commit" {
   source "$UL_LOCKS_LIB"
   ul_setup "test-project" "$TEST_DIR"
 
@@ -94,11 +94,13 @@ teardown() {
   before_hash=$(git rev-parse HEAD)
 
   noop_step() { true; }
-  ul_run_step "noop-step" "should not appear" noop_step
+  ul_run_step "noop-step" "update: noop" noop_step
 
-  local after_hash
-  after_hash=$(git rev-parse HEAD)
-  [ "$before_hash" = "$after_hash" ]
+  # HEAD advanced, and the only change is the stamp file.
+  [ "$(git rev-parse HEAD)" != "$before_hash" ]
+  run git show --name-only --format= HEAD
+  [[ "$output" =~ ".update-locks/steps/noop-step" ]]
+  [ "$(git show --name-only --format= HEAD | grep -vc '^$')" -eq 1 ]
 }
 
 @test "ul_run_step increments succeeded counter" {
@@ -112,6 +114,71 @@ teardown() {
   [ "$_UL_STEPS_RAN" -eq 2 ]
   [ "$_UL_STEPS_SUCCEEDED" -eq 2 ]
   [ "$_UL_STEPS_FAILED" -eq 0 ]
+}
+
+# --- ul_run_step: success commits content + stamp together ---
+
+@test "ul_run_step success commits content and the stamp in one commit" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  my_step() { echo "new content" > file.txt; }
+  ul_run_step "test-step" "update: test step" my_step
+
+  [ "$(git log -1 --format=%s)" = "update: test step" ]
+  run git show --name-only --format= HEAD
+  [[ "$output" =~ "file.txt" ]]
+  [[ "$output" =~ ".update-locks/steps/test-step" ]]
+}
+
+# --- ul_run_step: deferral (exit 75) ---
+
+@test "ul_run_step exit 75 rolls back content but commits the stamp" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  deferring_step() { echo "junk" > file.txt; echo "WARNING: not ready" >&2; ul_attempted; }
+  ul_run_step "defer-step" "update: defer" deferring_step
+
+  # Content rolled back (file.txt back to original), tree clean.
+  [ "$(cat file.txt)" = "initial" ]
+  git diff --quiet
+  git diff --cached --quiet
+  # A stamp-only commit landed.
+  run git show --name-only --format= HEAD
+  [[ "$output" =~ ".update-locks/steps/defer-step" ]]
+  [[ ! "$output" =~ "file.txt" ]]
+  # Counted as a pass (deferred), not a failure.
+  [ "$_UL_STEPS_DEFERRED" -eq 1 ]
+  [ "$_UL_STEPS_FAILED" -eq 0 ]
+}
+
+@test "ul_run_step exit 75 with no content change still commits the stamp" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  before=$(git rev-parse HEAD)
+  defer_noop() { ul_attempted; }
+  ul_run_step "defer-noop" "msg" defer_noop
+
+  [ "$(git rev-parse HEAD)" != "$before" ]
+  [ "$_UL_STEPS_DEFERRED" -eq 1 ]
+  run git show --name-only --format= HEAD
+  [[ "$output" =~ ".update-locks/steps/defer-noop" ]]
+}
+
+@test "ul_run_step other non-zero is a full rollback (no stamp) and a failure" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  before=$(git rev-parse HEAD)
+  hard_fail() { echo "mess" > file.txt; return 1; }
+  ul_run_step "hard-fail" "msg" hard_fail
+
+  [ "$(git rev-parse HEAD)" = "$before" ]        # no commit at all
+  [ ! -f "$TEST_DIR/.update-locks/steps/hard-fail" ]  # no stamp
+  [ "$_UL_STEPS_FAILED" -eq 1 ]
+  git diff --quiet
 }
 
 # --- ul_run_step: failure path ---
@@ -200,7 +267,7 @@ teardown() {
   source "$UL_LOCKS_LIB"
   ul_setup "test-project" "$TEST_DIR"
 
-  ul_mark_done "cached-step"
+  ul_write_stamp "cached-step"
   noop() { true; }
   ul_run_step "cached-step" "msg" noop
 
