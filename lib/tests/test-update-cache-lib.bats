@@ -51,91 +51,64 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
-# --- ul_should_run / ul_mark_done ---
+# --- ul_should_run (in-repo, value-based) ---
 
-@test "ul_should_run returns 0 when marker does not exist" {
-  ul_init "my-project"
+@test "ul_should_run returns 0 when no stamp exists" {
   run ul_should_run "some-step"
   [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
-@test "ul_should_run returns 1 when marker is fresh" {
-  ul_init "my-project"
-  ul_mark_done "some-step"
+@test "ul_should_run returns 1 when stamp is fresh" {
+  ul_write_stamp "some-step"
   run ul_should_run "some-step"
   [ "$status" -eq 1 ]
 }
 
-@test "ul_should_run returns 0 when marker is stale" {
-  ul_init "my-project"
-  ul_mark_done "some-step"
-  local marker="$UL_STATE_DIR/my-project/steps/some-step"
-  touch -t 202501010000 "$marker"
+@test "ul_should_run returns 0 when stamp is stale" {
+  mkdir -p "$_UL_STAMP_DIR"
+  echo "2020-01-01T00:00:00Z" > "$_UL_STAMP_DIR/some-step"
   run ul_should_run "some-step"
   [ "$status" -eq 0 ]
 }
 
-@test "ul_should_run returns 0 when UL_FORCE is true" {
+@test "ul_should_run returns 0 (fail-open) when stamp is unparseable" {
+  mkdir -p "$_UL_STAMP_DIR"
+  echo "<<<<<<< HEAD" > "$_UL_STAMP_DIR/some-step"
+  run ul_should_run "some-step"
+  [ "$status" -eq 0 ]
+}
+
+@test "ul_should_run returns 0 when UL_FORCE is true even if fresh" {
   export NIX_UL_FORCE_UPDATE="true"
   source "$UL_LIB_SCRIPT"
-  ul_init "my-project"
-  ul_mark_done "some-step"
+  ul_init "my-project" "$TEST_DIR/repo"
+  ul_write_stamp "some-step"
   run ul_should_run "some-step"
   [ "$status" -eq 0 ]
 }
 
-@test "ul_mark_done creates marker file" {
-  ul_init "my-project"
-  ul_mark_done "some-step"
-  [ -f "$UL_STATE_DIR/my-project/steps/some-step" ]
+@test "ul_should_run does NOT bypass on UL_CI_MODE" {
+  export UL_CI_MODE="true"
+  source "$UL_LIB_SCRIPT"
+  ul_init "my-project" "$TEST_DIR/repo"
+  ul_write_stamp "some-step"
+  run ul_should_run "some-step"
+  [ "$status" -eq 1 ]   # CI now respects the shared gate
 }
 
-@test "ul_mark_done updates marker mtime on repeated calls" {
-  ul_init "my-project"
-  ul_mark_done "some-step"
-  local marker="$UL_STATE_DIR/my-project/steps/some-step"
-  touch -t 202501010000 "$marker"
-  local old_mtime
-  old_mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker")
-  sleep 1
-  ul_mark_done "some-step"
-  local new_mtime
-  new_mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker")
-  [ "$new_mtime" -gt "$old_mtime" ]
-}
-
-# --- Skip message formatting ---
-
-@test "ul_should_run skip message includes step name" {
-  ul_init "my-project"
-  ul_mark_done "brew-update"
+@test "ul_should_run skip message includes step name, timestamp, and remaining" {
+  mkdir -p "$_UL_STAMP_DIR"
+  echo "2026-06-04T12:00:00Z" > "$_UL_STAMP_DIR/brew-update"
+  # Force "fresh" by setting a huge window so it's always within it.
+  export UL_STALE_SECONDS=999999999
+  source "$UL_LIB_SCRIPT"
+  ul_init "my-project" "$TEST_DIR/repo"
   run ul_should_run "brew-update"
   [ "$status" -eq 1 ]
   [[ "$output" =~ "Skipping brew-update" ]]
-}
-
-@test "ul_should_run skip message includes last successful timestamp" {
-  ul_init "my-project"
-  ul_mark_done "brew-update"
-  run ul_should_run "brew-update"
-  [ "$status" -eq 1 ]
-  [[ "$output" =~ "last successful at" ]]
-}
-
-@test "ul_should_run skip message includes time remaining" {
-  ul_init "my-project"
-  ul_mark_done "brew-update"
-  run ul_should_run "brew-update"
-  [ "$status" -eq 1 ]
+  [[ "$output" =~ "2026-06-04T12:00:00Z" ]]
   [[ "$output" =~ "next eligible in" ]]
-  [[ "$output" =~ [0-9]+h\ [0-9]+m\ [0-9]+s ]]
-}
-
-@test "ul_should_run prints nothing when step should run (no marker)" {
-  ul_init "my-project"
-  run ul_should_run "new-step"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
 }
 
 # --- ul_needs_rebuild / ul_mark_applied ---

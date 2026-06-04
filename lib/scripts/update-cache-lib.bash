@@ -33,36 +33,31 @@ ul_write_stamp() {
 
 ul_should_run() {
   local step_name="$1"
-  local marker="$UL_STATE_DIR/$_UL_PROJECT/steps/$step_name"
+  local stamp="$_UL_STAMP_DIR/$step_name"
 
-  if [[ $UL_FORCE == "true" || $UL_CI_MODE == "true" ]]; then
+  if [[ $UL_FORCE == "true" ]]; then
     return 0
   fi
+  # NOTE: UL_CI_MODE intentionally does NOT bypass — CI respects the shared,
+  # committed gate. UL_CI_MODE only governs the daemon health-check elsewhere.
 
-  if [[ ! -f $marker ]]; then
-    return 0
-  fi
+  [[ -f $stamp ]] || return 0
 
-  local now marker_mtime age remaining
+  local stored_iso stored_epoch now age
+  stored_iso=$(<"$stamp")
+  stored_epoch=$(_ul_iso_to_epoch "$stored_iso") || return 0   # unparseable → run
   now=$(date +%s)
-  marker_mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker")
-  age=$((now - marker_mtime))
+  age=$((now - stored_epoch))
 
   if [[ $age -ge $UL_STALE_SECONDS ]]; then
     return 0
   fi
 
-  remaining=$((UL_STALE_SECONDS - age))
-  local hours minutes seconds
-  hours=$((remaining / 3600))
-  minutes=$(((remaining % 3600) / 60))
-  seconds=$((remaining % 60))
-
-  local last_run
-  last_run=$(date -r "$marker_mtime" "+%Y-%m-%d %H:%M:%S" 2>/dev/null ||
-    date -d "@$marker_mtime" "+%Y-%m-%d %H:%M:%S")
-
-  echo -e "\033[33mSkipping ${step_name}: last successful at ${last_run}, next eligible in ${hours}h ${minutes}m ${seconds}s\033[0m"
+  local remaining=$((UL_STALE_SECONDS - age))
+  local hours=$((remaining / 3600))
+  local minutes=$(((remaining % 3600) / 60))
+  local seconds=$((remaining % 60))
+  echo -e "\033[33mSkipping ${step_name}: last successful at ${stored_iso}, next eligible in ${hours}h ${minutes}m ${seconds}s\033[0m"
   return 1
 }
 
