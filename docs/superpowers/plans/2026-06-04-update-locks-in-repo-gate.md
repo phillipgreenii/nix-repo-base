@@ -25,14 +25,20 @@
 | `lib/tests/test-update-cache-lib.bats` | cache-lib tests            | Modify: rewrite for value-based in-repo gate; delete vestigial-fn tests                                                                                               |
 | `lib/tests/test-update-locks-lib.bats` | locks-lib tests            | Modify: add three-outcome + deferred tests; fix tests that used `ul_mark_done` / assumed no-op = no-commit                                                            |
 
-**Active system for build/check commands:** `aarch64-darwin`. All commands below assume CWD is `phillipg-nix-repo-base/`.
+**Active system for build/check commands:** `aarch64-darwin`. All commands below assume CWD is the worktree root (the checkout of this repo).
 
-**Test commands used throughout:**
+**Test command — use this everywhere a step says "run the tests":**
 
-- Fast single-file (uses ambient git/coreutils, bats via `nix run`):
-  `UL_LIB_SCRIPTS_DIR="$PWD/lib/scripts" nix run nixpkgs#bats -- lib/tests/<file>.bats`
-- Authoritative (sandboxed, runs both bats files):
-  `nix build .#checks.aarch64-darwin.test-update-locks-lib -L`
+```bash
+nix build .#checks.aarch64-darwin.test-update-locks-lib -L
+```
+
+This runs **both** `lib/tests/*.bats` files in the Nix sandbox (GNU sed, pinned coreutils/git). Notes for whoever executes this:
+
+- **Do NOT use `nix run nixpkgs#bats -- …` on macOS.** The harness helper `_fix_mock_shebang` uses GNU-only `sed -i "1s|…|…|"`; the ambient macOS **BSD sed** misparses it and every mock-using test errors in `setup`. The sandbox check uses GNU sed and is the source of truth.
+- **`nix build .#checks…` reads tracked files from the git working tree.** All files this plan edits are already tracked, so working-tree edits are picked up — but if results look stale, `git add -A` first to be certain Nix sees them. (A dirty-tree warning from Nix is expected and harmless.)
+- When a step says "verify it FAILS," you'll see the relevant new/changed test fail inside the otherwise-green suite; when it says "verify it PASSES," the whole `test-update-locks-lib` build must succeed.
+- Optional faster local loop (only if you want it): `nix shell nixpkgs#bats nixpkgs#gnused nixpkgs#coreutils nixpkgs#git -c env UL_LIB_SCRIPTS_DIR="$PWD/lib/scripts" bats lib/tests/<file>.bats` — `gnused` puts GNU `sed` on PATH so `_fix_mock_shebang` works.
 
 ---
 
