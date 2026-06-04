@@ -51,7 +51,7 @@ ul_should_run() {
 
   local stored_iso stored_epoch now age
   stored_iso=$(<"$stamp")
-  stored_epoch=$(_ul_iso_to_epoch "$stored_iso") || return 0   # unparseable → run
+  stored_epoch=$(_ul_iso_to_epoch "$stored_iso") || return 0 # unparseable → run
   now=$(date +%s)
   age=$((now - stored_epoch))
 

@@ -274,8 +274,8 @@ _ul_commit_updated() {
 _ul_commit_stamp_only() {
   local step_name="$1"
   ul_write_stamp "$step_name"
-  if ! git add -- "$_UL_STAMP_DIR/$step_name" || \
-     ! git commit -m "update-locks: ${step_name} attempted, no update applied" >/dev/null; then
+  if ! git add -- "$_UL_STAMP_DIR/$step_name" ||
+    ! git commit -m "update-locks: ${step_name} attempted, no update applied" >/dev/null; then
     echo "  ✗ Step '${step_name}' stamp commit failed"
     git reset --hard HEAD 2>/dev/null || true
     git clean -fd 2>/dev/null || true
