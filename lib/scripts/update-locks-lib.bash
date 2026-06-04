@@ -291,6 +291,7 @@ ul_finalize() {
   echo "=== Update Summary ==="
   echo "  Ran:     ${_UL_STEPS_RAN}"
   echo "  Passed:  ${_UL_STEPS_SUCCEEDED}"
+  echo "  Deferred: ${_UL_STEPS_DEFERRED}"
   echo "  Failed:  ${_UL_STEPS_FAILED}"
   echo "  Skipped: ${_UL_STEPS_SKIPPED}"
 

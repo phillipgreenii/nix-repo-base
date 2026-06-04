@@ -16,7 +16,12 @@ _fix_mock_shebang() {
 
 setup() {
   TEST_DIR=$(mktemp -d)
-  export XDG_STATE_HOME="$TEST_DIR/state"
+  # XDG_STATE_HOME must live OUTSIDE the repo: _ul_ensure_pre_commit_hooks writes
+  # a pre-commit-drv-path marker under it during ul_setup. If it were nested in
+  # TEST_DIR (the git repo), `git add -A` in a step's commit would sweep that
+  # marker into the commit, polluting the per-step stamp commits the tests assert.
+  STATE_DIR=$(mktemp -d)
+  export XDG_STATE_HOME="$STATE_DIR"
   export NIX_UL_FORCE_UPDATE="true"
 
   # Mock nix so that `nix fmt` is a no-op in tests
@@ -44,6 +49,7 @@ teardown() {
   cd /
   rm -rf "$TEST_DIR"
   rm -rf "${MOCK_BIN:-}"
+  rm -rf "${STATE_DIR:-}"
 }
 
 # --- ul_setup ---
@@ -314,6 +320,19 @@ teardown() {
   [[ "$output" =~ "Ran:     2" ]]
   [[ "$output" =~ "Passed:  1" ]]
   [[ "$output" =~ "Failed:  1" ]]
+}
+
+@test "ul_finalize reports a Deferred count and exits 0 when only deferrals" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  defer() { ul_attempted; }
+  ul_run_step "d1" "msg" defer
+
+  run ul_finalize
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Deferred: 1" ]]
+  [[ "$output" =~ "successfully" ]]
 }
 
 # --- signal handling ---
