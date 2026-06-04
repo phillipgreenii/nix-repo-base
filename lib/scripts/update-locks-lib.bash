@@ -5,10 +5,18 @@
 
 _UL_LOCKS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Exit code a step returns to mean "valid attempt, no update applied" — roll
+# back content but record the timestamp (so it isn't retried until the window
+# expires) and keep the run passing. 75 = EX_TEMPFAIL: clear of generic 1/2 and
+# of Nix's 100/101, so a real tool failure is never misread as a deferral.
+UL_RC_ATTEMPTED=75
+ul_attempted() { exit "$UL_RC_ATTEMPTED"; }
+
 _UL_STEPS_RAN=0
 _UL_STEPS_SUCCEEDED=0
 _UL_STEPS_FAILED=0
 _UL_STEPS_SKIPPED=0
+_UL_STEPS_DEFERRED=0
 _UL_FAILED_STEPS=()
 _UL_SCRIPT_DIR=""
 _UL_CHILD_PID=""
@@ -143,7 +151,7 @@ ul_setup() {
 
   # shellcheck disable=SC1091
   source "${_UL_LOCKS_LIB_DIR}/update-cache-lib.bash"
-  ul_init "$project_name"
+  ul_init "$project_name" "$script_dir"
 
   cd "$script_dir"
 
@@ -169,6 +177,7 @@ ul_setup() {
   _UL_STEPS_SUCCEEDED=0
   _UL_STEPS_FAILED=0
   _UL_STEPS_SKIPPED=0
+  _UL_STEPS_DEFERRED=0
   _UL_FAILED_STEPS=()
 
   ul_check_nix_daemon
