@@ -51,6 +51,18 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
+@test "_ul_iso_to_epoch rejects an empty value" {
+  run _ul_iso_to_epoch ""
+  [ "$status" -ne 0 ]
+}
+
+@test "ul_should_run returns 0 (fail-open) when stamp is empty" {
+  mkdir -p "$_UL_STAMP_DIR"
+  : > "$_UL_STAMP_DIR/some-step"
+  run ul_should_run "some-step"
+  [ "$status" -eq 0 ]
+}
+
 # --- ul_should_run (in-repo, value-based) ---
 
 @test "ul_should_run returns 0 when no stamp exists" {

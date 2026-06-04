@@ -6,6 +6,7 @@
 UL_STALE_SECONDS="${UL_STALE_SECONDS:-43200}"
 UL_FORCE="${NIX_UL_FORCE_UPDATE:-false}"
 UL_CI_MODE="${UL_CI_MODE:-false}"
+# shellcheck disable=SC2034  # consumed by sibling update-locks-lib.bash (pre-commit-drv-path marker)
 UL_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/zn-self-upgrade"
 
 _UL_PROJECT=""
@@ -20,6 +21,11 @@ ul_init() {
 # Tries BSD date (macOS) then GNU date (Linux). Non-zero exit if unparseable.
 _ul_iso_to_epoch() {
   local iso="$1"
+  # Reject anything that isn't a strict ISO-8601 UTC instant up front: GNU
+  # `date -d` is lenient (parses "" and "now"), which would otherwise let an
+  # empty/corrupt stamp read as "fresh" and skip the step. The strict match
+  # keeps ul_should_run fail-open on bad input across both BSD and GNU date.
+  [[ $iso =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
   date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null ||
     date -u -d "$iso" +%s 2>/dev/null
 }
