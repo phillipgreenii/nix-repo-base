@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Update cache library for zn-self-upgrade
 # Provides time-based caching for remote-checking steps.
-# Source this file, then use ul_init, ul_should_run, ul_mark_done.
+# Source this file, then use ul_init, ul_should_run, ul_write_stamp.
 
 UL_STALE_SECONDS="${UL_STALE_SECONDS:-43200}"
 UL_FORCE="${NIX_UL_FORCE_UPDATE:-false}"
@@ -59,52 +59,6 @@ ul_should_run() {
   local seconds=$((remaining % 60))
   echo -e "\033[33mSkipping ${step_name}: last successful at ${stored_iso}, next eligible in ${hours}h ${minutes}m ${seconds}s\033[0m"
   return 1
-}
-
-ul_mark_done() {
-  local step_name="$1"
-  local marker="$UL_STATE_DIR/$_UL_PROJECT/steps/$step_name"
-  mkdir -p "$(dirname "$marker")"
-  touch "$marker"
-}
-
-ul_needs_rebuild() {
-  if [[ $UL_FORCE == "true" ]]; then
-    return 0
-  fi
-
-  local project_path
-  for project_path in "$@"; do
-    local project_name
-    project_name=$(basename "$project_path")
-    local hash_file="$UL_STATE_DIR/apply/applied-hash/$project_name"
-    local current_hash
-    current_hash=$(cd "$project_path" && git rev-parse HEAD)
-
-    if [[ ! -f $hash_file ]]; then
-      return 0
-    fi
-
-    local stored_hash
-    stored_hash=$(cat "$hash_file")
-    if [[ $current_hash != "$stored_hash" ]]; then
-      return 0
-    fi
-  done
-
-  echo -e "\033[33mSkipping rebuild: all project HEADs match last successful apply\033[0m"
-  return 1
-}
-
-ul_mark_applied() {
-  mkdir -p "$UL_STATE_DIR/apply/applied-hash"
-  local project_path
-  for project_path in "$@"; do
-    local project_name
-    project_name=$(basename "$project_path")
-    local hash_file="$UL_STATE_DIR/apply/applied-hash/$project_name"
-    (cd "$project_path" && git rev-parse HEAD) >"$hash_file"
-  done
 }
 
 ul_check_nix_daemon() {
