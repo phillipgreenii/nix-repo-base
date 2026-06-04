@@ -34,7 +34,6 @@ rec {
         inherit src version vendorHash;
         ldflags = [ "-X main.Version=${version}" ];
         nativeBuildInputs = (lib.optional manPage pkgs.help2man) ++ [ pkgs.makeWrapper ];
-        propagatedBuildInputs = runtimeDeps;
         nativeCheckInputs = testDeps;
         postInstall = ''
           _try() {
@@ -76,6 +75,9 @@ rec {
             _try "${name} completion fish" \
               sh -c "$out/bin/${name} completion fish > $out/share/fish/vendor_completions.d/${name}.fish" \
               || rm -f $out/share/fish/vendor_completions.d/${name}.fish
+          ''}
+          ${lib.optionalString (runtimeDeps != [ ]) ''
+            wrapProgram $out/bin/${name} --suffix PATH : ${lib.makeBinPath runtimeDeps}
           ''}
           ${extraPostInstall}
         '';
