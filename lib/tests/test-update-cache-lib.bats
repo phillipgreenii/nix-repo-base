@@ -11,9 +11,9 @@ fi
 
 setup() {
   TEST_DIR=$(mktemp -d)
-  export XDG_STATE_HOME="$TEST_DIR/state"
   export NIX_UL_FORCE_UPDATE="false"
   source "$UL_LIB_SCRIPT"
+  ul_init "my-project" "$TEST_DIR/repo"   # repo dir; stamps live under it
 }
 
 # Replace the shebang on $1 with one that uses an absolute bash path.
@@ -27,23 +27,28 @@ teardown() {
   rm -rf "$TEST_DIR"
 }
 
-@test "ul_init creates state directory for project" {
-  ul_init "my-project"
-  [ -d "$XDG_STATE_HOME/zn-self-upgrade/my-project/steps" ]
-}
-
-@test "ul_init sets _UL_PROJECT variable" {
-  ul_init "my-project"
+@test "ul_init sets _UL_PROJECT and _UL_STAMP_DIR under the repo" {
   [ "$_UL_PROJECT" = "my-project" ]
+  [ "$_UL_STAMP_DIR" = "$TEST_DIR/repo/.update-locks/steps" ]
 }
 
-@test "ul_init uses default XDG_STATE_HOME when unset" {
-  unset XDG_STATE_HOME
-  export HOME="$TEST_DIR/home"
-  mkdir -p "$HOME"
-  source "$UL_LIB_SCRIPT"
-  ul_init "my-project"
-  [ -d "$TEST_DIR/home/.local/state/zn-self-upgrade/my-project/steps" ]
+@test "ul_write_stamp creates the stamp file with an ISO-8601 UTC value" {
+  ul_write_stamp "some-step"
+  local f="$TEST_DIR/repo/.update-locks/steps/some-step"
+  [ -f "$f" ]
+  run cat "$f"
+  [[ "$output" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+}
+
+@test "_ul_iso_to_epoch round-trips a known timestamp" {
+  run _ul_iso_to_epoch "2021-01-01T00:00:00Z"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1609459200" ]
+}
+
+@test "_ul_iso_to_epoch fails on garbage" {
+  run _ul_iso_to_epoch "not-a-date"
+  [ "$status" -ne 0 ]
 }
 
 # --- ul_should_run / ul_mark_done ---

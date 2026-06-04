@@ -9,10 +9,26 @@ UL_CI_MODE="${UL_CI_MODE:-false}"
 UL_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/zn-self-upgrade"
 
 _UL_PROJECT=""
+_UL_STAMP_DIR=""
 
 ul_init() {
   _UL_PROJECT="$1"
-  mkdir -p "$UL_STATE_DIR/$_UL_PROJECT/steps"
+  _UL_STAMP_DIR="$2/.update-locks/steps"
+}
+
+# Convert an ISO-8601 UTC timestamp ("2026-06-04T12:00:00Z") to epoch seconds.
+# Tries BSD date (macOS) then GNU date (Linux). Non-zero exit if unparseable.
+_ul_iso_to_epoch() {
+  local iso="$1"
+  date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null ||
+    date -u -d "$iso" +%s 2>/dev/null
+}
+
+# Write the current time (ISO-8601 UTC) as this step's in-repo stamp.
+ul_write_stamp() {
+  local step_name="$1"
+  mkdir -p "$_UL_STAMP_DIR"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$_UL_STAMP_DIR/$step_name"
 }
 
 ul_should_run() {
