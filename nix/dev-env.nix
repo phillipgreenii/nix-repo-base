@@ -19,7 +19,7 @@
       programs = {
         nixfmt = {
           enable = true;
-          package = pkgs.nixfmt-rfc-style;
+          package = pkgs.nixfmt;
         };
         prettier = {
           enable = true;
@@ -102,7 +102,7 @@
     pkgs.mkShell {
       shellHook = pre-commit-shellHook;
       buildInputs = [
-        pkgs.nixfmt-rfc-style
+        pkgs.nixfmt
         pkgs.statix
         pkgs.deadnix
         pkgs.shellcheck

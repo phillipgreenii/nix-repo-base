@@ -5,12 +5,12 @@
   ...
 }:
 {
-  # Check Nix formatting with nixfmt-rfc-style
+  # Check Nix formatting with nixfmt
   formatting =
     root:
     pkgs.runCommand "check-formatting"
       {
-        nativeBuildInputs = [ pkgs.nixfmt-rfc-style ];
+        nativeBuildInputs = [ pkgs.nixfmt ];
       }
       ''
         cd ${root}
