@@ -109,6 +109,18 @@
           };
           test-update-locks-lib = checks-lib.testUpdateLocksLib { };
 
+          # Pure-function unit tests for lib/version.nix:mkVersion.
+          version-lib =
+            let
+              failures = pkgs.lib.runTests (import ./lib/version-tests.nix);
+            in
+            pkgs.runCommand "check-version-lib" { } (
+              if failures == [ ] then
+                "touch $out"
+              else
+                "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
+            );
+
           # Go test suite for pn. buildGoModule runs `go test ./...` during
           # the check phase, so building the package is equivalent to running
           # the tests. Exposing it as a check ensures `nix flake check`

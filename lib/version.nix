@@ -1,19 +1,42 @@
 # Version helper library
 # Provides git hash extraction and install-metadata derivation generation.
 #
-# The actual version string (yy.mm.dd.seconds-hash) is computed at build time
-# using the `date` command, which correctly handles all date/time complexity.
+# Version strings are computed at flake-eval time from the source flake's
+# `lastModifiedDate`, git revision, and (for dirty trees) `narHash`. See
+# mkVersion for the exact format and why the narHash digest is needed.
 let
   mkGitHash = gitRev: if gitRev != null then builtins.substring 0 7 gitRev else "dev";
 
-  # Format: YYYYMMDD-<7-char-hash>  (e.g. "20260430-abc1234")
+  # Format: YYYYMMDD-<7-char-hash> for a clean checkout (e.g. "20260430-abc1234").
+  #
+  # For a dirty working tree (the common case during local development, where
+  # repos are injected via `--override-input <name> git+file://<clone>`), Nix
+  # freezes both `rev` and `lastModified` at the HEAD commit and exposes only
+  # `dirtyRev` (= "<rev>-dirty"). The clean format above would therefore be
+  # IDENTICAL for every uncommitted edit, so `nvd` reports "No version or
+  # selection state changes" even though the source rebuilt — losing the
+  # per-input change attribution this metadata exists to provide.
+  #
+  # To fix that, append a short digest of `narHash` — which tracks the actual
+  # working-tree content and changes on every edit — whenever the source is not
+  # a clean commit. Committing the input collapses the version back to the
+  # stable YYYYMMDD-<hash> form (and `narHash` is deterministic, so identical
+  # content yields an identical version with no spurious churn).
   mkVersion =
     flakeSelf:
     let
       date = builtins.substring 0 8 (toString flakeSelf.lastModifiedDate);
       hash = mkGitHash (flakeSelf.rev or flakeSelf.dirtyRev or null);
+      # `rev` is present only for a clean commit; its absence means a dirty git
+      # tree (or a non-git `path:` source).
+      isClean = flakeSelf ? rev;
+      dirtySuffix =
+        if isClean || !(flakeSelf ? narHash) then
+          ""
+        else
+          "-dirty-${builtins.substring 0 8 (builtins.hashString "sha256" flakeSelf.narHash)}";
     in
-    "${date}-${hash}";
+    "${date}-${hash}${dirtySuffix}";
 in
 {
   # Extract short git hash from flake self reference
