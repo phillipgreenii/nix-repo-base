@@ -78,6 +78,67 @@ teardown() {
   [[ "$output" =~ "not clean" ]]
 }
 
+@test "ul_setup reconciles a regenerated .pre-commit-config.yaml instead of failing the gate" {
+  # Commit a steady-state config, then simulate the git-hooks.nix shellHook
+  # having regenerated it on dev-shell entry (dirty tree) — exactly what a prior
+  # `nix flake update` leaves behind. ul_setup must commit the reconcile and
+  # pass the gate, not abort with "not clean".
+  echo "old-config" > .pre-commit-config.yaml
+  git add .pre-commit-config.yaml
+  git commit -m "add pre-commit config"
+  echo "new-config" > .pre-commit-config.yaml # shellHook regenerated it (dirty)
+
+  # nix mock: tier-1 `build … --print-out-paths` prints a drv path; `run
+  # .#install-pre-commit-hooks` writes the canonical (new) config; all else
+  # (eval/fmt) is a silent no-op.
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in
+  *build*install-pre-commit-hooks*) echo "/nix/store/deadbeef-install-pre-commit-hooks" ;;
+  *run*install-pre-commit-hooks*) echo "new-config" > .pre-commit-config.yaml ;;
+esac
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR" # must NOT exit 1
+
+  [ "$(cat .pre-commit-config.yaml)" = "new-config" ]
+  git diff --quiet        # working tree clean
+  git diff --cached --quiet # nothing staged
+  run git log -1 --format=%s
+  [[ "$output" =~ pre-commit ]]
+}
+
+@test "ul_setup still exits 1 when a non-managed file is dirty alongside the pre-commit config" {
+  # The reconcile must commit ONLY .pre-commit-config.yaml; a genuine uncommitted
+  # edit must still trip the gate (and must not be destroyed).
+  echo "old-config" > .pre-commit-config.yaml
+  git add .pre-commit-config.yaml
+  git commit -m "add pre-commit config"
+  echo "new-config" > .pre-commit-config.yaml
+  echo "user edit" > file.txt # genuine uncommitted work
+
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in
+  *build*install-pre-commit-hooks*) echo "/nix/store/deadbeef-install-pre-commit-hooks" ;;
+  *run*install-pre-commit-hooks*) echo "new-config" > .pre-commit-config.yaml ;;
+esac
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  run bash -c "source '$UL_LOCKS_LIB'; ul_setup test-project '$TEST_DIR'"
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "not clean" ]]
+  # the user's edit survived (no destructive cleanup on the gate-fail path)
+  [ "$(cat file.txt)" = "user edit" ]
+}
+
 # --- ul_run_step: success path ---
 
 @test "ul_run_step commits changes on success" {

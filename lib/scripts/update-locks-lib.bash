@@ -54,6 +54,16 @@ _ul_cleanup() {
   fi
 }
 
+# Restore the fsmonitor config ul_setup disabled. Used as a NON-destructive
+# EXIT/INT/TERM trap during ul_setup's pre-gate phase, where the working tree
+# may still hold the user's uncommitted work — so _ul_cleanup's reset --hard /
+# clean -fd must NOT run there.
+_ul_restore_fsmonitor() {
+  if [[ ${_fsmonitor_was_active:-false} == "true" ]]; then
+    git config core.fsmonitor true 2>/dev/null || true
+  fi
+}
+
 _ul_ensure_pre_commit_hooks() {
   # Tier 1: does the flake declare install-pre-commit-hooks?
   # --no-link avoids polluting the project dir; if the attribute doesn't exist,
@@ -155,20 +165,41 @@ ul_setup() {
 
   cd "$script_dir"
 
+  # Disable fsmonitor before any flake evaluation — a live .ipc socket makes
+  # `nix flake` import fail with "unsupported type". The pre-commit reconcile
+  # below evaluates the flake, so this is hoisted above the clean-tree gate.
+  # Until the gate passes (full cleanup trap armed), use a NON-destructive trap
+  # that only restores fsmonitor: the tree may still hold the user's uncommitted
+  # work here, so _ul_cleanup's reset --hard / clean -fd must not run on an
+  # early exit.
+  _fsmonitor_was_active="$(git config core.fsmonitor 2>/dev/null || echo false)"
+  if [ "$_fsmonitor_was_active" = "true" ]; then
+    git config core.fsmonitor false
+    git fsmonitor--daemon stop 2>/dev/null || true
+  fi
+  rm -f .git/fsmonitor--daemon.ipc
+  trap '_ul_restore_fsmonitor' EXIT INT TERM
+
+  ul_check_nix_daemon
+
+  # Reconcile the generated .pre-commit-config.yaml BEFORE the clean-tree gate.
+  # That tracked symlink targets a /nix/store path derived from flake.lock, and
+  # entering the dev shell regenerates it. When a prior run's `nix flake update`
+  # bumped the lock without regenerating the symlink, it is left committed-stale,
+  # so the regeneration dirties the tree and would trip the gate below —
+  # defeating this very self-heal. _ul_ensure_pre_commit_hooks stages only
+  # .pre-commit-config.yaml (see its `git add`), so a genuine uncommitted edit is
+  # still left for the gate to catch.
+  _ul_ensure_pre_commit_hooks
+
   if ! git diff --quiet || ! git diff --cached --quiet; then
     echo "ERROR: Working directory is not clean. Commit or stash changes first."
     git status --short
     exit 1
   fi
 
-  _fsmonitor_was_active="$(git config core.fsmonitor 2>/dev/null || echo false)"
-  if [ "$_fsmonitor_was_active" = "true" ]; then
-    git config core.fsmonitor false
-    git fsmonitor--daemon stop 2>/dev/null || true
-  fi
-  # Remove stale daemon socket regardless of prior config — nix flake import
-  # fails with "unsupported type" if the .ipc socket exists in the source tree.
-  rm -f .git/fsmonitor--daemon.ipc
+  # Tree is clean of user changes — now safe to arm the full cleanup trap, which
+  # rolls back per-step failures (and still restores fsmonitor on exit).
   trap '_ul_cleanup EXIT' EXIT
   trap '_ul_cleanup INT' INT
   trap '_ul_cleanup TERM' TERM
@@ -179,10 +210,6 @@ ul_setup() {
   _UL_STEPS_SKIPPED=0
   _UL_STEPS_DEFERRED=0
   _UL_FAILED_STEPS=()
-
-  ul_check_nix_daemon
-
-  _ul_ensure_pre_commit_hooks
 }
 
 ul_run_step() {
