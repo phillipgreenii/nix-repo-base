@@ -17,15 +17,17 @@ const (
 
 // Workspace is the in-memory representation of a workspace rooted at Root.
 type Workspace struct {
-	root   string
-	config *WorkspaceConfig
-	lock   *Lock
-	runner exec.Runner
+	root    string
+	config  *WorkspaceConfig
+	lock    *Lock
+	revLock *RevLock
+	runner  exec.Runner
 }
 
-// Open loads the workspace rooted at dir. Reads pn-workspace.toml (required)
-// and pn-workspace.lock (optional). Returns an error if the TOML is missing
-// or malformed.
+// Open loads the workspace rooted at dir. Reads pn-workspace.toml (required),
+// pn-workspace.lock (optional, DAG ordering), and pn-workspace.revs.json
+// (optional, per-repo URL+Rev for reproducibility). Returns an error if the
+// TOML is missing or malformed.
 func Open(dir string, runner exec.Runner) (*Workspace, error) {
 	cfgPath := filepath.Join(dir, ConfigFileName)
 	data, err := os.ReadFile(cfgPath)
@@ -40,11 +42,16 @@ func Open(dir string, runner exec.Runner) (*Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
+	revLock, err := ReadRevLock(filepath.Join(dir, RevLockFileName))
+	if err != nil {
+		return nil, err
+	}
 	return &Workspace{
-		root:   dir,
-		config: cfg,
-		lock:   lock,
-		runner: runner,
+		root:    dir,
+		config:  cfg,
+		lock:    lock,
+		revLock: revLock,
+		runner:  runner,
 	}, nil
 }
 
@@ -54,8 +61,11 @@ func (w *Workspace) Root() string { return w.root }
 // Config returns the parsed workspace config.
 func (w *Workspace) Config() *WorkspaceConfig { return w.config }
 
-// Lock returns the parsed lock state.
+// Lock returns the parsed DAG lock state.
 func (w *Workspace) Lock() *Lock { return w.lock }
+
+// RevLock returns the parsed per-repo URL+Rev lock state.
+func (w *Workspace) RevLock() *RevLock { return w.revLock }
 
 // Runner returns the workspace's subprocess runner.
 func (w *Workspace) Runner() exec.Runner { return w.runner }
