@@ -18,6 +18,8 @@ _UL_STEPS_FAILED=0
 _UL_STEPS_SKIPPED=0
 _UL_STEPS_DEFERRED=0
 _UL_FAILED_STEPS=()
+_UL_UPGRADED_STEPS=()
+_UL_UPGRADE_NOTES=()
 _UL_SCRIPT_DIR=""
 _UL_CHILD_PID=""
 _UL_CAUGHT_SIGNAL=""
@@ -210,6 +212,8 @@ ul_setup() {
   _UL_STEPS_SKIPPED=0
   _UL_STEPS_DEFERRED=0
   _UL_FAILED_STEPS=()
+  _UL_UPGRADED_STEPS=()
+  _UL_UPGRADE_NOTES=()
 }
 
 ul_run_step() {
@@ -270,12 +274,67 @@ ul_run_step() {
   fi
 }
 
+# Record what a content-changing step upgraded, for the end-of-run summary.
+# Best-effort and never fails the step: extracts `version = "X"` → `version = "Y"`
+# deltas from changed *.nix / *.toml files, and the set of flake.lock inputs whose
+# locked revision moved. Falls back to the bare step name when it cannot
+# characterize the change. Called BEFORE `nix fmt` so reformatting can't hide the
+# version lines. Each `|| true` guards against the caller's `set -e`/pipefail
+# (e.g. `diff` exits 1 on differing inputs, which is the normal case here).
+_ul_record_upgrade() {
+  local step_name="$1"
+  local detail="" olds="" news="" nix_diff=""
+
+  # Package version-string bumps (covers `nix-update -F` and hand-pinned packages).
+  # --no-ext-diff/--no-textconv/--no-color force git's built-in unified diff so this
+  # parses `-`/`+` lines regardless of the repo's configured diff driver (e.g.
+  # difftastic emits columnar structural output that has no `-`/`+` lines).
+  nix_diff=$(git diff --no-ext-diff --no-textconv --no-color HEAD -- '*.nix' '*.toml' 2>/dev/null) || true
+  if [[ -n $nix_diff ]]; then
+    olds=$(printf '%s\n' "$nix_diff" | sed -nE 's/^-[[:space:]]*version = "([^"]+)".*/\1/p' | paste -sd, - 2>/dev/null) || true
+    news=$(printf '%s\n' "$nix_diff" | sed -nE 's/^\+[[:space:]]*version = "([^"]+)".*/\1/p' | paste -sd, - 2>/dev/null) || true
+    if [[ -n $news ]]; then
+      if [[ -n $olds ]]; then detail="${olds} → ${news}"; else detail="$news"; fi
+    fi
+  fi
+
+  # flake.lock input bumps: name the inputs whose locked rev/narHash changed.
+  if ! git diff --quiet HEAD -- flake.lock 2>/dev/null; then
+    local inputs=""
+    if command -v jq >/dev/null 2>&1; then
+      local before="" after=""
+      before=$(git show HEAD:flake.lock 2>/dev/null) || true
+      after=$(cat flake.lock 2>/dev/null) || true
+      inputs=$(
+        diff \
+          <(printf '%s' "${before:-{\}}" | jq -r '(.nodes // {}) | to_entries[] | "\(.key)=\(.value.locked.rev // .value.locked.narHash // "")"' 2>/dev/null | sort) \
+          <(printf '%s' "${after:-{\}}" | jq -r '(.nodes // {}) | to_entries[] | "\(.key)=\(.value.locked.rev // .value.locked.narHash // "")"' 2>/dev/null | sort) \
+          2>/dev/null | sed -nE 's/^> ([^=]+)=.*/\1/p' | sort -u | paste -sd, - 2>/dev/null
+      ) || true
+    fi
+    if [[ -n $inputs ]]; then
+      if [[ -n $detail ]]; then detail="${detail}; inputs: ${inputs}"; else detail="inputs: ${inputs}"; fi
+    elif [[ -z $detail ]]; then
+      detail="flake.lock updated"
+    fi
+  fi
+
+  _UL_UPGRADED_STEPS+=("$step_name")
+  if [[ -n $detail ]]; then
+    _UL_UPGRADE_NOTES+=("${step_name}: ${detail}")
+  else
+    _UL_UPGRADE_NOTES+=("$step_name")
+  fi
+  return 0
+}
+
 # Commit a successful step: format content if any changed, write the stamp,
 # and commit everything in one commit (content + stamp, or stamp-only on a
 # no-op success). On fmt/commit failure: roll back, record failure, return 1.
 _ul_commit_updated() {
   local step_name="$1" commit_msg="$2"
   if ! git diff --quiet || ! git diff --cached --quiet; then
+    _ul_record_upgrade "$step_name"
     if ! nix fmt; then
       echo "  ✗ Step '${step_name}' nix fmt failed"
       git reset --hard HEAD 2>/dev/null || true
@@ -318,9 +377,19 @@ ul_finalize() {
   echo "=== Update Summary ==="
   echo "  Ran:     ${_UL_STEPS_RAN}"
   echo "  Passed:  ${_UL_STEPS_SUCCEEDED}"
+  echo "  Upgraded: ${#_UL_UPGRADED_STEPS[@]}"
   echo "  Deferred: ${_UL_STEPS_DEFERRED}"
   echo "  Failed:  ${_UL_STEPS_FAILED}"
   echo "  Skipped: ${_UL_STEPS_SKIPPED}"
+
+  if [[ ${#_UL_UPGRADED_STEPS[@]} -gt 0 ]]; then
+    echo ""
+    echo "Upgrades applied:"
+    local note
+    for note in "${_UL_UPGRADE_NOTES[@]}"; do
+      echo "  ⬆ ${note}"
+    done
+  fi
 
   if [[ ${_UL_STEPS_FAILED} -gt 0 ]]; then
     echo ""
@@ -332,6 +401,10 @@ ul_finalize() {
   fi
 
   echo ""
-  echo "✓ All steps completed successfully!"
+  if [[ ${#_UL_UPGRADED_STEPS[@]} -eq 0 ]]; then
+    echo "✓ All steps completed successfully — no upgrades (everything already current)."
+  else
+    echo "✓ All steps completed successfully (${#_UL_UPGRADED_STEPS[@]} upgrade(s) applied)!"
+  fi
   exit 0
 }

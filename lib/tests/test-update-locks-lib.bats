@@ -396,6 +396,108 @@ MOCK
   [[ "$output" =~ "successfully" ]]
 }
 
+# --- upgrade summary ---
+
+@test "ul_run_step records a content-changing step as an upgrade" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  changed() { echo "new content" > file.txt; }
+  ul_run_step "test-step" "update: test step" changed
+
+  [ "${#_UL_UPGRADED_STEPS[@]}" -eq 1 ]
+  [ "${_UL_UPGRADED_STEPS[0]}" = "test-step" ]
+}
+
+@test "ul_run_step does NOT record a no-op success as an upgrade" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  noop() { true; }
+  ul_run_step "noop-step" "update: noop" noop
+
+  [ "${#_UL_UPGRADED_STEPS[@]}" -eq 0 ]
+  [ "$_UL_STEPS_SUCCEEDED" -eq 1 ]
+}
+
+@test "ul_run_step does NOT record a deferral as an upgrade" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  defer() { echo "junk" > file.txt; ul_attempted; }
+  ul_run_step "defer-step" "update: defer" defer
+
+  [ "${#_UL_UPGRADED_STEPS[@]}" -eq 0 ]
+  [ "$_UL_STEPS_DEFERRED" -eq 1 ]
+}
+
+@test "ul_run_step captures a version delta from a .nix change" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  printf '  version = "1.0.0";\n' > pkg.nix
+  git add pkg.nix
+  git commit -m "add pkg.nix"
+
+  bump() { printf '  version = "1.2.1";\n' > pkg.nix; }
+  ul_run_step "update-pkg" "update: pkg" bump
+
+  # Assert old and new versions are both present without embedding the U+2192
+  # arrow literal in this .bats file — bats' line preprocessor mishandles the
+  # multibyte char in a @test body (the rendered note still uses the arrow).
+  [ "${#_UL_UPGRADE_NOTES[@]}" -eq 1 ]
+  [[ "${_UL_UPGRADE_NOTES[0]}" == *"1.0.0"* ]]
+  [[ "${_UL_UPGRADE_NOTES[0]}" == *"1.2.1"* ]]
+}
+
+@test "ul_run_step names changed flake.lock inputs (skips unchanged ones)" {
+  command -v jq >/dev/null || skip "jq not available"
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  printf '%s\n' '{"nodes":{"nixpkgs":{"locked":{"rev":"aaaa"}},"home-manager":{"locked":{"rev":"bbbb"}},"root":{}}}' > flake.lock
+  git add flake.lock
+  git commit -m "add flake.lock"
+
+  bump_lock() {
+    printf '%s\n' '{"nodes":{"nixpkgs":{"locked":{"rev":"cccc"}},"home-manager":{"locked":{"rev":"bbbb"}},"root":{}}}' > flake.lock
+  }
+  ul_run_step "nix-flake-update" "update: lock" bump_lock
+
+  [ "${#_UL_UPGRADE_NOTES[@]}" -eq 1 ]
+  [[ "${_UL_UPGRADE_NOTES[0]}" =~ nixpkgs ]]
+  [[ ! "${_UL_UPGRADE_NOTES[0]}" =~ home-manager ]]
+}
+
+@test "ul_finalize lists upgraded steps and counts them" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  changed() { echo "new content" > file.txt; }
+  ul_run_step "test-step" "update: test step" changed
+
+  run ul_finalize
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Upgraded: 1" ]]
+  [[ "$output" =~ "Upgrades applied:" ]]
+  [[ "$output" =~ "test-step" ]]
+  [[ "$output" =~ "upgrade(s) applied" ]]
+}
+
+@test "ul_finalize reports zero upgrades when only no-op steps ran" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  noop() { true; }
+  ul_run_step "s1" "msg" noop
+
+  run ul_finalize
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Upgraded: 0" ]]
+  [[ "$output" =~ "no upgrades" ]]
+  [[ ! "$output" =~ "Upgrades applied" ]]
+}
+
 # --- signal handling ---
 
 # Note: Tests use SIGTERM (not SIGINT) because POSIX requires background
