@@ -110,3 +110,6 @@ together.
   factory itself stands; its "compute version via `mkVersion self`, reject `dev`" contract is
   replaced by the per-source digest computed inside `mkGoApp`.
 - Implements beads nrb-n9f / nrb-c7a (Go src-digest refactor) as a cross-language convention.
+- See also: phillipg-nix-ziprecruiter docs/adr/0044-reduce-darwin-rebuild-build-time.md —
+  complementary build-time work that removes uncached local-compile derivations (ollama,
+  contained-claude, serena). This ADR targets a different axis: per-commit rebuild churn.

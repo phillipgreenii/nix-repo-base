@@ -201,7 +201,17 @@ system generations is optional and noted, not forced.)
 
 `neovim-0.12.2` building from source is a substituter cache-miss, unrelated to versioning.
 Tracked separately: find a cached source (substituter/channel/overlay) or adjust
-`update-locks.sh` to pin a cached build.
+`update-locks.sh` to pin a cached build. This is the same class of cost addressed by
+**phillipg-nix-ziprecruiter ADR 0044** (reduce darwin-rebuild build time — moved ollama to
+Homebrew, removed contained-claude/serena local compiles); the neovim track should follow that
+ADR's audit playbook (closure audit + binary-cache probe → relocate / remove / cache), not an
+ad-hoc fix.
+
+> **Relationship to ADR 0044 (complementary, already landed).** ADR 0044 attacks the _fixed
+> per-build_ cost by removing uncached local-compile derivations. This spec attacks the
+> _per-commit_ rebuild churn of the stamped tier. The two are independent and additive. Note the
+> "84 derivations" baseline above predates ADR 0044's commits, so the implementation plan must
+> re-measure the dry-run on current `main`.
 
 ## Deliverables
 
