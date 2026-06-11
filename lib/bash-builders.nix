@@ -1,6 +1,8 @@
 # mkBashBuilders — factory for bash script packaging builders
 #
-# Takes { pkgs, lib, self } and returns { mkBashLibrary, gitHash }.
+# Takes { pkgs, lib, self } and returns { mkBashLibrary, mkBashScript, mkBashModule, gitHash }.
+# gitHash is retained in the return set for compatibility but is no longer used by
+# mkBashScript — version now comes from the per-source content digest; see ADR 0006.
 # mkBashLibrary composes sourceable bash libraries with dependency chaining
 # and generates test check derivations.
 {
@@ -9,7 +11,8 @@
   self,
 }:
 let
-  gitHash = (import ./version.nix).mkGitHash (self.rev or self.dirtyRev or null);
+  versionLib = import ./version.nix;
+  gitHash = versionLib.mkGitHash (self.rev or self.dirtyRev or null);
 
   # mkBashLibrary — build a sourceable bash library with dependency chaining
   #
@@ -151,7 +154,7 @@ let
       # Per-source content digest: this script's src plus each sourced library's
       # composed-lib store path (l.lib transitively embeds nested libs). Repo-rev
       # independent; see ADR 0006.
-      srcDigest = (import ./version.nix).mkSrcDigest ([ src ] ++ map (l: l.lib) libraries);
+      srcDigest = versionLib.mkSrcDigest ([ src ] ++ map (l: l.lib) libraries);
 
       # The main script derivation
       script = pkgs.stdenv.mkDerivation {
@@ -178,9 +181,8 @@ let
 
           # Compute version: YY.MM.DD.SSSSS+<srcDigest> (date is build-time and not a
           # derivation input; srcDigest is eval-time and content-driven). See ADR 0006.
-          SRC_DIGEST="${srcDigest}"
           SECONDS_TODAY=$(( $(date -u +%s) % 86400 ))
-          FULL_VERSION=$(printf "%s.%05d+%s" "$(date -u +%y.%m.%d)" "$SECONDS_TODAY" "$SRC_DIGEST")
+          FULL_VERSION=$(printf "%s.%05d+%s" "$(date -u +%y.%m.%d)" "$SECONDS_TODAY" "${srcDigest}")
 
           # Assemble script: header + body
           {
