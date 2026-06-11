@@ -1,7 +1,12 @@
 # 0005 — mkGoBuilders factory for Go applications
 
-**Status:** Accepted (2026-05-31)
+**Status:** Accepted (2026-05-31); version contract superseded by ADR 0006 (2026-06-11)
 **Context:** tc-perh.5 (pn-\* Bash → Go rewrite)
+
+> **Note (2026-06-11):** The `mkGoBinary`/`mkGoApp` factory described here still stands. Its
+> **version contract** — "compute version via `mkVersion self` → `YYYYMMDD-shortRev`, reject
+> `dev`" — has been replaced by the per-source content digest computed inside `mkGoApp`. See
+> ADR 0006 for the cross-language versioning decision.
 
 ## Context
 
