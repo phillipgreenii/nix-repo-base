@@ -121,6 +121,10 @@
                 "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
             );
 
+          # Rev-independence check: same src at two different self.rev values
+          # must produce the same script drvPath. See ADR 0006.
+          bash-version-rev-independent = import ./lib/bash-builders-version-tests.nix { inherit pkgs; };
+
           # Go test suite for pn. buildGoModule runs `go test ./...` during
           # the check phase, so building the package is equivalent to running
           # the tests. Exposing it as a check ensures `nix flake check`

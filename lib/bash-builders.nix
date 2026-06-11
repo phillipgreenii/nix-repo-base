@@ -148,6 +148,11 @@ let
       );
       scriptBodyFile = pkgs.writeText "${name}-body" scriptBody;
 
+      # Per-source content digest: this script's src plus each sourced library's
+      # composed-lib store path (l.lib transitively embeds nested libs). Repo-rev
+      # independent; see ADR 0006.
+      srcDigest = (import ./version.nix).mkSrcDigest ([ src ] ++ map (l: l.lib) libraries);
+
       # The main script derivation
       script = pkgs.stdenv.mkDerivation {
         pname = name;
@@ -171,10 +176,11 @@ let
         buildPhase = ''
           runHook preBuild
 
-          # Compute version: YY.MM.DD.SSSSS+gitHash
-          GIT_HASH="${gitHash}"
+          # Compute version: YY.MM.DD.SSSSS+<srcDigest> (date is build-time and not a
+          # derivation input; srcDigest is eval-time and content-driven). See ADR 0006.
+          SRC_DIGEST="${srcDigest}"
           SECONDS_TODAY=$(( $(date -u +%s) % 86400 ))
-          FULL_VERSION=$(printf "%s.%05d+%s" "$(date -u +%y.%m.%d)" "$SECONDS_TODAY" "$GIT_HASH")
+          FULL_VERSION=$(printf "%s.%05d+%s" "$(date -u +%y.%m.%d)" "$SECONDS_TODAY" "$SRC_DIGEST")
 
           # Assemble script: header + body
           {
