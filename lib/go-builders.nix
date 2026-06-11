@@ -123,10 +123,12 @@ rec {
       ...
     }@args:
     let
-      # 8-char digest of the package's own (filtered) source tree. `"${src}"`
-      # is the content-addressed store path of `src`, so this digest changes
-      # iff a file included in `src` changes — never for sibling packages.
-      version = "${baseVersion}-${builtins.substring 0 8 (builtins.hashString "sha256" "${src}")}";
+      # 8-char digest of the package's own (filtered) source tree via the shared
+      # helper, so this digest changes iff a file included in `src` changes —
+      # never for sibling packages. `src` may also be a list of paths (the helper
+      # joins them); single-path behaviour is identical to the old inline form.
+      # See ADR 0006.
+      version = "${baseVersion}-${(import ./version.nix).mkSrcDigest src}";
       forwarded = builtins.removeAttrs args [
         "versionPath"
         "baseVersion"
