@@ -7,6 +7,15 @@
 let
   mkGitHash = gitRev: if gitRev != null then builtins.substring 0 7 gitRev else "dev";
 
+  mkSrcDigest =
+    srcs:
+    let
+      list = if builtins.isList srcs then srcs else [ srcs ];
+    in
+    builtins.substring 0 8 (
+      builtins.hashString "sha256" (builtins.concatStringsSep ":" (map (s: "${s}") list))
+    );
+
   # Format: YYYYMMDD-<7-char-hash> for a clean checkout (e.g. "20260430-abc1234").
   #
   # For a dirty working tree (the common case during local development, where
@@ -47,6 +56,12 @@ in
   # Build a version string from a flake self reference.
   # Usage: version = mkVersion self;
   inherit mkVersion;
+
+  # Compute an 8-char content digest for one or more source paths.
+  # Usage: digest = mkSrcDigest src;           # single path/string
+  #        digest = mkSrcDigest [ src1 src2 ]; # multiple paths (joined with ":")
+  # Returns: first 8 characters of sha256(joined sources)
+  inherit mkSrcDigest;
 
   # Returns a home-manager module that installs a small JSON metadata file
   # for the given repo. The derivation name embeds the version so nvd shows

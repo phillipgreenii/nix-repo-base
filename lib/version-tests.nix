@@ -3,6 +3,8 @@
 let
   version = import ./version.nix;
   inherit (version) mkVersion;
+  inherit (version) mkSrcDigest;
+  sha8 = s: builtins.substring 0 8 (builtins.hashString "sha256" s);
 
   fullRev = "a41345da335be446172465681f16b43f895a0723";
   shortRev = "a41345d";
@@ -56,5 +58,41 @@ in
   testNonGitVersion = {
     expr = mkVersion nonGitSelf;
     expected = "20260604-dev-dirty-${digest "sha256-AAA"}";
+  };
+
+  # Single source: digest is first8(sha256) of the (stringified) source.
+  testSrcDigestSingle = {
+    expr = mkSrcDigest "src-a";
+    expected = sha8 "src-a";
+  };
+  # A single path equals the singleton list of that path.
+  testSrcDigestSingleEqualsSingleton = {
+    expr = mkSrcDigest "src-a" == mkSrcDigest [ "src-a" ];
+    expected = true;
+  };
+  # Multiple sources are joined with ":" before hashing.
+  testSrcDigestListConcat = {
+    expr = mkSrcDigest [
+      "a"
+      "b"
+    ];
+    expected = sha8 "a:b";
+  };
+  # Order-sensitive (callers pass a stable, ordered list).
+  testSrcDigestOrderSensitive = {
+    expr =
+      mkSrcDigest [
+        "a"
+        "b"
+      ] != mkSrcDigest [
+        "b"
+        "a"
+      ];
+    expected = true;
+  };
+  # Content change changes the digest.
+  testSrcDigestTracksContent = {
+    expr = mkSrcDigest "a" != mkSrcDigest "b";
+    expected = true;
   };
 }
