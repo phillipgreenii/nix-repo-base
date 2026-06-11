@@ -57,10 +57,14 @@ in
   # Usage: version = mkVersion self;
   inherit mkVersion;
 
-  # Compute an 8-char content digest for one or more source paths.
-  # Usage: digest = mkSrcDigest src;           # single path/string
+  # Compute an 8-char digest for one or more store paths (or strings).
+  # Each element is coerced to its string representation (store-path coercion
+  # for derivations/paths); inputs are expected to be store paths, which
+  # contain no ":" themselves.
+  # Usage: digest = mkSrcDigest src;           # single path/derivation
   #        digest = mkSrcDigest [ src1 src2 ]; # multiple paths (joined with ":")
-  # Returns: first 8 characters of sha256(joined sources)
+  # Returns: first8(sha256(colon-joined string representations))
+  # NOTE: this is NOT a NAR content hash; it is a hash of the store-path strings.
   inherit mkSrcDigest;
 
   # Returns a home-manager module that installs a small JSON metadata file

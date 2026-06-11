@@ -4,8 +4,6 @@ let
   version = import ./version.nix;
   inherit (version) mkVersion;
   inherit (version) mkSrcDigest;
-  sha8 = s: builtins.substring 0 8 (builtins.hashString "sha256" s);
-
   fullRev = "a41345da335be446172465681f16b43f895a0723";
   shortRev = "a41345d";
   digest = nar: builtins.substring 0 8 (builtins.hashString "sha256" nar);
@@ -63,7 +61,7 @@ in
   # Single source: digest is first8(sha256) of the (stringified) source.
   testSrcDigestSingle = {
     expr = mkSrcDigest "src-a";
-    expected = sha8 "src-a";
+    expected = digest "src-a";
   };
   # A single path equals the singleton list of that path.
   testSrcDigestSingleEqualsSingleton = {
@@ -71,12 +69,13 @@ in
     expected = true;
   };
   # Multiple sources are joined with ":" before hashing.
+  # The ":" separator is an intentional format pin (matches the bare-hash form).
   testSrcDigestListConcat = {
     expr = mkSrcDigest [
       "a"
       "b"
     ];
-    expected = sha8 "a:b";
+    expected = digest "a:b";
   };
   # Order-sensitive (callers pass a stable, ordered list).
   testSrcDigestOrderSensitive = {
