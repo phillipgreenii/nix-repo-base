@@ -26,6 +26,7 @@ func addWorkspaceCmd(parent *cobra.Command) {
 	ws.AddCommand(workspaceStatusCmd(&terminalFlag))
 	ws.AddCommand(workspaceInitCmd(&terminalFlag))
 	ws.AddCommand(workspaceCloneCmd(&terminalFlag))
+	ws.AddCommand(workspaceLockCmd(&terminalFlag))
 	ws.AddCommand(workspaceBuildCmd(&terminalFlag))
 	ws.AddCommand(workspaceApplyCmd(&terminalFlag))
 	ws.AddCommand(workspaceFlakeCheckCmd(&terminalFlag))
@@ -348,4 +349,28 @@ func workspaceCloneCmd(terminal *string) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+func workspaceLockCmd(terminal *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "lock",
+		Short: "Derive and write pn-workspace.lock.json",
+		Long:  "Evaluate flake inputs, build edges, resolve terminal, and write pn-workspace.lock.json atomically. Exits non-zero and preserves any existing lock file if validation errors are found.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return runWithHooks(ctx, w, "lock", func() error {
+				if err := w.WriteDerivedLockTo(ctx, w.Root(), out); err != nil {
+					fmt.Fprintln(out, err)
+					return err
+				}
+				fmt.Fprintln(out, "pn-workspace.lock.json written")
+				return nil
+			})
+		},
+	}
 }
