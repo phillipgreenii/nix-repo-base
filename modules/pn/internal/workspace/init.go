@@ -22,6 +22,9 @@ type InitOptions struct {
 // then writes pn-workspace.lock.json with the derived dependency DAG.
 // Clone progress is streamed to out.
 //
+// After cloning, Init also resolves each repo's flake path and writes
+// flake_path to config for any non-default locations discovered.
+//
 // NOTE: the clone step is performed via Clone() to avoid duplication; this
 // means Init remains idempotent. The tc-perh.9.11 slice will make Init
 // config-only (removing the clone and lock steps from here).
@@ -36,7 +39,12 @@ func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) e
 		return fmt.Errorf("init: %w", err)
 	}
 
-	// 3. Write pn-workspace.lock.json with the derived dependency DAG. This
+	// 3. Resolve flake paths for all repos and persist non-defaults to config.
+	if err := w.persistNonDefaultFlakePaths(); err != nil {
+		return fmt.Errorf("init: persist flake paths: %w", err)
+	}
+
+	// 4. Write pn-workspace.lock.json with the derived dependency DAG. This
 	// needs a terminal flake to derive from; with none configured, write an
 	// empty lock.
 	if w.config.Workspace.Terminal == "" {
@@ -48,6 +56,39 @@ func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) e
 	}
 	if err := w.RefreshLock(ctx); err != nil {
 		return fmt.Errorf("init: %w", err)
+	}
+	return nil
+}
+
+// persistNonDefaultFlakePaths resolves each repo's flake path and writes it
+// to pn-workspace.toml if (and only if) it is non-default.
+// Default paths (flake.nix, nix/flake.nix) are NOT written — they remain implicit.
+func (w *Workspace) persistNonDefaultFlakePaths() error {
+	var changed bool
+	names := make([]string, 0, len(w.config.Repos))
+	for n := range w.config.Repos {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		r := w.config.Repos[name]
+		if r.FlakePath != "" {
+			// Already explicitly set; don't override.
+			continue
+		}
+		resolved := w.resolveFlakePath(name)
+		if resolved == "" || isDefaultFlakePath(resolved) {
+			// No flake found, or it's a default path — don't write to config.
+			continue
+		}
+		// Non-default path: persist to config.
+		r.FlakePath = resolved
+		w.config.Repos[name] = r
+		changed = true
+	}
+	if changed {
+		return w.writeConfigTOML()
 	}
 	return nil
 }
@@ -75,6 +116,8 @@ func (w *Workspace) RefreshLock(ctx context.Context) error {
 
 // reconcileFromFilesystem scans w.root for existing repo dirs not yet in
 // w.config.Repos and adds them to the config (in-memory + on-disk TOML).
+// For each newly-added repo, it also resolves the flake_path and records
+// non-default paths in the config.
 func (w *Workspace) reconcileFromFilesystem(ctx context.Context) error {
 	entries, err := os.ReadDir(w.root)
 	if err != nil {
@@ -104,13 +147,28 @@ func (w *Workspace) reconcileFromFilesystem(ctx context.Context) error {
 			continue
 		}
 		url := httpsToFlakeURL(strings.TrimSpace(string(res.Stdout)))
-		w.config.Repos[name] = RepoConfig{URL: url, Branch: "main"}
+		newEntry := RepoConfig{URL: url, Branch: "main"}
+		w.config.Repos[name] = newEntry
 		added = true
 	}
-	if added {
-		return w.writeConfigTOML()
+
+	if !added {
+		return nil
 	}
-	return nil
+
+	// Resolve flake paths for newly-added repos and persist non-defaults.
+	for name, r := range w.config.Repos {
+		if r.FlakePath != "" {
+			continue // already set
+		}
+		resolved := w.resolveFlakePath(name)
+		if resolved != "" && !isDefaultFlakePath(resolved) {
+			r.FlakePath = resolved
+			w.config.Repos[name] = r
+		}
+	}
+
+	return w.writeConfigTOML()
 }
 
 // writeConfigTOML serializes w.config back to pn-workspace.toml at w.root.

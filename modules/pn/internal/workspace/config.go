@@ -48,6 +48,10 @@ type RepoConfig struct {
 	InputName string   `toml:"input-name,omitempty"`
 	Remotes   []Remote `toml:"remotes,omitempty"`
 	Slug      string   `toml:"slug,omitempty"`
+	// FlakePath is the path to the repo's flake.nix relative to the repo root.
+	// When set, this overrides the default search paths (flake.nix, nix/flake.nix).
+	// Recorded in pn-workspace.toml only for non-default locations.
+	FlakePath string   `toml:"flake_path,omitempty"`
 }
 
 // HookCommand describes one entry under [hooks.<command>]; Pre/Post are
