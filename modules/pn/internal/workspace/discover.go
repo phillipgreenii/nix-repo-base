@@ -9,7 +9,7 @@ import (
 // Repo is one workspace repo entry as surfaced by Discover.
 type Repo struct {
 	Name       string
-	URL        string // canonical URL (origin in the multi-remote form)
+	URL        string // display URL (origin in the multi-remote form)
 	Path       string
 	InputName  string // empty for the terminal repo and for siblings not consumed by the terminal
 	IsTerminal bool
@@ -76,30 +76,11 @@ func (ws *Workspace) Discover() ([]Repo, error) {
 	for _, name := range order {
 		out = append(out, Repo{
 			Name:       name,
-			URL:        canonicalURL(ws.config.Repos[name]),
+			URL:        displayURL(ws.config.Repos[name]),
 			Path:       filepath.Join(ws.root, name),
 			InputName:  inputNames[name],
 			IsTerminal: name == terminal,
 		})
 	}
 	return out, nil
-}
-
-// canonicalURL returns one URL string for display purposes:
-//   - If the toml uses the single-url form, return that URL.
-//   - Else (multi-remote form), return the origin remote's URL when one
-//     exists, otherwise the first remote's URL.
-func canonicalURL(r RepoConfig) string {
-	if r.URL != "" {
-		return r.URL
-	}
-	for _, rm := range r.Remotes {
-		if rm.Name == "origin" {
-			return rm.URL
-		}
-	}
-	if len(r.Remotes) > 0 {
-		return r.Remotes[0].URL
-	}
-	return ""
 }

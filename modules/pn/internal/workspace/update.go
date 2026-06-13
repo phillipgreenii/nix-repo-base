@@ -133,7 +133,7 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 			rev, err := captureHead(ctx, ws.runner, repoDir)
 			if err == nil && rev != "" {
 				revs[name] = LockedRepo{
-					URL: canonicalURL(ws.config.Repos[name]),
+					URL: displayURL(ws.config.Repos[name]),
 					Rev: rev,
 				}
 			}
