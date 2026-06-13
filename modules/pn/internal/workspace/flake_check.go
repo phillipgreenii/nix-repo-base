@@ -11,7 +11,9 @@ import (
 )
 
 // FlakeCheckOptions configures FlakeCheck.
-type FlakeCheckOptions struct{}
+type FlakeCheckOptions struct {
+	Terminal string // overrides workspace.terminal for this invocation
+}
 
 // FlakeCheck runs `nix flake check` in every workspace repo, injecting
 // --override-input flags that pin the repo's local workspace siblings to their

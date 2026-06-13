@@ -10,7 +10,9 @@ import (
 )
 
 // PreCommitCheckOptions configures PreCommitCheck.
-type PreCommitCheckOptions struct{}
+type PreCommitCheckOptions struct {
+	Terminal string // overrides workspace.terminal for this invocation
+}
 
 // PreCommitCheck runs `pre-commit run --all-files` in each workspace repo,
 // streaming each run's output to out. Matches the bash version which does NOT

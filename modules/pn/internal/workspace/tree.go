@@ -14,6 +14,8 @@ import (
 
 // TreeOptions configures Tree.
 type TreeOptions struct {
+	// Terminal overrides workspace.terminal for this tree render.
+	Terminal string
 	// AllInputs shows every flake input from the terminal's flake.lock, not just
 	// workspace-internal deps.
 	AllInputs bool

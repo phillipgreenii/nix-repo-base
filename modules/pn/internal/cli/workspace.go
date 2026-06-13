@@ -13,23 +13,29 @@ import (
 )
 
 func addWorkspaceCmd(parent *cobra.Command) {
+	// terminalFlag holds the --terminal value shared across all subcommands.
+	var terminalFlag string
+
 	ws := &cobra.Command{
 		Use:   "workspace",
 		Short: "Operate on the pn workspace",
 	}
-	ws.AddCommand(workspaceStatusCmd())
-	ws.AddCommand(workspaceInitCmd())
-	ws.AddCommand(workspaceCloneCmd())
-	ws.AddCommand(workspaceBuildCmd())
-	ws.AddCommand(workspaceApplyCmd())
-	ws.AddCommand(workspaceFlakeCheckCmd())
-	ws.AddCommand(workspacePreCommitCheckCmd())
-	ws.AddCommand(workspacePushCmd())
-	ws.AddCommand(workspaceRebaseCmd())
-	ws.AddCommand(workspaceTreeCmd())
-	ws.AddCommand(workspaceUpdateCmd())
-	ws.AddCommand(workspaceUpgradeCmd())
-	ws.AddCommand(workspaceDiscoverCmd())
+	// --terminal is a persistent flag inherited by all subcommands.
+	ws.PersistentFlags().StringVar(&terminalFlag, "terminal", "", "override the terminal repo (the flake build/apply targets)")
+
+	ws.AddCommand(workspaceStatusCmd(&terminalFlag))
+	ws.AddCommand(workspaceInitCmd(&terminalFlag))
+	ws.AddCommand(workspaceCloneCmd(&terminalFlag))
+	ws.AddCommand(workspaceBuildCmd(&terminalFlag))
+	ws.AddCommand(workspaceApplyCmd(&terminalFlag))
+	ws.AddCommand(workspaceFlakeCheckCmd(&terminalFlag))
+	ws.AddCommand(workspacePreCommitCheckCmd(&terminalFlag))
+	ws.AddCommand(workspacePushCmd(&terminalFlag))
+	ws.AddCommand(workspaceRebaseCmd(&terminalFlag))
+	ws.AddCommand(workspaceTreeCmd(&terminalFlag))
+	ws.AddCommand(workspaceUpdateCmd(&terminalFlag))
+	ws.AddCommand(workspaceUpgradeCmd(&terminalFlag))
+	ws.AddCommand(workspaceDiscoverCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
 	parent.AddCommand(ws)
 }
@@ -91,7 +97,7 @@ func fileExists(p string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func workspaceStatusCmd() *cobra.Command {
+func workspaceStatusCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Print git status across all workspace repos",
@@ -108,7 +114,7 @@ func workspaceStatusCmd() *cobra.Command {
 	}
 }
 
-func workspaceInitCmd() *cobra.Command {
+func workspaceInitCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
 		Short: "Clone repos from pn-workspace.toml; reconcile existing; write lock",
@@ -126,7 +132,7 @@ func workspaceInitCmd() *cobra.Command {
 	}
 }
 
-func workspaceBuildCmd() *cobra.Command {
+func workspaceBuildCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "build",
 		Short: "Build all workspace repos",
@@ -138,13 +144,13 @@ func workspaceBuildCmd() *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "build", func() error {
-				return w.Build(ctx, out, workspace.BuildOptions{})
+				return w.Build(ctx, out, workspace.BuildOptions{Terminal: *terminal})
 			})
 		},
 	}
 }
 
-func workspaceApplyCmd() *cobra.Command {
+func workspaceApplyCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "apply",
 		Short: "Apply nix configurations across workspace repos",
@@ -156,13 +162,13 @@ func workspaceApplyCmd() *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "apply", func() error {
-				return w.Apply(ctx, out, workspace.ApplyOptions{})
+				return w.Apply(ctx, out, workspace.ApplyOptions{Terminal: *terminal})
 			})
 		},
 	}
 }
 
-func workspaceFlakeCheckCmd() *cobra.Command {
+func workspaceFlakeCheckCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "flake-check",
 		Short: "Run nix flake check on each workspace repo",
@@ -174,13 +180,13 @@ func workspaceFlakeCheckCmd() *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "flake-check", func() error {
-				return w.FlakeCheck(ctx, out, workspace.FlakeCheckOptions{})
+				return w.FlakeCheck(ctx, out, workspace.FlakeCheckOptions{Terminal: *terminal})
 			})
 		},
 	}
 }
 
-func workspacePreCommitCheckCmd() *cobra.Command {
+func workspacePreCommitCheckCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "pre-commit-check",
 		Short: "Run pre-commit checks on each workspace repo",
@@ -192,13 +198,13 @@ func workspacePreCommitCheckCmd() *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "pre-commit-check", func() error {
-				return w.PreCommitCheck(ctx, out, workspace.PreCommitCheckOptions{})
+				return w.PreCommitCheck(ctx, out, workspace.PreCommitCheckOptions{Terminal: *terminal})
 			})
 		},
 	}
 }
 
-func workspacePushCmd() *cobra.Command {
+func workspacePushCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "push",
 		Short: "Git push each workspace repo",
@@ -216,7 +222,7 @@ func workspacePushCmd() *cobra.Command {
 	}
 }
 
-func workspaceRebaseCmd() *cobra.Command {
+func workspaceRebaseCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "rebase",
 		Short: "Git rebase each workspace repo",
@@ -234,7 +240,7 @@ func workspaceRebaseCmd() *cobra.Command {
 	}
 }
 
-func workspaceTreeCmd() *cobra.Command {
+func workspaceTreeCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "tree",
 		Short: "Print the workspace repo tree",
@@ -245,13 +251,13 @@ func workspaceTreeCmd() *cobra.Command {
 			}
 			ctx := context.Background()
 			return runWithHooks(ctx, w, "tree", func() error {
-				return w.Tree(ctx, cmd.OutOrStdout(), workspace.TreeOptions{})
+				return w.Tree(ctx, cmd.OutOrStdout(), workspace.TreeOptions{Terminal: *terminal})
 			})
 		},
 	}
 }
 
-func workspaceUpdateCmd() *cobra.Command {
+func workspaceUpdateCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "update",
 		Short: "Update each workspace repo (pull + update locks)",
@@ -269,7 +275,7 @@ func workspaceUpdateCmd() *cobra.Command {
 	}
 }
 
-func workspaceUpgradeCmd() *cobra.Command {
+func workspaceUpgradeCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "upgrade",
 		Short: "Update + apply each workspace repo",
@@ -287,7 +293,7 @@ func workspaceUpgradeCmd() *cobra.Command {
 	}
 }
 
-func workspaceDiscoverCmd() *cobra.Command {
+func workspaceDiscoverCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "discover",
 		Short: "List workspace repos",
@@ -325,8 +331,7 @@ func workspaceNixCmd() *cobra.Command {
 	}
 }
 
-func workspaceCloneCmd() *cobra.Command {
-	var terminal string
+func workspaceCloneCmd(terminal *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "clone",
 		Short: "Clone repos listed in pn-workspace.toml that are missing on disk",
@@ -338,10 +343,9 @@ func workspaceCloneCmd() *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return w.Clone(ctx, out, workspace.CloneOptions{
-				Terminal: terminal,
+				Terminal: *terminal,
 			})
 		},
 	}
-	cmd.Flags().StringVar(&terminal, "terminal", "", "terminal repo override (no behavioral effect for clone)")
 	return cmd
 }

@@ -12,6 +12,7 @@ import (
 
 // BuildOptions configures Build.
 type BuildOptions struct {
+	Terminal            string            // overrides workspace.terminal for this invocation
 	BuildCmd            string            // overrides build_command template
 	OverridePaths       map[string]string // repo key -> abs path
 	ShowNixCommandsOnly bool
