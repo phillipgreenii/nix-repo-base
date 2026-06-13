@@ -18,32 +18,22 @@ type InitOptions struct {
 	// (reserved for future use, e.g. --no-reconcile)
 }
 
-// Init clones missing repos from the TOML's [repos.*] entries, regenerates
-// pn-workspace.lock.json with resolved revs, and reconciles existing on-disk
-// repos not yet present in the TOML. Clone progress is streamed to out.
+// Init reconciles on-disk repos not yet in TOML, clones any missing repos,
+// then writes pn-workspace.lock.json with the derived dependency DAG.
+// Clone progress is streamed to out.
+//
+// NOTE: the clone step is performed via Clone() to avoid duplication; this
+// means Init remains idempotent. The tc-perh.9.11 slice will make Init
+// config-only (removing the clone and lock steps from here).
 func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) error {
 	// 1. Reconcile: add on-disk repos missing from TOML.
 	if err := w.reconcileFromFilesystem(ctx); err != nil {
 		return fmt.Errorf("init: reconcile: %w", err)
 	}
 
-	// 2. Clone missing repos from TOML (in deterministic name order).
-	names := make([]string, 0, len(w.config.Repos))
-	for n := range w.config.Repos {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		r := w.config.Repos[name]
-		repoDir := filepath.Join(w.root, name)
-		if isGitRepo(repoDir) {
-			continue
-		}
-		cloneURL := flakeURLToHTTPS(r.URL)
-		fmt.Fprintf(out, "  --== clone %s ==--  \n", name)
-		if _, err := w.runner.Run(ctx, "git", []string{"clone", "--branch", r.Branch, cloneURL, repoDir}, exec.RunOptions{Dir: w.root, Stdout: out, Stderr: out}); err != nil {
-			return fmt.Errorf("init: clone %s: %w", name, err)
-		}
+	// 2. Clone missing repos (delegates to Clone so the logic lives in one place).
+	if err := w.Clone(ctx, out, CloneOptions{}); err != nil {
+		return fmt.Errorf("init: %w", err)
 	}
 
 	// 3. Write pn-workspace.lock.json with the derived dependency DAG. This

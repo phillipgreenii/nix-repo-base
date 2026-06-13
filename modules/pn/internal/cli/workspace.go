@@ -19,6 +19,7 @@ func addWorkspaceCmd(parent *cobra.Command) {
 	}
 	ws.AddCommand(workspaceStatusCmd())
 	ws.AddCommand(workspaceInitCmd())
+	ws.AddCommand(workspaceCloneCmd())
 	ws.AddCommand(workspaceBuildCmd())
 	ws.AddCommand(workspaceApplyCmd())
 	ws.AddCommand(workspaceFlakeCheckCmd())
@@ -322,4 +323,25 @@ func workspaceNixCmd() *cobra.Command {
 			return w.NixCommand(context.Background(), args)
 		},
 	}
+}
+
+func workspaceCloneCmd() *cobra.Command {
+	var terminal string
+	cmd := &cobra.Command{
+		Use:   "clone",
+		Short: "Clone repos listed in pn-workspace.toml that are missing on disk",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			return w.Clone(ctx, out, workspace.CloneOptions{
+				Terminal: terminal,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&terminal, "terminal", "", "terminal repo override (no behavioral effect for clone)")
+	return cmd
 }
