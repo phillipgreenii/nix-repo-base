@@ -38,7 +38,16 @@ func (ws *Workspace) Tree(ctx context.Context, w io.Writer, opts TreeOptions) er
 	if opts.AllInputs {
 		return ws.treeAllInputs(ctx, w, terminal)
 	}
-	_, dependsOn, err := ws.deriveDAG(ctx)
+	inputURLs, err := ws.gatherInputURLs(ctx)
+	if err != nil {
+		return err
+	}
+	edges, _, err := buildEdges(ws.config.Repos, inputURLs)
+	if err != nil {
+		return err
+	}
+	repoKeys := orderedRepoNames(ws.config.Repos)
+	dependsOn := edgesToDependsOn(edges, repoKeys)
 	if err != nil {
 		return err
 	}

@@ -93,19 +93,24 @@ func (w *Workspace) persistNonDefaultFlakePaths() error {
 	return nil
 }
 
-// RefreshLock re-derives the workspace dependency DAG from each repo's declared
-// flake inputs and writes it to pn-workspace.lock.json. It performs no clone
-// or reconcile, so it is safe to run any time to regenerate the lock; it backs
-// the `pn workspace lock` command and the lock write at the end of init.
+// RefreshLock re-derives the workspace lock from each repo's declared flake
+// inputs and writes it to pn-workspace.lock.json. Uses the new gatherInputURLs
+// + buildEdges approach (replacing the old gatherDeclaredInputs + buildDAG).
 func (w *Workspace) RefreshLock(ctx context.Context) error {
-	order, _, err := w.deriveDAG(ctx)
+	inputURLs, err := w.gatherInputURLs(ctx)
+	if err != nil {
+		return fmt.Errorf("gather input URLs: %w", err)
+	}
+
+	edges, order, err := buildEdges(w.config.Repos, inputURLs)
 	if err != nil {
 		return err
 	}
+
 	lock := &Lock{
 		Order: order,
 		Repos: make(map[string]LockRepoEntry),
-		Edges: []LockEdge{},
+		Edges: edges,
 	}
 	if err := WriteLock(filepath.Join(w.root, LockFileName), lock); err != nil {
 		return fmt.Errorf("write lock: %w", err)

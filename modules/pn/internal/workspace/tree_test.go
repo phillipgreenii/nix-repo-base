@@ -155,10 +155,10 @@ func TestRenderTree_Color_DimOnDuplicate(t *testing.T) {
 	}
 }
 
-// TestTree_RendersGraphFromDeclaredInputs exercises Tree end-to-end: it derives
-// the DAG from each repo's declared flake inputs (not the lock) and renders it.
-// Output goes to a bytes.Buffer (not a TTY), so the no-color "*" form is used.
-func TestTree_RendersGraphFromDeclaredInputs(t *testing.T) {
+// TestTree_RendersGraphFromURLMatching exercises Tree end-to-end using the new
+// URL-based edge discovery. Repos declare inputs with URLs matching other workspace
+// repos' remote URLs, and the DAG is built from those matches.
+func TestTree_RendersGraphFromURLMatching(t *testing.T) {
 	root := t.TempDir()
 	for _, r := range []string{"term", "base", "overlay"} {
 		mkRepoDir(t, root, r)
@@ -173,20 +173,27 @@ url = "github:o/term"
 
 [repos.base]
 url = "github:o/base"
-input-name = "nb"
 
 [repos.overlay]
 url = "github:o/overlay"
-input-name = "ovl"
 `)
 
-	f := exec.NewFakeRunner()
-	evalArgs := func(repo string) []string {
-		return []string{"eval", "--json", "--file", filepath.Join(root, repo, "flake.nix"), "inputs", "--apply", "builtins.attrNames"}
+	// The new expression for gatherInputURLs.
+	fullApplyExpr := `is: builtins.mapAttrs (n: v: { url = v.url or null; flake = v.flake or true; }) is`
+	evalArgs := func(repo, apply string) []string {
+		return []string{"eval", "--json", "--file", filepath.Join(root, repo, "flake.nix"), "inputs", "--apply", apply}
 	}
-	f.AddResponse("nix", evalArgs("base"), exec.Result{Stdout: []byte(`["nixpkgs"]`)}, nil)
-	f.AddResponse("nix", evalArgs("overlay"), exec.Result{Stdout: []byte(`["nixpkgs","nb"]`)}, nil)
-	f.AddResponse("nix", evalArgs("term"), exec.Result{Stdout: []byte(`["nb","ovl"]`)}, nil)
+
+	f := exec.NewFakeRunner()
+	// base: no workspace inputs (only nixpkgs which doesn't match).
+	f.AddResponse("nix", evalArgs("base", fullApplyExpr),
+		exec.Result{Stdout: []byte(`{"nixpkgs":{"url":"https://github.com/NixOS/nixpkgs.git","flake":true}}`)}, nil)
+	// overlay: depends on base via URL matching.
+	f.AddResponse("nix", evalArgs("overlay", fullApplyExpr),
+		exec.Result{Stdout: []byte(`{"nixpkgs":{"url":"https://github.com/NixOS/nixpkgs.git","flake":true},"nb":{"url":"github:o/base","flake":true}}`)}, nil)
+	// term: depends on base and overlay via URL matching.
+	f.AddResponse("nix", evalArgs("term", fullApplyExpr),
+		exec.Result{Stdout: []byte(`{"nb":{"url":"github:o/base","flake":true},"ovl":{"url":"github:o/overlay","flake":true}}`)}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
