@@ -118,7 +118,7 @@ func workspaceStatusCmd(terminal *string) *cobra.Command {
 func workspaceInitCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Clone repos from pn-workspace.toml; reconcile existing; write lock",
+		Short: "Scan workspace root for git repos; reconcile into pn-workspace.toml (config-only; no clone, no lock write)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -127,7 +127,7 @@ func workspaceInitCmd(terminal *string) *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "init", func() error {
-				return w.Init(ctx, out, workspace.InitOptions{})
+				return w.Init(ctx, out, workspace.InitOptions{Terminal: *terminal})
 			})
 		},
 	}
@@ -270,7 +270,7 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "update", func() error {
-				return w.Update(ctx, out, workspace.UpdateOptions{})
+				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal})
 			})
 		},
 	}
