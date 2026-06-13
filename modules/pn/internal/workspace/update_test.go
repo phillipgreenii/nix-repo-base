@@ -25,7 +25,7 @@ url = "github:o/app"
 [repos.lib]
 url = "github:o/lib"
 `)
-	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"order":["lib","app"],"dependsOn":{"app":["lib"]}}`)
+	writeFile(t, filepath.Join(root, LockFileName), `{"order":["lib","app"],"repos":{"app":{"remote_url":"github:o/app"},"lib":{"remote_url":"github:o/lib"}},"edges":[]}`)
 	w, err := Open(root, exec.NewFakeRunner())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -48,7 +48,7 @@ url = "github:o/app"
 [repos.lib]
 url = "github:o/lib"
 `)
-	writeFile(t, filepath.Join(root, "pn-workspace.lock"), `{"order":["lib"],"dependsOn":{}}`)
+	writeFile(t, filepath.Join(root, LockFileName), `{"order":["lib"],"repos":{"lib":{"remote_url":"github:o/lib"}},"edges":[]}`)
 	w, err := Open(root, exec.NewFakeRunner())
 	if err != nil {
 		t.Fatalf("Open: %v", err)

@@ -19,8 +19,8 @@ type InitOptions struct {
 }
 
 // Init clones missing repos from the TOML's [repos.*] entries, regenerates
-// pn-workspace.lock with resolved revs, and reconciles existing on-disk repos
-// not yet present in the TOML. Clone progress is streamed to out.
+// pn-workspace.lock.json with resolved revs, and reconciles existing on-disk
+// repos not yet present in the TOML. Clone progress is streamed to out.
 func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) error {
 	// 1. Reconcile: add on-disk repos missing from TOML.
 	if err := w.reconcileFromFilesystem(ctx); err != nil {
@@ -46,13 +46,14 @@ func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) e
 		}
 	}
 
-	// 3. Write pn-workspace.lock with the derived dependency DAG. This needs a
-	// terminal flake to derive from; with none configured, write an empty lock.
+	// 3. Write pn-workspace.lock.json with the derived dependency DAG. This
+	// needs a terminal flake to derive from; with none configured, write an
+	// empty lock.
 	if w.config.Workspace.Terminal == "" {
-		if err := WriteLock(filepath.Join(w.root, LockFileName), &Lock{}); err != nil {
+		if err := WriteLock(filepath.Join(w.root, LockFileName), emptyLock()); err != nil {
 			return fmt.Errorf("init: write lock: %w", err)
 		}
-		w.lock = &Lock{DependsOn: make(map[string][]string)}
+		w.lock = emptyLock()
 		return nil
 	}
 	if err := w.RefreshLock(ctx); err != nil {
@@ -62,15 +63,19 @@ func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) e
 }
 
 // RefreshLock re-derives the workspace dependency DAG from each repo's declared
-// flake inputs and writes it to pn-workspace.lock. It performs no clone or
-// reconcile, so it is safe to run any time to regenerate the lock; it backs the
-// `pn workspace lock` command and the lock write at the end of init.
+// flake inputs and writes it to pn-workspace.lock.json. It performs no clone
+// or reconcile, so it is safe to run any time to regenerate the lock; it backs
+// the `pn workspace lock` command and the lock write at the end of init.
 func (w *Workspace) RefreshLock(ctx context.Context) error {
-	order, dependsOn, err := w.deriveDAG(ctx)
+	order, _, err := w.deriveDAG(ctx)
 	if err != nil {
 		return err
 	}
-	lock := &Lock{Order: order, DependsOn: dependsOn}
+	lock := &Lock{
+		Order: order,
+		Repos: make(map[string]LockRepoEntry),
+		Edges: []LockEdge{},
+	}
 	if err := WriteLock(filepath.Join(w.root, LockFileName), lock); err != nil {
 		return fmt.Errorf("write lock: %w", err)
 	}

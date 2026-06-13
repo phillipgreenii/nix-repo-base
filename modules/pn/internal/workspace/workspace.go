@@ -12,8 +12,6 @@ import (
 const (
 	// ConfigFileName is the workspace TOML filename at the workspace root.
 	ConfigFileName = "pn-workspace.toml"
-	// LockFileName is the workspace lock filename at the workspace root.
-	LockFileName = "pn-workspace.lock"
 )
 
 // Workspace is the in-memory representation of a workspace rooted at Root.
@@ -27,7 +25,7 @@ type Workspace struct {
 }
 
 // Open loads the workspace rooted at dir. Reads pn-workspace.toml (required),
-// pn-workspace.lock (optional, DAG ordering), and pn-workspace.revs.json
+// pn-workspace.lock.json (optional, DAG ordering), and pn-workspace.revs.json
 // (optional, per-repo URL+Rev for reproducibility). Constructs a shared
 // WorkerPool sized to runtime.NumCPU() for per-repo subprocess fan-out;
 // callers should call Close() when finished to drain the pool.

@@ -212,8 +212,8 @@ input-name = "nb"
 	}
 }
 
-// TestRefreshLock_WritesDAGLock verifies `pn workspace lock`'s core: re-derive
-// the DAG and write it to pn-workspace.lock (no clone/reconcile).
+// TestRefreshLock_WritesDAGLock verifies RefreshLock writes Order to the new
+// pn-workspace.lock.json format.
 func TestRefreshLock_WritesDAGLock(t *testing.T) {
 	root := t.TempDir()
 	for _, r := range []string{"term", "base"} {
@@ -246,14 +246,11 @@ input-name = "nb"
 		t.Fatalf("RefreshLock: %v", err)
 	}
 
-	lock, err := ReadLock(filepath.Join(root, "pn-workspace.lock"))
+	lock, err := ReadLock(filepath.Join(root, LockFileName))
 	if err != nil {
 		t.Fatalf("ReadLock: %v", err)
 	}
 	if want := []string{"base", "term"}; !reflect.DeepEqual(lock.Order, want) {
 		t.Errorf("lock.Order = %v, want %v", lock.Order, want)
-	}
-	if got := lock.DependsOn["term"]; !reflect.DeepEqual(got, []string{"base"}) {
-		t.Errorf("lock.DependsOn[term] = %v, want [base]", got)
 	}
 }

@@ -17,7 +17,12 @@ name = "test"
 [repos.foo]
 url = "github:owner/foo"
 `)
-	writeFile(t, filepath.Join(dir, "pn-workspace.lock"), `{"order":["foo"],"dependsOn":{}}`)
+	// Write new-format lock.
+	writeFile(t, filepath.Join(dir, LockFileName), `{
+  "order": ["foo"],
+  "repos": {"foo": {"remote_url": "github:owner/foo"}},
+  "edges": []
+}`)
 
 	w, err := Open(dir, exec.NewFakeRunner())
 	if err != nil {
@@ -51,8 +56,8 @@ name = "x"
 	if err != nil {
 		t.Fatalf("Open should tolerate missing lock, got %v", err)
 	}
-	if len(w.Lock().Order) != 0 || len(w.Lock().DependsOn) != 0 {
-		t.Errorf("expected empty lock, got order=%v dependsOn=%v", w.Lock().Order, w.Lock().DependsOn)
+	if len(w.Lock().Order) != 0 || len(w.Lock().Repos) != 0 || len(w.Lock().Edges) != 0 {
+		t.Errorf("expected empty lock, got order=%v repos=%v edges=%v", w.Lock().Order, w.Lock().Repos, w.Lock().Edges)
 	}
 }
 

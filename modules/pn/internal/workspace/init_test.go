@@ -39,13 +39,13 @@ url = "github:owner/foo"
 		}
 	}
 
-	// With no terminal configured, init writes an empty DAG lock (no revs).
-	lock, err := ReadLock(filepath.Join(root, "pn-workspace.lock"))
+	// With no terminal configured, init writes an empty lock.
+	lock, err := ReadLock(filepath.Join(root, LockFileName))
 	if err != nil {
 		t.Fatalf("ReadLock: %v", err)
 	}
-	if len(lock.Order) != 0 || len(lock.DependsOn) != 0 {
-		t.Errorf("expected empty DAG lock, got order=%v dependsOn=%v", lock.Order, lock.DependsOn)
+	if len(lock.Order) != 0 || len(lock.Repos) != 0 || len(lock.Edges) != 0 {
+		t.Errorf("expected empty lock, got order=%v repos=%v edges=%v", lock.Order, lock.Repos, lock.Edges)
 	}
 }
 
