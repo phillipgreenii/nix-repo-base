@@ -223,79 +223,6 @@ func TestSelectTerminal_ExplicitNotInGraph_Error(t *testing.T) {
 	}
 }
 
-func TestResolveInputNames_Simple(t *testing.T) {
-	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
-		"base":     {URL: "github:o/base"},
-		"overlay":  {URL: "github:o/overlay"},
-		"personal": {URL: "github:o/personal"},
-	}}
-	repoInputs := map[string]map[string]string{
-		"personal": {
-			"phillipgreenii-nix-base":    "github:o/base",
-			"phillipgreenii-nix-overlay": "github:o/overlay",
-		},
-	}
-	g, err := buildGraph(cfg, repoInputs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	names, err := resolveInputNames(cfg, g, repoInputs, "personal")
-	if err != nil {
-		t.Fatalf("resolveInputNames: %v", err)
-	}
-	if names["base"] != "phillipgreenii-nix-base" {
-		t.Errorf("base inputName = %q", names["base"])
-	}
-	if names["overlay"] != "phillipgreenii-nix-overlay" {
-		t.Errorf("overlay inputName = %q", names["overlay"])
-	}
-}
-
-func TestResolveInputNames_SiblingNotConsumed_Empty(t *testing.T) {
-	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
-		"base":     {URL: "github:o/base"},
-		"personal": {URL: "github:o/personal"},
-		"sibling":  {URL: "github:o/sibling"}, // not depended on by personal
-	}}
-	repoInputs := map[string]map[string]string{
-		"personal": {"phillipgreenii-nix-base": "github:o/base"},
-		"base":     {},
-		"sibling":  {},
-	}
-	g, err := buildGraph(cfg, repoInputs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	names, err := resolveInputNames(cfg, g, repoInputs, "personal")
-	if err != nil {
-		t.Fatalf("resolveInputNames: %v", err)
-	}
-	if got, ok := names["sibling"]; ok && got != "" {
-		t.Errorf("sibling should be empty/missing; got %q", got)
-	}
-}
-
-func TestResolveInputNames_MultipleMatches_Error(t *testing.T) {
-	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
-		"base":     {URL: "github:o/base"},
-		"personal": {URL: "github:o/personal"},
-	}}
-	repoInputs := map[string]map[string]string{
-		"personal": {
-			"name-one": "github:o/base",
-			"name-two": "github:o/base", // same target twice — illegal
-		},
-	}
-	g, err := buildGraph(cfg, repoInputs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = resolveInputNames(cfg, g, repoInputs, "personal")
-	if err == nil {
-		t.Fatal("expected error: terminal has two inputs pointing at the same repo")
-	}
-}
-
 func TestTopoSort_DepsFirstTerminalLast(t *testing.T) {
 	// overlay -> base ; personal -> overlay, personal -> base
 	g := &graph{
@@ -349,20 +276,5 @@ func TestTopoSort_StableByNameWithinLevel(t *testing.T) {
 		if n != want[i] {
 			t.Errorf("order[%d]=%q want %q (full: %v)", i, n, want[i], order)
 		}
-	}
-}
-
-func TestTopoSort_Cycle_Error(t *testing.T) {
-	// a -> b -> a
-	g := &graph{
-		edges: map[string]map[string]bool{
-			"a": {"b": true},
-			"b": {"a": true},
-		},
-		inDegree: map[string]int{"a": 1, "b": 1},
-	}
-	_, err := topoSort(g)
-	if err == nil {
-		t.Fatal("expected cycle error")
 	}
 }

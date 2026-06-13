@@ -15,8 +15,14 @@ type RebaseOptions struct{}
 // Rebase runs `git mu` (custom user alias for maintenance/update — typically
 // pull --rebase --autostash) in each workspace repo that has a configured
 // upstream, streaming output to out. Repos without an upstream are skipped.
+// Repos are processed in topological order (dependencies before consumers).
+// Rebase is a terminal-optional command: if no terminal is configured it emits
+// a warning and continues.
 func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, opts RebaseOptions) error {
-	names := orderedRepoNames(ws.config.Repos)
+	if ws.config.Workspace.Terminal == "" {
+		fmt.Fprintln(out, terminalWarningMessage)
+	}
+	names := ws.topoAlpha(ctx)
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
 		if !ws.hasUpstream(ctx, repoDir) {

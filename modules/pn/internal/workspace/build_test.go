@@ -23,7 +23,6 @@ url = "github:owner/leaf"
 
 [repos.dep]
 url = "github:owner/dep"
-input-name = "dep-input"
 `)
 	// Write lock file so overrideInputArgsFor has edges to work with.
 	// leaf depends on dep via alias "dep-input".

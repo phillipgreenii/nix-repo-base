@@ -30,10 +30,10 @@ url = "github:o/lib"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	got := w.updateOrder()
+	got := w.topoAlpha(context.Background())
 	want := []string{"lib", "app"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("updateOrder = %v, want %v (lock topo order)", got, want)
+		t.Errorf("topoAlpha = %v, want %v (lock topo order)", got, want)
 	}
 }
 
@@ -53,10 +53,10 @@ url = "github:o/lib"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	got := w.updateOrder()
+	got := w.topoAlpha(context.Background())
 	want := []string{"app", "lib"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("updateOrder = %v, want alphabetical fallback %v", got, want)
+		t.Errorf("topoAlpha = %v, want alphabetical fallback %v", got, want)
 	}
 }
 
@@ -97,6 +97,9 @@ url = "github:o/foo"
 func TestUpdate_InjectsULLibDirAndWorkspaceEnv(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
 [repos.foo]
 url = "github:owner/foo"
 `)
@@ -144,6 +147,9 @@ url = "github:owner/foo"
 func TestUpdate_ContinuesPastFailureAndAggregates(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
 [repos.foo]
 url = "github:owner/foo"
 
@@ -194,6 +200,9 @@ url = "github:owner/bar"
 func TestUpdate_PullFailureSkipsLocksAndPush(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
 [repos.foo]
 url = "github:owner/foo"
 `)
@@ -229,6 +238,9 @@ url = "github:owner/foo"
 func TestUpdate_PullLocksPushPerRepo(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
 [repos.foo]
 url = "github:owner/foo"
 `)
@@ -300,6 +312,9 @@ func lastArg(args []string) string {
 func TestUpdate_SkipsDirtyRepo(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
 [repos.foo]
 url = "github:owner/foo"
 `)
@@ -343,6 +358,9 @@ url = "github:owner/foo"
 func TestUpdate_NoUpstreamRunsLocksOnly(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
 [repos.foo]
 url = "github:owner/foo"
 `)
@@ -390,6 +408,9 @@ url = "github:owner/foo"
 func TestUpdate_RespectsCancelledContext(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
 [repos.foo]
 url = "github:owner/foo"
 `)

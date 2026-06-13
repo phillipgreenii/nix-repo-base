@@ -116,8 +116,11 @@ func TestParseConfig_EmptyConfig(t *testing.T) {
 	}
 }
 
-func TestParseConfig_RepoInputName(t *testing.T) {
-	cfg, err := ParseConfig([]byte(`
+// TestParseConfig_RejectsInputName verifies that ParseConfig returns a clear
+// migration error when any [repos.*] entry still has the removed input-name
+// field, with guidance to remove it and rely on per-edge lock aliases instead.
+func TestParseConfig_RejectsInputName(t *testing.T) {
+	_, err := ParseConfig([]byte(`
 [repos.phillipg-nix-repo-base]
 url = "github:phillipgreenii/nix-repo-base"
 input-name = "phillipgreenii-nix-base"
@@ -125,20 +128,14 @@ input-name = "phillipgreenii-nix-base"
 [repos.nix-overlay]
 url = "github:phillipgreenii/nix-overlay"
 `))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for legacy input-name field; got nil")
 	}
-	// Explicit input-name is honored.
-	if got := cfg.InputNameFor("phillipg-nix-repo-base"); got != "phillipgreenii-nix-base" {
-		t.Errorf("explicit input-name: got %q want phillipgreenii-nix-base", got)
+	if !strings.Contains(err.Error(), "input-name") {
+		t.Errorf("error should mention input-name; got %q", err.Error())
 	}
-	// Omitted input-name defaults to the repo key (the on-disk directory name).
-	if got := cfg.InputNameFor("nix-overlay"); got != "nix-overlay" {
-		t.Errorf("default input-name: got %q want nix-overlay", got)
-	}
-	// Unknown repo falls back to the key itself.
-	if got := cfg.InputNameFor("does-not-exist"); got != "does-not-exist" {
-		t.Errorf("unknown repo: got %q want does-not-exist", got)
+	if !strings.Contains(err.Error(), "phillipg-nix-repo-base") {
+		t.Errorf("error should name the offending repo; got %q", err.Error())
 	}
 }
 

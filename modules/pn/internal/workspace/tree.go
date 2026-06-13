@@ -32,8 +32,9 @@ const (
 // every flake input read from the terminal's flake.lock graph instead. The
 // first time a node appears it is printed normally; a repeat reference is
 // dimmed when the output is a color-capable terminal, otherwise prefixed "*".
+// Tree is a required-terminal command: it errors when no terminal is configured.
 func (ws *Workspace) Tree(ctx context.Context, w io.Writer, opts TreeOptions) error {
-	terminal, err := ws.config.TerminalRepo()
+	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
 	if err != nil {
 		return err
 	}
@@ -80,20 +81,6 @@ func (ws *Workspace) treeAllInputs(ctx context.Context, w io.Writer, terminal st
 	}
 	renderTree(w, root, dependsOn, colorEnabled(w))
 	return nil
-}
-
-// workspaceDisplayNames maps each non-terminal repo's resolved inputName to its
-// display name (the repo's directory basename, i.e. its key) so the all-inputs
-// tree shows workspace repos by directory rather than by lock input key.
-func (ws *Workspace) workspaceDisplayNames(terminal string) map[string]string {
-	m := make(map[string]string)
-	for _, key := range orderedRepoNames(ws.config.Repos) {
-		if key == terminal {
-			continue
-		}
-		m[ws.config.InputNameFor(key)] = key
-	}
-	return m
 }
 
 // buildAllInputsGraph parses a flake.lock and returns the full input dependency

@@ -17,6 +17,8 @@ const ulLibResolverRef = "github:phillipgreenii/nix-repo-base#determine-ul-lib-d
 
 // UpdateOptions configures Update.
 type UpdateOptions struct {
+	// Terminal overrides workspace.terminal for this invocation.
+	Terminal string
 	// Recreate forces full lock recreation (currently treated as an
 	// indicator for Upgrade; see upgrade.go).
 	Recreate bool
@@ -69,8 +71,15 @@ func (ws *Workspace) ulSubprocessEnv(ulLibDir string) map[string]string {
 //
 // The provided context is checked between repos and between sub-steps; a
 // cancelled context aborts cleanly with the next ctx.Err() observed.
+//
+// Repos are processed in topological order (dependencies before consumers) so
+// that downstream repos re-lock against already-updated upstreams.
+// Update is a required-terminal command: it errors when no terminal is configured.
 func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptions) error {
-	names := ws.updateOrder()
+	if _, err := ws.requireTerminal(ctx, opts.Terminal); err != nil {
+		return err
+	}
+	names := ws.topoAlpha(ctx)
 	// Start from the existing rev-lock so untouched repos keep their entries.
 	revs := make(map[string]LockedRepo, len(names))
 	if ws.revLock != nil {
@@ -148,29 +157,6 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 		return fmt.Errorf("update failed in %d project(s): %s", len(failed), strings.Join(failed, ", "))
 	}
 	return nil
-}
-
-// updateOrder returns the repo iteration order for Update: the lock's
-// topological order (dependencies first, terminal last) when the lock covers
-// exactly the configured repo set, so a downstream repo re-locks against its
-// already-updated upstream. Falls back to alphabetical when the lock is empty
-// or stale (doesn't match the configured repos), which is always safe.
-func (ws *Workspace) updateOrder() []string {
-	alpha := orderedRepoNames(ws.config.Repos)
-	order := ws.lock.Order
-	if len(order) != len(alpha) {
-		return alpha
-	}
-	inLock := make(map[string]bool, len(order))
-	for _, n := range order {
-		inLock[n] = true
-	}
-	for _, n := range alpha {
-		if !inLock[n] {
-			return alpha
-		}
-	}
-	return order
 }
 
 // isDirty reports whether repoDir has uncommitted changes — modified or staged

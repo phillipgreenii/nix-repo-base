@@ -5,10 +5,9 @@ import (
 )
 
 // buildDAG turns each repo's declared input names into the workspace dependency
-// DAG. Repo A depends on repo B when A declares an input named B's input-name —
-// the same name `--override-input` targets, so the edge mirrors what the build
-// actually overrides. Returns the topological order and the adjacency map
-// (repos with no workspace deps omitted).
+// DAG. Repo A depends on repo B when A declares an input with the same name as
+// B's repo key (directory name). Returns the topological order and the adjacency
+// map (repos with no workspace deps omitted).
 //
 // NOTE: buildDAG uses the OLD gatherDeclaredInputs-style data (input names,
 // not URLs). It is retained for buildGraph/tree.go internals that still use
@@ -17,10 +16,10 @@ import (
 func buildDAG(cfg *WorkspaceConfig, declaredInputs map[string][]string) ([]string, map[string][]string) {
 	repoKeys := orderedRepoNames(cfg.Repos)
 
-	// input-name -> repoKey for every workspace repo.
-	repoByInputName := make(map[string]string, len(repoKeys))
+	// repo key -> bool for every workspace repo (used for membership tests).
+	repoSet := make(map[string]bool, len(repoKeys))
 	for _, k := range repoKeys {
-		repoByInputName[cfg.InputNameFor(k)] = k
+		repoSet[k] = true
 	}
 
 	dependsOn := make(map[string][]string)
@@ -28,12 +27,12 @@ func buildDAG(cfg *WorkspaceConfig, declaredInputs map[string][]string) ([]strin
 		seen := make(map[string]bool)
 		var deps []string
 		for _, name := range declaredInputs[a] {
-			b, ok := repoByInputName[name]
-			if !ok || b == a || seen[b] {
+			// An input matches a workspace repo when its name equals the repo key.
+			if !repoSet[name] || name == a || seen[name] {
 				continue
 			}
-			seen[b] = true
-			deps = append(deps, b)
+			seen[name] = true
+			deps = append(deps, name)
 		}
 		if len(deps) > 0 {
 			sort.Strings(deps)

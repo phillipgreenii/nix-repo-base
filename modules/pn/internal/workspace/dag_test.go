@@ -6,21 +6,21 @@ import (
 )
 
 // TestBuildDAG_OrdersDepsBeforeDependents checks the pure graph builder: an
-// edge A->B exists when A declares an input named B's input-name. overlay
-// follows base; the terminal consumes both.
+// edge A->B exists when A declares an input with the same name as B's repo key.
+// overlay depends on base; the terminal consumes both.
 func TestBuildDAG_OrdersDepsBeforeDependents(t *testing.T) {
 	cfg := &WorkspaceConfig{
 		Workspace: WorkspaceSection{Terminal: "ziprecruiter"},
 		Repos: map[string]RepoConfig{
-			"base":         {InputName: "phillipgreenii-nix-base"},
-			"overlay":      {InputName: "ovl"},
-			"ziprecruiter": {},
+			"base":         {URL: "github:o/base"},
+			"overlay":      {URL: "github:o/overlay"},
+			"ziprecruiter": {URL: "github:o/zr"},
 		},
 	}
 	declared := map[string][]string{
 		"base":         {"nixpkgs"},
-		"overlay":      {"nixpkgs", "phillipgreenii-nix-base"},
-		"ziprecruiter": {"nixpkgs", "phillipgreenii-nix-base", "ovl"},
+		"overlay":      {"nixpkgs", "base"},
+		"ziprecruiter": {"nixpkgs", "base", "overlay"},
 	}
 
 	order, dependsOn := buildDAG(cfg, declared)
@@ -44,10 +44,10 @@ func TestBuildDAG_SiblingsAlphabeticalTiebreak(t *testing.T) {
 	cfg := &WorkspaceConfig{
 		Workspace: WorkspaceSection{Terminal: "term"},
 		Repos: map[string]RepoConfig{
-			"base": {InputName: "base"},
-			"bbb":  {InputName: "bbb"},
-			"aaa":  {InputName: "aaa"},
-			"term": {},
+			"base": {URL: "github:o/base"},
+			"bbb":  {URL: "github:o/bbb"},
+			"aaa":  {URL: "github:o/aaa"},
+			"term": {URL: "github:o/term"},
 		},
 	}
 	declared := map[string][]string{
@@ -69,9 +69,9 @@ func TestBuildDAG_CycleFallback(t *testing.T) {
 	cfg := &WorkspaceConfig{
 		Workspace: WorkspaceSection{Terminal: "z"},
 		Repos: map[string]RepoConfig{
-			"a": {InputName: "a"},
-			"b": {InputName: "b"},
-			"z": {},
+			"a": {URL: "github:o/a"},
+			"b": {URL: "github:o/b"},
+			"z": {URL: "github:o/z"},
 		},
 	}
 	declared := map[string][]string{

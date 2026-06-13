@@ -21,7 +21,7 @@ type BuildOptions struct {
 // Build formats and builds the terminal flake, injecting --override-input for
 // every non-terminal workspace repo. It does not activate.
 func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions) error {
-	terminal, err := ws.effectiveTerminal(opts.Terminal)
+	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
 	if err != nil {
 		return err
 	}
@@ -65,24 +65,9 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 	return nil
 }
 
-// workspaceInputNames returns the resolved input names of all non-terminal
-// repos (used for check_follows). Uses InputNameFor from config (legacy path
-// for compatibility while edges are not yet in the lock).
-//
-// Deprecated: prefer workspaceInputNamesFromEdges once the lock is populated.
-func (ws *Workspace) workspaceInputNames(terminal string) []string {
-	var names []string
-	for _, key := range orderedRepoNames(ws.config.Repos) {
-		if key == terminal {
-			continue
-		}
-		names = append(names, ws.config.InputNameFor(key))
-	}
-	return names
-}
-
 // effectiveTerminal returns the terminal repo key: flagTerminal if non-empty,
-// otherwise the config's workspace.terminal.
+// otherwise the config's workspace.terminal. Used by non-required commands
+// that accept a --terminal flag.
 func (ws *Workspace) effectiveTerminal(flagTerminal string) (string, error) {
 	if flagTerminal != "" {
 		return flagTerminal, nil

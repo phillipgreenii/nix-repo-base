@@ -64,11 +64,9 @@ url = "github:o/term"
 
 [repos.base]
 url = "github:o/base"
-input-name = "nb"
 
 [repos.overlay]
 url = "github:o/overlay"
-input-name = "ovl"
 `)
 	// pn-workspace.lock.json with edges: term uses alias "nb" for base and "ovl" for overlay.
 	// workspaceDisplayNamesFromEdges("term") will return {"nb":"base","ovl":"overlay"}.

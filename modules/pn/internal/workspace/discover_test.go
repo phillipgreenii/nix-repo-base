@@ -44,7 +44,7 @@ func newTestWorkspace(t *testing.T, configToml string, perRepo map[string]struct
 	return w
 }
 
-func TestDiscover_SimpleDep_OrderAndInputName(t *testing.T) {
+func TestDiscover_SimpleDep_OrderAndTerminal(t *testing.T) {
 	cfg := `
 [workspace]
 name = "test"
@@ -85,11 +85,8 @@ url = "github:o/personal"
 	if !repos[1].IsTerminal {
 		t.Errorf("last repo (personal) should be terminal")
 	}
-	if repos[0].InputName != "upstream-base" {
-		t.Errorf("base inputName = %q, want upstream-base", repos[0].InputName)
-	}
-	if repos[1].InputName != "" {
-		t.Errorf("personal (terminal) InputName should be empty; got %q", repos[1].InputName)
+	if repos[0].IsTerminal {
+		t.Errorf("base should not be terminal")
 	}
 }
 
@@ -129,9 +126,9 @@ url = "github:o/personal"
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	// "personal" should be terminal; "lib" should be first with inputName "my-lib".
-	if repos[0].Name != "lib" || repos[0].InputName != "my-lib" {
-		t.Errorf("lib: %+v", repos[0])
+	// "personal" should be terminal; "lib" should be first.
+	if repos[0].Name != "lib" {
+		t.Errorf("lib should be first: %+v", repos[0])
 	}
 	if !repos[1].IsTerminal {
 		t.Errorf("personal should be terminal: %+v", repos[1])

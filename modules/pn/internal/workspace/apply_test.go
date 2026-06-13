@@ -21,7 +21,6 @@ url = "github:owner/leaf"
 
 [repos.dep]
 url = "github:owner/dep"
-input-name = "dep-input"
 `
 
 // applyLock is the lock with edge leaf→dep alias "dep-input", used by tests

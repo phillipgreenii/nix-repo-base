@@ -112,36 +112,6 @@ func selectTerminal(cfg *WorkspaceConfig, g *graph) (string, error) {
 	}
 }
 
-// resolveInputNames returns a map repoName -> inputName, where the input
-// name is what the terminal flake calls each non-terminal workspace repo
-// among its inputs. Repos not consumed by the terminal are absent from the
-// returned map (callers should treat absent == empty inputName).
-//
-// Errors when the terminal has more than one input pointing at the same
-// workspace repo — this would mean the user has two distinct inputs that
-// both resolve to the same on-disk clone, which is a configuration mistake
-// pn cannot silently disambiguate.
-func resolveInputNames(cfg *WorkspaceConfig, g *graph, repoInputs map[string]map[string]string, terminal string) (map[string]string, error) {
-	termInputs := repoInputs[terminal]
-	out := make(map[string]string)
-	for inputName, url := range termInputs {
-		slug := ExtractGithubSlug(url)
-		if slug == "" {
-			continue
-		}
-		repo, ok := g.slugOwner[slug]
-		if !ok || repo == terminal {
-			continue
-		}
-		if existing, dup := out[repo]; dup {
-			return nil, fmt.Errorf("terminal %q has multiple inputs pointing at repo %q: %q and %q",
-				terminal, repo, existing, inputName)
-		}
-		out[repo] = inputName
-	}
-	return out, nil
-}
-
 // topoSort returns repos in Kahn-topological order — dependencies first,
 // terminal last. Within each "level" (set of nodes whose remaining
 // in-degree dropped to 0 in the same iteration), the order is stable

@@ -17,9 +17,15 @@ type PreCommitCheckOptions struct {
 // PreCommitCheck runs `pre-commit run --all-files` in each workspace repo,
 // streaming each run's output to out. Matches the bash version which does NOT
 // abort on per-repo failure; we mirror that by collecting failures and
-// returning a combined error at the end.
+// returning a combined error at the end. Repos are processed in topological
+// order (dependencies before consumers).
+// PreCommitCheck is a terminal-optional command: if no terminal is configured
+// it emits a warning and continues.
 func (ws *Workspace) PreCommitCheck(ctx context.Context, out io.Writer, opts PreCommitCheckOptions) error {
-	names := orderedRepoNames(ws.config.Repos)
+	if ws.config.Workspace.Terminal == "" {
+		fmt.Fprintln(out, terminalWarningMessage)
+	}
+	names := ws.topoAlpha(ctx)
 	var firstErr error
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)

@@ -26,7 +26,7 @@ type ApplyOptions struct {
 // when nothing changed, diffs the system profile via nvd when available, and
 // records the applied state.
 func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions) error {
-	terminal, err := ws.effectiveTerminal(opts.Terminal)
+	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
 	if err != nil {
 		return err
 	}

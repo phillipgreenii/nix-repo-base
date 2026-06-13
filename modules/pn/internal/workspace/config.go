@@ -36,22 +36,17 @@ type Remote struct {
 
 // RepoConfig describes one entry under [repos.<name>].
 //
-// Two complementary mechanisms for resolving a repo's upstream flake input:
-//  1. Explicit override via InputName (simpler, opt-in per repo).
-//  2. Topology-graph derivation via Remotes + Slug (auto-discovery; see
-//     graph.go + checkRemoteAgreement, added by later commits).
-//
-// Default (both unset): the repo's key (directory name) is used as InputName.
+// Per-edge dependency aliases are derived at lock time from flake input URLs
+// (see edges.go + LockEdge.Alias); they are NOT stored in pn-workspace.toml.
 type RepoConfig struct {
-	URL       string   `toml:"url"`
-	Branch    string   `toml:"branch"`
-	InputName string   `toml:"input-name,omitempty"`
-	Remotes   []Remote `toml:"remotes,omitempty"`
-	Slug      string   `toml:"slug,omitempty"`
+	URL     string   `toml:"url"`
+	Branch  string   `toml:"branch"`
+	Remotes []Remote `toml:"remotes,omitempty"`
+	Slug    string   `toml:"slug,omitempty"`
 	// FlakePath is the path to the repo's flake.nix relative to the repo root.
 	// When set, this overrides the default search paths (flake.nix, nix/flake.nix).
 	// Recorded in pn-workspace.toml only for non-default locations.
-	FlakePath string   `toml:"flake_path,omitempty"`
+	FlakePath string `toml:"flake_path,omitempty"`
 }
 
 // HookCommand describes one entry under [hooks.<command>]; Pre/Post are
@@ -109,22 +104,34 @@ func (c *WorkspaceConfig) ApplyCommandTemplate() (string, error) {
 	return c.Workspace.ApplyCommand, nil
 }
 
-// InputNameFor returns the flake input name to override for the workspace repo
-// keyed by repoKey: the repo's explicit input-name if set, otherwise repoKey
-// itself (the on-disk directory name). Unknown repos fall back to repoKey.
-// Nil-safe so override computation can call it unconditionally.
-func (c *WorkspaceConfig) InputNameFor(repoKey string) string {
-	if c != nil {
-		if r, ok := c.Repos[repoKey]; ok && r.InputName != "" {
-			return r.InputName
-		}
-	}
-	return repoKey
+// legacyInputName is a sentinel struct for detecting the removed input-name field.
+// We parse into a parallel map to detect its presence and emit a migration error.
+type legacyRepoConfig struct {
+	InputName string `toml:"input-name,omitempty"`
+}
+
+type legacyWorkspaceConfig struct {
+	Repos map[string]legacyRepoConfig `toml:"repos"`
 }
 
 // ParseConfig parses pn-workspace.toml bytes into a WorkspaceConfig. Applies
-// defaults (e.g., empty branch → "main") and validates the shape.
+// defaults (e.g., empty branch → "main") and validates the shape. Returns an
+// error if any [repos.*] entry still has the removed input-name field.
 func ParseConfig(data []byte) (*WorkspaceConfig, error) {
+	// First pass: detect legacy input-name fields before unmarshalling into the
+	// current schema (which no longer has that field and would silently drop it).
+	var legacy legacyWorkspaceConfig
+	if err := toml.Unmarshal(data, &legacy); err == nil {
+		for name, lr := range legacy.Repos {
+			if lr.InputName != "" {
+				return nil, fmt.Errorf(
+					"repo %q: input-name is no longer supported; aliases are derived per-edge from flake input URLs at lock time. Remove this field from pn-workspace.toml.",
+					name,
+				)
+			}
+		}
+	}
+
 	cfg := &WorkspaceConfig{}
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse pn-workspace.toml: %w", err)

@@ -23,8 +23,8 @@ var denyListedNixSubcommands = [][]string{
 }
 
 // NixCommand runs `nix <args>` from the workspace root, injecting one
-// --override-input flag for each non-terminal workspace repo that the
-// terminal flake consumes, pinning that input to its local clone.
+// --override-input flag for each workspace dep of the terminal flake as
+// recorded in the workspace lock. Uses per-consumer lock edges for aliasing.
 //
 // Subcommands in denyListedNixSubcommands are refused with a clear error.
 func (ws *Workspace) NixCommand(ctx context.Context, args []string) error {
@@ -37,11 +37,11 @@ func (ws *Workspace) NixCommand(ctx context.Context, args []string) error {
 	if denied, match := matchesDeniedSubcommand(args); denied {
 		return fmt.Errorf("nix %s is incompatible with workspace overrides; refused", strings.Join(match, " "))
 	}
-	repos, err := ws.Discover()
+	terminal, err := ws.effectiveTerminal("")
 	if err != nil {
-		return fmt.Errorf("discover: %w", err)
+		return fmt.Errorf("resolve terminal: %w", err)
 	}
-	overrides := computeOverrideArgsFromRepos(repos)
+	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{})
 	full := append([]string{}, args...)
 	full = append(full, overrides...)
 	_, err = ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root})

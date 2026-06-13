@@ -11,13 +11,11 @@ type Repo struct {
 	Name       string
 	URL        string // display URL (origin in the multi-remote form)
 	Path       string
-	InputName  string // empty for the terminal repo and for siblings not consumed by the terminal
 	IsTerminal bool
 }
 
 // Discover returns the workspace's repos in topological order (dependencies
-// first, terminal last). Each repo is enriched with InputName (the name the
-// terminal flake uses for that input) and IsTerminal.
+// first, terminal last). Each repo is annotated with IsTerminal.
 //
 // Discover performs per-repo subprocess fan-out (nix eval + git remote -v)
 // in parallel via the workspace's worker pool. Per-repo failures are tolerated
@@ -64,10 +62,6 @@ func (ws *Workspace) Discover() ([]Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	inputNames, err := resolveInputNames(ws.config, g, repoInputs, terminal)
-	if err != nil {
-		return nil, err
-	}
 	order, err := topoSort(g)
 	if err != nil {
 		return nil, err
@@ -78,7 +72,6 @@ func (ws *Workspace) Discover() ([]Repo, error) {
 			Name:       name,
 			URL:        displayURL(ws.config.Repos[name]),
 			Path:       filepath.Join(ws.root, name),
-			InputName:  inputNames[name],
 			IsTerminal: name == terminal,
 		})
 	}
