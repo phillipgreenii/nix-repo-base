@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -15,49 +16,188 @@ import (
 
 // InitOptions configures workspace init behavior.
 type InitOptions struct {
-	// (reserved for future use, e.g. --no-reconcile)
+	// Terminal is accepted for uniformity with other commands but is currently
+	// a no-op for Init (Init is config-only and does not need a terminal).
+	Terminal string
 }
 
-// Init reconciles on-disk repos not yet in TOML, clones any missing repos,
-// then writes pn-workspace.lock.json with the derived dependency DAG.
-// Clone progress is streamed to out.
+// Init reconciles on-disk repos not yet in the TOML config, resolves flake
+// paths for all repos, and writes pn-workspace.toml atomically. It does NOT
+// clone repos and does NOT write a workspace lock.
 //
-// After cloning, Init also resolves each repo's flake path and writes
-// flake_path to config for any non-default locations discovered.
+// Init is idempotent: running twice in succession produces "no changes" on the
+// second run. It never errors on indeterminacy (no terminal, missing repos) —
+// those are the lock command's concern.
 //
-// NOTE: the clone step is performed via Clone() to avoid duplication; this
-// means Init remains idempotent. The tc-perh.9.11 slice will make Init
-// config-only (removing the clone and lock steps from here).
+// A per-change summary is written to out.
 func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) error {
-	// 1. Reconcile: add on-disk repos missing from TOML.
-	if err := w.reconcileFromFilesystem(ctx); err != nil {
-		return fmt.Errorf("init: reconcile: %w", err)
-	}
+	var changes int32 // number of config changes made
 
-	// 2. Clone missing repos (delegates to Clone so the logic lives in one place).
-	if err := w.Clone(ctx, out, CloneOptions{}); err != nil {
-		return fmt.Errorf("init: %w", err)
+	// 1. Reconcile: scan workspace root for git repos not yet in config.
+	entries, err := os.ReadDir(w.root)
+	if err != nil {
+		return fmt.Errorf("init: read workspace dir: %w", err)
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
-	// 3. Resolve flake paths for all repos and persist non-defaults to config.
-	if err := w.persistNonDefaultFlakePaths(); err != nil {
-		return fmt.Errorf("init: persist flake paths: %w", err)
-	}
-
-	// 4. Write pn-workspace.lock.json with the derived dependency DAG. This
-	// needs a terminal flake to derive from; with none configured, write an
-	// empty lock.
-	if w.config.Workspace.Terminal == "" {
-		if err := WriteLock(filepath.Join(w.root, LockFileName), emptyLock()); err != nil {
-			return fmt.Errorf("init: write lock: %w", err)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
 		}
-		w.lock = emptyLock()
+		name := e.Name()
+		if name == ".git" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		if _, exists := w.config.Repos[name]; exists {
+			// Already in config; skip remote discovery (do not overwrite URL).
+			continue
+		}
+		repoDir := filepath.Join(w.root, name)
+		if !isGitRepo(repoDir) {
+			continue
+		}
+		// Discover URL from git remote origin.
+		res, err := w.runner.Run(ctx, "git",
+			[]string{"-C", repoDir, "remote", "get-url", "origin"},
+			exec.RunOptions{})
+		if err != nil {
+			// Remote not configured; add entry with empty URL to be filled later.
+			w.config.Repos[name] = RepoConfig{Branch: "main"}
+			atomic.AddInt32(&changes, 1)
+			fmt.Fprintf(out, "added repo %s (no origin remote; set url manually)\n", name)
+			continue
+		}
+		url := httpsToFlakeURL(strings.TrimSpace(string(res.Stdout)))
+		w.config.Repos[name] = RepoConfig{URL: url, Branch: "main"}
+		atomic.AddInt32(&changes, 1)
+		fmt.Fprintf(out, "added repo %s (url: %s)\n", name, url)
+	}
+
+	// 2. Resolve flake_path for every repo; persist non-defaults to config.
+	for _, name := range orderedRepoNames(w.config.Repos) {
+		r := w.config.Repos[name]
+		if r.FlakePath != "" {
+			// Config already has an explicit flake_path; preserve it (never overwrite).
+			continue
+		}
+		resolved := w.resolveFlakePath(name)
+		if resolved == "" {
+			// Not found among defaults; skip (user must configure manually).
+			continue
+		}
+		if isDefaultFlakePath(resolved) {
+			// Default location; no need to persist to config.
+			continue
+		}
+		// Non-default path found; write to config.
+		r.FlakePath = resolved
+		w.config.Repos[name] = r
+		atomic.AddInt32(&changes, 1)
+		fmt.Fprintf(out, "set flake_path for %s: %s\n", name, resolved)
+	}
+
+	// 3. Write pn-workspace.toml atomically if anything changed.
+	if changes == 0 {
+		fmt.Fprintln(out, "no changes")
 		return nil
 	}
-	if err := w.RefreshLock(ctx); err != nil {
-		return fmt.Errorf("init: %w", err)
+	if err := w.writeConfigTOMLAtomic(); err != nil {
+		return fmt.Errorf("init: write config: %w", err)
 	}
 	return nil
+}
+
+// writeConfigTOMLAtomic serializes w.config to pn-workspace.toml at w.root
+// using a tempfile+rename pattern (atomic on POSIX). Key order: workspace
+// section first, repos sorted by name, hooks last.
+func (w *Workspace) writeConfigTOMLAtomic() error {
+	// Build ordered output struct. toml.Marshal preserves the struct field
+	// order; repos come out sorted because we collect them that way.
+	type orderedConfig struct {
+		Workspace WorkspaceSection       `toml:"workspace"`
+		Repos     map[string]RepoConfig  `toml:"repos"`
+		Hooks     map[string]HookCommand `toml:"hooks,omitempty"`
+	}
+	out := orderedConfig{
+		Workspace: w.config.Workspace,
+		Repos:     w.config.Repos,
+		Hooks:     w.config.Hooks,
+	}
+	data, err := toml.Marshal(out)
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(w.root, ConfigFileName)
+	tmp, err := os.CreateTemp(w.root, ".pn-config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("write config (tempfile): %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write config (write): %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("write config (close): %w", err)
+	}
+	if err := os.Rename(tmpPath, dest); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("write config (rename): %w", err)
+	}
+	return nil
+}
+
+// writeConfigTOML serializes w.config back to pn-workspace.toml at w.root.
+// Used by reconciliation to record discovered repos. Kept for backward
+// compatibility; new code should prefer writeConfigTOMLAtomic.
+func (w *Workspace) writeConfigTOML() error {
+	type orderedConfig struct {
+		Workspace WorkspaceSection       `toml:"workspace"`
+		Repos     map[string]RepoConfig  `toml:"repos"`
+		Hooks     map[string]HookCommand `toml:"hooks,omitempty"`
+	}
+	out := orderedConfig{
+		Workspace: w.config.Workspace,
+		Repos:     w.config.Repos,
+		Hooks:     w.config.Hooks,
+	}
+	data, err := toml.Marshal(out)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(w.root, ConfigFileName), data, 0o644)
+}
+
+func isGitRepo(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, ".git"))
+	if err != nil {
+		return false
+	}
+	return info.IsDir() || info.Mode().IsRegular() // submodule has .git as file
+}
+
+// flakeURLToHTTPS converts e.g. "github:owner/repo" → "https://github.com/owner/repo.git".
+// Returns the input unchanged if it doesn't look like a flake-style URL.
+func flakeURLToHTTPS(flake string) string {
+	if strings.HasPrefix(flake, "github:") {
+		spec := strings.TrimPrefix(flake, "github:")
+		return "https://github.com/" + spec + ".git"
+	}
+	return flake
+}
+
+// httpsToFlakeURL converts e.g. "https://github.com/owner/repo.git" → "github:owner/repo".
+// Returns the input unchanged if it doesn't match the github HTTPS pattern.
+func httpsToFlakeURL(https string) string {
+	const prefix = "https://github.com/"
+	if !strings.HasPrefix(https, prefix) {
+		return https
+	}
+	spec := strings.TrimPrefix(https, prefix)
+	spec = strings.TrimSuffix(spec, ".git")
+	return "github:" + spec
 }
 
 // persistNonDefaultFlakePaths resolves each repo's flake path and writes it
@@ -174,54 +314,4 @@ func (w *Workspace) reconcileFromFilesystem(ctx context.Context) error {
 	}
 
 	return w.writeConfigTOML()
-}
-
-// writeConfigTOML serializes w.config back to pn-workspace.toml at w.root.
-// Used by reconciliation to record discovered repos.
-func (w *Workspace) writeConfigTOML() error {
-	type orderedConfig struct {
-		Workspace WorkspaceSection       `toml:"workspace"`
-		Repos     map[string]RepoConfig  `toml:"repos"`
-		Hooks     map[string]HookCommand `toml:"hooks,omitempty"`
-	}
-	out := orderedConfig{
-		Workspace: w.config.Workspace,
-		Repos:     w.config.Repos,
-		Hooks:     w.config.Hooks,
-	}
-	data, err := toml.Marshal(out)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(w.root, ConfigFileName), data, 0o644)
-}
-
-func isGitRepo(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, ".git"))
-	if err != nil {
-		return false
-	}
-	return info.IsDir() || info.Mode().IsRegular() // submodule has .git as file
-}
-
-// flakeURLToHTTPS converts e.g. "github:owner/repo" → "https://github.com/owner/repo.git".
-// Returns the input unchanged if it doesn't look like a flake-style URL.
-func flakeURLToHTTPS(flake string) string {
-	if strings.HasPrefix(flake, "github:") {
-		spec := strings.TrimPrefix(flake, "github:")
-		return "https://github.com/" + spec + ".git"
-	}
-	return flake
-}
-
-// httpsToFlakeURL converts e.g. "https://github.com/owner/repo.git" → "github:owner/repo".
-// Returns the input unchanged if it doesn't match the github HTTPS pattern.
-func httpsToFlakeURL(https string) string {
-	const prefix = "https://github.com/"
-	if !strings.HasPrefix(https, prefix) {
-		return https
-	}
-	spec := strings.TrimPrefix(https, prefix)
-	spec = strings.TrimSuffix(spec, ".git")
-	return "github:" + spec
 }
