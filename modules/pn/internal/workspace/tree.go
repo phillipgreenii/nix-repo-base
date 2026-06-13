@@ -74,7 +74,7 @@ func (ws *Workspace) treeAllInputs(ctx context.Context, w io.Writer, terminal st
 	if err != nil {
 		return fmt.Errorf("read %s: %w", lockPath, err)
 	}
-	root, dependsOn, err := buildAllInputsGraph(data, filepath.Base(terminalDir), ws.workspaceDisplayNames(terminal))
+	root, dependsOn, err := buildAllInputsGraph(data, filepath.Base(terminalDir), ws.workspaceDisplayNamesFromEdges(terminal))
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", lockPath, err)
 	}

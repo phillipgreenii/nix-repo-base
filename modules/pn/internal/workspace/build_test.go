@@ -25,6 +25,16 @@ url = "github:owner/leaf"
 url = "github:owner/dep"
 input-name = "dep-input"
 `)
+	// Write lock file so overrideInputArgsFor has edges to work with.
+	// leaf depends on dep via alias "dep-input".
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["dep", "leaf"],
+  "repos": {
+    "dep":  {"flake_path": "flake.nix", "remote_url": "github:owner/dep"},
+    "leaf": {"flake_path": "flake.nix", "remote_url": "github:owner/leaf"}
+  },
+  "edges": [{"consumer": "leaf", "alias": "dep-input", "target": "dep"}]
+}`)
 	leafDir := filepath.Join(root, "leaf")
 	depDir := filepath.Join(root, "dep")
 	f := exec.NewFakeRunner()

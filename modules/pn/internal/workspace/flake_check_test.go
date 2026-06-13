@@ -52,9 +52,14 @@ url = "github:owner/bar"
 }
 
 // TestFlakeCheck_InjectsLocalOverrides verifies that each repo is checked with
-// --override-input flags pinning its OTHER local workspace siblings — excluding
-// the terminal (the build target) and the repo under test (the flake itself).
-// This mirrors the bash, which ran each check via pn-ws-nix.
+// --override-input flags derived from the lock edges for that consumer.
+//
+// Topology (lock edges):
+//   base    has edge: base→overlay (alias=overlay)
+//   overlay has edge: overlay→base (alias=base)
+//   term    has edges: term→base (alias=base), term→overlay (alias=overlay)
+//
+// So each check gets the per-consumer overrides from the lock.
 func TestFlakeCheck_InjectsLocalOverrides(t *testing.T) {
 	root := t.TempDir()
 	for _, r := range []string{"term", "base", "overlay"} {
@@ -73,13 +78,35 @@ url = "github:o/base"
 [repos.overlay]
 url = "github:o/overlay"
 `)
+	// Lock with per-consumer edges:
+	//   base    → overlay (alias "overlay")
+	//   overlay → base    (alias "base")
+	//   term    → base    (alias "base")
+	//   term    → overlay (alias "overlay")
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["base", "overlay", "term"],
+  "repos": {
+    "base":    {"flake_path": "flake.nix", "remote_url": "github:o/base"},
+    "overlay": {"flake_path": "flake.nix", "remote_url": "github:o/overlay"},
+    "term":    {"flake_path": "flake.nix", "remote_url": "github:o/term"}
+  },
+  "edges": [
+    {"consumer": "base",    "alias": "overlay", "target": "overlay"},
+    {"consumer": "overlay", "alias": "base",    "target": "base"},
+    {"consumer": "term",    "alias": "base",    "target": "base"},
+    {"consumer": "term",    "alias": "overlay", "target": "overlay"}
+  ]
+}`)
 	base := filepath.Join(root, "base")
 	overlay := filepath.Join(root, "overlay")
 
 	// Iteration is alphabetical: base, overlay, term.
-	// base    -> override overlay (exclude terminal=term and self=base)
-	// overlay -> override base
-	// term    -> override base + overlay (terminal excludes only itself)
+	// base    → edges Consumer=base: alias=overlay,target=overlay
+	//           overrideInputArgsFor("base", {ExcludeRepo:"base"}) → overlay edge (not excluded)
+	// overlay → edges Consumer=overlay: alias=base,target=base
+	//           overrideInputArgsFor("overlay", {ExcludeRepo:"overlay"}) → base edge (not excluded)
+	// term    → edges Consumer=term: alias=base,target=base and alias=overlay,target=overlay
+	//           overrideInputArgsFor("term", {ExcludeRepo:"term"}) → base + overlay
 	wantArgs := [][]string{
 		{"flake", "check", "--override-input", "overlay", "git+file://" + overlay},
 		{"flake", "check", "--override-input", "base", "git+file://" + base},

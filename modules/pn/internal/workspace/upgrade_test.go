@@ -27,6 +27,15 @@ url = "github:owner/leaf"
 [repos.dep]
 url = "github:owner/dep"
 `)
+	// Lock file: leaf depends on dep via alias "dep" (default = repo key).
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["dep", "leaf"],
+  "repos": {
+    "dep":  {"flake_path": "flake.nix", "remote_url": "github:owner/dep"},
+    "leaf": {"flake_path": "flake.nix", "remote_url": "github:owner/leaf"}
+  },
+  "edges": [{"consumer": "leaf", "alias": "dep", "target": "dep"}]
+}`)
 
 	f := exec.NewFakeRunner()
 	leaf := filepath.Join(root, "leaf")

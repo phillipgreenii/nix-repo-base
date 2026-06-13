@@ -24,12 +24,25 @@ url = "github:owner/dep"
 input-name = "dep-input"
 `
 
+// applyLock is the lock with edge leaf→dep alias "dep-input", used by tests
+// that need overrideInputArgsFor to emit the override.
+const applyLock = `{
+  "order": ["dep", "leaf"],
+  "repos": {
+    "dep":  {"flake_path": "flake.nix", "remote_url": "github:owner/dep"},
+    "leaf": {"flake_path": "flake.nix", "remote_url": "github:owner/leaf"}
+  },
+  "edges": [{"consumer": "leaf", "alias": "dep-input", "target": "dep"}]
+}`
+
 func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	mkRepoDir(t, root, "dep")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
+	// Write lock so overrideInputArgsFor emits the dep-input override.
+	writeFile(t, filepath.Join(root, LockFileName), applyLock)
 	leafDir := filepath.Join(root, "leaf")
 	depDir := filepath.Join(root, "dep")
 

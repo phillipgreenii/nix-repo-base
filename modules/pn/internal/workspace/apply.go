@@ -26,7 +26,7 @@ type ApplyOptions struct {
 // when nothing changed, diffs the system profile via nvd when available, and
 // records the applied state.
 func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions) error {
-	terminal, err := ws.config.TerminalRepo()
+	terminal, err := ws.effectiveTerminal(opts.Terminal)
 	if err != nil {
 		return err
 	}
@@ -35,9 +35,9 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		terminalDir = td
 	}
 
-	overrides := ws.overrideInputArgs(overrideOpts{ExcludeTerminal: true, OverridePaths: opts.OverridePaths})
+	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{OverridePaths: opts.OverridePaths})
 
-	if err := checkFollows(terminalDir, ws.workspaceInputNames(terminal)); err != nil {
+	if err := checkFollows(terminalDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
 		return err
 	}
 

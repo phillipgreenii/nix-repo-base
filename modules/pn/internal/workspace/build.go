@@ -21,7 +21,7 @@ type BuildOptions struct {
 // Build formats and builds the terminal flake, injecting --override-input for
 // every non-terminal workspace repo. It does not activate.
 func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions) error {
-	terminal, err := ws.config.TerminalRepo()
+	terminal, err := ws.effectiveTerminal(opts.Terminal)
 	if err != nil {
 		return err
 	}
@@ -30,9 +30,9 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 		terminalDir = td
 	}
 
-	overrides := ws.overrideInputArgs(overrideOpts{ExcludeTerminal: true, OverridePaths: opts.OverridePaths})
+	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{OverridePaths: opts.OverridePaths})
 
-	if err := checkFollows(terminalDir, ws.workspaceInputNames(terminal)); err != nil {
+	if err := checkFollows(terminalDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
 		return err
 	}
 
@@ -66,7 +66,10 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 }
 
 // workspaceInputNames returns the resolved input names of all non-terminal
-// repos (used for check_follows).
+// repos (used for check_follows). Uses InputNameFor from config (legacy path
+// for compatibility while edges are not yet in the lock).
+//
+// Deprecated: prefer workspaceInputNamesFromEdges once the lock is populated.
 func (ws *Workspace) workspaceInputNames(terminal string) []string {
 	var names []string
 	for _, key := range orderedRepoNames(ws.config.Repos) {
@@ -76,4 +79,13 @@ func (ws *Workspace) workspaceInputNames(terminal string) []string {
 		names = append(names, ws.config.InputNameFor(key))
 	}
 	return names
+}
+
+// effectiveTerminal returns the terminal repo key: flagTerminal if non-empty,
+// otherwise the config's workspace.terminal.
+func (ws *Workspace) effectiveTerminal(flagTerminal string) (string, error) {
+	if flagTerminal != "" {
+		return flagTerminal, nil
+	}
+	return ws.config.TerminalRepo()
 }

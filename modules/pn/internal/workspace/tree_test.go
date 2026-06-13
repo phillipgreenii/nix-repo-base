@@ -70,6 +70,20 @@ input-name = "nb"
 url = "github:o/overlay"
 input-name = "ovl"
 `)
+	// pn-workspace.lock.json with edges: term uses alias "nb" for base and "ovl" for overlay.
+	// workspaceDisplayNamesFromEdges("term") will return {"nb":"base","ovl":"overlay"}.
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["base", "overlay", "term"],
+  "repos": {
+    "base":    {"flake_path": "flake.nix", "remote_url": "github:o/base"},
+    "overlay": {"flake_path": "flake.nix", "remote_url": "github:o/overlay"},
+    "term":    {"flake_path": "flake.nix", "remote_url": "github:o/term"}
+  },
+  "edges": [
+    {"consumer": "term", "alias": "nb",  "target": "base"},
+    {"consumer": "term", "alias": "ovl", "target": "overlay"}
+  ]
+}`)
 	// Terminal flake.lock present on disk: Tree reads it directly, no nix calls.
 	writeFile(t, filepath.Join(root, "term", "flake.lock"), allInputsLock)
 
