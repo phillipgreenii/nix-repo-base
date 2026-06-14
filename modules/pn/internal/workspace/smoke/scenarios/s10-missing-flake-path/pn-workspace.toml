@@ -1,0 +1,9 @@
+[workspace]
+name = "smoke-s10"
+terminal = "consumer"
+
+[repos.consumer]
+url = "file:///PLACEHOLDER"
+
+[repos.producer]
+url = "github:smoke-test/producer-noflakenix"

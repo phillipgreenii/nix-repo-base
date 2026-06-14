@@ -1,0 +1,6 @@
+[workspace]
+name = "smoke-s14"
+terminal = "myrepo"
+
+[repos.myrepo]
+url = "github:owner/myrepo"

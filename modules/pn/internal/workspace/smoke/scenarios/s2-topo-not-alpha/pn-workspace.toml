@@ -1,0 +1,9 @@
+[workspace]
+name = "smoke-s2"
+terminal = "aaa"
+
+[repos.aaa]
+url = "file:///PLACEHOLDER"
+
+[repos.zzz]
+url = "file:///PLACEHOLDER"

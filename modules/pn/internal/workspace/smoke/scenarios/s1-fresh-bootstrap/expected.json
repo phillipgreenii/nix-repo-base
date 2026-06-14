@@ -1,0 +1,4 @@
+{
+  "terminal": "consumer",
+  "order": ["producer", "consumer"]
+}

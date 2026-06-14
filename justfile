@@ -39,3 +39,7 @@ coverage:
 # Show pn coverage in browser
 coverage-html:
     cd modules/pn && go tool cover -html=coverage.out
+
+# Run pn end-to-end smoke tests (scenario-based, temp-dir, repeatable)
+pn-smoke:
+    cd modules/pn && CGO_ENABLED=0 go test -tags=smoke ./internal/workspace/smoke/... -v

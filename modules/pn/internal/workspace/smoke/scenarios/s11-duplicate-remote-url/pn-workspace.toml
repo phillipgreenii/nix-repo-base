@@ -1,0 +1,9 @@
+[workspace]
+name = "smoke-s11"
+terminal = "repo-a"
+
+[repos.repo-a]
+url = "github:owner/same-repo"
+
+[repos.repo-b]
+url = "https://github.com/owner/same-repo.git"

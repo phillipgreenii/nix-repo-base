@@ -1,0 +1,11 @@
+[workspace]
+name = "smoke-s13"
+terminal = "myrepo"
+
+[[repos.myrepo.remotes]]
+name = "origin"
+url = "file:///PLACEHOLDER"
+
+[[repos.myrepo.remotes]]
+name = "upstream"
+url = "file:///PLACEHOLDER"

@@ -1,0 +1,2 @@
+configured terminal
+is consumed by repo

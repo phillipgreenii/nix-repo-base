@@ -1,0 +1,9 @@
+[workspace]
+name = "smoke-s12"
+terminal = "wrong-terminal"
+
+[repos.wrong-terminal]
+url = "file:///PLACEHOLDER"
+
+[repos.real-terminal]
+url = "file:///PLACEHOLDER"

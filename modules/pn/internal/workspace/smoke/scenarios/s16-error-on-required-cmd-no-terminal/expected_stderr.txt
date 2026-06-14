@@ -1,0 +1,2 @@
+no terminal repo configured
+workspace.terminal

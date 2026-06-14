@@ -1,0 +1,11 @@
+[workspace]
+name = "smoke-s9"
+
+[repos.sink-a]
+url = "file:///PLACEHOLDER"
+
+[repos.sink-b]
+url = "file:///PLACEHOLDER"
+
+[repos.shared-lib]
+url = "file:///PLACEHOLDER"

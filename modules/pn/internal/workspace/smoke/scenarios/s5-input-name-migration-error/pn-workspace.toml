@@ -1,0 +1,6 @@
+[workspace]
+name = "smoke-s5"
+
+[repos.my-repo]
+url = "github:owner/my-repo"
+input-name = "my-old-input"

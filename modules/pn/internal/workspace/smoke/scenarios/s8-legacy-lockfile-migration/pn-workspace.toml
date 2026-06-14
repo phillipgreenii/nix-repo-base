@@ -1,0 +1,6 @@
+[workspace]
+name = "smoke-s8"
+terminal = "myrepo"
+
+[repos.myrepo]
+url = "file:///PLACEHOLDER"

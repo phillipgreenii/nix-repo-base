@@ -1,0 +1,9 @@
+[workspace]
+name = "smoke-s3"
+terminal = "terminal-repo"
+
+[repos.terminal-repo]
+url = "file:///PLACEHOLDER"
+
+[repos.lib-repo]
+url = "file:///PLACEHOLDER"

@@ -1,0 +1,2 @@
+workspace terminal cannot be determined
+workspace.terminal

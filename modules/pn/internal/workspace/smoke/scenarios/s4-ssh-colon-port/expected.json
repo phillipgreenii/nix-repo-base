@@ -1,0 +1,3 @@
+{
+  "edges": [{"consumer": "consumer", "alias": "producer", "target": "producer"}]
+}

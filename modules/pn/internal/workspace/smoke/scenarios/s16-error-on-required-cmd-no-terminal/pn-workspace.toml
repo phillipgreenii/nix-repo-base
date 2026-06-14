@@ -1,0 +1,5 @@
+[workspace]
+name = "smoke-s16"
+
+[repos.myrepo]
+url = "github:owner/myrepo"

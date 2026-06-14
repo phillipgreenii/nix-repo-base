@@ -1,0 +1,8 @@
+{
+  "terminal": "terminal-repo",
+  "repos": {
+    "terminal-repo": {
+      "flake_path": "nix/flake.nix"
+    }
+  }
+}
