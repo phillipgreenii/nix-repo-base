@@ -30,8 +30,8 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	var out bytes.Buffer
-	if err := w.Push(context.Background(), &out, PushOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.Push(context.Background(), &out, &errOut, PushOptions{}); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 	calls := f.Calls()
@@ -65,7 +65,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Push(context.Background(), &bytes.Buffer{}, PushOptions{}); err != nil {
+	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{}); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 	for _, c := range f.Calls() {

@@ -23,13 +23,14 @@ type FlakeCheckOptions struct {
 //
 // Per-repo failures are collected; the overall call returns non-nil if any
 // failed. Matches the bash "full sweep" behavior — does not short-circuit on
-// first failure. Each check's output is streamed live to out. Repos are
-// processed in topological order (dependencies before consumers).
+// first failure. Each check's output is streamed live to out. Warning output
+// goes to errOut (stderr). Repos are processed in topological order
+// (dependencies before consumers).
 // FlakeCheck is a terminal-optional command: if no terminal is configured it
-// emits a warning and continues.
-func (ws *Workspace) FlakeCheck(ctx context.Context, out io.Writer, opts FlakeCheckOptions) error {
+// emits a warning to errOut and continues.
+func (ws *Workspace) FlakeCheck(ctx context.Context, out io.Writer, errOut io.Writer, opts FlakeCheckOptions) error {
 	if ws.config.Workspace.Terminal == "" {
-		fmt.Fprintln(out, terminalWarningMessage)
+		fmt.Fprintln(errOut, terminalWarningMessage)
 	}
 	names := ws.topoAlpha(ctx)
 	var failed []string

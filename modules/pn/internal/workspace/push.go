@@ -20,13 +20,14 @@ func (ws *Workspace) hasUpstream(ctx context.Context, repoDir string) bool {
 }
 
 // Push runs `git push` in each workspace repo that has a configured upstream,
-// streaming push output to out. Repos without an upstream branch are skipped.
-// Repos are processed in topological order (dependencies before consumers).
+// streaming push output to out. Warning output goes to errOut (stderr). Repos
+// without an upstream branch are skipped. Repos are processed in topological
+// order (dependencies before consumers).
 // Push is a terminal-optional command: if no terminal is configured it emits
-// a warning and continues.
-func (ws *Workspace) Push(ctx context.Context, out io.Writer, opts PushOptions) error {
+// a warning to errOut and continues.
+func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, opts PushOptions) error {
 	if ws.config.Workspace.Terminal == "" {
-		fmt.Fprintln(out, terminalWarningMessage)
+		fmt.Fprintln(errOut, terminalWarningMessage)
 	}
 	names := ws.topoAlpha(ctx)
 	for _, name := range names {

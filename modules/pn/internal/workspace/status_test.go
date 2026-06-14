@@ -29,8 +29,8 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	var buf bytes.Buffer
-	if err := w.Status(context.Background(), &buf); err != nil {
+	var buf, errBuf bytes.Buffer
+	if err := w.Status(context.Background(), &buf, &errBuf); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	out := buf.String()
@@ -68,11 +68,40 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	var buf bytes.Buffer
-	if err := w.Status(context.Background(), &buf); err != nil {
+	var buf, errBuf bytes.Buffer
+	if err := w.Status(context.Background(), &buf, &errBuf); err != nil {
 		t.Fatalf("Status should not return error on per-repo failure, got %v", err)
 	}
-	if !strings.Contains(buf.String(), "(error)") {
-		t.Errorf("expected error marker; got:\n%s", buf.String())
+	// Error output goes to errOut (stderr).
+	if !strings.Contains(errBuf.String(), "(error)") {
+		t.Errorf("expected error marker on stderr; got stdout:\n%s\nstderr:\n%s", buf.String(), errBuf.String())
+	}
+}
+
+// TestStatus_WarningOnStderr verifies that the no-terminal warning goes to
+// errOut (stderr) and not to stdout.
+func TestStatus_WarningOnStderr(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "status", "--short"}, exec.Result{Stdout: []byte("")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Status(context.Background(), &out, &errOut); err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "no terminal") {
+		t.Errorf("expected no-terminal warning on stderr; got stderr:\n%s\nstdout:\n%s", errOut.String(), out.String())
+	}
+	if strings.Contains(out.String(), "no terminal") {
+		t.Errorf("warning must not appear on stdout; got:\n%s", out.String())
 	}
 }

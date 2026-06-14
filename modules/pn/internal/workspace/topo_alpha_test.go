@@ -154,8 +154,8 @@ url = "github:o/zzz"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	var out bytes.Buffer
-	if err := ws.Rebase(context.Background(), &out, RebaseOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := ws.Rebase(context.Background(), &out, &errOut, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
 	// Verify zzz was rebased before aaa

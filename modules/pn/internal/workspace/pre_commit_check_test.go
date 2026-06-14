@@ -27,8 +27,8 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	var out bytes.Buffer
-	if err := w.PreCommitCheck(context.Background(), &out, PreCommitCheckOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.PreCommitCheck(context.Background(), &out, &errOut, PreCommitCheckOptions{}); err != nil {
 		t.Fatalf("PreCommitCheck: %v", err)
 	}
 	calls := f.Calls()
@@ -66,7 +66,7 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, PreCommitCheckOptions{}); err == nil {
+	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PreCommitCheckOptions{}); err == nil {
 		t.Fatal("expected combined error from per-repo failure")
 	}
 	if len(f.Calls()) != 2 {

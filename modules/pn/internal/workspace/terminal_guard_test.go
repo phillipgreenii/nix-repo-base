@@ -126,7 +126,7 @@ func TestTerminalRequired_Update(t *testing.T) {
 }
 
 // TestTerminalOptional_Rebase_WarnsButContinues: rebase warns when no terminal
-// but still runs.
+// but still runs. The warning must appear on errOut (stderr), not stdout.
 func TestTerminalOptional_Rebase_WarnsButContinues(t *testing.T) {
 	root := t.TempDir()
 	mkRepoDir(t, root, "base")
@@ -143,13 +143,16 @@ url = "github:o/base"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	var warn bytes.Buffer
-	if err := w.Rebase(context.Background(), &warn, RebaseOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase should succeed even without terminal; got: %v", err)
 	}
-	// Warning should mention terminal.
-	if !strings.Contains(warn.String(), "no terminal") {
-		t.Errorf("Rebase should warn about missing terminal; got:\n%s", warn.String())
+	// Warning must appear on stderr, not stdout.
+	if !strings.Contains(errOut.String(), "no terminal") {
+		t.Errorf("Rebase should warn about missing terminal on stderr; got errOut:\n%s\nstdout:\n%s", errOut.String(), out.String())
+	}
+	if strings.Contains(out.String(), "no terminal") {
+		t.Errorf("warning must not appear on stdout; got stdout:\n%s", out.String())
 	}
 }
 

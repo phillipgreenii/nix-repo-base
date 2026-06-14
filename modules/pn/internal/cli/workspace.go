@@ -109,7 +109,7 @@ func workspaceStatusCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			return runWithHooks(ctx, w, "status", func() error {
-				return w.Status(ctx, cmd.OutOrStdout())
+				return w.Status(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			})
 		},
 	}
@@ -180,8 +180,9 @@ func workspaceFlakeCheckCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
+			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "flake-check", func() error {
-				return w.FlakeCheck(ctx, out, workspace.FlakeCheckOptions{Terminal: *terminal})
+				return w.FlakeCheck(ctx, out, errOut, workspace.FlakeCheckOptions{Terminal: *terminal})
 			})
 		},
 	}
@@ -198,8 +199,9 @@ func workspacePreCommitCheckCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
+			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "pre-commit-check", func() error {
-				return w.PreCommitCheck(ctx, out, workspace.PreCommitCheckOptions{Terminal: *terminal})
+				return w.PreCommitCheck(ctx, out, errOut, workspace.PreCommitCheckOptions{Terminal: *terminal})
 			})
 		},
 	}
@@ -216,8 +218,9 @@ func workspacePushCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
+			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "push", func() error {
-				return w.Push(ctx, out, workspace.PushOptions{})
+				return w.Push(ctx, out, errOut, workspace.PushOptions{})
 			})
 		},
 	}
@@ -234,8 +237,9 @@ func workspaceRebaseCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
+			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "rebase", func() error {
-				return w.Rebase(ctx, out, workspace.RebaseOptions{})
+				return w.Rebase(ctx, out, errOut, workspace.RebaseOptions{})
 			})
 		},
 	}
@@ -363,9 +367,10 @@ func workspaceLockCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
+			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "lock", func() error {
 				if err := w.WriteDerivedLockTo(ctx, w.Root(), out); err != nil {
-					fmt.Fprintln(out, err)
+					fmt.Fprintln(errOut, err)
 					return err
 				}
 				fmt.Fprintln(out, "pn-workspace.lock.json written")

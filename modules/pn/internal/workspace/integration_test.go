@@ -238,11 +238,11 @@ func TestIntegration_FromDiscovery_InitLockRebase(t *testing.T) {
 	}
 	ws3.runner = f3
 
-	var rebaseOut bytes.Buffer
-	if err := ws3.Rebase(context.Background(), &rebaseOut, RebaseOptions{}); err != nil {
+	var rebaseOut, rebaseErrOut bytes.Buffer
+	if err := ws3.Rebase(context.Background(), &rebaseOut, &rebaseErrOut, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
-	// All repos skip (no upstream), but the warning should appear (no terminal in this ws3 open).
+	// All repos skip (no upstream), but the warning should appear on stderr (no terminal in this ws3 open).
 	// The lock matches config so topoAlpha uses lock order. No failures expected.
 }
 
@@ -401,8 +401,8 @@ url = "github:o/zzz"
 	}
 
 	// Rebase should run without error (all repos skip due to no upstream).
-	var rebaseOut bytes.Buffer
-	if err := ws.Rebase(context.Background(), &rebaseOut, RebaseOptions{}); err != nil {
+	var rebaseOut, rebaseErrOut bytes.Buffer
+	if err := ws.Rebase(context.Background(), &rebaseOut, &rebaseErrOut, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
 }

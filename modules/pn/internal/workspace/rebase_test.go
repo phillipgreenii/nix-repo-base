@@ -29,8 +29,8 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	var out bytes.Buffer
-	if err := w.Rebase(context.Background(), &out, RebaseOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
 	calls := f.Calls()
@@ -63,7 +63,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Rebase(context.Background(), &bytes.Buffer{}, RebaseOptions{}); err != nil {
+	if err := w.Rebase(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
 	for _, c := range f.Calls() {

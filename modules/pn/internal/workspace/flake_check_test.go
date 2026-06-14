@@ -29,8 +29,8 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	var out bytes.Buffer
-	if err := w.FlakeCheck(context.Background(), &out, FlakeCheckOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.FlakeCheck(context.Background(), &out, &errOut, FlakeCheckOptions{}); err != nil {
 		t.Fatalf("FlakeCheck: %v", err)
 	}
 	calls := f.Calls()
@@ -124,7 +124,7 @@ url = "github:o/overlay"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.FlakeCheck(context.Background(), &bytes.Buffer{}, FlakeCheckOptions{}); err != nil {
+	if err := w.FlakeCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, FlakeCheckOptions{}); err != nil {
 		t.Fatalf("FlakeCheck: %v", err)
 	}
 
@@ -162,7 +162,7 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.FlakeCheck(context.Background(), &bytes.Buffer{}, FlakeCheckOptions{})
+	err = w.FlakeCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, FlakeCheckOptions{})
 	if err == nil {
 		t.Fatal("expected error reporting failures, got nil")
 	}
