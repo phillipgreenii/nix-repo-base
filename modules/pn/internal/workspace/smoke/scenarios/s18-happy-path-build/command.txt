@@ -1,0 +1,5 @@
+# Bootstrap the workspace, then run build.
+workspace init
+workspace clone
+workspace lock
+workspace build

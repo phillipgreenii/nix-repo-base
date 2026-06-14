@@ -1,0 +1,5 @@
+# Bootstrap the workspace, then run apply.
+workspace init
+workspace clone
+workspace lock
+workspace apply

@@ -1,0 +1,5 @@
+# Bootstrap the workspace, then run update.
+workspace init
+workspace clone
+workspace lock
+workspace update

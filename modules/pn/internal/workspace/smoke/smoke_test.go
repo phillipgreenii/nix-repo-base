@@ -209,6 +209,47 @@ func TestSmoke_S17_HelpTextSnapshot(t *testing.T) {
 	runScenario(t, "s17-help-text-snapshot")
 }
 
+// TestSmoke_S18_HappyPathBuild: two-repo workspace; pn workspace build runs
+// build.sh in the terminal (consumer) dir; asserts built.txt marker exists.
+func TestSmoke_S18_HappyPathBuild(t *testing.T) {
+	runScenario(t, "s18-happy-path-build")
+}
+
+// TestSmoke_S19_HappyPathApply: two-repo workspace; pn workspace apply runs
+// apply.sh in the terminal (consumer) dir; asserts applied.txt marker exists.
+func TestSmoke_S19_HappyPathApply(t *testing.T) {
+	runScenario(t, "s19-happy-path-apply")
+}
+
+// TestSmoke_S20_HappyPathUpdate: two-repo workspace; pn workspace update runs
+// update-locks.sh in each repo in topo order; asserts both updated.txt markers
+// and that order.log records producer before consumer.
+func TestSmoke_S20_HappyPathUpdate(t *testing.T) {
+	runScenario(t, "s20-happy-path-update")
+}
+
+// TestSmoke_S21_HappyPathPush: two-repo workspace with bare remotes;
+// after committing marker files in each clone, pn workspace push advances
+// both bare remote HEADs to the new commits.
+func TestSmoke_S21_HappyPathPush(t *testing.T) {
+	runScenario(t, "s21-happy-path-push")
+}
+
+// TestSmoke_S22_HappyPathRebase: one-repo workspace; bare remote at commit B;
+// workspace clone reset to commit A (parent). pn workspace rebase fast-forwards
+// workspace to B; stash list is empty afterward.
+func TestSmoke_S22_HappyPathRebase(t *testing.T) {
+	runScenario(t, "s22-happy-path-rebase")
+}
+
+// TestSmoke_S22b_HappyPathRebaseAutostash: same topology as S22 but the
+// workspace clone has a tracked-file modification before the rebase.
+// pn workspace rebase uses --autostash; asserts the modification survives
+// the round-trip and the stash list is empty afterward.
+func TestSmoke_S22b_HappyPathRebaseAutostash(t *testing.T) {
+	runScenario(t, "s22b-happy-path-rebase-autostash")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -357,6 +398,19 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS14TomlUnchanged(t, scenarioDir, wsRoot)
 	case "s17-help-text-snapshot":
 		assertS17SubcommandHelp(t, wsRoot, pnBin, env)
+	case "s18-happy-path-build":
+		assertS18BuildMarker(t, wsRoot)
+	case "s19-happy-path-apply":
+		assertS19ApplyMarker(t, wsRoot)
+	case "s20-happy-path-update":
+		assertS20UpdateMarkers(t, wsRoot)
+	case "s21-happy-path-push":
+		assertS21PushAdvanced(t, wsRoot)
+	case "s22-happy-path-rebase":
+		assertS22RebaseResult(t, wsRoot, "S22")
+	case "s22b-happy-path-rebase-autostash":
+		assertS22RebaseResult(t, wsRoot, "S22b")
+		assertS22AutostashRoundTrip(t, wsRoot)
 	}
 }
 

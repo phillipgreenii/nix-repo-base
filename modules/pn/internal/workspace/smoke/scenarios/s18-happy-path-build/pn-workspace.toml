@@ -1,0 +1,10 @@
+[workspace]
+name = "smoke-s18"
+terminal = "consumer"
+build_command = "./build.sh"
+
+[repos.consumer]
+url = "file:///PLACEHOLDER_consumer"
+
+[repos.producer]
+url = "file:///PLACEHOLDER_producer"

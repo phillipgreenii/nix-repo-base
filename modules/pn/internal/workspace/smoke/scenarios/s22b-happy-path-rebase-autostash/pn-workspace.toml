@@ -1,0 +1,6 @@
+[workspace]
+name = "smoke-s22b"
+terminal = "consumer"
+
+[repos.consumer]
+url = "file:///PLACEHOLDER_consumer"
