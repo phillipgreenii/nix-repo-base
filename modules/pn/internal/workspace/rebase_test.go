@@ -22,9 +22,11 @@ url = "github:owner/bar"
 
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "mu"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "fetch"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "mu"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "fetch"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -35,14 +37,14 @@ url = "github:owner/bar"
 		t.Fatalf("Rebase: %v", err)
 	}
 	calls := f.Calls()
-	if len(calls) != 4 {
-		t.Errorf("expected 4 calls (check+mu per repo), got %d", len(calls))
+	if len(calls) != 6 {
+		t.Errorf("expected 6 calls (check+fetch+pull per repo), got %d", len(calls))
 	}
-	// The rebase (git mu) streams; the upstream probe stays captured.
+	// The rebase commands (fetch, pull) stream; the upstream probe stays captured.
 	for _, c := range calls {
 		last := c.Args[len(c.Args)-1]
-		if last == "mu" && c.Opts.Stdout == nil {
-			t.Errorf("git mu should stream output (Opts.Stdout set); got %v", c.Args)
+		if (last == "fetch" || last == "--autostash") && c.Opts.Stdout == nil {
+			t.Errorf("rebase command should stream output (Opts.Stdout set); got %v", c.Args)
 		}
 		if last == "@{u}" && c.Opts.Stdout != nil {
 			t.Errorf("upstream probe should stay captured (Opts.Stdout nil); got %v", c.Args)
@@ -95,8 +97,8 @@ url = "github:owner/foo"
 	}
 	for _, c := range f.Calls() {
 		for _, a := range c.Args {
-			if a == "mu" {
-				t.Errorf("expected no git mu call when upstream missing; got %v", c.Args)
+			if a == "fetch" || a == "--autostash" {
+				t.Errorf("expected no rebase call when upstream missing; got %v", c.Args)
 			}
 		}
 	}

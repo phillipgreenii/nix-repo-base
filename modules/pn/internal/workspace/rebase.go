@@ -15,11 +15,12 @@ type RebaseOptions struct {
 	Terminal string
 }
 
-// Rebase runs `git mu` (custom user alias for maintenance/update — typically
-// pull --rebase --autostash) in each workspace repo that has a configured
-// upstream, streaming output to out. Warning output goes to errOut (stderr).
-// Repos without an upstream are skipped. Repos are processed in topological
-// order (dependencies before consumers).
+// Rebase runs `git fetch` followed by `git pull --rebase --autostash` in each
+// workspace repo that has a configured upstream, streaming output to out.
+// Warning output goes to errOut (stderr). Repos without an upstream are
+// skipped. Repos are processed in topological order (dependencies before
+// consumers). Both commands must succeed for a repo's rebase to be counted
+// complete; on the first failure the function returns immediately.
 // Rebase is a terminal-optional command: if no terminal is configured it emits
 // a warning to errOut and continues.
 func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer, opts RebaseOptions) error {
@@ -33,8 +34,11 @@ func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer
 			continue
 		}
 		fmt.Fprintf(out, "  --== rebase %s ==--  \n", name)
-		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "mu"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
-			return fmt.Errorf("git mu in %s: %w", name, err)
+		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "fetch"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+			return fmt.Errorf("git fetch in %s: %w", name, err)
+		}
+		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "pull", "--rebase", "--autostash"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+			return fmt.Errorf("git pull --rebase --autostash in %s: %w", name, err)
 		}
 	}
 	return nil

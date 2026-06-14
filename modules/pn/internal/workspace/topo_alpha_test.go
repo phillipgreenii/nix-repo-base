@@ -146,9 +146,11 @@ url = "github:o/zzz"
 	aDir := filepath.Join(root, "aaa")
 	zDir := filepath.Join(root, "zzz")
 	f.AddResponse("git", []string{"-C", zDir, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", zDir, "fetch"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", zDir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", aDir, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
-	f.AddResponse("git", []string{"-C", zDir, "mu"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", aDir, "mu"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", aDir, "fetch"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", aDir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 
 	ws, err := Open(root, f)
 	if err != nil {
@@ -158,28 +160,15 @@ url = "github:o/zzz"
 	if err := ws.Rebase(context.Background(), &out, &errOut, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
-	// Verify zzz was rebased before aaa
+	// Verify zzz was rebased before aaa (check fetch calls for ordering)
 	calls := f.Calls()
-	muCalls := []string{}
-	for _, c := range calls {
-		if c.Name == "git" && len(c.Args) > 1 && c.Args[len(c.Args)-1] == "mu" {
-			muCalls = append(muCalls, c.Opts.Dir)
-		}
-	}
-	if len(muCalls) != 2 {
-		t.Fatalf("expected 2 mu calls, got %d: %v", len(muCalls), muCalls)
-	}
-	// Dir-based check since mu uses -C flag
 	zCallDir := filepath.Join(root, "zzz")
 	aCallDir := filepath.Join(root, "aaa")
-	if muCalls[0] != "" {
-		// -C flag means Dir is ""  but args contain the path
-	}
-	// Check that zzz appears before aaa in the rebase calls
+	// Check that zzz appears before aaa in the fetch calls (proxy for rebase order)
 	gotOrder := []string{}
 	for _, c := range calls {
-		if c.Name == "git" && len(c.Args) >= 3 && c.Args[len(c.Args)-1] == "mu" {
-			// args are ["-C", dir, "mu"]
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[len(c.Args)-1] == "fetch" {
+			// args are ["-C", dir, "fetch"]
 			gotOrder = append(gotOrder, c.Args[1])
 		}
 	}
