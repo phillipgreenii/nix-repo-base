@@ -169,13 +169,9 @@ func TestSmoke_S9_MissingTerminalMultiSink(t *testing.T) {
 }
 
 // TestSmoke_S10_MissingFlakePath: consumer references producer with no flake.nix.
-// TODO: blocked on missing_flake_path validation being added to deriveLock/WriteDerivedLockTo.
-// Current code does not validate that edge targets have a flake path; the lock is written
-// successfully even when the target has no flake.nix. Once that validation is added,
-// remove the t.Skip and the scenario should pass.
+// deriveLock emits missing_flake_path ValidationError; lock exits non-zero.
 func TestSmoke_S10_MissingFlakePath(t *testing.T) {
-	t.Skip("TODO: missing_flake_path validation not yet implemented in deriveLock; " +
-		"the workspace package does not reject edges where the target has no flake_path")
+	runScenario(t, "s10-missing-flake-path")
 }
 
 // TestSmoke_S11_DuplicateRemoteURL: two repos canonicalize to the same URL.

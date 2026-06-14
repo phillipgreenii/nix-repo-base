@@ -492,3 +492,80 @@ url = "github:o/override"
 		t.Errorf("lock.Terminal = %q; want override", lock.Terminal)
 	}
 }
+
+// TestDeriveLock_MissingFlakePath: deriveLock emits missing_flake_path ValidationError
+// when an edge target has no detectable flake.nix.
+func TestDeriveLock_MissingFlakePath(t *testing.T) {
+	root := t.TempDir()
+	// consumer has a flake.nix; producer does NOT.
+	makeFlakeDirs(t, root, "consumer")
+	// Create producer dir without flake.nix so resolveFlakePath returns "".
+	if err := os.MkdirAll(filepath.Join(root, "producer"), 0o755); err != nil {
+		t.Fatalf("mkdir producer: %v", err)
+	}
+
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "consumer"
+
+[repos.consumer]
+url = "github:smoke-test/consumer"
+
+[repos.producer]
+url = "github:smoke-test/producer-noflakenix"
+`)
+	fullExpr := `is: builtins.mapAttrs (n: v: { url = v.url or null; flake = v.flake or true; }) is`
+	evalArgs := func(repo string) []string {
+		return []string{"eval", "--json", "--file", filepath.Join(root, repo, "flake.nix"), "inputs", "--apply", fullExpr}
+	}
+
+	f := exec.NewFakeRunner()
+	// producer has no workspace inputs (and no flake.nix, but the flake eval path
+	// for gatherInputURLs would be attempted; return empty so the edge is built from
+	// consumer referencing producer by URL, not from producer's flake).
+	f.AddResponse("nix", evalArgs("producer"),
+		exec.Result{Stdout: []byte(`{}`)}, nil)
+	// consumer depends on producer via its URL.
+	f.AddResponse("nix", evalArgs("consumer"),
+		exec.Result{Stdout: []byte(`{"my-producer":{"url":"github:smoke-test/producer-noflakenix","flake":true}}`)}, nil)
+
+	ws, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	lock, validErrs, err := deriveLock(context.Background(), ws, "")
+	if err != nil {
+		t.Fatalf("deriveLock: %v", err)
+	}
+
+	// Should have a missing_flake_path ValidationError naming the producer repo.
+	found := false
+	for _, ve := range validErrs {
+		if ve.Code == "missing_flake_path" {
+			found = true
+			if !strings.Contains(ve.Message, "producer") {
+				t.Errorf("missing_flake_path message should name the target repo %q; got: %q", "producer", ve.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected missing_flake_path ValidationError, got %v", validErrs)
+	}
+
+	// Exactly one missing_flake_path error per target (not per edge).
+	count := 0
+	for _, ve := range validErrs {
+		if ve.Code == "missing_flake_path" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 missing_flake_path error, got %d", count)
+	}
+
+	// The lock should still have the edge and repos (best-effort).
+	if len(lock.Edges) != 1 {
+		t.Errorf("expected 1 edge, got %d: %v", len(lock.Edges), lock.Edges)
+	}
+}

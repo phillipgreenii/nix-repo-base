@@ -1,0 +1,2 @@
+edge target "producer" has no detectable flake.nix
+flake_path in pn-workspace.toml

@@ -59,6 +59,29 @@ func deriveLock(ctx context.Context, ws *Workspace, flagTerminal string) (*Lock,
 		})
 	}
 
+	// Emit missing_flake_path for each edge target whose repo directory is present
+	// on disk but has no detectable flake.nix. Repos whose directory does not yet
+	// exist (not cloned) are silently skipped — empty FlakePath is expected there.
+	// Deduplicated per target: one error per target repo regardless of how many
+	// edges point to it.
+	seenMissingFlake := make(map[string]bool)
+	for _, edge := range edges {
+		target := edge.Target
+		if seenMissingFlake[target] {
+			continue
+		}
+		if repos[target].FlakePath == "" {
+			repoDir := filepath.Join(ws.root, target)
+			if dirExists(repoDir) {
+				seenMissingFlake[target] = true
+				validErrs = append(validErrs, ValidationError{
+					Code:    "missing_flake_path",
+					Message: fmt.Sprintf("edge target %q has no detectable flake.nix — set flake_path in pn-workspace.toml for repo %q", target, target),
+				})
+			}
+		}
+	}
+
 	lock := &Lock{
 		Terminal: terminal,
 		Order:    order,
