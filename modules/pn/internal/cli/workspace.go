@@ -19,6 +19,20 @@ func addWorkspaceCmd(parent *cobra.Command) {
 	ws := &cobra.Command{
 		Use:   "workspace",
 		Short: "Operate on the pn workspace",
+		Long: `Operate on the pn workspace.
+
+All subcommands resolve the workspace root using this order:
+  1. PN_WORKSPACE_ROOT environment variable
+  2. Walk upward from cwd until pn-workspace.toml is found
+
+Once resolved, PN_WORKSPACE_ROOT and WORKSPACE_ROOT are exported into
+every subprocess pn spawns (hooks, update-locks.sh, etc.).
+
+Environment variables:
+  PN_WORKSPACE_ROOT          Override workspace root (path to dir with pn-workspace.toml)
+  PN_WORKSPACE_OVERRIDE_PATHS  Comma-separated name=path pairs to pin repo locations
+  XDG_STATE_HOME             Override the apply-cache state parent dir (default ~/.local/state)
+  NO_COLOR                   Disable ANSI colour codes in tree output`,
 	}
 	// --terminal is a persistent flag inherited by all subcommands.
 	ws.PersistentFlags().StringVar(&terminalFlag, "terminal", "", "override the terminal repo (the flake build/apply targets)")

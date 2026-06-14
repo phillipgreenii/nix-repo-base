@@ -96,3 +96,24 @@ pn workspace discover             List workspace repos and their paths
 ```
 
 All subcommands accept `--terminal <name>` to override `workspace.terminal`.
+
+## Environment Variables
+
+Every config-path read in pn goes through an environment variable (with a sensible default) or is computed under `PN_WORKSPACE_ROOT`. This makes it safe to run concurrent smoke-test scenarios in isolated temp directories using `t.Setenv`.
+
+| Variable | Default | What it controls |
+| --- | --- | --- |
+| `PN_WORKSPACE_ROOT` | nearest ancestor dir containing `pn-workspace.toml` | Workspace root. All workspace files (`pn-workspace.toml`, `pn-workspace.lock.json`, `pn-workspace.revs.json`) and per-repo subdirectories are resolved relative to this root. |
+| `PN_WORKSPACE_OVERRIDE_PATHS` | (empty) | Comma-separated `name=path` pairs that override where pn looks for a workspace repo on disk. Used by tests and CI to inject fixture repos without modifying `pn-workspace.toml`. |
+| `XDG_STATE_HOME` | `~/.local/state` | Parent directory for the apply-cache state (`zn-self-upgrade/apply/applied-hash/`). Override in tests to isolate state from the real user state dir. |
+| `NO_COLOR` | (unset) | When set to any non-empty value, disables ANSI color codes in `pn workspace tree` output. |
+
+### Workspace root resolution order
+
+`pn workspace` subcommands resolve the workspace root using this priority:
+
+1. `--root <dir>` flag (not exposed on every subcommand, but honored by `openWorkspaceRoot`).
+2. `PN_WORKSPACE_ROOT` environment variable.
+3. Walk upward from the current working directory until a directory containing `pn-workspace.toml` is found.
+
+Once resolved, `pn` exports the root as both `PN_WORKSPACE_ROOT` and `WORKSPACE_ROOT` into every subprocess it spawns (hooks, `update-locks.sh`, etc.).
