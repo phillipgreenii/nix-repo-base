@@ -149,7 +149,7 @@ func TestSelectTerminal_SingleCandidate(t *testing.T) {
 		"overlay": 0,
 	}}
 	cfg := &WorkspaceConfig{}
-	got, err := selectTerminal(cfg, g)
+	got, err := selectTerminal(cfg, g, "")
 	if err != nil {
 		t.Fatalf("selectTerminal: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestSelectTerminal_ExplicitInToml(t *testing.T) {
 		"personal": 0,
 	}}
 	cfg := &WorkspaceConfig{Workspace: WorkspaceSection{Terminal: "personal"}}
-	got, err := selectTerminal(cfg, g)
+	got, err := selectTerminal(cfg, g, "")
 	if err != nil {
 		t.Fatalf("selectTerminal: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSelectTerminal_AmbiguousNoToml_Error(t *testing.T) {
 		"b": 0,
 	}}
 	cfg := &WorkspaceConfig{}
-	_, err := selectTerminal(cfg, g)
+	_, err := selectTerminal(cfg, g, "")
 	if err == nil {
 		t.Fatal("expected error: multiple terminal candidates without explicit terminal")
 	}
@@ -192,7 +192,7 @@ func TestSelectTerminal_ExplicitTerminalIsDependedOn_Error(t *testing.T) {
 		"b": 0,
 	}}
 	cfg := &WorkspaceConfig{Workspace: WorkspaceSection{Terminal: "a"}}
-	_, err := selectTerminal(cfg, g)
+	_, err := selectTerminal(cfg, g, "")
 	if err == nil {
 		t.Fatal("expected error: explicit terminal has in-degree > 0")
 	}
@@ -205,7 +205,7 @@ func TestSelectTerminal_Cycle_Error(t *testing.T) {
 		"b": 1,
 	}}
 	cfg := &WorkspaceConfig{}
-	_, err := selectTerminal(cfg, g)
+	_, err := selectTerminal(cfg, g, "")
 	if err == nil {
 		t.Fatal("expected error: dependency cycle")
 	}
@@ -217,9 +217,29 @@ func TestSelectTerminal_ExplicitNotInGraph_Error(t *testing.T) {
 	// (unit-test fixtures); cover the branch.
 	g := &graph{inDegree: map[string]int{"foo": 0}}
 	cfg := &WorkspaceConfig{Workspace: WorkspaceSection{Terminal: "ghost"}}
-	_, err := selectTerminal(cfg, g)
+	_, err := selectTerminal(cfg, g, "")
 	if err == nil {
 		t.Fatal("expected error: terminal names a non-graph repo")
+	}
+}
+
+// TestSelectTerminal_FlagOverridesConfig verifies that flagTerminal takes
+// priority over cfg.Workspace.Terminal, implementing the --terminal flag
+// priority order for Discover.
+func TestSelectTerminal_FlagOverridesConfig(t *testing.T) {
+	g := &graph{inDegree: map[string]int{
+		"base":    0,
+		"overlay": 0,
+	}}
+	// Config says "overlay" is terminal.
+	cfg := &WorkspaceConfig{Workspace: WorkspaceSection{Terminal: "overlay"}}
+	// Flag says "base" — flag must win.
+	got, err := selectTerminal(cfg, g, "base")
+	if err != nil {
+		t.Fatalf("selectTerminal: %v", err)
+	}
+	if got != "base" {
+		t.Errorf("--terminal flag should override config; want base, got %q", got)
 	}
 }
 

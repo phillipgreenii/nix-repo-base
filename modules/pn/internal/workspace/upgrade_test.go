@@ -5,10 +5,51 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+// TestUpgrade_TerminalFlagForwardedToUpdateAndApply verifies that UpgradeOptions.Terminal
+// is forwarded to both Update and Apply, allowing --terminal to override config.
+// When config has no terminal and no flag is passed, Update returns an error;
+// passing the flag must allow the command to proceed past the requireTerminal check.
+func TestUpgrade_TerminalFlagForwardedToUpdateAndApply(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+apply_command = "true"
+
+[repos.leaf]
+url = "github:owner/leaf"
+`)
+	// Without a terminal flag, Upgrade must fail with the no-terminal error.
+	f := exec.NewFakeRunner()
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	noFlagErr := w.Upgrade(context.Background(), io.Discard, UpgradeOptions{})
+	if noFlagErr == nil {
+		t.Fatal("Upgrade without terminal and no config terminal: expected error, got nil")
+	}
+	if !strings.Contains(noFlagErr.Error(), "no terminal repo configured") {
+		t.Fatalf("unexpected error (want no-terminal): %v", noFlagErr)
+	}
+
+	// With terminal flag, Upgrade must NOT return a no-terminal error — it proceeds
+	// past requireTerminal. Subsequent subprocess failures are fine (FakeRunner).
+	f2 := exec.NewFakeRunner()
+	w2, err := Open(root, f2)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	err = w2.Upgrade(context.Background(), io.Discard, UpgradeOptions{Terminal: "leaf"})
+	if err != nil && strings.Contains(err.Error(), "no terminal repo configured") {
+		t.Errorf("--terminal flag must be forwarded to Update; got no-terminal error: %v", err)
+	}
+}
 
 func TestUpgrade_RunsUpdateThenApply(t *testing.T) {
 	stateDir := t.TempDir()

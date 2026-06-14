@@ -56,7 +56,7 @@ url = "github:o/base"
 		t.Fatalf("Open: %v", err)
 	}
 
-	lock, validErrs, err := deriveLock(context.Background(), ws)
+	lock, validErrs, err := deriveLock(context.Background(), ws, "")
 	if err != nil {
 		t.Fatalf("deriveLock: %v", err)
 	}
@@ -100,7 +100,7 @@ url = "github:o/b"
 		t.Fatalf("Open: %v", err)
 	}
 
-	lock, validErrs, err := deriveLock(context.Background(), ws)
+	lock, validErrs, err := deriveLock(context.Background(), ws, "")
 	if err != nil {
 		t.Fatalf("deriveLock: %v", err)
 	}
@@ -149,7 +149,7 @@ url = "github:phillipgreenii/homelab"
 		t.Fatalf("Open: %v", err)
 	}
 
-	lock, validErrs, err := deriveLock(context.Background(), ws)
+	lock, validErrs, err := deriveLock(context.Background(), ws, "")
 	if err != nil {
 		t.Fatalf("deriveLock: %v", err)
 	}
@@ -408,7 +408,7 @@ url = "github:o/base"
 	}
 
 	var notice strings.Builder
-	if err := ws.WriteDerivedLockTo(context.Background(), root, &notice); err != nil {
+	if err := ws.WriteDerivedLockTo(context.Background(), root, &notice, ""); err != nil {
 		t.Fatalf("WriteDerivedLockTo: %v", err)
 	}
 
@@ -425,5 +425,70 @@ url = "github:o/base"
 	// Notice should mention removal
 	if !strings.Contains(notice.String(), "removed legacy") {
 		t.Errorf("expected removal notice, got %q", notice.String())
+	}
+}
+
+// TestWriteDerivedLockTo_FlagTerminalOverridesConfig verifies that the flagTerminal
+// parameter to WriteDerivedLockTo overrides workspace.terminal from the config,
+// implementing the --terminal flag priority for the lock subcommand.
+func TestWriteDerivedLockTo_FlagTerminalOverridesConfig(t *testing.T) {
+	root := t.TempDir()
+	// Two standalone repos, no config terminal — would auto-detect nothing (two sinks).
+	makeFlakeDirs(t, root, "base", "override")
+
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.base]
+url = "github:o/base"
+
+[repos.override]
+url = "github:o/override"
+`)
+	fullExpr := `is: builtins.mapAttrs (n: v: { url = v.url or null; flake = v.flake or true; }) is`
+	f := exec.NewFakeRunner()
+	// Neither repo has workspace-level inputs (no edges between them).
+	f.AddResponse("nix", []string{"eval", "--json", "--file", filepath.Join(root, "base", "flake.nix"), "inputs", "--apply", fullExpr},
+		exec.Result{Stdout: []byte(`{}`)}, nil)
+	f.AddResponse("nix", []string{"eval", "--json", "--file", filepath.Join(root, "override", "flake.nix"), "inputs", "--apply", fullExpr},
+		exec.Result{Stdout: []byte(`{}`)}, nil)
+
+	ws, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// Without flag, WriteDerivedLock would fail (ambiguous terminal — two isolated sinks).
+	errNoFlag := ws.WriteDerivedLockTo(context.Background(), root, nil, "")
+	if errNoFlag == nil {
+		t.Fatal("expected error without flagTerminal (ambiguous terminal); got nil")
+	}
+
+	// Re-open (nix eval responses consumed above; need fresh fake runner).
+	f2 := exec.NewFakeRunner()
+	f2.AddResponse("nix", []string{"eval", "--json", "--file", filepath.Join(root, "base", "flake.nix"), "inputs", "--apply", fullExpr},
+		exec.Result{Stdout: []byte(`{}`)}, nil)
+	f2.AddResponse("nix", []string{"eval", "--json", "--file", filepath.Join(root, "override", "flake.nix"), "inputs", "--apply", fullExpr},
+		exec.Result{Stdout: []byte(`{}`)}, nil)
+	ws2, err := Open(root, f2)
+	if err != nil {
+		t.Fatalf("Open ws2: %v", err)
+	}
+
+	// With flagTerminal = "override", it should succeed and write override as terminal.
+	if err := ws2.WriteDerivedLockTo(context.Background(), root, nil, "override"); err != nil {
+		t.Fatalf("WriteDerivedLockTo with flagTerminal: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, LockFileName))
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if !strings.Contains(string(data), `"override"`) || !strings.Contains(string(data), `"terminal"`) {
+		t.Errorf("lock should have terminal=override when flag is set; got:\n%s", string(data))
+	}
+	lock, err := ReadLock(filepath.Join(root, LockFileName))
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+	if lock.Terminal != "override" {
+		t.Errorf("lock.Terminal = %q; want override", lock.Terminal)
 	}
 }

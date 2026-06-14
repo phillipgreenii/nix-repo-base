@@ -7,12 +7,12 @@ import (
 
 // graph holds the workspace dependency graph.
 //
-//   edges[from][to] = true  means repo `from` has a flake input pointing at
-//                           repo `to` (i.e. `from` depends on `to`).
-//   inDegree[name]         = how many other workspace repos depend on this repo.
-//   slugOwner[slug]        = the repo name owning that slug. Built during
-//                           construction; surfaced as an error if two distinct
-//                           repos have overlapping slug sets.
+//	edges[from][to] = true  means repo `from` has a flake input pointing at
+//	                        repo `to` (i.e. `from` depends on `to`).
+//	inDegree[name]         = how many other workspace repos depend on this repo.
+//	slugOwner[slug]        = the repo name owning that slug. Built during
+//	                        construction; surfaced as an error if two distinct
+//	                        repos have overlapping slug sets.
 type graph struct {
 	edges     map[string]map[string]bool
 	inDegree  map[string]int
@@ -71,20 +71,22 @@ func buildGraph(cfg *WorkspaceConfig, repoInputs map[string]map[string]string) (
 }
 
 // selectTerminal picks the terminal repo per design §9. Inputs:
+//   - flagTerminal          (highest priority; overrides config when non-empty)
 //   - cfg.Workspace.Terminal (optional explicit pick)
 //   - g.inDegree           (computed by buildGraph)
 //
 // Behavior:
 //  1. Compute the set of candidates (in-degree == 0).
-//  2. If cfg.Workspace.Terminal is set:
+//  2. If flagTerminal is set, it wins; validate it is a graph node and a sink.
+//  3. If cfg.Workspace.Terminal is set:
 //     - it must be in inDegree (graph node); else error.
 //     - it must be in candidates (in-degree 0); else error.
 //     Return it.
-//  3. If exactly one candidate, return it.
-//  4. If multiple candidates and no explicit terminal, return error with
+//  4. If exactly one candidate, return it.
+//  5. If multiple candidates and no explicit terminal, return error with
 //     candidate list — user must set [workspace].terminal.
-//  5. If zero candidates, the graph has a cycle — return error.
-func selectTerminal(cfg *WorkspaceConfig, g *graph) (string, error) {
+//  6. If zero candidates, the graph has a cycle — return error.
+func selectTerminal(cfg *WorkspaceConfig, g *graph, flagTerminal string) (string, error) {
 	candidates := make([]string, 0, len(g.inDegree))
 	for name, d := range g.inDegree {
 		if d == 0 {
@@ -93,6 +95,18 @@ func selectTerminal(cfg *WorkspaceConfig, g *graph) (string, error) {
 	}
 	sort.Strings(candidates)
 
+	// Tier 1: --terminal flag takes highest priority.
+	if flagTerminal != "" {
+		if _, exists := g.inDegree[flagTerminal]; !exists {
+			return "", fmt.Errorf("--terminal %q is not a graph node (no flake.nix?)", flagTerminal)
+		}
+		if g.inDegree[flagTerminal] > 0 {
+			return "", fmt.Errorf("--terminal %q has in-degree %d; cannot be a terminal", flagTerminal, g.inDegree[flagTerminal])
+		}
+		return flagTerminal, nil
+	}
+
+	// Tier 2: config terminal.
 	if explicit := cfg.Workspace.Terminal; explicit != "" {
 		if _, exists := g.inDegree[explicit]; !exists {
 			return "", fmt.Errorf("workspace.terminal %q is not a graph node (no flake.nix?)", explicit)
@@ -102,6 +116,8 @@ func selectTerminal(cfg *WorkspaceConfig, g *graph) (string, error) {
 		}
 		return explicit, nil
 	}
+
+	// Tier 3: auto-detect.
 	switch len(candidates) {
 	case 0:
 		return "", fmt.Errorf("dependency cycle: no repo has in-degree 0")

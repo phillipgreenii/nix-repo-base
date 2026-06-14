@@ -30,7 +30,7 @@ url = "github:owner/bar"
 		t.Fatalf("Open: %v", err)
 	}
 	var buf, errBuf bytes.Buffer
-	if err := w.Status(context.Background(), &buf, &errBuf); err != nil {
+	if err := w.Status(context.Background(), &buf, &errBuf, StatusOptions{}); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	out := buf.String()
@@ -69,12 +69,37 @@ url = "github:owner/foo"
 		t.Fatalf("Open: %v", err)
 	}
 	var buf, errBuf bytes.Buffer
-	if err := w.Status(context.Background(), &buf, &errBuf); err != nil {
+	if err := w.Status(context.Background(), &buf, &errBuf, StatusOptions{}); err != nil {
 		t.Fatalf("Status should not return error on per-repo failure, got %v", err)
 	}
 	// Error output goes to errOut (stderr).
 	if !strings.Contains(errBuf.String(), "(error)") {
 		t.Errorf("expected error marker on stderr; got stdout:\n%s\nstderr:\n%s", buf.String(), errBuf.String())
+	}
+}
+
+// TestStatus_TerminalFlagSuppressesWarning verifies that passing Terminal via
+// StatusOptions suppresses the no-terminal warning even when config has no terminal.
+func TestStatus_TerminalFlagSuppressesWarning(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "status", "--short"}, exec.Result{Stdout: []byte("")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Status(context.Background(), &out, &errOut, StatusOptions{Terminal: "foo"}); err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if strings.Contains(errOut.String(), "no terminal") {
+		t.Errorf("--terminal flag should suppress warning; got stderr:\n%s", errOut.String())
 	}
 }
 
@@ -95,7 +120,7 @@ url = "github:owner/foo"
 		t.Fatalf("Open: %v", err)
 	}
 	var out, errOut bytes.Buffer
-	if err := w.Status(context.Background(), &out, &errOut); err != nil {
+	if err := w.Status(context.Background(), &out, &errOut, StatusOptions{}); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	if !strings.Contains(errOut.String(), "no terminal") {

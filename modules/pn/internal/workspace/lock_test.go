@@ -16,9 +16,9 @@ func TestLock_WriteAndRead_RoundTrip(t *testing.T) {
 		Terminal: "homelab",
 		Order:    []string{"nix-repo-base", "nix-overlay", "homelab"},
 		Repos: map[string]LockRepoEntry{
-			"homelab":      {FlakePath: "nix/flake.nix", RemoteURL: "ssh://git@synfra.twistcone.us:222/twistcone/homelab.git"},
+			"homelab":       {FlakePath: "nix/flake.nix", RemoteURL: "ssh://git@synfra.twistcone.us:222/twistcone/homelab.git"},
 			"nix-repo-base": {FlakePath: "flake.nix", RemoteURL: "github:phillipgreenii/nix-repo-base"},
-			"nix-overlay":  {FlakePath: "flake.nix", RemoteURL: "github:phillipgreenii/nix-overlay"},
+			"nix-overlay":   {FlakePath: "flake.nix", RemoteURL: "github:phillipgreenii/nix-overlay"},
 		},
 		Edges: []LockEdge{
 			{Consumer: "homelab", Alias: "phillipgreenii-nix-base", Target: "nix-repo-base"},
@@ -266,7 +266,7 @@ func TestParseLock_ValidLock(t *testing.T) {
 		Terminal: "homelab",
 		Order:    []string{"nix-repo-base", "homelab"},
 		Repos: map[string]LockRepoEntry{
-			"homelab":      {FlakePath: "nix/flake.nix", RemoteURL: "ssh://git@host/homelab.git"},
+			"homelab":       {FlakePath: "nix/flake.nix", RemoteURL: "ssh://git@host/homelab.git"},
 			"nix-repo-base": {FlakePath: "flake.nix", RemoteURL: "github:phillipgreenii/nix-repo-base"},
 		},
 		Edges: []LockEdge{

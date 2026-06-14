@@ -8,7 +8,6 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-
 func TestNixCommand_RefusesFlakeUpdate(t *testing.T) {
 	cfg := `
 [workspace]

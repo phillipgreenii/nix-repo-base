@@ -60,11 +60,12 @@ const LockFileNameLegacy = "pn-workspace.lock"
 // deriveLock validation errors.
 //
 // Invariants checked:
-//  (a) No self-edge: edge.Consumer != edge.Target.
-//  (b) Per-consumer alias uniqueness: no two edges share (Consumer, Alias).
-//  (c) Edge endpoints exist in Repos: edge.Consumer and edge.Target in Repos.
-//  (d) Edge target has a flake path: Repos[edge.Target].FlakePath != "".
-//  (e) Terminal validity: if Terminal != "", Terminal appears in Repos.
+//
+//	(a) No self-edge: edge.Consumer != edge.Target.
+//	(b) Per-consumer alias uniqueness: no two edges share (Consumer, Alias).
+//	(c) Edge endpoints exist in Repos: edge.Consumer and edge.Target in Repos.
+//	(d) Edge target has a flake path: Repos[edge.Target].FlakePath != "".
+//	(e) Terminal validity: if Terminal != "", Terminal appears in Repos.
 func ParseLock(lock *Lock) error {
 	// (e) Terminal validity.
 	if lock.Terminal != "" {

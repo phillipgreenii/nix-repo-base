@@ -72,7 +72,7 @@ url = "github:o/personal"
 			createFlake: true,
 		},
 	})
-	repos, err := w.Discover()
+	repos, err := w.Discover(DiscoverOptions{})
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -122,7 +122,7 @@ url = "github:o/personal"
 			createFlake: true,
 		},
 	})
-	repos, err := w.Discover()
+	repos, err := w.Discover(DiscoverOptions{})
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -153,9 +153,64 @@ url = "github:o/foo"
 			createFlake: false,
 		},
 	})
-	_, err := w.Discover()
+	_, err := w.Discover(DiscoverOptions{})
 	if err == nil {
 		t.Fatal("expected remote-agreement error")
+	}
+}
+
+// TestDiscover_TerminalFlagOverridesConfig verifies that DiscoverOptions.Terminal
+// overrides workspace.terminal in the config, implementing the --terminal flag
+// priority for the discover subcommand.
+func TestDiscover_TerminalFlagOverridesConfig(t *testing.T) {
+	cfg := `
+[workspace]
+name = "test"
+terminal = "personal"
+
+[repos.base]
+url = "github:o/base"
+
+[repos.personal]
+url = "github:o/personal"
+
+[repos.alt]
+url = "github:o/alt"
+`
+	w := newTestWorkspace(t, cfg, map[string]struct {
+		flakeInputs string
+		gitRemotes  string
+		createFlake bool
+	}{
+		"base": {
+			flakeInputs: `{}`,
+			gitRemotes:  "origin\tgithub:o/base (fetch)\norigin\tgithub:o/base (push)\n",
+			createFlake: true,
+		},
+		"personal": {
+			flakeInputs: `{}`,
+			gitRemotes:  "origin\tgithub:o/personal (fetch)\norigin\tgithub:o/personal (push)\n",
+			createFlake: true,
+		},
+		"alt": {
+			flakeInputs: `{}`,
+			gitRemotes:  "origin\tgithub:o/alt (fetch)\norigin\tgithub:o/alt (push)\n",
+			createFlake: true,
+		},
+	})
+	// With flagTerminal = "alt", the terminal should be alt, not personal.
+	repos, err := w.Discover(DiscoverOptions{Terminal: "alt"})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	var gotTerminal string
+	for _, r := range repos {
+		if r.IsTerminal {
+			gotTerminal = r.Name
+		}
+	}
+	if gotTerminal != "alt" {
+		t.Errorf("--terminal flag should override config; want terminal=alt, got %q", gotTerminal)
 	}
 }
 
@@ -169,7 +224,7 @@ name = "empty"
 		t.Fatalf("Open: %v", err)
 	}
 	defer w.Close()
-	repos, err := w.Discover()
+	repos, err := w.Discover(DiscoverOptions{})
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}

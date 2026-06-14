@@ -123,7 +123,7 @@ func workspaceStatusCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			return runWithHooks(ctx, w, "status", func() error {
-				return w.Status(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				return w.Status(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr(), workspace.StatusOptions{Terminal: *terminal})
 			})
 		},
 	}
@@ -234,7 +234,7 @@ func workspacePushCmd(terminal *string) *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "push", func() error {
-				return w.Push(ctx, out, errOut, workspace.PushOptions{})
+				return w.Push(ctx, out, errOut, workspace.PushOptions{Terminal: *terminal})
 			})
 		},
 	}
@@ -253,7 +253,7 @@ func workspaceRebaseCmd(terminal *string) *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "rebase", func() error {
-				return w.Rebase(ctx, out, errOut, workspace.RebaseOptions{})
+				return w.Rebase(ctx, out, errOut, workspace.RebaseOptions{Terminal: *terminal})
 			})
 		},
 	}
@@ -306,7 +306,7 @@ func workspaceUpgradeCmd(terminal *string) *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "upgrade", func() error {
-				return w.Upgrade(ctx, out, workspace.UpgradeOptions{})
+				return w.Upgrade(ctx, out, workspace.UpgradeOptions{Terminal: *terminal})
 			})
 		},
 	}
@@ -322,7 +322,7 @@ func workspaceDiscoverCmd(terminal *string) *cobra.Command {
 				return err
 			}
 			defer w.Close()
-			repos, err := w.Discover()
+			repos, err := w.Discover(workspace.DiscoverOptions{Terminal: *terminal})
 			if err != nil {
 				return err
 			}
@@ -383,7 +383,7 @@ func workspaceLockCmd(terminal *string) *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "lock", func() error {
-				if err := w.WriteDerivedLockTo(ctx, w.Root(), out); err != nil {
+				if err := w.WriteDerivedLockTo(ctx, w.Root(), out, *terminal); err != nil {
 					fmt.Fprintln(errOut, err)
 					return err
 				}

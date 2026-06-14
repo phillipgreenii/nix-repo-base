@@ -9,14 +9,20 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
+// StatusOptions configures Status.
+type StatusOptions struct {
+	// Terminal overrides workspace.terminal for this invocation.
+	Terminal string
+}
+
 // Status writes a per-repo git status report to w. Error and warning output
 // goes to errOut (stderr). Repos are processed in topological order
 // (dependencies before consumers). A repo that fails its status call is
 // reported but does not abort the loop.
 // Status is a terminal-optional command: if no terminal is configured it emits
 // a warning to errOut and continues.
-func (ws *Workspace) Status(ctx context.Context, w io.Writer, errOut io.Writer) error {
-	if ws.config.Workspace.Terminal == "" {
+func (ws *Workspace) Status(ctx context.Context, w io.Writer, errOut io.Writer, opts StatusOptions) error {
+	if opts.Terminal == "" && ws.config.Workspace.Terminal == "" {
 		fmt.Fprintln(errOut, terminalWarningMessage)
 	}
 	names := ws.topoAlpha(ctx)

@@ -14,11 +14,14 @@ import (
 //  3. Populating per-repo LockRepoEntry (FlakePath, RemoteURL).
 //  4. Resolving the terminal via resolveTerminal.
 //
+// flagTerminal, when non-empty, is used as the terminal override (tier 1 of
+// the priority order: flag > config > auto-detect).
+//
 // Returns:
 //   - lock: the most complete Lock derivable (always non-nil, even with errors).
 //   - validErrs: non-fatal validation issues (missing_terminal, terminal_not_sink, etc.).
 //   - err: non-nil only on fatal I/O errors (config not readable, etc.).
-func deriveLock(ctx context.Context, ws *Workspace) (*Lock, []ValidationError, error) {
+func deriveLock(ctx context.Context, ws *Workspace, flagTerminal string) (*Lock, []ValidationError, error) {
 	// Gather input URLs from every repo's flake.
 	inputURLs, err := ws.gatherInputURLs(ctx)
 	if err != nil {
@@ -41,11 +44,10 @@ func deriveLock(ctx context.Context, ws *Workspace) (*Lock, []ValidationError, e
 		}
 	}
 
-	// Resolve terminal via 3-tier priority (no flag for library use).
-	terminal, validErrs, err := resolveTerminal(ws.config, "", edges, repos)
+	// Resolve terminal via 3-tier priority (flag > config > auto-detect).
+	terminal, validErrs, err := resolveTerminal(ws.config, flagTerminal, edges, repos)
 	if err != nil {
-		// Only fatal if flag validation failed (unknown repo) — not expected here
-		// since we pass no flag.
+		// Fatal only if flag validation failed (unknown repo).
 		return emptyLock(), nil, fmt.Errorf("deriveLock: resolve terminal: %w", err)
 	}
 
@@ -80,7 +82,7 @@ func (ws *Workspace) effectiveLock(ctx context.Context) (*Lock, []ValidationErro
 	if ws.lock != nil && lockMatchesConfig(ws.lock, ws.config) {
 		return ws.lock, nil, nil
 	}
-	lock, validErrs, err := deriveLock(ctx, ws)
+	lock, validErrs, err := deriveLock(ctx, ws, "")
 	if err != nil {
 		return emptyLock(), nil, err
 	}
@@ -112,13 +114,14 @@ func lockMatchesConfig(lock *Lock, cfg *WorkspaceConfig) bool {
 // After a successful write, if the legacy pn-workspace.lock exists in the same
 // directory, it is removed and a notice is written to out (may be nil to silence).
 func (ws *Workspace) WriteDerivedLock(ctx context.Context, dir string) error {
-	return ws.WriteDerivedLockTo(ctx, dir, nil)
+	return ws.WriteDerivedLockTo(ctx, dir, nil, "")
 }
 
 // WriteDerivedLockTo is like WriteDerivedLock but accepts an io.Writer for notices
-// (legacy lock removal). Pass nil to suppress notices.
-func (ws *Workspace) WriteDerivedLockTo(ctx context.Context, dir string, out io.Writer) error {
-	lock, validErrs, err := deriveLock(ctx, ws)
+// (legacy lock removal) and a flagTerminal override. Pass nil out to suppress
+// notices. Pass "" for flagTerminal to use the config or auto-detect.
+func (ws *Workspace) WriteDerivedLockTo(ctx context.Context, dir string, out io.Writer, flagTerminal string) error {
+	lock, validErrs, err := deriveLock(ctx, ws, flagTerminal)
 	if err != nil {
 		return err
 	}

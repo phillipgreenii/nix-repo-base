@@ -10,7 +10,10 @@ import (
 )
 
 // PushOptions configures Push.
-type PushOptions struct{}
+type PushOptions struct {
+	// Terminal overrides workspace.terminal for this invocation.
+	Terminal string
+}
 
 // hasUpstream checks whether the branch at repoDir has a configured upstream.
 // Mirrors bash workspace_has_upstream (git rev-parse --abbrev-ref @{u}).
@@ -26,7 +29,7 @@ func (ws *Workspace) hasUpstream(ctx context.Context, repoDir string) bool {
 // Push is a terminal-optional command: if no terminal is configured it emits
 // a warning to errOut and continues.
 func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, opts PushOptions) error {
-	if ws.config.Workspace.Terminal == "" {
+	if opts.Terminal == "" && ws.config.Workspace.Terminal == "" {
 		fmt.Fprintln(errOut, terminalWarningMessage)
 	}
 	names := ws.topoAlpha(ctx)

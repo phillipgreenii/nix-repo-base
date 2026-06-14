@@ -14,6 +14,12 @@ type Repo struct {
 	IsTerminal bool
 }
 
+// DiscoverOptions configures Discover.
+type DiscoverOptions struct {
+	// Terminal overrides workspace.terminal for this invocation.
+	Terminal string
+}
+
 // Discover returns the workspace's repos in topological order (dependencies
 // first, terminal last). Each repo is annotated with IsTerminal.
 //
@@ -21,7 +27,7 @@ type Repo struct {
 // in parallel via the workspace's worker pool. Per-repo failures are tolerated
 // (the repo simply contributes no out-edges); errors that prevent graph
 // construction (slug conflicts, terminal ambiguity, cycles) are returned.
-func (ws *Workspace) Discover() ([]Repo, error) {
+func (ws *Workspace) Discover(opts DiscoverOptions) ([]Repo, error) {
 	ctx := context.Background()
 	names := orderedRepoNames(ws.config.Repos)
 	repoInputs := make(map[string]map[string]string, len(names))
@@ -58,7 +64,7 @@ func (ws *Workspace) Discover() ([]Repo, error) {
 	if len(names) == 0 {
 		return []Repo{}, nil
 	}
-	terminal, err := selectTerminal(ws.config, g)
+	terminal, err := selectTerminal(ws.config, g, opts.Terminal)
 	if err != nil {
 		return nil, err
 	}

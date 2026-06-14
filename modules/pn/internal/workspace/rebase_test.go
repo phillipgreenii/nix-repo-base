@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -46,6 +47,32 @@ url = "github:owner/bar"
 		if last == "@{u}" && c.Opts.Stdout != nil {
 			t.Errorf("upstream probe should stay captured (Opts.Stdout nil); got %v", c.Args)
 		}
+	}
+}
+
+// TestRebase_TerminalFlagSuppressesWarning verifies that passing Terminal via
+// RebaseOptions suppresses the no-terminal warning even when config has no terminal.
+func TestRebase_TerminalFlagSuppressesWarning(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+
+	f := exec.NewFakeRunner()
+	// upstream check fails — no rebase (we just care about the warning).
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{Terminal: "foo"}); err != nil {
+		t.Fatalf("Rebase: %v", err)
+	}
+	if strings.Contains(errOut.String(), "no terminal") {
+		t.Errorf("--terminal flag should suppress warning; got stderr:\n%s", errOut.String())
 	}
 }
 

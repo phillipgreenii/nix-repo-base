@@ -55,9 +55,10 @@ url = "github:owner/bar"
 // --override-input flags derived from the lock edges for that consumer.
 //
 // Topology (lock edges):
-//   base    has edge: base→overlay (alias=overlay)
-//   overlay has edge: overlay→base (alias=base)
-//   term    has edges: term→base (alias=base), term→overlay (alias=overlay)
+//
+//	base    has edge: base→overlay (alias=overlay)
+//	overlay has edge: overlay→base (alias=base)
+//	term    has edges: term→base (alias=base), term→overlay (alias=overlay)
 //
 // So each check gets the per-consumer overrides from the lock.
 func TestFlakeCheck_InjectsLocalOverrides(t *testing.T) {

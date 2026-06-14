@@ -325,7 +325,7 @@ url = "github:o/base"
 	}
 
 	var notice strings.Builder
-	if err := ws.WriteDerivedLockTo(context.Background(), root, &notice); err != nil {
+	if err := ws.WriteDerivedLockTo(context.Background(), root, &notice, ""); err != nil {
 		t.Fatalf("WriteDerivedLockTo: %v", err)
 	}
 
@@ -486,7 +486,6 @@ url = "github:o/consumer-b"
 	}
 }
 
-
 // TestIntegration_CyclicFlakeGraph_DegradesToAlphabetical (Scenario 10):
 // A depends on B; B depends on A (cycle). buildEdges + topoSortByDeps degrades
 // to alphabetical order (does NOT return an error). deriveLock does not error on
@@ -553,7 +552,7 @@ url = "github:o/beta"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	lock, validErrs, err := deriveLock(context.Background(), ws)
+	lock, validErrs, err := deriveLock(context.Background(), ws, "")
 	if err != nil {
 		t.Fatalf("deriveLock should not error on cycle; got: %v", err)
 	}
@@ -569,7 +568,6 @@ url = "github:o/beta"
 		t.Errorf("expected terminal_not_sink for cyclic terminal; validErrs=%v", validErrs)
 	}
 }
-
 
 // TestIntegration_StaleLockNewRepo_EffectiveLockDerives (Scenario 11):
 // Stale lock on disk (only has "base"), config has new repo "newrepo".
