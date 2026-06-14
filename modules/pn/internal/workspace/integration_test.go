@@ -682,6 +682,139 @@ func TestIntegration_CanonicalURL_ParityWithRevLock(t *testing.T) {
 	}
 }
 
+// TestIntegration_SingleConsumerTwoAliasesSameProducer covers the case where
+// a single consumer repo declares TWO flake inputs that both resolve to the
+// same producer repo (e.g. "foo" and "bar" both point at producer's URL).
+//
+// This exercises the path documented in tc-perh.9.22:
+//   - buildEdges emits two distinct LockEdges (Consumer=consumer, Target=producer)
+//     with different Alias values.
+//   - edgesToDependsOn deduplicates to a single dep (consumer depends on producer once).
+//   - overrideInputArgsFor("consumer") emits BOTH --override-input flags.
+//   - topo order: producer first, consumer second (one entry each).
+func TestIntegration_SingleConsumerTwoAliasesSameProducer(t *testing.T) {
+	root := t.TempDir()
+
+	// Create repo directories with minimal flake.nix files.
+	for _, name := range []string{"consumer", "producer"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "flake.nix"), "{ inputs = {}; }")
+	}
+
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "consumer"
+
+[repos.consumer]
+url = "github:o/consumer"
+
+[repos.producer]
+url = "github:o/producer"
+`)
+
+	f := exec.NewFakeRunner()
+	// producer: no workspace inputs.
+	f.AddResponse("nix", evalInputsArgs(root, "producer"),
+		exec.Result{Stdout: []byte(`{}`)}, nil)
+	// consumer: two inputs ("foo" and "bar") both pointing at producer's URL.
+	// "foo" uses the github: shorthand; "bar" uses the git+ssh:// form.
+	// canonicalURL normalizes both to the same canonical, so both resolve to producer.
+	f.AddResponse("nix", evalInputsArgs(root, "consumer"),
+		exec.Result{Stdout: []byte(`{"bar":{"url":"git+ssh://git@github.com/o/producer.git","flake":true},"foo":{"url":"github:o/producer","flake":true}}`)}, nil)
+
+	ws, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if err := ws.WriteDerivedLock(context.Background(), root); err != nil {
+		t.Fatalf("WriteDerivedLock: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, LockFileName))
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	var lock Lock
+	if err := json.Unmarshal(data, &lock); err != nil {
+		t.Fatalf("parse lock: %v", err)
+	}
+
+	// Assertion 1: exactly two edges, both Consumer=consumer, Target=producer.
+	if len(lock.Edges) != 2 {
+		t.Fatalf("expected 2 edges (one per alias), got %d: %v", len(lock.Edges), lock.Edges)
+	}
+	aliasSet := make(map[string]bool)
+	for _, e := range lock.Edges {
+		if e.Consumer != "consumer" {
+			t.Errorf("edge consumer = %q, want \"consumer\": %+v", e.Consumer, e)
+		}
+		if e.Target != "producer" {
+			t.Errorf("edge target = %q, want \"producer\": %+v", e.Target, e)
+		}
+		aliasSet[e.Alias] = true
+	}
+	if !aliasSet["foo"] {
+		t.Errorf("missing edge with alias \"foo\"; edges=%v", lock.Edges)
+	}
+	if !aliasSet["bar"] {
+		t.Errorf("missing edge with alias \"bar\"; edges=%v", lock.Edges)
+	}
+
+	// Assertion 2: topo order — producer before consumer, each appears exactly once.
+	if len(lock.Order) != 2 {
+		t.Fatalf("expected 2 repos in order, got %d: %v", len(lock.Order), lock.Order)
+	}
+	producerIdx, consumerIdx := -1, -1
+	for i, k := range lock.Order {
+		if k == "producer" {
+			producerIdx = i
+		}
+		if k == "consumer" {
+			consumerIdx = i
+		}
+	}
+	if producerIdx < 0 || consumerIdx < 0 {
+		t.Fatalf("lock.Order missing producer or consumer: %v", lock.Order)
+	}
+	if producerIdx >= consumerIdx {
+		t.Errorf("topo order: producer (%d) must come before consumer (%d): %v",
+			producerIdx, consumerIdx, lock.Order)
+	}
+
+	// Assertion 3: overrideInputArgsFor("consumer") emits BOTH --override-input flags.
+	// Re-open workspace so it loads the written lock.
+	ws2, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open(2): %v", err)
+	}
+	overrideArgs := ws2.overrideInputArgsFor("consumer", overrideOpts{})
+	// Expect 6 args: 2 × ("--override-input", alias, url)
+	if len(overrideArgs) != 6 {
+		t.Fatalf("overrideInputArgsFor: got %d args (want 6): %v", len(overrideArgs), overrideArgs)
+	}
+	// Extract aliases from args (positions 1 and 4 after sort-by-alias).
+	// Aliases are sorted alphabetically: "bar" < "foo".
+	if overrideArgs[1] != "bar" {
+		t.Errorf("first alias = %q, want \"bar\"", overrideArgs[1])
+	}
+	if overrideArgs[4] != "foo" {
+		t.Errorf("second alias = %q, want \"foo\"", overrideArgs[4])
+	}
+	// Both should point at producer's directory.
+	producerDir := filepath.Join(root, "producer")
+	wantURL := "git+file://" + producerDir
+	if overrideArgs[2] != wantURL {
+		t.Errorf("first url = %q, want %q", overrideArgs[2], wantURL)
+	}
+	if overrideArgs[5] != wantURL {
+		t.Errorf("second url = %q, want %q", overrideArgs[5], wantURL)
+	}
+}
+
 // TestIntegration_RealMonorepodURLForms (Scenario 8):
 // Fixture with github: shorthand in TOML and git+ssh:// in consumer's flake.
 // Lock produces the edge (URL canonicalization normalizes both to same form).
