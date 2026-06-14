@@ -47,6 +47,7 @@ Environment variables:
 	ws.AddCommand(workspacePreCommitCheckCmd(&terminalFlag))
 	ws.AddCommand(workspacePushCmd(&terminalFlag))
 	ws.AddCommand(workspaceRebaseCmd(&terminalFlag))
+	ws.AddCommand(workspaceFormatCmd(&terminalFlag))
 	ws.AddCommand(workspaceTreeCmd(&terminalFlag))
 	ws.AddCommand(workspaceUpdateCmd(&terminalFlag))
 	ws.AddCommand(workspaceUpgradeCmd(&terminalFlag))
@@ -257,6 +258,25 @@ func workspaceRebaseCmd(terminal *string) *cobra.Command {
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "rebase", func() error {
 				return w.Rebase(ctx, out, errOut, workspace.RebaseOptions{Terminal: *terminal})
+			})
+		},
+	}
+}
+
+func workspaceFormatCmd(terminal *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "format",
+		Short: "Run `nix fmt` in each workspace repo",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			errOut := cmd.ErrOrStderr()
+			return runWithHooks(ctx, w, "format", func() error {
+				return w.Format(ctx, out, errOut, workspace.FormatOptions{Terminal: *terminal})
 			})
 		},
 	}

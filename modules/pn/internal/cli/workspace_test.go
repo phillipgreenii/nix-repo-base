@@ -116,7 +116,7 @@ func TestAllWorkspaceCommands_OpenFailurePropagates(t *testing.T) {
 
 	cmds := []string{
 		"status", "init", "clone", "lock", "build", "apply",
-		"flake-check", "pre-commit-check", "push", "rebase",
+		"flake-check", "pre-commit-check", "push", "rebase", "format",
 		"tree", "update", "upgrade", "discover",
 	}
 	for _, sub := range cmds {
@@ -520,6 +520,43 @@ func TestWorkspaceRebase_ExitZeroNoTerminal(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// format (optional-terminal)
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceFormat_FlagTerminalFlows(t *testing.T) {
+	withFakeWorkspace(t, minimalToml)
+	_, stderr, err := runCobraCmd(t, []string{"format", "--terminal", "myterm"})
+	if err != nil {
+		t.Fatalf("format --terminal: unexpected error: %v", err)
+	}
+	if strings.Contains(stderr, "no terminal") {
+		t.Error("--terminal flag not threaded: warning still emitted")
+	}
+}
+
+func TestWorkspaceFormat_NoTerminalWarnsOnStderr(t *testing.T) {
+	withFakeWorkspace(t, minimalToml)
+	stdout, stderr, err := runCobraCmd(t, []string{"format"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(stdout, "no terminal") {
+		t.Error("terminal warning on stdout; must be stderr-only")
+	}
+	if !strings.Contains(stderr, "no terminal") {
+		t.Errorf("expected terminal warning on stderr; got %q", stderr)
+	}
+}
+
+func TestWorkspaceFormat_ExitZeroNoTerminal(t *testing.T) {
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"format"})
+	if err != nil {
+		t.Errorf("format with no terminal should exit 0; got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // tree (required-terminal)
 // ---------------------------------------------------------------------------
 
@@ -658,7 +695,7 @@ func TestPersistentTerminalFlag_IsInheritedByAllSubcommands(t *testing.T) {
 	subcommands := []string{
 		"status", "init", "clone", "lock",
 		"build", "apply", "flake-check", "pre-commit-check",
-		"push", "rebase", "tree", "update", "upgrade", "discover",
+		"push", "rebase", "format", "tree", "update", "upgrade", "discover",
 	}
 
 	orig := openWorkspace

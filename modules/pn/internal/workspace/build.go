@@ -18,8 +18,9 @@ type BuildOptions struct {
 	ShowNixCommandsOnly bool
 }
 
-// Build formats and builds the terminal flake, injecting --override-input for
+// Build builds the terminal flake, injecting --override-input for
 // every non-terminal workspace repo. It does not activate.
+// Formatting is a separate step: run `pn workspace format` before building.
 func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions) error {
 	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
 	if err != nil {
@@ -46,14 +47,8 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 	}
 
 	if opts.ShowNixCommandsOnly {
-		fmt.Fprintf(out, "cd %s && nix fmt\n", terminalDir)
 		fmt.Fprintln(out, strings.Join(append(append([]string{}, cmdArgs...), overrides...), " "))
 		return nil
-	}
-
-	fmt.Fprintf(out, "  --== %s: formatting flake ==--  \n", terminal)
-	if _, err := ws.runner.Run(ctx, "nix", []string{"fmt"}, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out}); err != nil {
-		return fmt.Errorf("nix fmt in %s: %w", terminalDir, err)
 	}
 
 	fmt.Fprintf(out, "  --== %s: building flake ==--  \n", terminal)

@@ -250,6 +250,14 @@ func TestSmoke_S22b_HappyPathRebaseAutostash(t *testing.T) {
 	runScenario(t, "s22b-happy-path-rebase-autostash")
 }
 
+// TestSmoke_S23_HappyPathFormat: two-repo file:// bare-remote workspace;
+// pn workspace format runs `nix fmt` in each repo in topo order;
+// asserts exit 0 and that stdout shows per-repo format banners in topo order
+// (producer before consumer).
+func TestSmoke_S23_HappyPathFormat(t *testing.T) {
+	runScenario(t, "s23-happy-path-format")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -411,6 +419,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 	case "s22b-happy-path-rebase-autostash":
 		assertS22RebaseResult(t, wsRoot, "S22b")
 		assertS22AutostashRoundTrip(t, wsRoot)
+	case "s23-happy-path-format":
+		assertS23FormatTopoOrder(t, lastResult)
 	}
 }
 

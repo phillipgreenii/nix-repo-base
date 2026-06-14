@@ -21,10 +21,11 @@ type ApplyOptions struct {
 	Force               bool // always rebuild (bypass the skip gate)
 }
 
-// Apply formats and activates the terminal flake, injecting --override-input for
+// Apply activates the terminal flake, injecting --override-input for
 // every non-terminal workspace repo. It checks daemon health, skips the rebuild
 // when nothing changed, diffs the system profile via nvd when available, and
-// records the applied state.
+// records the applied state. Formatting is a separate step: run
+// `pn workspace format` before applying.
 func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions) error {
 	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
 	if err != nil {
@@ -54,18 +55,12 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	}
 
 	if opts.ShowNixCommandsOnly {
-		fmt.Fprintf(out, "cd %s && nix fmt\n", terminalDir)
 		fmt.Fprintln(out, strings.Join(append(append([]string{}, cmdArgs...), overrides...), " "))
 		return nil
 	}
 
 	if err := ws.checkNixDaemon(ctx); err != nil {
 		return err
-	}
-
-	fmt.Fprintf(out, "  --== %s: formatting flake ==--  \n", terminal)
-	if _, err := ws.runner.Run(ctx, "nix", []string{"fmt"}, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out}); err != nil {
-		return fmt.Errorf("nix fmt in %s: %w", terminalDir, err)
 	}
 
 	fmt.Fprintf(out, "  --== %s: applying flake ==--  \n", terminal)

@@ -47,7 +47,6 @@ func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 
 	f := exec.NewFakeRunner()
 	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
-	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil)
 	f.AddResponse("sudo", []string{
 		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
 		"--override-input", "dep-input", "git+file://" + depDir,
@@ -118,6 +117,9 @@ func TestApply_ShowNixCommandsOnly(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "sudo darwin-rebuild switch --flake "+filepath.Join(root, "leaf")) {
 		t.Errorf("dry-run output missing apply command:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "nix fmt") {
+		t.Errorf("dry-run output should not contain 'nix fmt' (fmt is now a separate command):\n%s", out.String())
 	}
 }
 

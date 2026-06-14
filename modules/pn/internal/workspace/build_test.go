@@ -37,7 +37,6 @@ url = "github:owner/dep"
 	leafDir := filepath.Join(root, "leaf")
 	depDir := filepath.Join(root, "dep")
 	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil)
 	f.AddResponse("darwin-rebuild", []string{
 		"build", "--flake", leafDir,
 		"--override-input", "dep-input", "git+file://" + depDir,
@@ -55,15 +54,15 @@ url = "github:owner/dep"
 		t.Errorf("build output should name the terminal project %q; got:\n%s", "leaf", out.String())
 	}
 	calls := f.Calls()
-	if len(calls) != 2 {
-		t.Fatalf("expected fmt + build = 2 calls, got %d", len(calls))
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 build call (no fmt), got %d", len(calls))
 	}
-	if calls[0].Opts.Dir != leafDir || calls[1].Opts.Dir != leafDir {
-		t.Errorf("commands must run in terminal dir; got %q,%q", calls[0].Opts.Dir, calls[1].Opts.Dir)
+	if calls[0].Opts.Dir != leafDir {
+		t.Errorf("build command must run in terminal dir; got %q", calls[0].Opts.Dir)
 	}
-	// Both commands stream their output live (Opts.Stdout set).
-	if calls[0].Opts.Stdout == nil || calls[1].Opts.Stdout == nil {
-		t.Errorf("build should stream subprocess output (Opts.Stdout set on fmt + build)")
+	// Build command streams its output live (Opts.Stdout set).
+	if calls[0].Opts.Stdout == nil {
+		t.Errorf("build should stream subprocess output (Opts.Stdout set on build)")
 	}
 }
 
@@ -89,9 +88,11 @@ url = "github:owner/leaf"
 	if len(f.Calls()) != 0 {
 		t.Errorf("dry-run must not run anything; got %d calls", len(f.Calls()))
 	}
-	if !strings.Contains(out.String(), "nix fmt") ||
-		!strings.Contains(out.String(), "darwin-rebuild build --flake "+filepath.Join(root, "leaf")) {
-		t.Errorf("dry-run output missing commands:\n%s", out.String())
+	if !strings.Contains(out.String(), "darwin-rebuild build --flake "+filepath.Join(root, "leaf")) {
+		t.Errorf("dry-run output missing build command:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "nix fmt") {
+		t.Errorf("dry-run output should not contain 'nix fmt' (fmt is now a separate command):\n%s", out.String())
 	}
 }
 

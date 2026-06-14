@@ -95,9 +95,8 @@ url = "github:owner/dep"
 	f.AddResponse("git", []string{"-C", dep, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
 	f.AddResponse("git", []string{"-C", leaf, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("def\n")}, nil)
 
-	// Apply sequence: daemon check, nix fmt.
+	// Apply sequence: daemon check only (nix fmt is now a separate pn workspace format command).
 	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
-	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil)
 
 	// needsRebuild: git status --porcelain + git rev-parse HEAD for each repo.
 	// Pre-write the applied-hash files with matching hashes so rebuild is skipped,
@@ -128,9 +127,10 @@ url = "github:owner/dep"
 	if err := w.Upgrade(context.Background(), io.Discard, UpgradeOptions{}); err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}
-	// Ensure both nix fmt and the apply command were invoked, indicating Apply ran after Update.
-	gotFmt := false
+	// Ensure the apply command was invoked (Apply ran after Update).
+	// nix fmt is no longer part of Apply; it is a separate pn workspace format command.
 	gotApply := false
+	gotFmt := false
 	for _, c := range f.Calls() {
 		if c.Name == "nix" && len(c.Args) > 0 && c.Args[0] == "fmt" {
 			gotFmt = true
@@ -139,7 +139,10 @@ url = "github:owner/dep"
 			gotApply = true
 		}
 	}
-	if !gotFmt || !gotApply {
-		t.Errorf("expected apply phase to run nix fmt + apply command; got calls=%+v", f.Calls())
+	if !gotApply {
+		t.Errorf("expected apply phase to run apply command; got calls=%+v", f.Calls())
+	}
+	if gotFmt {
+		t.Errorf("Apply should not invoke nix fmt (fmt is now a separate pn workspace format command); got calls=%+v", f.Calls())
 	}
 }

@@ -270,6 +270,27 @@ func assertS22RebaseResult(t *testing.T, wsRoot, scenarioName string) {
 	}
 }
 
+// --- S23 extra: format banners appear in topo order (producer before consumer) ---
+
+func assertS23FormatTopoOrder(t *testing.T, result scenarioResult) {
+	t.Helper()
+	stdout := string(result.Stdout)
+	producerIdx := strings.Index(stdout, "format producer")
+	consumerIdx := strings.Index(stdout, "format consumer")
+
+	if producerIdx < 0 {
+		t.Errorf("S23: stdout missing 'format producer' banner; got:\n%s", stdout)
+		return
+	}
+	if consumerIdx < 0 {
+		t.Errorf("S23: stdout missing 'format consumer' banner; got:\n%s", stdout)
+		return
+	}
+	if producerIdx > consumerIdx {
+		t.Errorf("S23: 'format producer' appeared after 'format consumer' (topo order violated);\nstdout:\n%s", stdout)
+	}
+}
+
 // --- S22b extra: autostash file survived the round-trip ---
 
 func assertS22AutostashRoundTrip(t *testing.T, wsRoot string) {

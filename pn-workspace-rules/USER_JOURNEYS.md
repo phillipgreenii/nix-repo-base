@@ -111,16 +111,19 @@ compiles cross-repo.
 **Commands:** `pn workspace build`
 
 **Outcomes:**
-- Success: every consumer's nix build succeeds with `--override-input`
+- Success: the terminal's nix build succeeds with `--override-input`
   args injected for workspace producers; exits 0.
 - Error: nix build failure; exits non-zero with build output on stderr.
+
+Note: `pn workspace build` does NOT run `nix fmt`. To format all repos
+before building, run `pn workspace format` first.
 
 **Smoke:** ✓ **S18 `happy-path-build`** — two-repo file:// bare-remote
 fixture; `build_command = "./build.sh"` (noop script that writes
 `built.txt`); asserts exit 0 and marker file in terminal (consumer) dir.
-The nix formatter step uses a pre-built noop-fmt derivation so no network
-is required. Note: `pn workspace build` builds the terminal only; the
-scenario reflects that (one marker, not two).
+No formatter step in the build (nix fmt coupling removed in tc-perh.9.27).
+Note: `pn workspace build` builds the terminal only; the scenario reflects
+that (one marker, not two).
 
 ---
 
@@ -131,12 +134,13 @@ scenario reflects that (one marker, not two).
 **Commands:** `pn workspace apply`
 
 **Outcomes:** same as `build` but with the configured `apply` command
-(typically `nixos-rebuild switch`).
+(typically `nixos-rebuild switch`). Does NOT run `nix fmt`; run
+`pn workspace format` first if you want to format.
 
 **Smoke:** ✓ **S19 `happy-path-apply`** — same shape as S18 with
 `apply_command = "./apply.sh"`; asserts exit 0 and `applied.txt` in
-terminal (consumer) dir. Nix daemon check and formatter step both
-succeed via the same noop-fmt pattern.
+terminal (consumer) dir. Nix daemon check runs; no formatter step
+(nix fmt coupling removed in tc-perh.9.27).
 
 ---
 
@@ -233,6 +237,29 @@ workspace reset to commit A while remote is at B; `pn workspace rebase`
 advances workspace to B; asserts HEAD matches remote and stash is empty.
 S22b additionally seeds a tracked-file modification before rebase and
 verifies the autostash round-trip (modification survives, stash empty).
+
+---
+
+### J28. Format the workspace
+
+**Trigger:** user wants to run `nix fmt` across all repos in the workspace
+(e.g. before building or committing).
+
+**Commands:** `pn workspace format`
+
+**Outcomes:**
+- Success: `nix fmt` runs in each workspace repo in topological+alphabetical
+  order; exits 0. Terminal-optional: warns to stderr and continues if no
+  terminal is configured.
+- Error: first per-repo `nix fmt` failure stops the chain; exits non-zero.
+
+Note: `pn workspace format` is the only `pn workspace` command that runs
+`nix fmt`. The `build` and `apply` commands do NOT format automatically.
+
+**Smoke:** ✓ **S23 `happy-path-format`** — two-repo file:// bare-remote
+fixture; both repos' flake.nix declares a noop formatter; `pn workspace
+format` runs `nix fmt` in each repo; asserts exit 0 and that stdout shows
+format banners for both repos in topo order (producer before consumer).
 
 ---
 
@@ -500,10 +527,10 @@ lifecycle phrasing).
 
 ## Coupling summary
 
-**Smoke scenarios (23) cover:** J1, J5–J7, J10–J11, J13–J27 (22 journeys
+**Smoke scenarios (30) cover:** J1, J5–J7, J10–J11, J13–J28 (23 journeys
 end-to-end); partial coverage of J8, J9 (via error/warning paths only).
 
-**Gaps (4 journeys without full smoke coverage):**
+**Gaps (journeys without full smoke coverage):**
 
 | journey | gap | smoke proposal | priority |
 |---|---|---|---|
@@ -516,13 +543,17 @@ end-to-end); partial coverage of J8, J9 (via error/warning paths only).
 | J17 binary-level corrupt-lock | smoke asserts via unit only | future S | medium |
 
 **Closed by tc-perh.9.26 (S18–S22b):**
-- J5 build happy-path → **S18** (build_command=./build.sh, noop-fmt drv)
-- J6 apply happy-path → **S19** (apply_command=./apply.sh, noop-fmt drv)
+- J5 build happy-path → **S18** (build_command=./build.sh)
+- J6 apply happy-path → **S19** (apply_command=./apply.sh)
 - J7 update happy-path → **S20** (update-locks.sh per-repo, topo order.log)
 - J10 push happy-path → **S21** (file:// bare remote, HEAD advancement)
 - J11 rebase happy-path → **S22 + S22b** (git fetch+pull --rebase --autostash)
 
+**Closed by tc-perh.9.27 (S23):**
+- J28 format happy-path → **S23** (nix fmt per-repo, topo order verified via stdout)
+- S18/S19 simplified: noop-fmt drv references removed (build/apply no longer run nix fmt)
+
 ---
 
-*Last updated: 2026-06-14 (tc-perh.9.26 adds S18–S22b: 6 new scenarios).
-22 of 26 documented journeys now have full smoke coverage.*
+*Last updated: 2026-06-14 (tc-perh.9.27 adds S23, simplifies S18/S19: 1 new scenario).
+23 of 28 documented journeys now have full smoke coverage.*

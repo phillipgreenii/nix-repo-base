@@ -1,0 +1,9 @@
+[workspace]
+name = "smoke-s23"
+terminal = "consumer"
+
+[repos.consumer]
+url = "file://PLACEHOLDER_CONSUMER"
+
+[repos.producer]
+url = "file://PLACEHOLDER_PRODUCER"

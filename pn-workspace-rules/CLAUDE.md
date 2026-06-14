@@ -11,10 +11,13 @@ Rules for AI agents working inside a `pn-workspace.toml` workspace. These apply 
 After completing any task in a project that participates in a `pn-workspace.toml`, you MUST run `pn workspace build` from the workspace root before declaring the task complete. Cross-project changes (a new flake output consumed by another workspace repo, for instance) only show up here.
 
 ```text
+pn workspace format   # optional: run nix fmt in each repo before building
 pn workspace build
 ```
 
 Per-project `nix flake check` is necessary but not sufficient. Workspace-level build catches consumer-side breakage.
+
+`pn workspace build` and `pn workspace apply` do NOT run `nix fmt` automatically. If you want to format all repos before building, run `pn workspace format` as a separate step first.
 
 If `pn workspace build` fails, the task is not complete. Fix the failure (in this or the consuming project) and re-run.
 
@@ -46,7 +49,7 @@ The `input-name` field on `[repos.*]` sections has been removed. Alias names are
 Every `pn workspace` subcommand accepts `--terminal <name>` to override `workspace.terminal` for that invocation. This is a persistent flag on the `workspace` group.
 
 - **Required-terminal commands** (build, apply, tree, update): Error with a standard message if no terminal is configured and no flag is given.
-- **Optional-terminal commands** (init, clone, lock, rebase, push, status, flake-check, pre-commit-check): Warn once and continue if no terminal is configured.
+- **Optional-terminal commands** (init, clone, lock, rebase, push, format, status, flake-check, pre-commit-check): Warn once and continue if no terminal is configured.
 
 ## In-Memory Lock Fallback
 
@@ -88,6 +91,7 @@ pn workspace flake-check          Run `nix flake check` across all repos
 pn workspace update               Refresh flake locks across all repos (terminal required)
 pn workspace upgrade              Update + apply (USER ONLY for the apply step)
 pn workspace rebase               Rebase each repo on its remote
+pn workspace format               Run `nix fmt` in each workspace repo
 pn workspace push                 Push each repo (USER-INITIATED ONLY)
 pn workspace status               Per-repo working-tree summary
 pn workspace tree                 Print the workspace dependency DAG (terminal required)

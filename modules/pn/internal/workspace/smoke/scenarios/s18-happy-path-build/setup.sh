@@ -3,14 +3,13 @@
 # Two bare-remote repos (producer, consumer). consumer is the terminal.
 # build_command = "./build.sh" writes built.txt in the consumer (terminal) dir.
 # Runs workspace init → clone → lock before the test command (workspace build).
+# Note: pn workspace build no longer invokes `nix fmt`; formatting is a
+# separate step via `pn workspace format`.
 set -euo pipefail
 
 WSROOT="$PWD"
 REMOTES_DIR="$WSROOT/remotes"
 mkdir -p "$REMOTES_DIR"
-
-# Pre-built noop formatter derivation (already in the nix store on this host).
-NOOP_FMT_DRV="/nix/store/nmlmz195lfa9p00v906g4r8mck669bnv-noop-fmt.drv"
 
 # ---- producer bare remote ----
 PRODUCER_BARE="$REMOTES_DIR/producer.git"
@@ -43,14 +42,9 @@ touch built.txt
 SH
 chmod +x "$CONSUMER_WORK/build.sh"
 
-# flake.nix: no external inputs; provides noop formatter so `nix fmt` passes.
-cat > "$CONSUMER_WORK/flake.nix" << FLAKE
-{
-  inputs = {};
-  outputs = { self, ... }:
-  let noopFmt = import ${NOOP_FMT_DRV};
-  in { formatter.x86_64-linux = noopFmt; };
-}
+# flake.nix: no external inputs; no formatter needed (build no longer runs nix fmt).
+cat > "$CONSUMER_WORK/flake.nix" << 'FLAKE'
+{ inputs = {}; outputs = { self, ... }: {}; }
 FLAKE
 
 git -C "$CONSUMER_WORK" add flake.nix build.sh
