@@ -67,21 +67,33 @@ func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) e
 		if !isGitRepo(repoDir) {
 			continue
 		}
-		// Discover URL from git remote origin.
-		res, err := w.runner.Run(ctx, "git",
-			[]string{"-C", repoDir, "remote", "get-url", "origin"},
-			exec.RunOptions{})
-		if err != nil {
-			// Remote not configured; add entry with empty URL to be filled later.
+		// Discover every git remote the on-disk repo declares, not just origin.
+		// Repos with multiple remotes (e.g. a github origin and a bitbucket
+		// mirror) get the multi-remote form so all remotes survive a fresh
+		// `pn workspace clone` (tc-bufhe).
+		remotes, _ := readGitRemotes(ctx, w.runner, repoDir)
+		switch {
+		case len(remotes) == 0:
 			w.config.Repos[name] = RepoConfig{Branch: "main"}
-			atomic.AddInt32(&changes, 1)
-			fmt.Fprintf(out, "added repo %s (no origin remote; set url manually)\n", name)
-			continue
+			fmt.Fprintf(out, "added repo %s (no remotes; set url manually)\n", name)
+		case len(remotes) == 1 && remotes["origin"] != "":
+			url := httpsToFlakeURL(remotes["origin"])
+			w.config.Repos[name] = RepoConfig{URL: url, Branch: "main"}
+			fmt.Fprintf(out, "added repo %s (url: %s)\n", name, url)
+		default:
+			rnames := make([]string, 0, len(remotes))
+			for n := range remotes {
+				rnames = append(rnames, n)
+			}
+			sort.Strings(rnames)
+			rs := make([]Remote, 0, len(rnames))
+			for _, n := range rnames {
+				rs = append(rs, Remote{Name: n, URL: remotes[n]})
+			}
+			w.config.Repos[name] = RepoConfig{Remotes: rs, Branch: "main"}
+			fmt.Fprintf(out, "added repo %s (remotes: %s)\n", name, strings.Join(rnames, ", "))
 		}
-		url := httpsToFlakeURL(strings.TrimSpace(string(res.Stdout)))
-		w.config.Repos[name] = RepoConfig{URL: url, Branch: "main"}
 		atomic.AddInt32(&changes, 1)
-		fmt.Fprintf(out, "added repo %s (url: %s)\n", name, url)
 	}
 
 	// 2. Resolve flake_path for every repo; persist non-defaults to config.

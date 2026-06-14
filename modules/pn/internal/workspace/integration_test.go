@@ -160,11 +160,14 @@ func TestIntegration_FromDiscovery_InitLockRebase(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "")
 
 	f := exec.NewFakeRunner()
-	// Init will call "git -C <dir> remote get-url origin" for each new repo.
+	// Init will call "git -C <dir> remote -v" for each new repo.
 	for _, name := range []string{"aaa", "bbb", "ccc"} {
+		url := "https://github.com/o/" + name + ".git"
 		f.AddResponse("git",
-			[]string{"-C", filepath.Join(root, name), "remote", "get-url", "origin"},
-			exec.Result{Stdout: []byte("https://github.com/o/" + name + ".git\n")}, nil)
+			[]string{"-C", filepath.Join(root, name), "remote", "-v"},
+			exec.Result{Stdout: []byte(
+				"origin\t" + url + " (fetch)\norigin\t" + url + " (push)\n",
+			)}, nil)
 	}
 
 	ws, err := Open(root, f)

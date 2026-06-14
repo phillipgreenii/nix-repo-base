@@ -34,9 +34,12 @@ func TestInit_CreatesConfigFromEmptyDir(t *testing.T) {
 
 	f := exec.NewFakeRunner()
 	for _, name := range []string{"alpha", "beta", "gamma"} {
+		url := "https://github.com/o/" + name + ".git"
 		f.AddResponse("git",
-			[]string{"-C", filepath.Join(root, name), "remote", "get-url", "origin"},
-			exec.Result{Stdout: []byte("https://github.com/o/" + name + ".git\n")}, nil)
+			[]string{"-C", filepath.Join(root, name), "remote", "-v"},
+			exec.Result{Stdout: []byte(
+				"origin\t" + url + " (fetch)\norigin\t" + url + " (push)\n",
+			)}, nil)
 	}
 
 	w, err := Open(root, f)
@@ -79,10 +82,13 @@ url = "github:o/existing"
 `)
 
 	f := exec.NewFakeRunner()
-	// Only the new repo needs a remote get-url call.
+	// Only the new repo needs a remote -v call.
+	const newURL = "https://github.com/o/new-repo.git"
 	f.AddResponse("git",
-		[]string{"-C", filepath.Join(root, "new-repo"), "remote", "get-url", "origin"},
-		exec.Result{Stdout: []byte("https://github.com/o/new-repo.git\n")}, nil)
+		[]string{"-C", filepath.Join(root, "new-repo"), "remote", "-v"},
+		exec.Result{Stdout: []byte(
+			"origin\t" + newURL + " (fetch)\norigin\t" + newURL + " (push)\n",
+		)}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -102,6 +108,90 @@ url = "github:o/existing"
 	}
 	if !strings.Contains(string(tomlData), "existing") {
 		t.Errorf("TOML should still mention existing; got:\n%s", string(tomlData))
+	}
+}
+
+// TestInit_DiscoversMultiRemote: a fresh repo on disk has both an origin
+// (github) and a bitbucket remote. Init must record both in the multi-remote
+// `[[repos.NAME.remotes]]` form so a subsequent `pn workspace clone` re-creates
+// all of them (regression for tc-bufhe — homepage's bitbucket mirror was lost
+// because Init only read `git remote get-url origin`).
+func TestInit_DiscoversMultiRemote(t *testing.T) {
+	root := t.TempDir()
+	mkGitRepo(t, root, "homepage")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "")
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git",
+		[]string{"-C", filepath.Join(root, "homepage"), "remote", "-v"},
+		exec.Result{Stdout: []byte(
+			"bitbucket\tgit@bitbucket.org:phillipgreenii/homepage.git (fetch)\n" +
+				"bitbucket\tgit@bitbucket.org:phillipgreenii/homepage.git (push)\n" +
+				"origin\tssh://git@github.com/phillipgreenii/homepage.git (fetch)\n" +
+				"origin\tssh://git@github.com/phillipgreenii/homepage.git (push)\n",
+		)}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out bytes.Buffer
+	if err := w.Init(context.Background(), &out, InitOptions{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	tomlData, err := os.ReadFile(filepath.Join(root, ConfigFileName))
+	if err != nil {
+		t.Fatalf("read TOML: %v", err)
+	}
+	toml := string(tomlData)
+	// Must record both remotes. go-toml v2 serializes strings with single quotes.
+	for _, want := range []string{
+		"[[repos.homepage.remotes]]",
+		"name = 'bitbucket'",
+		"url = 'git@bitbucket.org:phillipgreenii/homepage.git'",
+		"name = 'origin'",
+		"url = 'ssh://git@github.com/phillipgreenii/homepage.git'",
+	} {
+		if !strings.Contains(toml, want) {
+			t.Errorf("TOML should contain %q; got:\n%s", want, toml)
+		}
+	}
+	if !strings.Contains(out.String(), "remotes: bitbucket, origin") {
+		t.Errorf("Init summary should list discovered remotes; got:\n%s", out.String())
+	}
+}
+
+// TestInit_SingleNonOriginRemoteUsesMultiRemoteForm: when the sole remote is
+// not named "origin", Init records it as `[[repos.NAME.remotes]]` so the name
+// survives a fresh clone (single-url form implies origin).
+func TestInit_SingleNonOriginRemoteUsesMultiRemoteForm(t *testing.T) {
+	root := t.TempDir()
+	mkGitRepo(t, root, "foo")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "")
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git",
+		[]string{"-C", filepath.Join(root, "foo"), "remote", "-v"},
+		exec.Result{Stdout: []byte(
+			"upstream\thttps://github.com/o/foo.git (fetch)\nupstream\thttps://github.com/o/foo.git (push)\n",
+		)}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Init(context.Background(), &bytes.Buffer{}, InitOptions{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	tomlData, err := os.ReadFile(filepath.Join(root, ConfigFileName))
+	if err != nil {
+		t.Fatalf("read TOML: %v", err)
+	}
+	toml := string(tomlData)
+	if !strings.Contains(toml, "name = 'upstream'") {
+		t.Errorf("TOML should preserve the non-origin remote name; got:\n%s", toml)
 	}
 }
 
