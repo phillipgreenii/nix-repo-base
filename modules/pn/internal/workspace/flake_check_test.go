@@ -144,6 +144,60 @@ url = "github:o/overlay"
 	}
 }
 
+// TestFlakeCheck_NoWarningWhenFlagSet asserts that when opts.Terminal is set
+// and config.Workspace.Terminal is empty, no warning is emitted to errOut.
+func TestFlakeCheck_NoWarningWhenFlagSet(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"flake", "check"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.FlakeCheck(context.Background(), &out, &errOut, FlakeCheckOptions{Terminal: "foo"}); err != nil {
+		t.Fatalf("FlakeCheck: %v", err)
+	}
+	if strings.Contains(errOut.String(), terminalWarningMessage) {
+		t.Errorf("spurious warning emitted when --terminal flag is set; errOut=%q", errOut.String())
+	}
+}
+
+// TestFlakeCheck_NoWarningWhenConfigTerminalSet asserts that when config has a
+// terminal set (and no flag), no warning is emitted.
+func TestFlakeCheck_NoWarningWhenConfigTerminalSet(t *testing.T) {
+	root := t.TempDir()
+	mkRepoDir(t, root, "term")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "term"
+
+[repos.term]
+url = "github:owner/term"
+`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"flake", "check"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.FlakeCheck(context.Background(), &out, &errOut, FlakeCheckOptions{}); err != nil {
+		t.Fatalf("FlakeCheck: %v", err)
+	}
+	if strings.Contains(errOut.String(), terminalWarningMessage) {
+		t.Errorf("warning emitted even though config terminal is set; errOut=%q", errOut.String())
+	}
+}
+
 func TestFlakeCheck_ContinuesPastFailure(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `

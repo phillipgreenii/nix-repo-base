@@ -22,7 +22,7 @@ type PreCommitCheckOptions struct {
 // PreCommitCheck is a terminal-optional command: if no terminal is configured
 // it emits a warning to errOut and continues.
 func (ws *Workspace) PreCommitCheck(ctx context.Context, out io.Writer, errOut io.Writer, opts PreCommitCheckOptions) error {
-	if ws.config.Workspace.Terminal == "" {
+	if opts.Terminal == "" && ws.config.Workspace.Terminal == "" {
 		fmt.Fprintln(errOut, terminalWarningMessage)
 	}
 	names := ws.topoAlpha(ctx)

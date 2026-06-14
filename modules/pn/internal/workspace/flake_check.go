@@ -29,7 +29,7 @@ type FlakeCheckOptions struct {
 // FlakeCheck is a terminal-optional command: if no terminal is configured it
 // emits a warning to errOut and continues.
 func (ws *Workspace) FlakeCheck(ctx context.Context, out io.Writer, errOut io.Writer, opts FlakeCheckOptions) error {
-	if ws.config.Workspace.Terminal == "" {
+	if opts.Terminal == "" && ws.config.Workspace.Terminal == "" {
 		fmt.Fprintln(errOut, terminalWarningMessage)
 	}
 	names := ws.topoAlpha(ctx)
