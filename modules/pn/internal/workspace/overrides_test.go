@@ -33,23 +33,31 @@ func openWS(t *testing.T, root, toml string) *Workspace {
 func TestOverrideInputArgs_OverridePathSwap(t *testing.T) {
 	root := t.TempDir()
 	alt := t.TempDir() // stand-in worktree
+	mkRepoDir(t, root, "app")
 	mkRepoDir(t, root, "dep")
 	w := openWS(t, root, `
+[repos.app]
+url = "github:owner/app"
+
 [repos.dep]
 url = "github:owner/dep"
 `)
 	// Need a lock with an edge so overrideInputArgsFor emits an override.
+	// Use a valid non-self edge: "app" (consumer) depends on "dep" (target).
 	writeFile(t, filepath.Join(root, LockFileName), `{
-  "order": ["dep"],
-  "repos": {"dep": {"remote_url": "github:owner/dep"}},
-  "edges": [{"consumer": "dep", "alias": "dep", "target": "dep"}]
+  "order": ["dep", "app"],
+  "repos": {
+    "app": {"flake_path": "flake.nix", "remote_url": "github:owner/app"},
+    "dep": {"flake_path": "flake.nix", "remote_url": "github:owner/dep"}
+  },
+  "edges": [{"consumer": "app", "alias": "dep", "target": "dep"}]
 }`)
 	// Reload to pick up the lock.
 	w2, err := Open(root, exec.NewFakeRunner())
 	if err != nil {
 		t.Fatalf("Open (with lock): %v", err)
 	}
-	got := w2.overrideInputArgsFor("dep", overrideOpts{OverridePaths: map[string]string{"dep": alt}})
+	got := w2.overrideInputArgsFor("app", overrideOpts{OverridePaths: map[string]string{"dep": alt}})
 	_ = got
 	_ = w
 	// Just verify it doesn't panic and runs cleanly. The lock-based test in

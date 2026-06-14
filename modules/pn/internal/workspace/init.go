@@ -247,9 +247,19 @@ func (w *Workspace) RefreshLock(ctx context.Context) error {
 		return err
 	}
 
+	// Populate per-repo lock entries from config (URL + resolved flake path).
+	repos := make(map[string]LockRepoEntry, len(w.config.Repos))
+	for key, rc := range w.config.Repos {
+		fp := w.resolveFlakePath(key)
+		repos[key] = LockRepoEntry{
+			FlakePath: fp,
+			RemoteURL: displayURL(rc),
+		}
+	}
+
 	lock := &Lock{
 		Order: order,
-		Repos: make(map[string]LockRepoEntry),
+		Repos: repos,
 		Edges: edges,
 	}
 	if err := WriteLock(filepath.Join(w.root, LockFileName), lock); err != nil {

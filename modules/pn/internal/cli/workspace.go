@@ -56,7 +56,10 @@ Environment variables:
 }
 
 // openWorkspace opens the workspace by walking up from cwd (or PN_WORKSPACE_ROOT).
-func openWorkspace() (*workspace.Workspace, error) { return openWorkspaceRoot("") }
+// It is a variable so that tests can replace it with a stub that returns a
+// controlled *workspace.Workspace without touching the file system or spawning
+// real subprocesses. Production code must never reassign it.
+var openWorkspace = func() (*workspace.Workspace, error) { return openWorkspaceRoot("") }
 
 // openWorkspaceRoot opens the workspace rooted via resolveWorkspaceRoot(rootFlag).
 // It also exports the resolved root as PN_WORKSPACE_ROOT and WORKSPACE_ROOT so

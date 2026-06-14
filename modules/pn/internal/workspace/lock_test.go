@@ -278,6 +278,182 @@ func TestParseLock_ValidLock(t *testing.T) {
 	}
 }
 
+// TestReadLock_InvalidLock_SelfEdge verifies that ReadLock returns an error when
+// the on-disk lock violates invariant (a): no self-edge.
+func TestReadLock_InvalidLock_SelfEdge(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, LockFileName)
+	content := `{
+  "order": ["a"],
+  "repos": {"a": {"flake_path": "flake.nix", "remote_url": "github:o/a"}},
+  "edges": [{"consumer": "a", "alias": "a-inp", "target": "a"}]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	_, err := ReadLock(path)
+	if err == nil {
+		t.Fatal("expected error for disk-loaded lock with self-edge, got nil")
+	}
+	if !strings.Contains(err.Error(), "self-edge") {
+		t.Errorf("expected 'self-edge' in error, got: %v", err)
+	}
+}
+
+// TestReadLock_InvalidLock_DuplicateAlias verifies that ReadLock returns an
+// error when the on-disk lock violates invariant (b): per-consumer alias
+// uniqueness.
+func TestReadLock_InvalidLock_DuplicateAlias(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, LockFileName)
+	content := `{
+  "order": ["consumer", "target1", "target2"],
+  "repos": {
+    "consumer": {"flake_path": "flake.nix", "remote_url": "github:o/consumer"},
+    "target1":  {"flake_path": "flake.nix", "remote_url": "github:o/target1"},
+    "target2":  {"flake_path": "flake.nix", "remote_url": "github:o/target2"}
+  },
+  "edges": [
+    {"consumer": "consumer", "alias": "shared", "target": "target1"},
+    {"consumer": "consumer", "alias": "shared", "target": "target2"}
+  ]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	_, err := ReadLock(path)
+	if err == nil {
+		t.Fatal("expected error for disk-loaded lock with duplicate alias, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("expected 'duplicate' in error, got: %v", err)
+	}
+}
+
+// TestReadLock_InvalidLock_ConsumerMissingFromRepos verifies that ReadLock
+// returns an error when the on-disk lock violates invariant (c): edge consumer
+// must exist in repos.
+func TestReadLock_InvalidLock_ConsumerMissingFromRepos(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, LockFileName)
+	content := `{
+  "order": ["target"],
+  "repos": {"target": {"flake_path": "flake.nix", "remote_url": "github:o/target"}},
+  "edges": [{"consumer": "ghost-consumer", "alias": "inp", "target": "target"}]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	_, err := ReadLock(path)
+	if err == nil {
+		t.Fatal("expected error for disk-loaded lock with missing consumer, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghost-consumer") {
+		t.Errorf("expected consumer name in error, got: %v", err)
+	}
+}
+
+// TestReadLock_InvalidLock_TargetMissingFromRepos verifies that ReadLock
+// returns an error when the on-disk lock violates invariant (c): edge target
+// must exist in repos.
+func TestReadLock_InvalidLock_TargetMissingFromRepos(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, LockFileName)
+	content := `{
+  "order": ["consumer"],
+  "repos": {"consumer": {"flake_path": "flake.nix", "remote_url": "github:o/consumer"}},
+  "edges": [{"consumer": "consumer", "alias": "inp", "target": "ghost-target"}]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	_, err := ReadLock(path)
+	if err == nil {
+		t.Fatal("expected error for disk-loaded lock with missing target, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghost-target") {
+		t.Errorf("expected target name in error, got: %v", err)
+	}
+}
+
+// TestReadLock_InvalidLock_TargetEmptyFlakePath verifies that ReadLock returns
+// an error when the on-disk lock violates invariant (d): edge target must have
+// a non-empty flake_path.
+func TestReadLock_InvalidLock_TargetEmptyFlakePath(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, LockFileName)
+	content := `{
+  "order": ["consumer", "target"],
+  "repos": {
+    "consumer": {"flake_path": "flake.nix", "remote_url": "github:o/consumer"},
+    "target":   {"remote_url": "github:o/target"}
+  },
+  "edges": [{"consumer": "consumer", "alias": "inp", "target": "target"}]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	_, err := ReadLock(path)
+	if err == nil {
+		t.Fatal("expected error for disk-loaded lock with empty flake_path, got nil")
+	}
+	if !strings.Contains(err.Error(), "flake_path") {
+		t.Errorf("expected 'flake_path' in error, got: %v", err)
+	}
+}
+
+// TestReadLock_InvalidLock_TerminalNotInRepos verifies that ReadLock returns an
+// error when the on-disk lock violates invariant (e): terminal must exist in
+// repos.
+func TestReadLock_InvalidLock_TerminalNotInRepos(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, LockFileName)
+	content := `{
+  "terminal": "ghost-terminal",
+  "order": ["a"],
+  "repos": {"a": {"flake_path": "flake.nix", "remote_url": "github:o/a"}},
+  "edges": []
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	_, err := ReadLock(path)
+	if err == nil {
+		t.Fatal("expected error for disk-loaded lock with terminal not in repos, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghost-terminal") {
+		t.Errorf("expected terminal name in error, got: %v", err)
+	}
+}
+
+// TestReadLock_ValidLock_PassesInvariantCheck verifies that a valid on-disk
+// lock loads without error after ParseLock validation is applied.
+func TestReadLock_ValidLock_PassesInvariantCheck(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, LockFileName)
+	content := `{
+  "terminal": "homelab",
+  "order": ["nix-repo-base", "homelab"],
+  "repos": {
+    "homelab":       {"flake_path": "nix/flake.nix", "remote_url": "ssh://git@host/homelab.git"},
+    "nix-repo-base": {"flake_path": "flake.nix",     "remote_url": "github:o/nix-repo-base"}
+  },
+  "edges": [
+    {"consumer": "homelab", "alias": "nrb", "target": "nix-repo-base"}
+  ]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	lock, err := ReadLock(path)
+	if err != nil {
+		t.Fatalf("ReadLock should succeed for valid lock, got: %v", err)
+	}
+	if lock.Terminal != "homelab" {
+		t.Errorf("terminal: got %q, want %q", lock.Terminal, "homelab")
+	}
+}
+
 // TestWriteLock_EdgesSorted verifies that WriteLock sorts edges by
 // (consumer, alias, target) regardless of input order.
 func TestWriteLock_EdgesSorted(t *testing.T) {

@@ -140,6 +140,9 @@ func ReadLock(path string) (*Lock, error) {
 	if lock.Order == nil {
 		lock.Order = []string{}
 	}
+	if err := ParseLock(lock); err != nil {
+		return nil, fmt.Errorf("lock invariant check failed for %s: %w", path, err)
+	}
 	return lock, nil
 }
 

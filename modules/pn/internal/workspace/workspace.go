@@ -41,7 +41,7 @@ func Open(dir string, runner exec.Runner) (*Workspace, error) {
 	}
 	lock, err := ReadLock(filepath.Join(dir, LockFileName))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w (run `pn workspace lock` to regenerate)", err)
 	}
 	revLock, err := ReadRevLock(filepath.Join(dir, RevLockFileName))
 	if err != nil {
