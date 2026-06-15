@@ -12,7 +12,7 @@ cd "$WSROOT/shared-lib"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << 'FLAKE'
+cat >flake.nix <<'FLAKE'
 {
   description = "shared-lib";
   inputs = {};
@@ -28,7 +28,7 @@ cd "$WSROOT/sink-a"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << FLAKE
+cat >flake.nix <<FLAKE
 {
   description = "sink-a";
   inputs = {
@@ -47,7 +47,7 @@ cd "$WSROOT/sink-b"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << FLAKE
+cat >flake.nix <<FLAKE
 {
   description = "sink-b";
   inputs = {
@@ -62,7 +62,7 @@ git commit -m "init"
 
 # Write pn-workspace.toml (no terminal)
 cd "$WSROOT"
-cat > pn-workspace.toml << TOML
+cat >pn-workspace.toml <<TOML
 [workspace]
 name = "smoke-s9"
 

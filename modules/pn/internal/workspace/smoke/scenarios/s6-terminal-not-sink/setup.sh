@@ -13,7 +13,7 @@ cd "$WSROOT/alpha"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << 'FLAKE'
+cat >flake.nix <<'FLAKE'
 {
   description = "alpha";
   inputs = {};
@@ -30,7 +30,7 @@ cd "$WSROOT/beta"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << FLAKE
+cat >flake.nix <<FLAKE
 {
   description = "beta";
   inputs = {
@@ -45,7 +45,7 @@ git commit -m "init"
 
 # Write pn-workspace.toml (terminal = alpha, but beta consumes alpha)
 cd "$WSROOT"
-cat > pn-workspace.toml << TOML
+cat >pn-workspace.toml <<TOML
 [workspace]
 name = "smoke-s6"
 terminal = "alpha"
@@ -58,7 +58,7 @@ url = "file://${WSROOT}/beta"
 TOML
 
 # Write seed lock.json (to verify it's preserved after failed lock)
-cat > pn-workspace.lock.json << 'LOCKJSON'
+cat >pn-workspace.lock.json <<'LOCKJSON'
 {
   "terminal": "alpha",
   "order": ["alpha", "beta"],

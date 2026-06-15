@@ -11,7 +11,7 @@ cd "$WSROOT/wrong-terminal"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << 'FLAKE'
+cat >flake.nix <<'FLAKE'
 {
   description = "wrong-terminal";
   inputs = {};
@@ -26,7 +26,7 @@ cd "$WSROOT/real-terminal"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << 'FLAKE'
+cat >flake.nix <<'FLAKE'
 {
   description = "real-terminal";
   inputs = {};
@@ -37,7 +37,7 @@ git add flake.nix
 git commit -m "init"
 
 cd "$WSROOT"
-cat > pn-workspace.toml << TOML
+cat >pn-workspace.toml <<TOML
 [workspace]
 name = "smoke-s12"
 terminal = "wrong-terminal"

@@ -18,6 +18,7 @@ scope here (different domains; covered separately if at all).
 listing the repos by URL, has no repos on disk yet.
 
 **Commands:**
+
 ```
 pn workspace init    # reconciles config (no-op when toml is hand-written and complete)
 pn workspace clone   # fetches every listed repo into the workspace dir
@@ -25,6 +26,7 @@ pn workspace lock    # discovers edges, resolves terminal, writes pn-workspace.l
 ```
 
 **Outcomes:**
+
 - Success: `pn-workspace.lock.json` present with exact `terminal`, `order`,
   `repos`, `edges`; every repo cloned; second `lock` is byte-identical.
 - Error: any `ValidationError` from `lock` exits non-zero, preserves any
@@ -41,19 +43,21 @@ plus byte-identical re-run).
 pn to take over without re-cloning.
 
 **Commands:**
+
 ```
 pn workspace init    # walks the dir, populates pn-workspace.toml from discovered .git URLs
 pn workspace lock    # `clone` is unnecessary; the repos are already present
 ```
 
 **Outcomes:**
+
 - Success: TOML reflects the on-disk state; `lock` produces a valid
   lockfile.
 - Error: `init` is documented as "never errors on indeterminacy" — it
   writes what it can and leaves gaps for the user to fill.
 
 **Smoke:** **GAP**. S1 starts from an empty dir; no scenario currently
-covers "repos already on disk, no toml yet". *Recommend:* add S18.
+covers "repos already on disk, no toml yet". _Recommend:_ add S18.
 
 ---
 
@@ -62,6 +66,7 @@ covers "repos already on disk, no toml yet". *Recommend:* add S18.
 **Trigger:** user wants to bring a new repo into a working workspace.
 
 **Commands:**
+
 ```
 # edit pn-workspace.toml: add [[repos]] entry
 pn workspace clone   # fetches the new repo
@@ -69,13 +74,14 @@ pn workspace lock    # re-derives edges; updates pn-workspace.lock.json
 ```
 
 **Outcomes:**
+
 - Success: new repo is cloned, lock includes it in `repos` and any
   flake-input edges it introduces.
 - Error: clone failure (network, auth, bad URL), validation error if the
   new repo's URL collides with an existing one.
 
 **Smoke:** **GAP**. S7 covers idempotent re-run of an unchanged workspace;
-no scenario adds a repo mid-flight. *Recommend:* add S19.
+no scenario adds a repo mid-flight. _Recommend:_ add S19.
 
 ---
 
@@ -84,6 +90,7 @@ no scenario adds a repo mid-flight. *Recommend:* add S19.
 **Trigger:** repo is no longer needed.
 
 **Commands:**
+
 ```
 # edit pn-workspace.toml: delete the [[repos]] entry
 # manually delete the repo directory (pn never deletes for you)
@@ -91,12 +98,13 @@ pn workspace lock    # re-derives without the dropped repo
 ```
 
 **Outcomes:**
+
 - Success: lock no longer references the dropped repo; downstream commands
   no longer iterate over it.
 - Error: if the dropped repo was the configured terminal, `lock` errors
   with the terminal field unresolvable.
 
-**Smoke:** **GAP**. No scenario currently exercises removal. *Recommend:*
+**Smoke:** **GAP**. No scenario currently exercises removal. _Recommend:_
 add S20.
 
 ---
@@ -111,6 +119,7 @@ compiles cross-repo.
 **Commands:** `pn workspace build`
 
 **Outcomes:**
+
 - Success: the terminal's nix build succeeds with `--override-input`
   args injected for workspace producers; exits 0.
 - Error: nix build failure; exits non-zero with build output on stderr.
@@ -149,6 +158,7 @@ terminal (consumer) dir. Nix daemon check runs; no formatter step
 **Trigger:** weekly / periodic refresh of nix flake inputs.
 
 **Commands:**
+
 ```
 pn workspace update      # nix flake update per-repo in topo order
 pn workspace apply       # rebuild on the updated locks
@@ -157,6 +167,7 @@ pn workspace upgrade     # update + apply in one shot
 ```
 
 **Outcomes:**
+
 - Success: every flake.lock advanced; consumer build succeeds.
 - Error: a flake input no longer resolves; a build fails on the new lock.
 
@@ -174,11 +185,13 @@ the dependency edge.
 **Trigger:** "what's going on across these repos right now?"
 
 **Commands:**
+
 - `pn workspace status` — git status per repo, topo order
 - `pn workspace tree` — visual DAG rendering
 - `pn workspace discover` — list of repos (lighter than `tree`)
 
 **Outcomes:**
+
 - Success: prints to stdout; exit 0.
 - Warning (status): no-terminal warning to stderr (does not block).
 - Error (tree): required-cmd error if no terminal.
@@ -212,6 +225,7 @@ their respective remotes.
 **Commands:** `pn workspace push`
 
 **Outcomes:**
+
 - Success: each repo pushed to its tracked remote in topo order.
 - Error: a single repo's push failure stops the chain.
 
@@ -248,6 +262,7 @@ verifies the autostash round-trip (modification survives, stash empty).
 **Commands:** `pn workspace format`
 
 **Outcomes:**
+
 - Success: `nix fmt` runs in each workspace repo in topological+alphabetical
   order; exits 0. Terminal-optional: warns to stderr and continues if no
   terminal is configured.
@@ -273,7 +288,7 @@ with the workspace's `--override-input` args applied.
 **Outcomes:** passthrough; pn injects the override args, then exec's nix.
 
 **Smoke:** **GAP**. No scenario; the passthrough is a documented escape
-hatch. *Recommend:* add S21 asserting the injected `--override-input` args
+hatch. _Recommend:_ add S21 asserting the injected `--override-input` args
 are correct given a known fixture.
 
 ---
@@ -288,6 +303,7 @@ what `workspace.terminal` is set to.
 **Commands:** `pn workspace <any-cmd> --terminal <repo>`
 
 **Outcomes:**
+
 - Success: the flag value beats config; flag-resolved terminal is used.
 - Persists no state — TOML is not rewritten.
 
@@ -304,6 +320,7 @@ ambiguous.
 `workspace.terminal` in TOML.
 
 **Outcomes:**
+
 - Required commands (`build`, `apply`, `tree`, `update`, `upgrade`):
   error to stderr, exit non-zero. Error includes the candidate list when
   auto-detect produced multiple sinks.
@@ -358,11 +375,12 @@ empty `flake_path`, terminal not in repos).
 `pn workspace lock` to regenerate; exit non-zero.
 
 **Smoke:** **PARTIAL**. Unit tests (`TestOpen_CorruptLockPropagatesError`
-+ 6 invariant-specific tests in `lock_test.go`) cover all 5 invariants at
-the API level. **No smoke scenario seeds a corrupt `.lock.json` and
-runs the binary against it.** *Recommend:* add S22 for at least one
-invariant (e.g. self-edge) at the binary boundary, to prove the error
-surfaces to stderr cleanly.
+
+- 6 invariant-specific tests in `lock_test.go`) cover all 5 invariants at
+  the API level. **No smoke scenario seeds a corrupt `.lock.json` and
+  runs the binary against it.** _Recommend:_ add S22 for at least one
+  invariant (e.g. self-edge) at the binary boundary, to prove the error
+  surfaces to stderr cleanly.
 
 ---
 
@@ -489,7 +507,7 @@ correct; it does NOT prove every iterator actually calls it. A
 regression where one command bypasses `topoAlpha()` would not be caught
 by S2. The in-process integration tests (`integration_test.go`) cover
 this via `FakeRunner` order assertions — but that lives in unit tests,
-not smoke. *Recommend:* add per-command iterator-order assertions
+not smoke. _Recommend:_ add per-command iterator-order assertions
 either to S2 sub-scenarios or to integration tests if not already there.
 
 ---
@@ -532,17 +550,18 @@ end-to-end); partial coverage of J8, J9 (via error/warning paths only).
 
 **Gaps (journeys without full smoke coverage):**
 
-| journey | gap | smoke proposal | priority |
-|---|---|---|---|
-| J2 bootstrap from on-disk repos | smoke starts from empty dir | future S | low |
-| J3 add a repo | mid-flight workspace change | future S | medium |
-| J4 remove a repo | mid-flight workspace change | future S | low |
-| J8 happy-path discover/tree/status | rendered-output assertions | extend S15/S16 | low |
-| J9 happy-path flake-check/pre-commit-check | same | extend S15/S16 | low |
-| J12 nix passthrough | not covered | future S | medium |
-| J17 binary-level corrupt-lock | smoke asserts via unit only | future S | medium |
+| journey                                    | gap                         | smoke proposal | priority |
+| ------------------------------------------ | --------------------------- | -------------- | -------- |
+| J2 bootstrap from on-disk repos            | smoke starts from empty dir | future S       | low      |
+| J3 add a repo                              | mid-flight workspace change | future S       | medium   |
+| J4 remove a repo                           | mid-flight workspace change | future S       | low      |
+| J8 happy-path discover/tree/status         | rendered-output assertions  | extend S15/S16 | low      |
+| J9 happy-path flake-check/pre-commit-check | same                        | extend S15/S16 | low      |
+| J12 nix passthrough                        | not covered                 | future S       | medium   |
+| J17 binary-level corrupt-lock              | smoke asserts via unit only | future S       | medium   |
 
 **Closed by tc-perh.9.26 (S18–S22b):**
+
 - J5 build happy-path → **S18** (build_command=./build.sh)
 - J6 apply happy-path → **S19** (apply_command=./apply.sh)
 - J7 update happy-path → **S20** (update-locks.sh per-repo, topo order.log)
@@ -550,10 +569,11 @@ end-to-end); partial coverage of J8, J9 (via error/warning paths only).
 - J11 rebase happy-path → **S22 + S22b** (git fetch+pull --rebase --autostash)
 
 **Closed by tc-perh.9.27 (S23):**
+
 - J28 format happy-path → **S23** (nix fmt per-repo, topo order verified via stdout)
 - S18/S19 simplified: noop-fmt drv references removed (build/apply no longer run nix fmt)
 
 ---
 
-*Last updated: 2026-06-14 (tc-perh.9.27 adds S23, simplifies S18/S19: 1 new scenario).
-23 of 28 documented journeys now have full smoke coverage.*
+_Last updated: 2026-06-14 (tc-perh.9.27 adds S23, simplifies S18/S19: 1 new scenario).
+23 of 28 documented journeys now have full smoke coverage._

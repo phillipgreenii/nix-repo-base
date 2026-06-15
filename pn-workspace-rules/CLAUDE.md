@@ -57,15 +57,15 @@ Commands that need a topological order (rebase, push, status, flake-check, pre-c
 
 ## Builds and Validation
 
-| Goal                                           | Use                                            | Don't use                                                                |
-| ---------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------ |
-| Build the system (current host)                | `pn workspace build`                           | `darwin-rebuild build`, `nix build .#darwinConfigurations.<host>.system` |
-| Activate the system                            | the **user** runs `pn workspace apply`         | NEVER invoke from agent context                                          |
-| Run `nix flake check` on a project             | `nix flake check` inside a project dir         | (no special wrapper needed)                                              |
-| Run `nix flake check` across every project     | `pn workspace flake-check`                     | per-repo `nix flake check`                                               |
-| Build a single package                         | `nix build .#<pkg>` inside the project         | (no workspace-level wrapper)                                             |
-| Pre-commit checks across all repos             | `pn workspace pre-commit-check`                | per-repo `pre-commit run --all-files`                                    |
-| Update flake locks across all repos            | `pn workspace update`                          | per-repo `nix flake update`                                              |
+| Goal                                       | Use                                    | Don't use                                                                |
+| ------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------ |
+| Build the system (current host)            | `pn workspace build`                   | `darwin-rebuild build`, `nix build .#darwinConfigurations.<host>.system` |
+| Activate the system                        | the **user** runs `pn workspace apply` | NEVER invoke from agent context                                          |
+| Run `nix flake check` on a project         | `nix flake check` inside a project dir | (no special wrapper needed)                                              |
+| Run `nix flake check` across every project | `pn workspace flake-check`             | per-repo `nix flake check`                                               |
+| Build a single package                     | `nix build .#<pkg>` inside the project | (no workspace-level wrapper)                                             |
+| Pre-commit checks across all repos         | `pn workspace pre-commit-check`        | per-repo `pre-commit run --all-files`                                    |
+| Update flake locks across all repos        | `pn workspace update`                  | per-repo `nix flake update`                                              |
 
 ## When to Push
 
@@ -105,12 +105,12 @@ All subcommands accept `--terminal <name>` to override `workspace.terminal`.
 
 Every config-path read in pn goes through an environment variable (with a sensible default) or is computed under `PN_WORKSPACE_ROOT`. This makes it safe to run concurrent smoke-test scenarios in isolated temp directories using `t.Setenv`.
 
-| Variable | Default | What it controls |
-| --- | --- | --- |
-| `PN_WORKSPACE_ROOT` | nearest ancestor dir containing `pn-workspace.toml` | Workspace root. All workspace files (`pn-workspace.toml`, `pn-workspace.lock.json`, `pn-workspace.revs.json`) and per-repo subdirectories are resolved relative to this root. |
-| `PN_WORKSPACE_OVERRIDE_PATHS` | (empty) | Comma-separated `name=path` pairs that override where pn looks for a workspace repo on disk. Used by tests and CI to inject fixture repos without modifying `pn-workspace.toml`. |
-| `XDG_STATE_HOME` | `~/.local/state` | Parent directory for the apply-cache state (`zn-self-upgrade/apply/applied-hash/`). Override in tests to isolate state from the real user state dir. |
-| `NO_COLOR` | (unset) | When set to any non-empty value, disables ANSI color codes in `pn workspace tree` output. |
+| Variable                      | Default                                             | What it controls                                                                                                                                                                 |
+| ----------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PN_WORKSPACE_ROOT`           | nearest ancestor dir containing `pn-workspace.toml` | Workspace root. All workspace files (`pn-workspace.toml`, `pn-workspace.lock.json`, `pn-workspace.revs.json`) and per-repo subdirectories are resolved relative to this root.    |
+| `PN_WORKSPACE_OVERRIDE_PATHS` | (empty)                                             | Comma-separated `name=path` pairs that override where pn looks for a workspace repo on disk. Used by tests and CI to inject fixture repos without modifying `pn-workspace.toml`. |
+| `XDG_STATE_HOME`              | `~/.local/state`                                    | Parent directory for the apply-cache state (`zn-self-upgrade/apply/applied-hash/`). Override in tests to isolate state from the real user state dir.                             |
+| `NO_COLOR`                    | (unset)                                             | When set to any non-empty value, disables ANSI color codes in `pn workspace tree` output.                                                                                        |
 
 ### Workspace root resolution order
 

@@ -13,7 +13,7 @@ cd "$WSROOT/lib-repo"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << 'FLAKE'
+cat >flake.nix <<'FLAKE'
 {
   description = "lib-repo";
   inputs = {};
@@ -29,7 +29,7 @@ cd "$WSROOT/terminal-repo"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > nix/flake.nix << FLAKE
+cat >nix/flake.nix <<FLAKE
 {
   description = "terminal-repo";
   inputs = {
@@ -44,7 +44,7 @@ git commit -m "init"
 
 # Write pn-workspace.toml
 cd "$WSROOT"
-cat > pn-workspace.toml << TOML
+cat >pn-workspace.toml <<TOML
 [workspace]
 name = "smoke-s3"
 terminal = "terminal-repo"

@@ -23,7 +23,7 @@ PRODUCER_WORK="$(mktemp -d)"
 git clone "file://${PRODUCER_BARE}" "$PRODUCER_WORK"
 git -C "$PRODUCER_WORK" config user.email "smoke@test.invalid"
 git -C "$PRODUCER_WORK" config user.name "smoke"
-cat > "$PRODUCER_WORK/flake.nix" << 'FLAKE'
+cat >"$PRODUCER_WORK/flake.nix" <<'FLAKE'
 {
   inputs.nixpkgs.url = "nixpkgs";
   outputs = { self, nixpkgs }: {
@@ -54,7 +54,7 @@ git -C "$CONSUMER_WORK" config user.name "smoke"
 # Consumer declares producer as an input so the workspace lock detects the
 # topo edge (producer before consumer). Use git+file:// because nix treats
 # plain file:// as a tarball path, not a git repo.
-cat > "$CONSUMER_WORK/flake.nix" << FLAKE
+cat >"$CONSUMER_WORK/flake.nix" <<FLAKE
 {
   inputs.nixpkgs.url = "nixpkgs";
   inputs.producer.url = "git+file://${PRODUCER_BARE}";
@@ -73,7 +73,7 @@ git -C "$CONSUMER_WORK" push -u origin main
 rm -rf "$CONSUMER_WORK"
 
 # Write the real pn-workspace.toml with actual file:// URLs.
-cat > "$WSROOT/pn-workspace.toml" << TOML
+cat >"$WSROOT/pn-workspace.toml" <<TOML
 [workspace]
 name = "smoke-s23"
 terminal = "consumer"

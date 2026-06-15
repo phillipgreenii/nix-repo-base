@@ -13,7 +13,7 @@ cd "$WSROOT/producer"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > README.md << 'README'
+cat >README.md <<'README'
 This repo intentionally has no flake.nix.
 README
 git add README.md
@@ -25,7 +25,7 @@ cd "$WSROOT/consumer"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << FLAKE
+cat >flake.nix <<FLAKE
 {
   description = "consumer";
   inputs = {
@@ -40,7 +40,7 @@ git commit -m "init"
 
 # Write pn-workspace.toml (terminal = consumer; producer has no flake.nix).
 cd "$WSROOT"
-cat > pn-workspace.toml << TOML
+cat >pn-workspace.toml <<TOML
 [workspace]
 name = "smoke-s10"
 terminal = "consumer"

@@ -12,7 +12,7 @@ cd "$WSROOT/producer"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << 'FLAKE'
+cat >flake.nix <<'FLAKE'
 {
   description = "producer";
   inputs = {};
@@ -29,7 +29,7 @@ cd "$WSROOT/consumer"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << FLAKE
+cat >flake.nix <<FLAKE
 {
   description = "consumer";
   inputs = {
@@ -44,7 +44,7 @@ git commit -m "init"
 
 # Write the real pn-workspace.toml with actual file:// URLs
 cd "$WSROOT"
-cat > pn-workspace.toml << TOML
+cat >pn-workspace.toml <<TOML
 [workspace]
 name = "smoke-s1"
 terminal = "consumer"

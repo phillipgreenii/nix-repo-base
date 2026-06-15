@@ -23,7 +23,7 @@ git init --bare -b main "$PRODUCER_BARE"
 PRODUCER_WORK="$(mktemp -d)"
 git clone "file://${PRODUCER_BARE}" "$PRODUCER_WORK"
 git_id "$PRODUCER_WORK"
-cat > "$PRODUCER_WORK/flake.nix" << 'FLAKE'
+cat >"$PRODUCER_WORK/flake.nix" <<'FLAKE'
 { inputs = {}; outputs = { self, ... }: {}; }
 FLAKE
 git -C "$PRODUCER_WORK" add flake.nix
@@ -37,7 +37,7 @@ git init --bare -b main "$CONSUMER_BARE"
 CONSUMER_WORK="$(mktemp -d)"
 git clone "file://${CONSUMER_BARE}" "$CONSUMER_WORK"
 git_id "$CONSUMER_WORK"
-cat > "$CONSUMER_WORK/flake.nix" << 'FLAKE'
+cat >"$CONSUMER_WORK/flake.nix" <<'FLAKE'
 { inputs = {}; outputs = { self, ... }: {}; }
 FLAKE
 git -C "$CONSUMER_WORK" add flake.nix
@@ -54,16 +54,16 @@ git_id "$PRODUCER_CLONE"
 git_id "$CONSUMER_CLONE"
 
 # Add a new commit in each workspace clone (something to push).
-echo "pushed-by-smoke" > "$PRODUCER_CLONE/pushed.txt"
+echo "pushed-by-smoke" >"$PRODUCER_CLONE/pushed.txt"
 git -C "$PRODUCER_CLONE" add pushed.txt
 git -C "$PRODUCER_CLONE" commit -m "smoke: add pushed.txt"
 
-echo "pushed-by-smoke" > "$CONSUMER_CLONE/pushed.txt"
+echo "pushed-by-smoke" >"$CONSUMER_CLONE/pushed.txt"
 git -C "$CONSUMER_CLONE" add pushed.txt
 git -C "$CONSUMER_CLONE" commit -m "smoke: add pushed.txt"
 
 # Write the real pn-workspace.toml with actual file:// URLs.
-cat > "$WSROOT/pn-workspace.toml" << TOML
+cat >"$WSROOT/pn-workspace.toml" <<TOML
 [workspace]
 name = "smoke-s21"
 terminal = "consumer"

@@ -17,11 +17,11 @@ PRODUCER_WORK="$(mktemp -d)"
 git clone "file://${PRODUCER_BARE}" "$PRODUCER_WORK"
 git -C "$PRODUCER_WORK" config user.email "smoke@test.invalid"
 git -C "$PRODUCER_WORK" config user.name "smoke"
-cat > "$PRODUCER_WORK/flake.nix" << 'FLAKE'
+cat >"$PRODUCER_WORK/flake.nix" <<'FLAKE'
 { inputs = {}; outputs = { self, ... }: {}; }
 FLAKE
 # update-locks.sh: write updated.txt and append "producer" to order.log.
-cat > "$PRODUCER_WORK/update-locks.sh" << 'SH'
+cat >"$PRODUCER_WORK/update-locks.sh" <<'SH'
 #!/bin/sh
 set -e
 touch updated.txt
@@ -42,14 +42,14 @@ git -C "$CONSUMER_WORK" config user.email "smoke@test.invalid"
 git -C "$CONSUMER_WORK" config user.name "smoke"
 # flake.nix: declare producer as input so workspace lock detects the edge
 # (producer before consumer in topo order).
-cat > "$CONSUMER_WORK/flake.nix" << FLAKE
+cat >"$CONSUMER_WORK/flake.nix" <<FLAKE
 {
   inputs.producer.url = "file://${PRODUCER_BARE}";
   outputs = { self, producer, ... }: {};
 }
 FLAKE
 # update-locks.sh: write updated.txt and append "consumer" to order.log.
-cat > "$CONSUMER_WORK/update-locks.sh" << 'SH'
+cat >"$CONSUMER_WORK/update-locks.sh" <<'SH'
 #!/bin/sh
 set -e
 touch updated.txt
@@ -62,7 +62,7 @@ git -C "$CONSUMER_WORK" push -u origin main
 rm -rf "$CONSUMER_WORK"
 
 # Write the real pn-workspace.toml with actual file:// URLs.
-cat > "$WSROOT/pn-workspace.toml" << TOML
+cat >"$WSROOT/pn-workspace.toml" <<TOML
 [workspace]
 name = "smoke-s20"
 terminal = "consumer"

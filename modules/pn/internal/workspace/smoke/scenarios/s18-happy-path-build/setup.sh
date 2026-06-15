@@ -18,7 +18,7 @@ PRODUCER_WORK="$(mktemp -d)"
 git clone "file://${PRODUCER_BARE}" "$PRODUCER_WORK"
 git -C "$PRODUCER_WORK" config user.email "smoke@test.invalid"
 git -C "$PRODUCER_WORK" config user.name "smoke"
-cat > "$PRODUCER_WORK/flake.nix" << 'FLAKE'
+cat >"$PRODUCER_WORK/flake.nix" <<'FLAKE'
 { inputs = {}; outputs = { self, ... }: {}; }
 FLAKE
 git -C "$PRODUCER_WORK" add flake.nix
@@ -35,7 +35,7 @@ git -C "$CONSUMER_WORK" config user.email "smoke@test.invalid"
 git -C "$CONSUMER_WORK" config user.name "smoke"
 
 # build.sh: writes built.txt marker in the consumer (terminal) dir.
-cat > "$CONSUMER_WORK/build.sh" << 'SH'
+cat >"$CONSUMER_WORK/build.sh" <<'SH'
 #!/bin/sh
 set -e
 touch built.txt
@@ -43,7 +43,7 @@ SH
 chmod +x "$CONSUMER_WORK/build.sh"
 
 # flake.nix: no external inputs; no formatter needed (build no longer runs nix fmt).
-cat > "$CONSUMER_WORK/flake.nix" << 'FLAKE'
+cat >"$CONSUMER_WORK/flake.nix" <<'FLAKE'
 { inputs = {}; outputs = { self, ... }: {}; }
 FLAKE
 
@@ -53,7 +53,7 @@ git -C "$CONSUMER_WORK" push -u origin main
 rm -rf "$CONSUMER_WORK"
 
 # Write the real pn-workspace.toml with actual file:// URLs.
-cat > "$WSROOT/pn-workspace.toml" << TOML
+cat >"$WSROOT/pn-workspace.toml" <<TOML
 [workspace]
 name = "smoke-s18"
 terminal = "consumer"

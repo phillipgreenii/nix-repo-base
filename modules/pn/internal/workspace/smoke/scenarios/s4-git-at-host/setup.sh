@@ -7,7 +7,7 @@ cd "$WSROOT/consumer"
 git init -b main
 git config user.email "smoke@test.invalid"
 git config user.name "smoke"
-cat > flake.nix << 'FLAKE'
+cat >flake.nix <<'FLAKE'
 {
   description = "consumer";
   inputs = {
@@ -20,7 +20,7 @@ FLAKE
 git add flake.nix
 git commit -m "init"
 cd "$WSROOT"
-cat > pn-workspace.toml << TOML
+cat >pn-workspace.toml <<TOML
 [workspace]
 name = "smoke-s4-git-at-host"
 terminal = "consumer"
