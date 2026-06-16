@@ -131,7 +131,8 @@
           # exercises the Go tests.
           pn-go-tests = pkgs.callPackage ./modules/pn { inherit self; };
 
-          # Hermetically verify the pn darwin module registers logSources.pn.
+          # Hermetically verify the exported darwinModules.default (the aggregate
+          # the machine actually imports) registers logSources.pn.
           pn-logsources-registration =
             let
               eval = pkgs.lib.evalModules {
@@ -150,7 +151,7 @@
                     };
                     config.phillipgreenii.observability.enable = true;
                   }
-                  ./darwin/modules/pn/default.nix
+                  ./darwin
                 ];
               };
             in
@@ -171,10 +172,12 @@
     )
     // {
       homeModules.pn = import ./home/pn/default.nix;
-      # repo-base's first darwin module: registers phillipgreenii.observability.logSources.pn
-      # so pn's JSONL event stream is collected into Loki (pull/filelog). Inert until a
-      # machine flake imports it; see darwin/modules/pn/default.nix.
-      darwinModules.pn = import ./darwin/modules/pn/default.nix;
+      # repo-base's first darwin module set, exported as the aggregate
+      # darwinModules.default (mirrors agent-support). Currently carries the pn
+      # module, which registers phillipgreenii.observability.logSources.pn so pn's
+      # JSONL event stream is collected into Loki (pull/filelog). Inert until a
+      # machine flake imports it; see darwin/default.nix and darwin/modules/pn.
+      darwinModules.default = ./darwin;
       homeModules.install-metadata = (import ./lib/version.nix).mkInstallMetadata {
         flakeSelf = self;
         name = "phillipg-nix-repo-base";
