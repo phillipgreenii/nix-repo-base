@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/eventlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/workspace"
 )
@@ -310,8 +311,18 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
+
+			// Best-effort: never fail the run because the event log can't open.
+			// On error lw is the nil *Writer, whose Emit/Close are safe no-ops.
+			lw, err := eventlog.New(eventlog.DefaultPath())
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "pn: event log unavailable: %v\n", err)
+			} else {
+				defer func() { _ = lw.Close() }()
+			}
+
 			return runWithHooks(ctx, w, "update", func() error {
-				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal})
+				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal, Log: lw})
 			})
 		},
 	}
