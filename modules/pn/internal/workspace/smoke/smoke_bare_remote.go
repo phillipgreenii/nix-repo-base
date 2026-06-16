@@ -310,3 +310,233 @@ func assertS22AutostashRoundTrip(t *testing.T, wsRoot string) {
 		t.Errorf("S22b: stash not empty after autostash round-trip: %v", stash)
 	}
 }
+
+// --- S24 extra: worktree set exists, all repos on feature-x, files copied ---
+
+func assertS24WorktreeAdd(t *testing.T, wsRoot string) {
+	t.Helper()
+	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+
+	// 1. Set dir must exist.
+	if _, err := os.Stat(setDir); os.IsNotExist(err) {
+		t.Errorf("S24: worktree set dir %s does not exist", setDir)
+		return
+	}
+
+	// 2. Each repo in the set must be on branch feature-x.
+	for _, repo := range []string{"producer", "consumer"} {
+		repoDir := filepath.Join(setDir, repo)
+		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+			t.Errorf("S24: set repo dir %s does not exist", repoDir)
+			continue
+		}
+		cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+		cmd.Env = os.Environ()
+		out, err := cmd.Output()
+		if err != nil {
+			t.Errorf("S24: git rev-parse HEAD in %s: %v", repoDir, err)
+			continue
+		}
+		branch := strings.TrimSpace(string(out))
+		if branch != "feature-x" {
+			t.Errorf("S24: %s in set is on branch %q, want feature-x", repo, branch)
+		}
+	}
+
+	// 3. pn-workspace.toml and pn-workspace.lock.json must be copied into the set dir.
+	for _, f := range []string{"pn-workspace.toml", "pn-workspace.lock.json"} {
+		if _, err := os.Stat(filepath.Join(setDir, f)); os.IsNotExist(err) {
+			t.Errorf("S24: %s not copied into set dir %s", f, setDir)
+		}
+	}
+}
+
+// --- S27 extra: set dir gone; branches left behind ---
+
+func assertS27WorktreeRemove(t *testing.T, wsRoot string) {
+	t.Helper()
+	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+
+	// 1. Set dir must be gone.
+	if _, err := os.Stat(setDir); err == nil {
+		t.Errorf("S27: set dir %s still exists after worktree remove", setDir)
+	}
+
+	// 2. Branch feature-x must still exist in each canonical repo.
+	for _, repo := range []string{"producer", "consumer"} {
+		repoDir := filepath.Join(wsRoot, repo)
+		cmd := exec.Command("git", "-C", repoDir, "branch", "--list", "feature-x")
+		cmd.Env = os.Environ()
+		out, err := cmd.Output()
+		if err != nil {
+			t.Errorf("S27: git branch --list feature-x in %s: %v", repoDir, err)
+			continue
+		}
+		if strings.TrimSpace(string(out)) == "" {
+			t.Errorf("S27: branch feature-x was deleted from canonical repo %s (remove should leave branches behind)", repo)
+		}
+	}
+}
+
+// --- S28 extra: worktree add, rm -rf set dir, prune, verify no stale entries ---
+
+func assertS28WorktreePrune(t *testing.T, wsRoot, pnBin string, env []string) {
+	t.Helper()
+
+	// Step 1: Create a worktree set for "feature-z".
+	r := runCommand(t, pnBin, wsRoot, []string{"workspace", "worktree", "add", "feature-z"}, env)
+	if r.ExitCode != 0 {
+		t.Fatalf("S28: worktree add failed (exit %d)\nstdout: %s\nstderr: %s",
+			r.ExitCode, r.Stdout, r.Stderr)
+	}
+	setDir := filepath.Join(wsRoot, ".worktrees", "feature-z")
+
+	// Step 2: Manually remove the set dir to create stale .git/worktrees entries.
+	if err := os.RemoveAll(setDir); err != nil {
+		t.Fatalf("S28: rm -rf set dir: %v", err)
+	}
+
+	// Step 3: Run worktree prune.
+	r2 := runCommand(t, pnBin, wsRoot, []string{"workspace", "worktree", "prune"}, env)
+	if r2.ExitCode != 0 {
+		t.Fatalf("S28: worktree prune failed (exit %d)\nstdout: %s\nstderr: %s",
+			r2.ExitCode, r2.Stdout, r2.Stderr)
+	}
+
+	// Step 4: Verify each canonical repo's git worktree list no longer shows the stale entry.
+	for _, repo := range []string{"producer", "consumer"} {
+		repoDir := filepath.Join(wsRoot, repo)
+		cmd := exec.Command("git", "-C", repoDir, "worktree", "list")
+		cmd.Env = os.Environ()
+		out, err := cmd.Output()
+		if err != nil {
+			t.Errorf("S28: git worktree list in %s: %v", repoDir, err)
+			continue
+		}
+		if strings.Contains(string(out), "feature-z") {
+			t.Errorf("S28: git worktree list in %s still shows feature-z after prune:\n%s", repoDir, string(out))
+		}
+	}
+}
+
+// --- S29 extra: verbs-in-a-set + P1 primary-unchanged ---
+
+// setEnv returns a copy of env with PN_WORKSPACE_ROOT overridden to newRoot.
+func setEnv(env []string, key, val string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env))
+	found := false
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			out = append(out, prefix+val)
+			found = true
+		} else {
+			out = append(out, kv)
+		}
+	}
+	if !found {
+		out = append(out, prefix+val)
+	}
+	return out
+}
+
+// gitHeadSHA returns the HEAD SHA of a repo dir (empty string + error on failure).
+func gitHeadSHA(t *testing.T, repoDir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	cmd.Env = os.Environ()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Errorf("S29: git rev-parse HEAD in %s: %v", repoDir, err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitStatusPorcelain returns the output of git status --porcelain in a repo dir.
+func gitStatusPorcelain(t *testing.T, repoDir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repoDir, "status", "--porcelain")
+	cmd.Env = os.Environ()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Errorf("S29: git status --porcelain in %s: %v", repoDir, err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func assertS29VerbsInASet(t *testing.T, wsRoot, pnBin string, env []string) {
+	t.Helper()
+	setDir := filepath.Join(wsRoot, ".worktrees", "feature-y")
+
+	// Verify the set dir was created by command.txt's worktree add.
+	if _, err := os.Stat(setDir); os.IsNotExist(err) {
+		t.Fatalf("S29: set dir %s does not exist (worktree add may have failed)", setDir)
+	}
+
+	// Snapshot primary (canonical) repo HEADs and status before running verbs in the set.
+	type repoSnapshot struct{ head, status string }
+	primarySnapshot := make(map[string]repoSnapshot)
+	for _, repo := range []string{"producer", "consumer"} {
+		canonDir := filepath.Join(wsRoot, repo)
+		primarySnapshot[repo] = repoSnapshot{
+			head:   gitHeadSHA(t, canonDir),
+			status: gitStatusPorcelain(t, canonDir),
+		}
+	}
+
+	// Build an env with PN_WORKSPACE_ROOT pointing at the set dir.
+	setEnvFull := setEnv(env, "PN_WORKSPACE_ROOT", setDir)
+
+	// Run status (informational; exit 0).
+	if r := runCommand(t, pnBin, setDir, []string{"workspace", "status"}, setEnvFull); r.ExitCode != 0 {
+		t.Errorf("S29: workspace status in set failed (exit %d)\nstdout: %s\nstderr: %s",
+			r.ExitCode, r.Stdout, r.Stderr)
+	}
+
+	// Run build.
+	if r := runCommand(t, pnBin, setDir, []string{"workspace", "build"}, setEnvFull); r.ExitCode != 0 {
+		t.Errorf("S29: workspace build in set failed (exit %d)\nstdout: %s\nstderr: %s",
+			r.ExitCode, r.Stdout, r.Stderr)
+	}
+	// Assert build.sh marker was created in the set's consumer dir.
+	builtMarker := filepath.Join(setDir, "consumer", "built.txt")
+	if _, err := os.Stat(builtMarker); os.IsNotExist(err) {
+		t.Errorf("S29: consumer/built.txt not found in set after workspace build")
+	}
+
+	// Run update.
+	if r := runCommand(t, pnBin, setDir, []string{"workspace", "update"}, setEnvFull); r.ExitCode != 0 {
+		t.Errorf("S29: workspace update in set failed (exit %d)\nstdout: %s\nstderr: %s",
+			r.ExitCode, r.Stdout, r.Stderr)
+	}
+
+	// Run rebase main (rebases each set repo onto main).
+	if r := runCommand(t, pnBin, setDir, []string{"workspace", "rebase", "main"}, setEnvFull); r.ExitCode != 0 {
+		t.Errorf("S29: workspace rebase main in set failed (exit %d)\nstdout: %s\nstderr: %s",
+			r.ExitCode, r.Stdout, r.Stderr)
+	}
+
+	// Run push --set-upstream (bare remotes, feature-y branch has no upstream yet).
+	if r := runCommand(t, pnBin, setDir, []string{"workspace", "push", "--set-upstream"}, setEnvFull); r.ExitCode != 0 {
+		t.Errorf("S29: workspace push --set-upstream in set failed (exit %d)\nstdout: %s\nstderr: %s",
+			r.ExitCode, r.Stdout, r.Stderr)
+	}
+
+	// P1 smoke: assert the primary (canonical) checkouts are unchanged.
+	for _, repo := range []string{"producer", "consumer"} {
+		canonDir := filepath.Join(wsRoot, repo)
+		snap := primarySnapshot[repo]
+		afterHead := gitHeadSHA(t, canonDir)
+		afterStatus := gitStatusPorcelain(t, canonDir)
+		if snap.head != afterHead {
+			t.Errorf("S29 P1: primary %s HEAD changed from %s to %s after verbs-in-a-set",
+				repo, snap.head, afterHead)
+		}
+		if snap.status != afterStatus {
+			t.Errorf("S29 P1: primary %s status changed after verbs-in-a-set\nbefore: %q\nafter:  %q",
+				repo, snap.status, afterStatus)
+		}
+	}
+}

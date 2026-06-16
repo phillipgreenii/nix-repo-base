@@ -258,6 +258,48 @@ func TestSmoke_S23_HappyPathFormat(t *testing.T) {
 	runScenario(t, "s23-happy-path-format")
 }
 
+// TestSmoke_S24_WorktreeAdd: two-repo workspace; pn workspace worktree add feature-x
+// creates .worktrees/feature-x with each repo checked out on branch feature-x,
+// and copies pn-workspace.toml + pn-workspace.lock.json into the set dir.
+func TestSmoke_S24_WorktreeAdd(t *testing.T) {
+	runScenario(t, "s24-worktree-add")
+}
+
+// TestSmoke_S25_WorktreeAddAlreadyCheckedOut: two-repo workspace; attempting
+// pn workspace worktree add main fails with non-zero exit (main is already
+// checked out in the canonical clones).
+func TestSmoke_S25_WorktreeAddAlreadyCheckedOut(t *testing.T) {
+	runScenario(t, "s25-worktree-add-already-checked-out")
+}
+
+// TestSmoke_S26_WorktreeList: two-repo workspace; after creating a worktree set
+// for feature-x, pn workspace worktree list outputs a line containing "feature-x".
+func TestSmoke_S26_WorktreeList(t *testing.T) {
+	runScenario(t, "s26-worktree-list")
+}
+
+// TestSmoke_S27_WorktreeRemove: two-repo workspace; after creating a worktree set
+// for feature-x, pn workspace worktree remove feature-x removes the set dir but
+// leaves the feature-x branch in each canonical repo.
+func TestSmoke_S27_WorktreeRemove(t *testing.T) {
+	runScenario(t, "s27-worktree-remove")
+}
+
+// TestSmoke_S28_WorktreePrune: two-repo workspace; after creating a worktree set
+// and manually rm -rf'ing the set dir, pn workspace worktree prune clears the
+// stale .git/worktrees entries in each canonical repo.
+func TestSmoke_S28_WorktreePrune(t *testing.T) {
+	runScenario(t, "s28-worktree-prune")
+}
+
+// TestSmoke_S29_VerbsInASet: two-repo workspace; after bootstrapping and creating
+// a worktree set for feature-y, runs status→build→update→rebase main→push --set-upstream
+// from inside the set (PN_WORKSPACE_ROOT pointing at the set dir). Also asserts
+// the primary canonical checkouts are unchanged afterward (P1 smoke).
+func TestSmoke_S29_VerbsInASet(t *testing.T) {
+	runScenario(t, "s29-verbs-in-a-set")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -421,6 +463,18 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS22AutostashRoundTrip(t, wsRoot)
 	case "s23-happy-path-format":
 		assertS23FormatTopoOrder(t, lastResult)
+	case "s24-worktree-add":
+		assertS24WorktreeAdd(t, wsRoot)
+	case "s25-worktree-add-already-checked-out":
+		// Asserted via expected_exit.txt + expected_stderr.txt; no extra needed.
+	case "s26-worktree-list":
+		// Asserted via expected_stdout.txt; no extra needed.
+	case "s27-worktree-remove":
+		assertS27WorktreeRemove(t, wsRoot)
+	case "s28-worktree-prune":
+		assertS28WorktreePrune(t, wsRoot, pnBin, env)
+	case "s29-verbs-in-a-set":
+		assertS29VerbsInASet(t, wsRoot, pnBin, env)
 	}
 }
 

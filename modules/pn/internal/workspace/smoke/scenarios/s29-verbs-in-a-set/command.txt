@@ -1,0 +1,7 @@
+# Bootstrap the workspace, then create a worktree set.
+# The verb chain (status→build→update→rebase main→push --set-upstream)
+# and P1 primary-unchanged assertions are in assertS29VerbsInASet.
+workspace init
+workspace clone
+workspace lock
+workspace worktree add feature-y

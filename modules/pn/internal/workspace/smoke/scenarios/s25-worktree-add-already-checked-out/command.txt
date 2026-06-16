@@ -1,0 +1,6 @@
+# Bootstrap the workspace, then try to add a worktree set for 'main'
+# which is already checked out in each canonical clone → should fail.
+workspace init
+workspace clone
+workspace lock
+workspace worktree add main
