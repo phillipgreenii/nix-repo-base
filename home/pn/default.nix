@@ -7,6 +7,16 @@
 # The pn package is sourced from pkgs.pn, which consuming flakes make
 # available by adding this flake's overlays.default to nixpkgs.overlays.
 # Override phillipgreenii.pn.package to substitute a different build.
+#
+# Observability: `pn workspace update` writes a structured JSONL event stream
+# (run_start / project_result / run_end; skipped repos -> warn, failed -> error)
+# to the standard path `${XDG_STATE_HOME}/pn/events.jsonl`, distinct from pn's
+# human stdout transcript. Lines conform to the phillipgreenii JSONL standard
+# (`time`/`level`/`msg`). The sibling `darwinModules.pn`
+# (`darwin/modules/pn/default.nix`) registers `phillipgreenii.observability.logSources.pn`
+# so the file is collected into Loki; the default glob (`${env:XDG_STATE_HOME}/pn/*.jsonl`)
+# matches it, so no path override is needed. That registration is inert until a
+# machine flake imports `repo-base.darwinModules.pn`.
 {
   config,
   lib,
