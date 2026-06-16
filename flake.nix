@@ -130,6 +130,36 @@
           # the tests. Exposing it as a check ensures `nix flake check`
           # exercises the Go tests.
           pn-go-tests = pkgs.callPackage ./modules/pn { inherit self; };
+
+          # Hermetically verify the pn darwin module registers logSources.pn.
+          pn-logsources-registration =
+            let
+              eval = pkgs.lib.evalModules {
+                modules = [
+                  # Narrow stub: declares just enough of the support-apps observability
+                  # surface for the pn module to type-check standalone (the real option
+                  # lives in phillipgreenii-nix-support-apps). Mirrors that flake's
+                  # crossFlakeOptionStubs.
+                  {
+                    options.phillipgreenii.observability = {
+                      enable = pkgs.lib.mkEnableOption "observability (stub)";
+                      logSources = pkgs.lib.mkOption {
+                        type = pkgs.lib.types.attrsOf pkgs.lib.types.anything;
+                        default = { };
+                      };
+                    };
+                    config.phillipgreenii.observability.enable = true;
+                  }
+                  ./darwin/modules/pn/default.nix
+                ];
+              };
+            in
+            pkgs.runCommand "pn-logsources-registration" { } (
+              if eval.config.phillipgreenii.observability.logSources ? pn then
+                "touch $out"
+              else
+                throw "pn darwin module did not register logSources.pn"
+            );
         }
         // ulScripts.checks;
 
@@ -141,6 +171,10 @@
     )
     // {
       homeModules.pn = import ./home/pn/default.nix;
+      # repo-base's first darwin module: registers phillipgreenii.observability.logSources.pn
+      # so pn's JSONL event stream is collected into Loki (pull/filelog). Inert until a
+      # machine flake imports it; see darwin/modules/pn/default.nix.
+      darwinModules.pn = import ./darwin/modules/pn/default.nix;
       homeModules.install-metadata = (import ./lib/version.nix).mkInstallMetadata {
         flakeSelf = self;
         name = "phillipg-nix-repo-base";
