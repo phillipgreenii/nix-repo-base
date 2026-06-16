@@ -26,6 +26,9 @@ type WorkspaceSection struct {
 	// ApplyCommand is required by `apply`.
 	BuildCommand string `toml:"build_command,omitempty"`
 	ApplyCommand string `toml:"apply_command,omitempty"`
+	// WorktreesDir is where `pn workspace worktree` creates sets. Relative paths are
+	// resolved against the workspace root. Defaults to ".worktrees" when empty.
+	WorktreesDir string `toml:"worktrees_dir,omitempty"`
 }
 
 // Remote is one named git remote that publishes a workspace repo.
@@ -102,6 +105,18 @@ func (c *WorkspaceConfig) ApplyCommandTemplate() (string, error) {
 		return "", fmt.Errorf("workspace.apply_command is not set in pn-workspace.toml")
 	}
 	return c.Workspace.ApplyCommand, nil
+}
+
+const defaultWorktreesDir = ".worktrees"
+
+// WorktreesDirName returns the raw configured worktrees_dir value, or the
+// default ".worktrees" when the field is empty. For a resolved absolute path,
+// use Workspace.WorktreesDir().
+func (c *WorkspaceConfig) WorktreesDirName() string {
+	if c != nil && c.Workspace.WorktreesDir != "" {
+		return c.Workspace.WorktreesDir
+	}
+	return defaultWorktreesDir
 }
 
 // legacyInputName is a sentinel struct for detecting the removed input-name field.

@@ -40,12 +40,23 @@ func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) e
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
+	// Determine the configured worktrees_dir name so we can skip it when it is
+	// a non-dot relative single-segment directory directly under the root.
+	// Dot-prefixed names (the ".worktrees" default) are already skipped below.
+	worktreesDirName := w.config.WorktreesDirName()
+
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		name := e.Name()
 		if name == ".git" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		// Skip a configured non-dot worktrees_dir that appears as a relative
+		// single-segment child of the workspace root.
+		if !strings.HasPrefix(worktreesDirName, ".") && !filepath.IsAbs(worktreesDirName) &&
+			name == worktreesDirName {
 			continue
 		}
 		if _, exists := w.config.Repos[name]; exists {
@@ -280,6 +291,12 @@ func (w *Workspace) reconcileFromFilesystem(ctx context.Context) error {
 	}
 	// Sort entries for deterministic call ordering.
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+
+	// Determine the configured worktrees_dir name so we can skip it when it is
+	// a non-dot relative single-segment directory directly under the root.
+	// Dot-prefixed names (the ".worktrees" default) are already skipped below.
+	worktreesDirName := w.config.WorktreesDirName()
+
 	var added bool
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -287,6 +304,12 @@ func (w *Workspace) reconcileFromFilesystem(ctx context.Context) error {
 		}
 		name := e.Name()
 		if name == ".git" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		// Skip a configured non-dot worktrees_dir that appears as a relative
+		// single-segment child of the workspace root.
+		if !strings.HasPrefix(worktreesDirName, ".") && !filepath.IsAbs(worktreesDirName) &&
+			name == worktreesDirName {
 			continue
 		}
 		if _, exists := w.config.Repos[name]; exists {

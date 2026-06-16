@@ -354,3 +354,92 @@ remotes = [
 		t.Errorf("Remotes: got %d", len(cfg.Repos["foo"].Remotes))
 	}
 }
+
+// TestParseConfig_WorktreesDirField verifies that worktrees_dir in [workspace]
+// is parsed into WorkspaceSection.WorktreesDir.
+func TestParseConfig_WorktreesDirField(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[workspace]
+worktrees_dir = "sets"
+
+[repos.foo]
+url = "github:o/foo"
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Workspace.WorktreesDir != "sets" {
+		t.Errorf("WorktreesDir: got %q, want %q", cfg.Workspace.WorktreesDir, "sets")
+	}
+}
+
+// TestParseConfig_WorktreesDirAbsent verifies that when worktrees_dir is absent,
+// WorktreesDir is empty and WorktreesDirName returns the default ".worktrees".
+func TestParseConfig_WorktreesDirAbsent(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[repos.foo]
+url = "github:o/foo"
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Workspace.WorktreesDir != "" {
+		t.Errorf("WorktreesDir: got %q, want empty", cfg.Workspace.WorktreesDir)
+	}
+	if got := cfg.WorktreesDirName(); got != ".worktrees" {
+		t.Errorf("WorktreesDirName (absent): got %q, want .worktrees", got)
+	}
+}
+
+// TestWorkspaceConfig_WorktreesDirName verifies WorktreesDirName returns the
+// configured value when set, and the default ".worktrees" when empty.
+func TestWorkspaceConfig_WorktreesDirName(t *testing.T) {
+	tests := []struct {
+		name      string
+		configured string
+		want      string
+	}{
+		{"empty returns default", "", ".worktrees"},
+		{"custom value returned", "sets", "sets"},
+		{"dot prefix preserved", ".wt", ".wt"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &WorkspaceConfig{
+				Workspace: WorkspaceSection{WorktreesDir: tc.configured},
+			}
+			if got := cfg.WorktreesDirName(); got != tc.want {
+				t.Errorf("WorktreesDirName: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWorkspace_WorktreesDir verifies the Workspace.WorktreesDir() accessor
+// resolves relative paths under root and leaves absolute paths unchanged.
+func TestWorkspace_WorktreesDir(t *testing.T) {
+	root := "/some/workspace"
+
+	tests := []struct {
+		name       string
+		configured string
+		want       string
+	}{
+		{"default (.worktrees)", "", "/some/workspace/.worktrees"},
+		{"relative name", "sets", "/some/workspace/sets"},
+		{"absolute path unchanged", "/abs/wt", "/abs/wt"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &Workspace{
+				root: root,
+				config: &WorkspaceConfig{
+					Workspace: WorkspaceSection{WorktreesDir: tc.configured},
+				},
+			}
+			if got := w.WorktreesDir(); got != tc.want {
+				t.Errorf("WorktreesDir: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

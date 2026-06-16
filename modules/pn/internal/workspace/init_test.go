@@ -333,3 +333,62 @@ url = "github:owner/foo"
 		t.Error("Init must not write a lock file")
 	}
 }
+
+// TestInit_SkipsConfiguredWorktreesDirNonDot: when worktrees_dir is a non-dot
+// relative name (e.g. "sets"), Init must not add that directory as a repo even
+// if it looks like a git repo.
+func TestInit_SkipsConfiguredWorktreesDirNonDot(t *testing.T) {
+	root := t.TempDir()
+	// "sets" is a non-dot directory that looks like a git repo.
+	mkGitRepo(t, root, "sets")
+	// "real-repo" is a normal repo that SHOULD be discovered.
+	mkGitRepo(t, root, "real-repo")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+worktrees_dir = "sets"
+
+[repos.existing]
+url = "github:o/existing"
+`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git",
+		[]string{"-C", filepath.Join(root, "real-repo"), "remote", "get-url", "origin"},
+		exec.Result{Stdout: []byte("https://github.com/o/real-repo.git\n")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out bytes.Buffer
+	if err := w.Init(context.Background(), &out, InitOptions{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if _, exists := w.config.Repos["sets"]; exists {
+		t.Error("Init must not add the configured worktrees_dir 'sets' as a repo")
+	}
+	if _, exists := w.config.Repos["real-repo"]; !exists {
+		t.Error("Init should have discovered real-repo")
+	}
+}
+
+// TestInit_SkipsDotWorktreesByDefault: the default ".worktrees" is already
+// skipped by the dot-prefix rule; confirm it continues to be skipped.
+func TestInit_SkipsDotWorktreesByDefault(t *testing.T) {
+	root := t.TempDir()
+	mkGitRepo(t, root, ".worktrees")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "")
+
+	f := exec.NewFakeRunner()
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Init(context.Background(), &bytes.Buffer{}, InitOptions{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if _, exists := w.config.Repos[".worktrees"]; exists {
+		t.Error("Init must not add .worktrees as a repo")
+	}
+}
