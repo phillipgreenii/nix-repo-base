@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -23,8 +24,15 @@ func stateDir() string {
 }
 
 func appliedHashDir() string { return filepath.Join(stateDir(), "apply", "applied-hash") }
+
+// appliedHashFile returns the cache file path for repoDir's applied-hash entry.
+// The filename is the hex-encoded SHA-256 of the cleaned absolute repoDir so
+// that two repos sharing the same basename but living under different parent
+// directories (e.g. a primary checkout and a worktree set copy) always map to
+// distinct cache entries and never collide.
 func appliedHashFile(repoDir string) string {
-	return filepath.Join(appliedHashDir(), filepath.Base(repoDir))
+	sum := sha256.Sum256([]byte(filepath.Clean(repoDir)))
+	return filepath.Join(appliedHashDir(), fmt.Sprintf("%x", sum))
 }
 
 // needsRebuild reports whether apply must rebuild. Returns true if force is set,

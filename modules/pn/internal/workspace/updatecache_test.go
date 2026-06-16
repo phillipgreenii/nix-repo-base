@@ -3,12 +3,21 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+// hashRepoDir returns the hex-encoded SHA-256 of the cleaned absolute repoDir,
+// matching the keying logic in appliedHashFile.
+func hashRepoDir(repoDir string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(repoDir)))
+	return fmt.Sprintf("%x", sum)
+}
 
 func TestNeedsRebuild_Force(t *testing.T) {
 	w := &Workspace{runner: exec.NewFakeRunner()}
@@ -36,7 +45,8 @@ func TestNeedsRebuild_CleanUnchangedSkips(t *testing.T) {
 	if err := os.MkdirAll(hashDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(hashDir, "repo"), []byte("abc123\n"), 0o644); err != nil {
+	// Use the full-path-keyed filename (sha256 of "/repo") to match appliedHashFile.
+	if err := os.WriteFile(filepath.Join(hashDir, hashRepoDir("/repo")), []byte("abc123\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f := exec.NewFakeRunner()
@@ -59,7 +69,8 @@ func TestMarkApplied_WritesHead(t *testing.T) {
 	if err := w.markApplied(context.Background(), []string{"/repo"}); err != nil {
 		t.Fatalf("markApplied: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(state, "zn-self-upgrade", "apply", "applied-hash", "repo"))
+	// Cache file is now keyed by sha256 of the full path, not the basename.
+	got, err := os.ReadFile(filepath.Join(state, "zn-self-upgrade", "apply", "applied-hash", hashRepoDir("/repo")))
 	if err != nil {
 		t.Fatalf("read hash: %v", err)
 	}
@@ -74,5 +85,60 @@ func TestCheckNixDaemon_ErrorPath(t *testing.T) {
 	w := &Workspace{runner: f}
 	if err := w.checkNixDaemon(context.Background()); err == nil {
 		t.Fatal("expected daemon-check error")
+	}
+}
+
+// TestAppliedHashFile_FullPathKey verifies that two repo dirs sharing the same
+// basename but differing in their full path (e.g. primary/foo vs set/foo) are
+// keyed to DISTINCT cache files so a set and the primary never collide.
+func TestAppliedHashFile_FullPathKey(t *testing.T) {
+	primary := "/home/user/ws/foo"
+	set := "/home/user/ws-set/foo"
+	if appliedHashFile(primary) == appliedHashFile(set) {
+		t.Errorf("appliedHashFile collision: same basename %q but different full paths %q and %q both map to %q",
+			filepath.Base(primary), primary, set, appliedHashFile(primary))
+	}
+}
+
+// TestAppliedHashFile_SamePathSameKey verifies that the same repoDir always
+// maps to the same cache file (deterministic keying).
+func TestAppliedHashFile_SamePathSameKey(t *testing.T) {
+	dir := "/home/user/ws/foo"
+	if appliedHashFile(dir) != appliedHashFile(dir) {
+		t.Error("appliedHashFile is not deterministic")
+	}
+}
+
+// TestMarkApplied_SetVsPrimaryNoCollision verifies that markApplied for one
+// repo path is not read back as "applied" by needsRebuild for a repo with the
+// same basename but a different full path.
+func TestMarkApplied_SetVsPrimaryNoCollision(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+
+	primaryDir := "/primary/ws/repo"
+	setDir := "/set/ws/repo"
+	const headHash = "cafebabe"
+
+	// Mark the primary repo as applied.
+	fMark := exec.NewFakeRunner()
+	fMark.AddResponse("git", []string{"-C", primaryDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte(headHash + "\n")}, nil)
+	wMark := &Workspace{runner: fMark}
+	if err := wMark.markApplied(context.Background(), []string{primaryDir}); err != nil {
+		t.Fatalf("markApplied: %v", err)
+	}
+
+	// needsRebuild for setDir (same basename, different parent) must see no stored hash
+	// and therefore return rebuild=true.
+	fCheck := exec.NewFakeRunner()
+	fCheck.AddResponse("git", []string{"-C", setDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	fCheck.AddResponse("git", []string{"-C", setDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte(headHash + "\n")}, nil)
+	wCheck := &Workspace{runner: fCheck}
+	rebuild, err := wCheck.needsRebuild(context.Background(), []string{setDir}, false, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("needsRebuild: %v", err)
+	}
+	if !rebuild {
+		t.Error("needsRebuild should return true for setDir: primary's applied-hash must not bleed into set's cache entry")
 	}
 }
