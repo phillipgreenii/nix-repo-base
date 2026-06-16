@@ -54,6 +54,7 @@ Environment variables:
 	ws.AddCommand(workspaceUpgradeCmd(&terminalFlag))
 	ws.AddCommand(workspaceDiscoverCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
+	ws.AddCommand(workspaceWorktreeCmd(&terminalFlag))
 	parent.AddCommand(ws)
 }
 
@@ -417,6 +418,99 @@ func workspaceCloneCmd(terminal *string) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// workspaceWorktreeCmd returns the `pn workspace worktree` parent command with
+// add/list/remove/prune subcommands. These are scaffolding-only commands and
+// are NOT wired through runWithHooks and NOT registered in knownHookCommands.
+func workspaceWorktreeCmd(terminal *string) *cobra.Command {
+	wt := &cobra.Command{
+		Use:   "worktree",
+		Short: "Manage coordinated git worktree sets",
+	}
+	wt.AddCommand(workspaceWorktreeAddCmd(terminal))
+	wt.AddCommand(workspaceWorktreeListCmd())
+	wt.AddCommand(workspaceWorktreeRemoveCmd())
+	wt.AddCommand(workspaceWorktreePruneCmd())
+	return wt
+}
+
+func workspaceWorktreeAddCmd(terminal *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "add <branch> [<commit-ish>]",
+		Short: "Create a coordinated worktree set on <branch> across all workspace repos",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			opts := workspace.WorktreeAddOptions{
+				Branch:   args[0],
+				Terminal: *terminal,
+			}
+			if len(args) == 2 {
+				opts.CommitIsh = args[1]
+			}
+			return w.WorktreeAdd(cmd.Context(), cmd.OutOrStdout(), opts)
+		},
+	}
+}
+
+func workspaceWorktreeListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List coordinated worktree sets",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			return w.WorktreeList(cmd.Context(), cmd.OutOrStdout(), workspace.WorktreeListOptions{})
+		},
+	}
+}
+
+func workspaceWorktreeRemoveCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:     "remove <branch>",
+		Aliases: []string{"rm"},
+		Short:   "Remove a coordinated worktree set (mirrors git worktree remove; does NOT delete the branch)",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			return w.WorktreeRemove(cmd.Context(), cmd.OutOrStdout(), workspace.WorktreeRemoveOptions{
+				Branch: args[0],
+				Force:  force,
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "force removal even if worktrees are dirty or locked")
+	return cmd
+}
+
+func workspaceWorktreePruneCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "prune",
+		Short: "Run git worktree prune in each canonical repo (clear stale admin entries)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			return w.WorktreePrune(cmd.Context(), cmd.OutOrStdout(), workspace.WorktreePruneOptions{})
+		},
+	}
 }
 
 func workspaceLockCmd(terminal *string) *cobra.Command {
