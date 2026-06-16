@@ -520,6 +520,50 @@ func TestWorkspaceRebase_ExitZeroNoTerminal(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// rebase [branch] positional arg
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceRebase_PositionalArgAccepted(t *testing.T) {
+	// "rebase main" should be accepted without an "unexpected argument" error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"rebase", "main"})
+	if err != nil && strings.Contains(err.Error(), "unknown") {
+		t.Errorf("rebase <branch>: unexpected cobra error: %v", err)
+	}
+}
+
+func TestWorkspaceRebase_TooManyArgsRejected(t *testing.T) {
+	// More than one positional arg should be rejected by cobra.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"rebase", "main", "extra"})
+	if err == nil {
+		t.Error("rebase with two positional args: expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// push --set-upstream / -u flag
+// ---------------------------------------------------------------------------
+
+func TestWorkspacePush_SetUpstreamFlagAccepted(t *testing.T) {
+	// --set-upstream must be accepted without "unknown flag" error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"push", "--set-upstream"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("push --set-upstream: flag not wired: %v", err)
+	}
+}
+
+func TestWorkspacePush_SetUpstreamShortFlagAccepted(t *testing.T) {
+	// -u shorthand must also be accepted.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"push", "-u"})
+	if err != nil && strings.Contains(err.Error(), "unknown shorthand") {
+		t.Errorf("push -u: shorthand not wired: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // format (optional-terminal)
 // ---------------------------------------------------------------------------
 

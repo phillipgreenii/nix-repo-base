@@ -227,7 +227,8 @@ func workspacePreCommitCheckCmd(terminal *string) *cobra.Command {
 }
 
 func workspacePushCmd(terminal *string) *cobra.Command {
-	return &cobra.Command{
+	var setUpstream bool
+	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "Git push each workspace repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -239,16 +240,27 @@ func workspacePushCmd(terminal *string) *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "push", func() error {
-				return w.Push(ctx, out, errOut, workspace.PushOptions{Terminal: *terminal})
+				return w.Push(ctx, out, errOut, workspace.PushOptions{Terminal: *terminal, SetUpstream: setUpstream})
 			})
 		},
 	}
+	cmd.Flags().BoolVarP(&setUpstream, "set-upstream", "u", false, "push with -u origin <branch> for repos that have no upstream yet")
+	return cmd
 }
 
 func workspaceRebaseCmd(terminal *string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "rebase",
+		Use:   "rebase [branch]",
 		Short: "Git rebase each workspace repo",
+		Long: `Git rebase each workspace repo.
+
+Without [branch]: fetches and runs 'git pull --rebase --autostash' in each
+repo that has a configured upstream. Repos without an upstream are skipped.
+
+With [branch]: runs 'git rebase --autostash <branch>' in each repo using the
+given local ref (branch name, remote-tracking ref, etc.). No fetch is
+performed. Repos where the ref does not resolve are skipped with a notice.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -257,8 +269,12 @@ func workspaceRebaseCmd(terminal *string) *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
+			opts := workspace.RebaseOptions{Terminal: *terminal}
+			if len(args) == 1 {
+				opts.Onto = args[0]
+			}
 			return runWithHooks(ctx, w, "rebase", func() error {
-				return w.Rebase(ctx, out, errOut, workspace.RebaseOptions{Terminal: *terminal})
+				return w.Rebase(ctx, out, errOut, opts)
 			})
 		},
 	}

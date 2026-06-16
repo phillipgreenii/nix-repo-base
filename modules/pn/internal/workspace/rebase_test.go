@@ -103,3 +103,93 @@ url = "github:owner/foo"
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Rebase with Onto field (rebase <branch> local-ref form)
+// ---------------------------------------------------------------------------
+
+// TestRebase_OntoLocalRef verifies that when RebaseOptions.Onto is set the
+// function resolves the ref, runs git rebase --autostash <onto>, and skips
+// fetch/pull entirely.
+func TestRebase_OntoLocalRef(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+
+[repos.bar]
+url = "github:owner/bar"
+`)
+
+	f := exec.NewFakeRunner()
+	// ref resolution succeeds for both repos.
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--verify", "--quiet", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rebase", "--autostash", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--verify", "--quiet", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rebase", "--autostash", "main"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{Onto: "main"}); err != nil {
+		t.Fatalf("Rebase with Onto: %v", err)
+	}
+	calls := f.Calls()
+	// 2 ref-resolve + 2 rebase = 4 total; no fetch or pull calls.
+	if len(calls) != 4 {
+		t.Errorf("expected 4 calls (rev-parse+rebase per repo), got %d", len(calls))
+	}
+	for _, c := range calls {
+		for _, a := range c.Args {
+			if a == "fetch" || a == "pull" {
+				t.Errorf("rebase <branch> form must not call fetch/pull; got %v", c.Args)
+			}
+		}
+	}
+}
+
+// TestRebase_OntoSkipsMissingRef verifies that a repo where the ref does not
+// resolve is skipped with a stderr notice rather than aborting the whole run.
+func TestRebase_OntoSkipsMissingRef(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+
+[repos.bar]
+url = "github:owner/bar"
+`)
+
+	f := exec.NewFakeRunner()
+	// "bar" ref resolves OK.
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--verify", "--quiet", "feature"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rebase", "--autostash", "feature"}, exec.Result{}, nil)
+	// "foo" ref does NOT resolve.
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--verify", "--quiet", "feature"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	// Must not return an error — skip the missing-ref repo.
+	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{Onto: "feature"}); err != nil {
+		t.Fatalf("Rebase with missing ref: expected no error (skip), got %v", err)
+	}
+	// A notice must appear on stderr.
+	if !strings.Contains(errOut.String(), "foo") {
+		t.Errorf("expected stderr notice mentioning skipped repo 'foo'; got: %q", errOut.String())
+	}
+	// No rebase should have been attempted for "foo".
+	for _, c := range f.Calls() {
+		if len(c.Args) >= 2 && c.Args[1] == filepath.Join(root, "foo") {
+			for _, a := range c.Args {
+				if a == "--autostash" {
+					t.Errorf("should not have rebased foo; got %v", c.Args)
+				}
+			}
+		}
+	}
+}
