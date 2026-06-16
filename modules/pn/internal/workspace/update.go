@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/eventlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
@@ -26,6 +27,9 @@ type UpdateOptions struct {
 	// it skips its own determine-ul-lib-dir resolution. Resolve it once per run
 	// via ResolveULLibDir. Empty leaves each script to resolve for itself.
 	ULLibDir string
+	// Log, when non-nil, receives a structured JSONL event stream for the run
+	// (run_start / project_result / run_end). Nil disables event logging.
+	Log *eventlog.Writer
 }
 
 // ResolveULLibDir runs the update-locks lib resolver once and returns the path
@@ -80,6 +84,10 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 		return err
 	}
 	names := ws.topoAlpha(ctx)
+	_ = opts.Log.Emit("info", "run_start", "workspace update started", map[string]any{
+		"terminal": opts.Terminal,
+		"projects": len(names),
+	})
 	// Start from the existing rev-lock so untouched repos keep their entries.
 	revs := make(map[string]LockedRepo, len(names))
 	if ws.revLock != nil {
@@ -98,6 +106,8 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 		// Skip (non-fatal) if the working tree is dirty (modified or staged).
 		if ws.isDirty(ctx, repoDir) {
 			fmt.Fprintf(out, "  ⊘ skipping %s — working tree has uncommitted changes\n", name)
+			_ = opts.Log.Emit("warn", "project_result", "project skipped (dirty working tree)",
+				map[string]any{"name": name, "outcome": "skipped"})
 			continue
 		}
 
@@ -137,7 +147,17 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 
 		if projectFailed {
 			failed = append(failed, name)
+			step := "push"
+			if pullFailed {
+				step = "pull"
+			}
+			_ = opts.Log.Emit("error", "project_result", "project failed", map[string]any{
+				"name": name, "outcome": "failed", "failed_step": step,
+			})
 		} else {
+			_ = opts.Log.Emit("info", "project_result", "project updated", map[string]any{
+				"name": name, "outcome": "ok",
+			})
 			// Capture the new HEAD rev for the rev-lock.
 			rev, err := captureHead(ctx, ws.runner, repoDir)
 			if err == nil && rev != "" {
@@ -154,8 +174,11 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 	}
 
 	if len(failed) > 0 {
+		_ = opts.Log.Emit("error", "run_end", "workspace update finished with failures",
+			map[string]any{"status": "failed", "failed": len(failed), "failed_projects": failed})
 		return fmt.Errorf("update failed in %d project(s): %s", len(failed), strings.Join(failed, ", "))
 	}
+	_ = opts.Log.Emit("info", "run_end", "workspace update finished", map[string]any{"status": "ok", "failed": 0})
 	return nil
 }
 
