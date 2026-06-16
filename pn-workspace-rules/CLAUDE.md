@@ -81,22 +81,30 @@ A failing remote build is **not** a reason to push agent-only branches.
 Workspace-level (operate on every repo in the workspace):
 
 ```text
-pn workspace init                 Scan for git repos; reconcile into pn-workspace.toml
-pn workspace clone                Clone repos from pn-workspace.toml missing on disk
-pn workspace lock                 Derive and write pn-workspace.lock.json
-pn workspace build                Build the current host's system config
-pn workspace apply                Activate (USER ONLY)
-pn workspace pre-commit-check     Run pre-commit checks across all repos
-pn workspace flake-check          Run `nix flake check` across all repos
-pn workspace update               Refresh flake locks across all repos (terminal required)
-pn workspace upgrade              Update + apply (USER ONLY for the apply step)
-pn workspace rebase               Rebase each repo on its remote
-pn workspace format               Run `nix fmt` in each workspace repo
-pn workspace push                 Push each repo (USER-INITIATED ONLY)
-pn workspace status               Per-repo working-tree summary
-pn workspace tree                 Print the workspace dependency DAG (terminal required)
-pn workspace nix -- <nix args>    Run nix with --override-input flags injected
-pn workspace discover             List workspace repos and their paths
+pn workspace init                        Scan for git repos; reconcile into pn-workspace.toml
+pn workspace clone                       Clone repos from pn-workspace.toml missing on disk
+pn workspace lock                        Derive and write pn-workspace.lock.json
+pn workspace build                       Build the current host's system config
+pn workspace apply                       Activate (USER ONLY)
+pn workspace pre-commit-check            Run pre-commit checks across all repos
+pn workspace flake-check                 Run `nix flake check` across all repos
+pn workspace update                      Refresh flake locks across all repos (terminal required)
+pn workspace upgrade                     Update + apply (USER ONLY for the apply step)
+pn workspace rebase                      Rebase each repo onto its remote tracking branch
+pn workspace rebase <branch>             Rebase each repo onto a local ref (no fetch)
+pn workspace format                      Run `nix fmt` in each workspace repo
+pn workspace push                        Push each repo (USER-INITIATED ONLY)
+pn workspace push --set-upstream         Push and set upstream for repos with no remote branch yet
+pn workspace push -u                     Same as --set-upstream (short flag)
+pn workspace status                      Per-repo working-tree summary
+pn workspace tree                        Print the workspace dependency DAG (terminal required)
+pn workspace nix -- <nix args>           Run nix with --override-input flags injected
+pn workspace discover                    List workspace repos and their paths
+pn workspace worktree add <branch>       Create a coordinated worktree set on <branch>
+pn workspace worktree add <branch> <sha> Same, starting from <commit-ish>
+pn workspace worktree list               List existing worktree sets
+pn workspace worktree remove <branch>    Remove a set (alias: rm); does NOT delete the branch
+pn workspace worktree prune              Prune stale git worktree admin entries across all repos
 ```
 
 All subcommands accept `--terminal <name>` to override `workspace.terminal`.
@@ -121,3 +129,90 @@ Every config-path read in pn goes through an environment variable (with a sensib
 3. Walk upward from the current working directory until a directory containing `pn-workspace.toml` is found.
 
 Once resolved, `pn` exports the root as both `PN_WORKSPACE_ROOT` and `WORKSPACE_ROOT` into every subprocess it spawns (hooks, `update-locks.sh`, etc.).
+
+**Caveat for coordinated worktree sets:** if `PN_WORKSPACE_ROOT` is already exported pointing at the _canonical_ workspace root, it defeats the cd-into-set model — `pn` reads it first (step 2) and resolves the primary workspace instead of the set. When working inside a set, either **unset** `PN_WORKSPACE_ROOT` (the upward search at step 3 will find the set's own `pn-workspace.toml`) or set it explicitly to the set directory. See [Coordinated Worktree Sets](#coordinated-worktree-sets) below.
+
+## Coordinated Worktree Sets
+
+A **coordinated worktree set** is a directory that acts as a complete, self-contained workspace whose repos are git worktrees — all on the same feature branch. It lets an agent work a cross-repo feature in isolation without touching the canonical checkouts.
+
+### How a set is laid out
+
+```text
+<canonical_root>/.worktrees/<branch>/    # location set by worktrees_dir (default .worktrees)
+├── pn-workspace.toml                    # copied from canonical
+├── pn-workspace.lock.json               # copied from canonical
+├── pn-workspace.revs.json               # copied; rewritten here by `update`
+├── phillipg-nix-repo-base/              # git worktree @ <branch>
+├── phillipgreenii-nix-support-apps/     # git worktree @ <branch>
+└── …                                    # one worktree per repo in the config
+```
+
+A set always contains **every** repo listed in `pn-workspace.toml` (subsetting is a deferred follow-up, pg2-dirg). Directory names match the `[repos.<key>]` map keys exactly.
+
+### The cd-into-set workflow
+
+```bash
+# From the canonical workspace root:
+pn workspace worktree add my-feature          # create the set; all repos on my-feature
+cd .worktrees/my-feature                      # enter the set
+# unset PN_WORKSPACE_ROOT if it was pointing at the canonical root
+unset PN_WORKSPACE_ROOT
+
+# All normal pn workspace verbs now operate on the set's worktrees:
+pn workspace status
+pn workspace build
+pn workspace rebase main                      # rebase each worktree's branch onto local main
+pn workspace push --set-upstream              # publish my-feature to origin for the first time
+pn workspace update                           # pull + relock inside the set
+```
+
+The set is itself an ordinary workspace root. `pn workspace` verbs "just work" because upward search finds the set's own `pn-workspace.toml` and all repo paths resolve to `{set}/{repo}`. No command-specific worktree logic exists — the verbs are unchanged.
+
+### `pn workspace worktree` commands
+
+| Command                                             | What it does                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pn workspace worktree add <branch> [<commit-ish>]` | Create a set under `worktrees_dir/<branch>`. Pre-flights: every repo must exist on disk; set dir must not exist; `<branch>` must not be checked out in any other worktree. If `<branch>` does not exist it is created from `<commit-ish>` (default: canonical `HEAD`), mirroring `git worktree add`. |
+| `pn workspace worktree list`                        | List existing sets under `worktrees_dir`.                                                                                                                                                                                                                                                            |
+| `pn workspace worktree remove <branch>`             | Remove all worktrees in the set and delete the set directory. Alias: `rm`. Mirrors `git worktree remove`: refuses dirty/locked worktrees unless `--force`. **Does NOT delete the branch.**                                                                                                           |
+| `pn workspace worktree prune`                       | Run `git worktree prune` in every canonical repo, clearing stale `.git/worktrees` admin entries left when a set was deleted manually or a partial `add` failed.                                                                                                                                      |
+
+### `rebase [branch]` and `push --set-upstream`
+
+These two enhancements are the natural workflow companions for a fresh set:
+
+- **`pn workspace rebase`** (no arg) — unchanged: fetches and runs `git pull --rebase --autostash` onto each repo's remote tracking branch. Skipped for repos with no upstream (a freshly `-b`-created branch has none yet).
+- **`pn workspace rebase <branch>`** — rebase each repo's current branch onto the given local ref. No fetch. Any git ref works (`main`, `origin/main`, another worktree's branch). Repos where the ref does not resolve are skipped with a notice. Use `pn workspace rebase main` to sync a set's feature branches onto local `main`.
+- **`pn workspace push --set-upstream`** (or `-u`) — for repos that have no upstream yet, runs `git push -u origin <current-branch>`. Without the flag, repos with no upstream are silently skipped. This is the explicit one-time step to publish a fresh set's branches; afterwards plain `push`/`rebase`/`update` track normally.
+
+### `PN_WORKSPACE_ROOT` must be unset (or point at the set)
+
+Because `PN_WORKSPACE_ROOT` is checked before the upward walk, a shell session that already has it pointing at the canonical root will silently operate on the primary workspace rather than the set. Rule:
+
+- **Unset it** (preferred): `unset PN_WORKSPACE_ROOT` — the upward walk from `{set}` finds the set's own `pn-workspace.toml`.
+- **Or set it to the set directory**: `export PN_WORKSPACE_ROOT=/path/to/.worktrees/my-feature`.
+
+Never run `pn workspace` verbs from inside a set while `PN_WORKSPACE_ROOT` points at the canonical root.
+
+### `WORKSPACE_ROOT` and `update-locks.sh`
+
+After resolving the root, `pn` force-exports `PN_WORKSPACE_ROOT` and `WORKSPACE_ROOT` (set to the resolved root) into every subprocess it spawns. However, `update-locks.sh` **recomputes** `WORKSPACE_ROOT` from its own `SCRIPT_DIR/..` at startup (`WORKSPACE_ROOT="${SCRIPT_DIR}/.."`) — it does not use `pn`'s exported value. This is correct because `pn` invokes `update-locks.sh` with its working directory set to `{set}/{repo}`, so `SCRIPT_DIR` resolves into the set and `SCRIPT_DIR/..` is the set root.
+
+**Consequence for hook and script authors:** do not hard-code or rely on `PN_WORKSPACE_ROOT`/`WORKSPACE_ROOT` being stable if you recompute the workspace root from `SCRIPT_DIR`. Ensure your script's `SCRIPT_DIR` is inside the set (i.e. workspace-relative, not an absolute canonical path) so the recomputed root stays within the set.
+
+### Absolute paths in hooks — stay workspace-relative
+
+Hooks copied into the set (`{set}/pn-workspace.toml` carries the hook config; the hook scripts live under `{set}/{repo}`) fire with set-root semantics. A hook that builds paths as `{root}/{repo}` (where `root` is resolved from cwd or `PN_WORKSPACE_ROOT`) stays within the set and respects P1. A hook that **hard-codes an absolute canonical path** (e.g. `/Users/me/workspace/phillipg-nix-repo-base/...`) escapes the set and may violate P1.
+
+**Rule:** hooks must use workspace-relative path construction, not hard-coded absolute canonical paths.
+
+### P1 — the primary checkouts are never modified
+
+**P1 guarantee:** no `pn workspace` verb run from inside a set modifies the canonical (primary) checkouts' working state. Specifically, for every canonical checkout `{canonical_root}/{repo}`: its `HEAD`, checked-out branch, index, and working-tree files are unchanged, and no entry is added to its HEAD/branch reflog.
+
+This holds **structurally**: when `pn` is rooted at a set, every repo path it constructs is `{set}/{repo}`. The canonical path `{canonical_root}/{repo}` is never produced — no verb can address what it never constructs.
+
+**Deliberate carve-out:** `update`/`rebase` run `git fetch`/`git pull` on the set's worktrees, which updates **shared** remote-tracking refs (`refs/remotes/origin/*`) and `FETCH_HEAD`. These are observable from the canonical checkout but never alter its working tree, index, HEAD, or checked-out branch. New commits and branches created in the set land in the shared object store (expected — that is the feature work). P1 protects the primary's **working state**, not the shared object store.
+
+**Practical meaning for agents:** you can work a cross-repo feature branch in full isolation. Running `build`, `update`, `rebase`, `push`, `format`, `flake-check`, and all other verbs from inside the set will not disturb what is checked out in the primary workspace.

@@ -131,6 +131,15 @@ Activation requires no consumer change: any machine that imports `agent-support/
 
 ## Rule content (`pn-workspace-rules.md`)
 
+> **Source of truth:** the rendered agent-rules file is
+> `pn-workspace-rules/CLAUDE.md` in `phillipg-nix-repo-base`. The snapshot
+> below reflects the original design from 2026-05-18. For the current content
+> — including the **Coordinated Worktree Sets** section added in pg2-4kto
+> (cd-into-set workflow, `PN_WORKSPACE_ROOT` caveat, `WORKSPACE_ROOT`
+> recompute-from-`SCRIPT_DIR` note, absolute-path-in-hooks caveat, and the P1
+> guarantee) — read `pn-workspace-rules/CLAUDE.md` directly. The design doc
+> section below is kept for historical context; it is not maintained in sync.
+
 ````markdown
 # pn-workspace Conventions for Agents
 
