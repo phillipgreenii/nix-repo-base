@@ -42,7 +42,7 @@ type WorktreePruneOptions struct{}
 // It pre-flights all checks before creating anything, then runs git worktree add
 // in each canonical repo (in deterministic order), and copies pn-workspace.toml,
 // pn-workspace.lock.json, and pn-workspace.revs.json into the set directory.
-func (w *Workspace) WorktreeAdd(ctx context.Context, out io.Writer, opts WorktreeAddOptions) error {
+func (w *Workspace) WorktreeAdd(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreeAddOptions) error {
 	branch := opts.Branch
 	setDir := filepath.Join(w.WorktreesDir(), branch)
 	names := orderedRepoNames(w.Config().Repos)
@@ -121,7 +121,7 @@ func (w *Workspace) WorktreeAdd(ctx context.Context, out io.Writer, opts Worktre
 
 // WorktreeList lists the worktree sets under w.WorktreesDir(), one per line.
 // If the worktrees directory does not exist, nothing is printed (not an error).
-func (w *Workspace) WorktreeList(ctx context.Context, out io.Writer, opts WorktreeListOptions) error {
+func (w *Workspace) WorktreeList(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreeListOptions) error {
 	wtDir := w.WorktreesDir()
 	entries, err := os.ReadDir(wtDir)
 	if err != nil {
@@ -145,7 +145,7 @@ func (w *Workspace) WorktreeList(ctx context.Context, out io.Writer, opts Worktr
 // It mirrors git worktree remove: relies on git's dirty/locked refusal unless --force.
 // Deletes the set directory after all git worktree removes succeed.
 // Does NOT delete any branches.
-func (w *Workspace) WorktreeRemove(ctx context.Context, out io.Writer, opts WorktreeRemoveOptions) error {
+func (w *Workspace) WorktreeRemove(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreeRemoveOptions) error {
 	branch := opts.Branch
 	setDir := filepath.Join(w.WorktreesDir(), branch)
 
@@ -184,7 +184,7 @@ func (w *Workspace) WorktreeRemove(ctx context.Context, out io.Writer, opts Work
 // WorktreePrune runs git worktree prune in every canonical repo, clearing
 // stale .git/worktrees admin entries left when a set dir was deleted manually
 // or a partial add failed.
-func (w *Workspace) WorktreePrune(ctx context.Context, out io.Writer, opts WorktreePruneOptions) error {
+func (w *Workspace) WorktreePrune(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreePruneOptions) error {
 	names := orderedRepoNames(w.Config().Repos)
 	for _, repo := range names {
 		fmt.Fprintf(out, "  --== worktree prune %s ==--  \n", repo)

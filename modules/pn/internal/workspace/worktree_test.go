@@ -90,8 +90,8 @@ func TestWorktreeAdd_PreflightMissingRepo(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	var out bytes.Buffer
-	err = w.WorktreeAdd(context.Background(), &out, WorktreeAddOptions{Branch: "feature"})
+	var out, errOut bytes.Buffer
+	err = w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"})
 	if err == nil {
 		t.Fatal("expected error for missing canonical repo, got nil")
 	}
@@ -124,8 +124,8 @@ func TestWorktreeAdd_PreflightSetDirExists(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	var out bytes.Buffer
-	err = w.WorktreeAdd(context.Background(), &out, WorktreeAddOptions{Branch: "feature"})
+	var out, errOut bytes.Buffer
+	err = w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"})
 	if err == nil {
 		t.Fatal("expected error when set dir already exists, got nil")
 	}
@@ -156,8 +156,8 @@ func TestWorktreeAdd_PreflightBranchCheckedOut(t *testing.T) {
 	// foo: branch IS already checked out
 	addWorktreeListWithBranch(f, filepath.Join(root, "foo"), "feature")
 
-	var out bytes.Buffer
-	err = w.WorktreeAdd(context.Background(), &out, WorktreeAddOptions{Branch: "feature"})
+	var out, errOut bytes.Buffer
+	err = w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"})
 	if err == nil {
 		t.Fatal("expected error when branch already checked out, got nil")
 	}
@@ -212,9 +212,12 @@ url = "github:owner/bar"
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
 
-	var out bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, WorktreeAddOptions{Branch: "feature"}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"}); err != nil {
 		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	// Verify git args: should use -b form without commit-ish.
@@ -292,9 +295,12 @@ url = "github:owner/bar"
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet, "abc1234"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet, "abc1234"}, exec.Result{}, nil)
 
-	var out bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, WorktreeAddOptions{Branch: "feature", CommitIsh: "abc1234"}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature", CommitIsh: "abc1234"}); err != nil {
 		t.Fatalf("WorktreeAdd with commit-ish: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	// Verify commit-ish appended.
@@ -343,9 +349,12 @@ url = "github:owner/bar"
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", barSet, "feature"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", fooSet, "feature"}, exec.Result{}, nil)
 
-	var out bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, WorktreeAddOptions{Branch: "feature"}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"}); err != nil {
 		t.Fatalf("WorktreeAdd existing branch: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	// Verify no -b flag.
@@ -390,9 +399,12 @@ func TestWorktreeRemove_HappyPath(t *testing.T) {
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "remove", barSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "remove", fooSet}, exec.Result{}, nil)
 
-	var out bytes.Buffer
-	if err := w.WorktreeRemove(context.Background(), &out, WorktreeRemoveOptions{Branch: "feature"}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeRemove(context.Background(), &out, &errOut, WorktreeRemoveOptions{Branch: "feature"}); err != nil {
 		t.Fatalf("WorktreeRemove: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	// Set dir should be gone.
@@ -437,9 +449,12 @@ func TestWorktreeRemove_ForceFlag(t *testing.T) {
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "remove", barSet, "--force"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "remove", fooSet, "--force"}, exec.Result{}, nil)
 
-	var out bytes.Buffer
-	if err := w.WorktreeRemove(context.Background(), &out, WorktreeRemoveOptions{Branch: "feature", Force: true}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeRemove(context.Background(), &out, &errOut, WorktreeRemoveOptions{Branch: "feature", Force: true}); err != nil {
 		t.Fatalf("WorktreeRemove --force: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	// Verify --force was passed.
@@ -488,9 +503,12 @@ func TestWorktreeRemove_NoForceFlag(t *testing.T) {
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "remove", barSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "remove", fooSet}, exec.Result{}, nil)
 
-	var out bytes.Buffer
-	if err := w.WorktreeRemove(context.Background(), &out, WorktreeRemoveOptions{Branch: "feature", Force: false}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeRemove(context.Background(), &out, &errOut, WorktreeRemoveOptions{Branch: "feature", Force: false}); err != nil {
 		t.Fatalf("WorktreeRemove (no force): %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	// Verify --force was NOT appended.
@@ -515,7 +533,7 @@ func TestWorktreeRemove_SetDirMissing(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	err = w.WorktreeRemove(context.Background(), &bytes.Buffer{}, WorktreeRemoveOptions{Branch: "nonexistent"})
+	err = w.WorktreeRemove(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorktreeRemoveOptions{Branch: "nonexistent"})
 	if err == nil {
 		t.Fatal("expected error when set dir doesn't exist, got nil")
 	}
@@ -539,9 +557,12 @@ func TestWorktreePrune_RunsInEachRepo(t *testing.T) {
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "prune"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "prune"}, exec.Result{}, nil)
 
-	var out bytes.Buffer
-	if err := w.WorktreePrune(context.Background(), &out, WorktreePruneOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreePrune(context.Background(), &out, &errOut, WorktreePruneOptions{}); err != nil {
 		t.Fatalf("WorktreePrune: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	calls := f.Calls()
@@ -583,9 +604,12 @@ func TestWorktreeList_ListsSets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var out bytes.Buffer
-	if err := w.WorktreeList(context.Background(), &out, WorktreeListOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeList(context.Background(), &out, &errOut, WorktreeListOptions{}); err != nil {
 		t.Fatalf("WorktreeList: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	output := out.String()
@@ -608,9 +632,12 @@ func TestWorktreeList_NoWorktreesDir(t *testing.T) {
 	}
 
 	// Do NOT create worktrees_dir — expect no error and empty output.
-	var out bytes.Buffer
-	if err := w.WorktreeList(context.Background(), &out, WorktreeListOptions{}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeList(context.Background(), &out, &errOut, WorktreeListOptions{}); err != nil {
 		t.Fatalf("WorktreeList with no dir: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 	if out.Len() != 0 {
 		t.Errorf("expected empty output when worktrees_dir missing; got: %q", out.String())
@@ -651,9 +678,12 @@ url = "github:owner/bar"
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
 
-	var out bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, WorktreeAddOptions{Branch: "feature"}); err != nil {
+	var out, errOut bytes.Buffer
+	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"}); err != nil {
 		t.Fatalf("WorktreeAdd without revs file: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
 	// RevLock should NOT be in the set dir (was absent in canonical).

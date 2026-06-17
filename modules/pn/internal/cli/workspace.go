@@ -475,7 +475,7 @@ func workspaceWorktreeAddCmd(terminal *string) *cobra.Command {
 			if len(args) == 2 {
 				opts.CommitIsh = args[1]
 			}
-			return w.WorktreeAdd(cmd.Context(), cmd.OutOrStdout(), opts)
+			return w.WorktreeAdd(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), opts)
 		},
 	}
 }
@@ -491,7 +491,7 @@ func workspaceWorktreeListCmd() *cobra.Command {
 				return err
 			}
 			defer w.Close()
-			return w.WorktreeList(cmd.Context(), cmd.OutOrStdout(), workspace.WorktreeListOptions{})
+			return w.WorktreeList(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workspace.WorktreeListOptions{})
 		},
 	}
 }
@@ -509,7 +509,7 @@ func workspaceWorktreeRemoveCmd() *cobra.Command {
 				return err
 			}
 			defer w.Close()
-			return w.WorktreeRemove(cmd.Context(), cmd.OutOrStdout(), workspace.WorktreeRemoveOptions{
+			return w.WorktreeRemove(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workspace.WorktreeRemoveOptions{
 				Branch: args[0],
 				Force:  force,
 			})
@@ -530,7 +530,7 @@ func workspaceWorktreePruneCmd() *cobra.Command {
 				return err
 			}
 			defer w.Close()
-			return w.WorktreePrune(cmd.Context(), cmd.OutOrStdout(), workspace.WorktreePruneOptions{})
+			return w.WorktreePrune(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workspace.WorktreePruneOptions{})
 		},
 	}
 }
