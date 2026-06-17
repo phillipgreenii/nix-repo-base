@@ -114,17 +114,37 @@ func TestAllWorkspaceCommands_OpenFailurePropagates(t *testing.T) {
 	}
 	t.Cleanup(func() { openWorkspace = orig })
 
-	cmds := []string{
-		"status", "init", "clone", "lock", "build", "apply",
-		"flake-check", "pre-commit-check", "push", "rebase", "format",
-		"tree", "update", "upgrade", "discover",
+	type cmdEntry struct {
+		name string
+		args []string
 	}
-	for _, sub := range cmds {
-		sub := sub
-		t.Run(sub, func(t *testing.T) {
-			_, _, err := runCobraCmd(t, []string{sub})
+	cmds := []cmdEntry{
+		{"status", []string{"status"}},
+		{"init", []string{"init"}},
+		{"clone", []string{"clone"}},
+		{"lock", []string{"lock"}},
+		{"build", []string{"build"}},
+		{"apply", []string{"apply"}},
+		{"flake-check", []string{"flake-check"}},
+		{"pre-commit-check", []string{"pre-commit-check"}},
+		{"push", []string{"push"}},
+		{"rebase", []string{"rebase"}},
+		{"format", []string{"format"}},
+		{"tree", []string{"tree"}},
+		{"update", []string{"update"}},
+		{"upgrade", []string{"upgrade"}},
+		{"discover", []string{"discover"}},
+		{"worktree list", []string{"worktree", "list"}},
+		{"worktree prune", []string{"worktree", "prune"}},
+		{"worktree add", []string{"worktree", "add", "my-branch"}},
+		{"worktree remove", []string{"worktree", "remove", "my-branch"}},
+	}
+	for _, tc := range cmds {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := runCobraCmd(t, tc.args)
 			if err == nil {
-				t.Errorf("%s: expected error when workspace open fails, got nil", sub)
+				t.Errorf("%s: expected error when workspace open fails, got nil", tc.name)
 			}
 		})
 	}
@@ -728,6 +748,185 @@ func TestWorkspaceDiscover_NoTerminalNoError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// worktree add
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceWorktreeAdd_BranchArgRequired(t *testing.T) {
+	// worktree add with no positional args must be rejected by cobra (RangeArgs(1,2)).
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "add"})
+	if err == nil {
+		t.Error("worktree add with no args: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreeAdd_TooManyArgsRejected(t *testing.T) {
+	// worktree add accepts at most 2 positional args (branch + commit-ish).
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "add", "my-branch", "abc123", "extra"})
+	if err == nil {
+		t.Error("worktree add with 3 positional args: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreeAdd_FlagTerminalFlows(t *testing.T) {
+	// --terminal is the persistent parent flag; it must be accepted without
+	// "unknown flag" on the worktree add subcommand.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "add", "--terminal", "myterm", "my-branch"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("worktree add --terminal: persistent flag not inherited: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreeAdd_OpenFailurePropagates(t *testing.T) {
+	orig := openWorkspace
+	openWorkspace = func() (*workspace.Workspace, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { openWorkspace = orig })
+
+	_, _, err := runCobraCmd(t, []string{"worktree", "add", "my-branch"})
+	if err == nil {
+		t.Error("worktree add: expected error when workspace open fails, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// worktree list
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceWorktreeList_NoArgsAccepted(t *testing.T) {
+	// worktree list takes no args and exits 0 when the worktrees dir is absent.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "list"})
+	if err != nil {
+		t.Errorf("worktree list on empty workspace: unexpected error: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreeList_TooManyArgsRejected(t *testing.T) {
+	// worktree list is cobra.NoArgs; extra positional args must error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "list", "extra"})
+	if err == nil {
+		t.Error("worktree list with extra arg: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreeList_FlagTerminalFlows(t *testing.T) {
+	// --terminal is the persistent parent flag; it must be accepted without error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "list", "--terminal", "myterm"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("worktree list --terminal: persistent flag not inherited: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreeList_OpenFailurePropagates(t *testing.T) {
+	orig := openWorkspace
+	openWorkspace = func() (*workspace.Workspace, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { openWorkspace = orig })
+
+	_, _, err := runCobraCmd(t, []string{"worktree", "list"})
+	if err == nil {
+		t.Error("worktree list: expected error when workspace open fails, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// worktree remove
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceWorktreeRemove_BranchArgRequired(t *testing.T) {
+	// worktree remove requires exactly 1 positional arg.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "remove"})
+	if err == nil {
+		t.Error("worktree remove with no args: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreeRemove_TooManyArgsRejected(t *testing.T) {
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "remove", "my-branch", "extra"})
+	if err == nil {
+		t.Error("worktree remove with 2 positional args: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreeRemove_ForceFlagAccepted(t *testing.T) {
+	// --force must be accepted without "unknown flag" error.
+	// The command will fail because the set dir does not exist, but NOT due to an
+	// unknown flag.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "remove", "--force", "my-branch"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("worktree remove --force: flag not wired: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreeRemove_FlagTerminalFlows(t *testing.T) {
+	// --terminal is the persistent parent flag; it must be accepted.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "remove", "--terminal", "myterm", "my-branch"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("worktree remove --terminal: persistent flag not inherited: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreeRemove_OpenFailurePropagates(t *testing.T) {
+	orig := openWorkspace
+	openWorkspace = func() (*workspace.Workspace, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { openWorkspace = orig })
+
+	_, _, err := runCobraCmd(t, []string{"worktree", "remove", "my-branch"})
+	if err == nil {
+		t.Error("worktree remove: expected error when workspace open fails, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// worktree prune
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceWorktreePrune_NoArgsAccepted(t *testing.T) {
+	// worktree prune takes no args; with no repos the command exits 0 (no-op).
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "prune"})
+	if err != nil {
+		t.Errorf("worktree prune on empty workspace: unexpected error: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreePrune_TooManyArgsRejected(t *testing.T) {
+	// worktree prune is cobra.NoArgs; extra args must error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "prune", "extra"})
+	if err == nil {
+		t.Error("worktree prune with extra arg: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreePrune_FlagTerminalFlows(t *testing.T) {
+	// --terminal is the persistent parent flag; it must be accepted.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "prune", "--terminal", "myterm"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("worktree prune --terminal: persistent flag not inherited: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreePrune_OpenFailurePropagates(t *testing.T) {
+	orig := openWorkspace
+	openWorkspace = func() (*workspace.Workspace, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { openWorkspace = orig })
+
+	_, _, err := runCobraCmd(t, []string{"worktree", "prune"})
+	if err == nil {
+		t.Error("worktree prune: expected error when workspace open fails, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Persistent --terminal flag wiring: verify it is truly persistent
 // (inherited by every subcommand via the parent ws command)
 // ---------------------------------------------------------------------------
@@ -736,10 +935,30 @@ func TestPersistentTerminalFlag_IsInheritedByAllSubcommands(t *testing.T) {
 	// For each subcommand that accepts --terminal, invoke it with the flag and
 	// assert the flag is not rejected. Commands that are required-terminal will
 	// fail for other reasons (no real terminal dir) but NOT with "unknown flag".
-	subcommands := []string{
-		"status", "init", "clone", "lock",
-		"build", "apply", "flake-check", "pre-commit-check",
-		"push", "rebase", "format", "tree", "update", "upgrade", "discover",
+	type subEntry struct {
+		name string
+		args []string
+	}
+	subcommands := []subEntry{
+		{"status", []string{"status", "--terminal", "sentinel"}},
+		{"init", []string{"init", "--terminal", "sentinel"}},
+		{"clone", []string{"clone", "--terminal", "sentinel"}},
+		{"lock", []string{"lock", "--terminal", "sentinel"}},
+		{"build", []string{"build", "--terminal", "sentinel"}},
+		{"apply", []string{"apply", "--terminal", "sentinel"}},
+		{"flake-check", []string{"flake-check", "--terminal", "sentinel"}},
+		{"pre-commit-check", []string{"pre-commit-check", "--terminal", "sentinel"}},
+		{"push", []string{"push", "--terminal", "sentinel"}},
+		{"rebase", []string{"rebase", "--terminal", "sentinel"}},
+		{"format", []string{"format", "--terminal", "sentinel"}},
+		{"tree", []string{"tree", "--terminal", "sentinel"}},
+		{"update", []string{"update", "--terminal", "sentinel"}},
+		{"upgrade", []string{"upgrade", "--terminal", "sentinel"}},
+		{"discover", []string{"discover", "--terminal", "sentinel"}},
+		{"worktree add", []string{"worktree", "add", "--terminal", "sentinel", "my-branch"}},
+		{"worktree list", []string{"worktree", "list", "--terminal", "sentinel"}},
+		{"worktree remove", []string{"worktree", "remove", "--terminal", "sentinel", "my-branch"}},
+		{"worktree prune", []string{"worktree", "prune", "--terminal", "sentinel"}},
 	}
 
 	orig := openWorkspace
@@ -747,14 +966,14 @@ func TestPersistentTerminalFlag_IsInheritedByAllSubcommands(t *testing.T) {
 
 	for _, sub := range subcommands {
 		sub := sub
-		t.Run(sub, func(t *testing.T) {
+		t.Run(sub.name, func(t *testing.T) {
 			fr := exec.NewFakeRunner()
 			w := newTestWorkspace(t, fr, minimalToml)
 			openWorkspace = func() (*workspace.Workspace, error) { return w, nil }
 
-			_, _, err := runCobraCmd(t, []string{sub, "--terminal", "sentinel"})
+			_, _, err := runCobraCmd(t, sub.args)
 			if err != nil && strings.Contains(err.Error(), "unknown flag") {
-				t.Errorf("%s: --terminal flag not wired (persistent flag missing): %v", sub, err)
+				t.Errorf("%s: --terminal flag not wired (persistent flag missing): %v", sub.name, err)
 			}
 		})
 	}
