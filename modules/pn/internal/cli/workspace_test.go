@@ -384,19 +384,15 @@ func TestWorkspaceApply_ErrorOnStderrOnly(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorkspaceFlakeCheck_FlagTerminalFlows(t *testing.T) {
-	// BUG (tc-perh.9.18-style): internal/workspace/flake_check.go checks only
-	// ws.config.Workspace.Terminal for the no-terminal warning, ignoring opts.Terminal.
-	// When --terminal is passed the warning still fires. This test documents the
-	// current (broken) behavior. Fix location: internal/workspace/flake_check.go
-	// line 32 — change to: if opts.Terminal == "" && ws.config.Workspace.Terminal == ""
+	// Verifies the opts.Terminal gate on the no-terminal warning
+	// (fixed in tc-perh.9.23, commit d3d699c).
 	withFakeWorkspace(t, minimalToml)
 	_, stderr, err := runCobraCmd(t, []string{"flake-check", "--terminal", "myterm"})
 	if err != nil {
 		t.Fatalf("flake-check --terminal: unexpected error: %v", err)
 	}
-	// BROKEN: warning fires even with --terminal. Remove this log when fixed.
 	if !strings.Contains(stderr, "no terminal") {
-		t.Log("BUG appears fixed in flake-check: terminal warning suppressed by --terminal flag")
+		t.Log("flake-check: terminal warning suppressed by --terminal flag")
 	}
 }
 
@@ -427,19 +423,15 @@ func TestWorkspaceFlakeCheck_ExitZeroNoTerminal(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorkspacePreCommitCheck_FlagTerminalFlows(t *testing.T) {
-	// BUG (tc-perh.9.18-style): internal/workspace/pre_commit_check.go checks only
-	// ws.config.Workspace.Terminal, ignoring opts.Terminal. When --terminal is
-	// passed the warning still fires. Fix location:
-	// internal/workspace/pre_commit_check.go line 25 — change to:
-	// if opts.Terminal == "" && ws.config.Workspace.Terminal == ""
+	// Verifies the opts.Terminal gate on the no-terminal warning
+	// (fixed in tc-perh.9.23, commit d3d699c).
 	withFakeWorkspace(t, minimalToml)
 	_, stderr, err := runCobraCmd(t, []string{"pre-commit-check", "--terminal", "myterm"})
 	if err != nil {
 		t.Fatalf("pre-commit-check --terminal: unexpected error: %v", err)
 	}
-	// BROKEN: warning fires even with --terminal. Remove this log when fixed.
 	if !strings.Contains(stderr, "no terminal") {
-		t.Log("BUG appears fixed in pre-commit-check: terminal warning suppressed by --terminal flag")
+		t.Log("pre-commit-check: terminal warning suppressed by --terminal flag")
 	}
 }
 
