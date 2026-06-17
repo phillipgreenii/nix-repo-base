@@ -120,6 +120,19 @@ rec {
       # Human-facing base; the per-source digest is appended for uniqueness.
       baseVersion ? "0.0.0",
       ldflags ? [ ],
+      # First-party modules pulled in via a local `replace => <relPath>` directive.
+      # buildGoModule's `go mod vendor` copies these into the vendorHash-pinned
+      # `-go-modules` FOD, which FREEZES them: the FOD is content-addressed by
+      # (constant name, vendorHash), so it is never rebuilt on a source edit and the
+      # build silently compiles a stale copy (or, after a GC, fails with a hash
+      # mismatch) — every local edit otherwise forces a manual `vendorHash` bump.
+      # See bead pg2-gjzz for the full write-up. To keep local code "live" we:
+      #   1. strip each module from the FOD (so its hash tracks ONLY third-party
+      #      deps and never drifts on a local edit), and
+      #   2. overlay the current source back into `vendor/` at build time.
+      # Each entry: { goImportPath = "github.com/org/mod"; relPath = "../mod"; }
+      # where relPath is relative to modRoot (the build's working directory).
+      localReplaceModules ? [ ],
       ...
     }@args:
     let
@@ -135,7 +148,31 @@ rec {
         "ldflags"
         "version"
         "vendorHash"
+        "localReplaceModules"
       ];
+      # (1) Drop the local module's contents from the FOD, AFTER `go mod vendor`
+      #     has run (cwd = modRoot, vendor/ still local) and BEFORE it is copied to
+      #     $out. vendor/modules.txt keeps listing the module; only its files go,
+      #     so the FOD hash no longer depends on first-party source.
+      stripLocalFromModules = lib.concatMapStringsSep "\n" (m: ''
+        rm -rf "vendor/${m.goImportPath}"
+      '') localReplaceModules;
+      # (2) After buildGoModule's configurePhase copies the FOD into ./vendor,
+      #     overlay the live source so the build always sees current local code.
+      #     The FOD is copied read-only from the store, so make vendor/ writable
+      #     first (else creating the overlaid dir fails with EACCES). The per-module
+      #     chmod + go.mod/go.sum strip keeps the copy a valid vendored dep (vendored
+      #     modules must not carry their own module files).
+      overlayLocalModules = ''
+        chmod -R u+w vendor
+      ''
+      + lib.concatMapStringsSep "\n" (m: ''
+        rm -rf "vendor/${m.goImportPath}"
+        mkdir -p "$(dirname "vendor/${m.goImportPath}")"
+        cp -r --reflink=auto "${m.relPath}" "vendor/${m.goImportPath}"
+        chmod -R u+w "vendor/${m.goImportPath}"
+        rm -f "vendor/${m.goImportPath}/go.mod" "vendor/${m.goImportPath}/go.sum"
+      '') localReplaceModules;
     in
     pkgs.buildGoModule (
       forwarded
@@ -143,8 +180,18 @@ rec {
         inherit version vendorHash;
         ldflags = ldflags ++ [ "-X ${versionPath}=${version}" ];
         passthru = (args.passthru or { }) // {
-          overrideModAttrs = _: { name = "${pname}-go-modules"; };
+          overrideModAttrs =
+            _:
+            {
+              name = "${pname}-go-modules";
+            }
+            // lib.optionalAttrs (localReplaceModules != [ ]) {
+              postBuild = stripLocalFromModules;
+            };
         };
+      }
+      // lib.optionalAttrs (localReplaceModules != [ ]) {
+        postConfigure = (args.postConfigure or "") + "\n" + overlayLocalModules;
       }
     );
 }
