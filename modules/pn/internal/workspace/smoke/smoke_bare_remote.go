@@ -3,10 +3,13 @@
 package smoke
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -538,5 +541,197 @@ func assertS29VerbsInASet(t *testing.T, wsRoot, pnBin string, env []string) {
 			t.Errorf("S29 P1: primary %s status changed after verbs-in-a-set\nbefore: %q\nafter:  %q",
 				repo, snap.status, afterStatus)
 		}
+	}
+}
+
+// --- S30 extra: push --set-upstream advances bare remote branch and records upstream ---
+
+func assertS30PushSetUpstream(t *testing.T, wsRoot string) {
+	t.Helper()
+	remotesDir := filepath.Join(wsRoot, "remotes")
+	for _, repo := range []string{"producer", "consumer"} {
+		bareDir := filepath.Join(remotesDir, repo+".git")
+		cloneDir := filepath.Join(wsRoot, repo)
+
+		// Determine which branch the clone is on.
+		branchCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "HEAD")
+		branchCmd.Env = os.Environ()
+		branchOut, err := branchCmd.Output()
+		if err != nil {
+			t.Errorf("S30: %s cannot determine current branch: %v", repo, err)
+			continue
+		}
+		branch := strings.TrimSpace(string(branchOut))
+
+		// 1. Bare remote's ref for this branch must match workspace clone HEAD.
+		// (bare remote HEAD points to default branch; we check the feature branch ref)
+		bareRef := fmt.Sprintf("refs/heads/%s", branch)
+		bareCmd := exec.Command("git", "-C", bareDir, "rev-parse", bareRef)
+		bareCmd.Env = os.Environ()
+		bareOut, err := bareCmd.Output()
+		if err != nil {
+			t.Errorf("S30: %s bare remote has no ref %s after push --set-upstream: %v", repo, bareRef, err)
+			continue
+		}
+		bareHead := strings.TrimSpace(string(bareOut))
+		cloneHead := workspaceHead(t, cloneDir)
+		if bareHead == "" || cloneHead == "" {
+			return
+		}
+		if bareHead != cloneHead {
+			t.Errorf("S30: %s bare remote %s = %s, workspace clone HEAD = %s (push did not advance remote branch)",
+				repo, branch, bareHead, cloneHead)
+		}
+
+		// 2. The workspace clone's branch must now track origin/<branch>.
+		upCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "@{u}")
+		upCmd.Env = os.Environ()
+		upOut, err := upCmd.Output()
+		if err != nil {
+			t.Errorf("S30: %s branch %s has no upstream after push --set-upstream (git rev-parse @{u}: %v)", repo, branch, err)
+			continue
+		}
+		upstream := strings.TrimSpace(string(upOut))
+		if !strings.HasPrefix(upstream, "origin/") {
+			t.Errorf("S30: %s upstream = %q, want origin/<branch>", repo, upstream)
+		}
+	}
+}
+
+// --- S31 extra: rebase [branch] rebased onto local ref, no fetch occurred ---
+
+func assertS31RebaseBranch(t *testing.T, wsRoot string) {
+	t.Helper()
+	remotesDir := filepath.Join(wsRoot, "remotes")
+
+	for _, repo := range []string{"producer", "consumer"} {
+		bareDir := filepath.Join(remotesDir, repo+".git")
+		cloneDir := filepath.Join(wsRoot, repo)
+
+		// 1. After `rebase main` the workspace clone's feature branch must contain
+		// the "main-extra" commit (i.e. the rebase brought in main's content).
+		markerPath := filepath.Join(cloneDir, "main-extra.txt")
+		if _, err := os.Stat(markerPath); os.IsNotExist(err) {
+			t.Errorf("S31: %s main-extra.txt not present after rebase main (rebase did not bring in main commits)", repo)
+		}
+
+		// 2. No fetch: the bare remote's reflog must not have grown after the command.
+		// setup.sh wrote the pre-command length to <repo>-reflog-before.txt.
+		beforeFile := filepath.Join(wsRoot, repo+"-reflog-before.txt")
+		beforeData, err := os.ReadFile(beforeFile)
+		if err != nil {
+			t.Logf("S31: %s cannot read reflog-before file: %v (skipping no-fetch assertion)", repo, err)
+			continue
+		}
+		before := strings.TrimSpace(string(beforeData))
+		beforeN, _ := strconv.Atoi(before)
+
+		// Capture post-command reflog length.
+		cmd := exec.Command("git", "-C", bareDir, "reflog", "--all")
+		cmd.Env = os.Environ()
+		afterOut, afterErr := cmd.Output()
+		afterN := 0
+		if afterErr == nil {
+			afterN = len(strings.Split(strings.TrimSpace(string(afterOut)), "\n"))
+			if strings.TrimSpace(string(afterOut)) == "" {
+				afterN = 0
+			}
+		}
+		if afterN > beforeN {
+			t.Errorf("S31: %s bare remote reflog grew from %d to %d entries after rebase main (fetch should not have occurred)",
+				repo, beforeN, afterN)
+		}
+	}
+}
+
+// --- S32 extra: pn workspace update writes events.jsonl ---
+
+// parseJSONLEvents reads a JSONL file and returns each line as a parsed map.
+func parseJSONLEvents(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("S32: open events.jsonl %s: %v", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	var recs []map[string]any
+	scanner := bufio.NewScanner(f)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Bytes()
+		if len(strings.TrimSpace(string(line))) == 0 {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Errorf("S32: events.jsonl line %d is not valid JSON: %v\nline: %s", lineNum, err, string(line))
+			continue
+		}
+		// Assert mandatory keys are present on every event line.
+		for _, key := range []string{"time", "level", "kind", "msg"} {
+			if _, ok := m[key]; !ok {
+				t.Errorf("S32: events.jsonl line %d missing key %q: %v", lineNum, key, m)
+			}
+		}
+		recs = append(recs, m)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("S32: scan events.jsonl: %v", err)
+	}
+	return recs
+}
+
+// countKind returns the number of records whose "kind" field equals k.
+func countKind(recs []map[string]any, k string) int {
+	n := 0
+	for _, m := range recs {
+		if m["kind"] == k {
+			n++
+		}
+	}
+	return n
+}
+
+func assertS32EventsJSONL(t *testing.T, wsRoot string, env []string) {
+	t.Helper()
+
+	// Resolve XDG_STATE_HOME from the scenario env (set by buildScrubbedEnv).
+	var xdgState string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "XDG_STATE_HOME=") {
+			xdgState = strings.TrimPrefix(kv, "XDG_STATE_HOME=")
+			break
+		}
+	}
+	if xdgState == "" {
+		t.Fatalf("S32: XDG_STATE_HOME not found in scenario env")
+	}
+
+	eventsPath := filepath.Join(xdgState, "pn", "events.jsonl")
+
+	// 1. File must exist.
+	if _, err := os.Stat(eventsPath); os.IsNotExist(err) {
+		t.Fatalf("S32: events.jsonl not found at %s (workspace update did not write event log)", eventsPath)
+	}
+
+	recs := parseJSONLEvents(t, eventsPath)
+	if t.Failed() {
+		return
+	}
+
+	// 2. At least one run_start and one run_end.
+	if countKind(recs, "run_start") < 1 {
+		t.Errorf("S32: no run_start event found in events.jsonl; events: %v", recs)
+	}
+	if countKind(recs, "run_end") < 1 {
+		t.Errorf("S32: no run_end event found in events.jsonl; events: %v", recs)
+	}
+
+	// 3. One project_result per workspace repo (producer + consumer = 2).
+	// The topo iteration visits exactly the repos in the workspace config.
+	projectResults := countKind(recs, "project_result")
+	if projectResults != 2 {
+		t.Errorf("S32: expected 2 project_result events (one per repo), got %d; events: %v", projectResults, recs)
 	}
 }

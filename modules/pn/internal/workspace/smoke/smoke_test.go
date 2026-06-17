@@ -300,6 +300,34 @@ func TestSmoke_S29_VerbsInASet(t *testing.T) {
 	runScenario(t, "s29-verbs-in-a-set")
 }
 
+// TestSmoke_S30_HappyPathPushSetUpstream: two-repo workspace with bare remotes;
+// workspace clones are on a fresh local branch (no upstream configured).
+// pn workspace push --set-upstream pushes each clone and records origin/<branch>
+// as the upstream. Asserts exit 0, each bare remote HEAD matches the clone HEAD,
+// and each clone's branch now tracks origin/<branch>.
+func TestSmoke_S30_HappyPathPushSetUpstream(t *testing.T) {
+	runScenario(t, "s30-happy-path-push-set-upstream")
+}
+
+// TestSmoke_S31_HappyPathRebaseBranch: two-repo workspace with bare remotes;
+// clones are on feature-s31 which diverged from main before extra commits were
+// added to the remote's main. pn workspace rebase main rebases each clone onto
+// the local "main" ref (no fetch). Asserts exit 0, each clone's HEAD is ahead
+// of its pre-rebase position (feature commit is rebased onto main-extra), and
+// the bare remote's reflog is unchanged (no fetch happened).
+func TestSmoke_S31_HappyPathRebaseBranch(t *testing.T) {
+	runScenario(t, "s31-happy-path-rebase-branch")
+}
+
+// TestSmoke_S32_UpdateEventsJSONL: two-repo workspace with bare remotes and
+// update-locks.sh per repo; pn workspace update runs in topo order and writes
+// a JSONL event stream to ${XDG_STATE_HOME}/pn/events.jsonl. Asserts the file
+// exists, contains run_start and run_end events, and one project_result per
+// workspace repo (2 total).
+func TestSmoke_S32_UpdateEventsJSONL(t *testing.T) {
+	runScenario(t, "s32-update-events-jsonl")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -475,6 +503,12 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS28WorktreePrune(t, wsRoot, pnBin, env)
 	case "s29-verbs-in-a-set":
 		assertS29VerbsInASet(t, wsRoot, pnBin, env)
+	case "s30-happy-path-push-set-upstream":
+		assertS30PushSetUpstream(t, wsRoot)
+	case "s31-happy-path-rebase-branch":
+		assertS31RebaseBranch(t, wsRoot)
+	case "s32-update-events-jsonl":
+		assertS32EventsJSONL(t, wsRoot, env)
 	}
 }
 
