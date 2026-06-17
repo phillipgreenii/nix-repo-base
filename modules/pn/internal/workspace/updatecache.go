@@ -7,11 +7,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+// hexFilenameRe matches exactly 64 lowercase hex characters — the form
+// produced by appliedHashFile (sha256 of the full repo path).
+var hexFilenameRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // stateDir returns the update-cache state root, honoring XDG_STATE_HOME.
 func stateDir() string {
@@ -68,11 +73,44 @@ func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []string, force 
 	return false, nil
 }
 
+// cleanStaleHashCacheEntries removes files in the apply-hash cache directory
+// whose names are NOT 64-character lowercase hex strings. Such files were
+// written by the old basename-keyed scheme (before commit 0df8389) and are no
+// longer valid — their values cannot be reused because the key schema changed.
+// The function is idempotent and silent (debug-only concern); a missing cache
+// directory is not an error.
+func cleanStaleHashCacheEntries() error {
+	dir := appliedHashDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read apply-hash cache dir: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if hexFilenameRe.MatchString(e.Name()) {
+			continue
+		}
+		// Stale basename-keyed entry — remove it.
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale cache entry %q: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
 // markApplied records each repo's current HEAD as the last applied hash.
 func (ws *Workspace) markApplied(ctx context.Context, repoDirs []string) error {
 	if err := os.MkdirAll(appliedHashDir(), 0o755); err != nil {
 		return err
 	}
+	// One-shot cleanup: remove any stale basename-keyed files left over from
+	// before the 0df8389 rekey. This is silent and idempotent.
+	_ = cleanStaleHashCacheEntries()
 	for _, dir := range repoDirs {
 		res, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.RunOptions{})
 		if err != nil {

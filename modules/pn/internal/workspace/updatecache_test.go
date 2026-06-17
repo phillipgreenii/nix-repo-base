@@ -109,6 +109,109 @@ func TestAppliedHashFile_SamePathSameKey(t *testing.T) {
 	}
 }
 
+// TestCleanStaleHashCacheEntries_RemovesBasenameKeyed verifies that stale
+// basename-keyed files (not 64-char hex) are removed and valid hex-keyed files
+// are preserved.
+func TestCleanStaleHashCacheEntries_RemovesBasenameKeyed(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	hashDir := filepath.Join(state, "zn-self-upgrade", "apply", "applied-hash")
+	if err := os.MkdirAll(hashDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Valid hex-keyed files (64-char hex strings — sha256 output).
+	hexKey1 := hashRepoDir("/home/user/ws/repo-a")
+	hexKey2 := hashRepoDir("/home/user/ws/repo-b")
+	if err := os.WriteFile(filepath.Join(hashDir, hexKey1), []byte("aabbcc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hashDir, hexKey2), []byte("ddeeff\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stale basename-keyed files — short names, not 64-char hex.
+	stale1 := "repo-a"
+	stale2 := "nix-repo-base"
+	stale3 := "some-other-repo"
+	for _, name := range []string{stale1, stale2, stale3} {
+		if err := os.WriteFile(filepath.Join(hashDir, name), []byte("oldvalue\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := cleanStaleHashCacheEntries(); err != nil {
+		t.Fatalf("cleanStaleHashCacheEntries: %v", err)
+	}
+
+	// Hex-keyed files must still exist.
+	for _, name := range []string{hexKey1, hexKey2} {
+		if _, err := os.Stat(filepath.Join(hashDir, name)); err != nil {
+			t.Errorf("hex-keyed file %q was unexpectedly removed", name)
+		}
+	}
+
+	// Stale basename-keyed files must be gone.
+	for _, name := range []string{stale1, stale2, stale3} {
+		if _, err := os.Stat(filepath.Join(hashDir, name)); !os.IsNotExist(err) {
+			t.Errorf("stale basename-keyed file %q was not removed (err: %v)", name, err)
+		}
+	}
+}
+
+// TestCleanStaleHashCacheEntries_Idempotent verifies that running cleanup twice
+// on a directory that already contains only hex-keyed files is a no-op (no
+// error, no files removed).
+func TestCleanStaleHashCacheEntries_Idempotent(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	hashDir := filepath.Join(state, "zn-self-upgrade", "apply", "applied-hash")
+	if err := os.MkdirAll(hashDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hexKey := hashRepoDir("/home/user/ws/repo")
+	if err := os.WriteFile(filepath.Join(hashDir, hexKey), []byte("cafebabe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := cleanStaleHashCacheEntries(); err != nil {
+			t.Fatalf("run %d: cleanStaleHashCacheEntries: %v", i+1, err)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(hashDir, hexKey)); err != nil {
+		t.Errorf("hex-keyed file was unexpectedly removed on second run")
+	}
+}
+
+// TestCleanStaleHashCacheEntries_EmptyDir verifies that an empty cache
+// directory does not cause an error.
+func TestCleanStaleHashCacheEntries_EmptyDir(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	hashDir := filepath.Join(state, "zn-self-upgrade", "apply", "applied-hash")
+	if err := os.MkdirAll(hashDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanStaleHashCacheEntries(); err != nil {
+		t.Fatalf("cleanStaleHashCacheEntries on empty dir: %v", err)
+	}
+}
+
+// TestCleanStaleHashCacheEntries_MissingDir verifies that a missing cache
+// directory (no prior apply) does not cause an error.
+func TestCleanStaleHashCacheEntries_MissingDir(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	// Do NOT create the directory — simulate a first-ever run.
+	if err := cleanStaleHashCacheEntries(); err != nil {
+		t.Fatalf("cleanStaleHashCacheEntries with missing dir: %v", err)
+	}
+}
+
 // TestMarkApplied_SetVsPrimaryNoCollision verifies that markApplied for one
 // repo path is not read back as "applied" by needsRebuild for a repo with the
 // same basename but a different full path.
