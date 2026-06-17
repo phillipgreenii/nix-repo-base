@@ -1,6 +1,6 @@
 # Keep first-party local-replace Go modules "live" via the `mkGoApp` overlay
 
-**Status**: Accepted
+**Status**: Superseded by [0008](0008-adopt-gomod2nix-for-go-packages.md)
 **Date**: 2026-06-17
 **Deciders**: Phillip Green II
 
