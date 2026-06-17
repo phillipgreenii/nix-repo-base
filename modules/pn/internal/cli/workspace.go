@@ -229,9 +229,26 @@ func workspacePreCommitCheckCmd(terminal *string) *cobra.Command {
 
 func workspacePushCmd(terminal *string) *cobra.Command {
 	var setUpstream bool
+	var remoteFlag string
 	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "Git push each workspace repo",
+		Long: `Git push each workspace repo.
+
+For repos that already have a configured upstream, runs plain 'git push'.
+For repos with no upstream, the --set-upstream/-u flag is required; pn then
+resolves the push remote via this convention chain (highest priority first):
+
+  1. --remote <name>  Explicit override (applies to every repo).
+  2. Single-remote    If the repo has exactly one remote, use it.
+  3. branch.<branch>.pushRemote  Per-branch git config.
+  4. remote.pushDefault (local)  Repo-local git config.
+  5. remote.pushDefault (global) User-global git config.
+  6. "origin"         If present among the repo's remotes.
+  7. Per-repo error   Skips the repo; continues the push loop.
+
+To configure a default push remote for a multi-remote repo:
+  git -C <repo> config remote.pushDefault <name>`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -241,11 +258,16 @@ func workspacePushCmd(terminal *string) *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "push", func() error {
-				return w.Push(ctx, out, errOut, workspace.PushOptions{Terminal: *terminal, SetUpstream: setUpstream})
+				return w.Push(ctx, out, errOut, workspace.PushOptions{
+					Terminal:    *terminal,
+					SetUpstream: setUpstream,
+					Remote:      remoteFlag,
+				})
 			})
 		},
 	}
-	cmd.Flags().BoolVarP(&setUpstream, "set-upstream", "u", false, "push with -u origin <branch> for repos that have no upstream yet")
+	cmd.Flags().BoolVarP(&setUpstream, "set-upstream", "u", false, "push with -u <remote> <branch> for repos that have no upstream yet; remote is resolved via convention chain")
+	cmd.Flags().StringVar(&remoteFlag, "remote", "", "override remote name for all repos when --set-upstream is set (skip repo if remote absent)")
 	return cmd
 }
 

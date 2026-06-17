@@ -584,6 +584,37 @@ func TestWorkspacePush_SetUpstreamShortFlagAccepted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// push --remote flag (tc-perh.16)
+// ---------------------------------------------------------------------------
+
+func TestWorkspacePush_RemoteFlagAccepted(t *testing.T) {
+	// --remote must be accepted without "unknown flag" error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"push", "--remote", "upstream"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("push --remote: flag not wired: %v", err)
+	}
+}
+
+func TestWorkspacePush_RemoteFlagWithSetUpstreamAccepted(t *testing.T) {
+	// --remote combined with --set-upstream must be accepted.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"push", "--set-upstream", "--remote", "gitea"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("push --set-upstream --remote: flags not wired: %v", err)
+	}
+}
+
+func TestWorkspacePush_RemoteShortCombinedAccepted(t *testing.T) {
+	// -u --remote must both be accepted.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"push", "-u", "--remote", "gitea"})
+	if err != nil && strings.Contains(err.Error(), "unknown") {
+		t.Errorf("push -u --remote: flags not wired: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // format (optional-terminal)
 // ---------------------------------------------------------------------------
 

@@ -233,6 +233,7 @@ their respective remotes.
 pn workspace push                        # push repos whose current branch already tracks an upstream
 pn workspace push --set-upstream         # also publish branches with no upstream yet
 pn workspace push -u                     # short alias for --set-upstream
+pn workspace push -u --remote <name>     # same, but override the push remote for all repos
 ```
 
 **Outcomes:**
@@ -242,17 +243,36 @@ pn workspace push -u                     # short alias for --set-upstream
   (e.g. a freshly created feature branch inside a coordinated worktree
   set — see **J29**) are silently skipped.
 - Success (`--set-upstream`/`-u`): for any repo whose current branch has
-  no upstream, runs `git push -u origin <current-branch>`, establishing
-  remote tracking. This is the explicit one-time step to publish a fresh
-  worktree set's branches; subsequent `push`/`rebase`/`update` invocations
-  then track normally.
-- Error: a single repo's push failure stops the chain.
+  no upstream, pn resolves the push remote via this convention chain
+  (highest priority first) and runs `git push -u <remote> <current-branch>`:
+
+  1. `--remote <name>` flag — explicit override, applied to every repo.
+     If the named remote doesn't exist in a repo, that repo is skipped
+     with an error to stderr; the loop continues.
+  2. Single-remote shortcut — if the repo has exactly one remote, use it.
+  3. `git config branch.<current>.pushRemote` — per-branch push remote.
+  4. `git config --local remote.pushDefault` — repo-local default.
+  5. `git config --global remote.pushDefault` — user-global default.
+  6. `origin` if among the repo's remotes — git's conventional default.
+  7. Per-repo error to stderr — skips the repo; the loop continues.
+
+  This is the explicit one-time step to publish a fresh worktree set's
+  branches; subsequent `push`/`rebase`/`update` invocations then track
+  normally.
+- Error: a single repo's *push* failure stops the chain. Remote
+  *resolution* failures are per-repo skip-and-continue (error to stderr).
+
+To configure a non-origin default push remote for a multi-remote repo:
+```
+git -C <repo> config remote.pushDefault <name>
+```
 
 **Smoke:** ✓ **S21 `happy-path-push`** — two-repo file:// bare-remote
 fixture; setup commits a marker file in each workspace clone; `pn
 workspace push` advances both bare remotes; asserts each bare remote
-HEAD equals the workspace clone HEAD. The `--set-upstream` variant is
-**GAP** at the smoke layer (covered by unit/integration tests only).
+HEAD equals the workspace clone HEAD. The `--set-upstream` and
+`--remote` variants are **GAP** at the smoke layer (covered by
+unit/integration tests only).
 
 ---
 
@@ -734,8 +754,8 @@ GAP at the smoke layer (unit/integration coverage only). J30
 
 ---
 
-_Last updated: 2026-06-17 (tc-perh.15 adds J29 worktree-set workflow + J30
-events.jsonl observability; updates J7/J10/J11 for events.jsonl /
-`--set-upstream` / `rebase <branch>`; folds S24–S29 into the summary).
+_Last updated: 2026-06-17 (tc-perh.16 adds convention-based remote
+resolution to `push --set-upstream` and the `--remote` override flag;
+updates J10 to document the 7-step resolution chain).
 24 of 30 documented journeys now have full smoke coverage; J30 is GAP,
 tracked in tc-perh.14._

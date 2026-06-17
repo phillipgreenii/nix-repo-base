@@ -94,8 +94,9 @@ pn workspace rebase                      Rebase each repo onto its remote tracki
 pn workspace rebase <branch>             Rebase each repo onto a local ref (no fetch)
 pn workspace format                      Run `nix fmt` in each workspace repo
 pn workspace push                        Push each repo (USER-INITIATED ONLY)
-pn workspace push --set-upstream         Push and set upstream for repos with no remote branch yet
+pn workspace push --set-upstream         Push and set upstream for repos with no remote branch yet; remote resolved via convention chain
 pn workspace push -u                     Same as --set-upstream (short flag)
+pn workspace push -u --remote <name>     Same, but override the remote for all repos (skip repo if remote absent)
 pn workspace status                      Per-repo working-tree summary
 pn workspace tree                        Print the workspace dependency DAG (terminal required)
 pn workspace nix -- <nix args>           Run nix with --override-input flags injected
