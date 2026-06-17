@@ -24,6 +24,10 @@
     git-hooks.inputs.nixpkgs.follows = "nixpkgs";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
+    gomod2nix = {
+      url = "github:nix-community/gomod2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -37,6 +41,7 @@
       flake-utils,
       git-hooks,
       treefmt-nix,
+      gomod2nix,
     }:
     let
       devEnvLib = import ./nix/dev-env.nix {
@@ -48,7 +53,10 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ gomod2nix.overlays.default ];
+        };
         treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
         checks-lib = import ./nix/checks.nix { inherit pkgs; };
         pre-commit = devEnvLib.mkPreCommitHooks {
