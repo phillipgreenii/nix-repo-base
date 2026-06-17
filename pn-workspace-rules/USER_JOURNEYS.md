@@ -170,6 +170,11 @@ pn workspace upgrade     # update + apply in one shot
 
 - Success: every flake.lock advanced; consumer build succeeds.
 - Error: a flake input no longer resolves; a build fails on the new lock.
+- Side effect: `update` appends JSONL events
+  (`run.start` / `project.start` / `project.end` / `run.end`) to
+  `${XDG_STATE_HOME}/pn/events.jsonl` so downstream tooling can observe
+  per-repo timing and exit status. See **J30** for the consumer-side
+  journey.
 
 **Smoke:** ✓ **S20 `happy-path-update`** — two-repo file:// bare-remote
 fixture; each repo's `update-locks.sh` writes `updated.txt` and appends
@@ -222,28 +227,59 @@ warns if no terminal but continues.
 **Trigger:** user has commits across multiple repos and wants them on
 their respective remotes.
 
-**Commands:** `pn workspace push`
+**Commands:**
+
+```
+pn workspace push                        # push repos whose current branch already tracks an upstream
+pn workspace push --set-upstream         # also publish branches with no upstream yet
+pn workspace push -u                     # short alias for --set-upstream
+```
 
 **Outcomes:**
 
-- Success: each repo pushed to its tracked remote in topo order.
+- Success (plain `push`): each repo whose current branch has an upstream
+  is pushed to its tracked remote in topo order. Repos with no upstream
+  (e.g. a freshly created feature branch inside a coordinated worktree
+  set — see **J29**) are silently skipped.
+- Success (`--set-upstream`/`-u`): for any repo whose current branch has
+  no upstream, runs `git push -u origin <current-branch>`, establishing
+  remote tracking. This is the explicit one-time step to publish a fresh
+  worktree set's branches; subsequent `push`/`rebase`/`update` invocations
+  then track normally.
 - Error: a single repo's push failure stops the chain.
 
 **Smoke:** ✓ **S21 `happy-path-push`** — two-repo file:// bare-remote
 fixture; setup commits a marker file in each workspace clone; `pn
 workspace push` advances both bare remotes; asserts each bare remote
-HEAD equals the workspace clone HEAD.
+HEAD equals the workspace clone HEAD. The `--set-upstream` variant is
+**GAP** at the smoke layer (covered by unit/integration tests only).
 
 ---
 
 ### J11. Rebase across repos
 
-**Trigger:** working through a stack of cross-repo changes.
+**Trigger:** working through a stack of cross-repo changes, or syncing a
+coordinated worktree set's feature branches onto local `main`.
 
-**Commands:** `pn workspace rebase`
+**Commands:**
 
-**Outcomes:** per-repo `git fetch` + `git pull --rebase --autostash`
-in topo order (as of tc-perh.9.25; no longer requires `git mu` alias).
+```
+pn workspace rebase              # fetch + pull --rebase onto each repo's upstream
+pn workspace rebase <branch>     # rebase each repo's current branch onto a local ref; no fetch
+```
+
+**Outcomes:**
+
+- No-arg form: per-repo `git fetch` + `git pull --rebase --autostash` in
+  topo order (as of tc-perh.9.25; no longer requires `git mu` alias).
+  Repos with no upstream are skipped with a notice.
+- Positional `<branch>` form: per-repo `git rebase <branch>` in topo
+  order. **No `git fetch`** is performed — `<branch>` must already exist
+  locally (any ref works: `main`, `origin/main`, another set's branch).
+  Repos where the ref does not resolve are skipped with a notice and the
+  chain continues. Typical use from inside a coordinated worktree set
+  (see **J29**): `pn workspace rebase main` to forward-port the set onto
+  the canonical workspace's local `main`.
 
 **Smoke:** ✓ **S22 `happy-path-rebase`** and **S22b
 `happy-path-rebase-autostash`** — one-repo file:// bare-remote fixture;
@@ -251,6 +287,8 @@ workspace reset to commit A while remote is at B; `pn workspace rebase`
 advances workspace to B; asserts HEAD matches remote and stash is empty.
 S22b additionally seeds a tracked-file modification before rebase and
 verifies the autostash round-trip (modification survives, stash empty).
+The positional `rebase <branch>` form (no-fetch, missing-ref-skips)
+is **GAP** at the smoke layer (covered by unit/integration tests only).
 
 ---
 
@@ -543,22 +581,135 @@ lifecycle phrasing).
 
 ---
 
+## Coordinated worktree sets
+
+### J29. Coordinated worktree set workflow
+
+**Trigger:** user wants to work a cross-repo feature branch in isolation
+from the canonical checkouts — every workspace repo on the same feature
+branch, all changes contained under one set directory.
+
+**Commands:**
+
+```
+pn workspace worktree add <branch>          # create the set under worktrees_dir/<branch>
+pn workspace worktree add <branch> <ref>    # same, starting <branch> from <ref> (default: canonical HEAD)
+pn workspace worktree list                  # list existing sets
+pn workspace worktree remove <branch>       # tear down the set (alias: rm)
+pn workspace worktree prune                 # clear stale .git/worktrees admin entries
+cd <worktrees_dir>/<branch>                 # cd-into-set; normal `pn workspace` verbs now operate on the set
+```
+
+The set directory is itself an ordinary workspace root: it carries copies
+of `pn-workspace.toml`, `pn-workspace.lock.json`, and
+`pn-workspace.revs.json`, plus one git worktree per repo named after the
+`[repos.<key>]` map keys. All normal `pn workspace` verbs (build, status,
+update, rebase, push, format, …) "just work" inside the set because
+upward search finds the set's own `pn-workspace.toml` and all repo paths
+resolve to `{set}/{repo}`. No verb has set-specific logic.
+
+The set directory location is controlled by the `worktrees_dir` field in
+`pn-workspace.toml` (default: `.worktrees`).
+
+**Outcomes:**
+
+- `add <branch> [<ref>]`: pre-flights that every repo exists on disk,
+  the set dir does not exist, and `<branch>` is not already checked out
+  in another worktree. If `<branch>` does not exist it is created from
+  `<ref>` (default canonical `HEAD`), mirroring `git worktree add`.
+- `list`: prints existing sets under `worktrees_dir` to stdout.
+- `remove <branch>`: tears down every per-repo worktree and deletes the
+  set directory. Refuses dirty/locked worktrees unless `--force`. **Does
+  NOT delete the branch** — the branch remains for reuse.
+- `prune`: runs `git worktree prune` in every canonical repo to clear
+  stale `.git/worktrees` admin entries left behind when a set was
+  removed manually or a partial `add` failed.
+- **P1 invariant:** running any `pn workspace` verb from inside a set
+  never modifies the canonical (primary) checkouts' working state —
+  their HEAD, branch, index, and working-tree files are untouched. The
+  deliberate carve-out is the shared object store and remote-tracking
+  refs (`refs/remotes/origin/*`, `FETCH_HEAD`) updated by `update`/
+  `rebase`, which are observable from the canonical checkout but never
+  alter its working tree.
+- Caveat: `PN_WORKSPACE_ROOT` is checked before the upward walk; a shell
+  that has it pointing at the canonical root will silently operate on
+  the primary workspace from inside a set. Unset it (preferred) or set
+  it explicitly to the set directory before running verbs in the set.
+
+**Smoke:** ✓ **S24 `worktree-add`**, **S25
+`worktree-add-already-checked-out`** (pre-flight error path), **S26
+`worktree-list`**, **S27 `worktree-remove`**, **S28 `worktree-prune`**,
+and **S29 `verbs-in-a-set`** — exercise the verb group plus the P1
+invariant (canonical checkouts unchanged by verbs run inside a set).
+Implementation: `internal/workspace/worktree.go`.
+
+---
+
+## Observability
+
+### J30. Consume the workspace event stream
+
+**Trigger:** tooling (dashboards, CI summaries, agent metrics) wants
+machine-readable per-run / per-repo timing and status for workspace
+update operations.
+
+**Commands:**
+
+```
+pn workspace update               # writes JSONL events as a side effect
+tail -F ${XDG_STATE_HOME:-$HOME/.local/state}/pn/events.jsonl   # consumer side
+```
+
+**Outcomes:**
+
+- Each `pn workspace update` invocation appends an ordered sequence of
+  newline-delimited JSON events to `${XDG_STATE_HOME}/pn/events.jsonl`
+  (default `~/.local/state/pn/events.jsonl`). The directory is created
+  on first write.
+- Event kinds emitted by `update`:
+  - `run.start` — one per invocation, at the top of the run.
+  - `project.start` — one per repo, in topo order, before that repo's
+    `update-locks.sh` is spawned.
+  - `project.end` — one per repo, after the repo's update finishes,
+    carrying its exit status.
+  - `run.end` — one per invocation, at the bottom of the run.
+- The file is append-only across invocations; consumers should tail or
+  seek by offset rather than reread it whole.
+- `XDG_STATE_HOME` is honored to keep test runs isolated from the real
+  user state dir (the same envar already gates the apply-cache; see the
+  Environment Variables section of `CLAUDE.md`).
+
+**Smoke:** **GAP** — no smoke scenario currently exercises the event
+stream end-to-end (assert file path, event ordering, schema fields).
+Smoke coverage is tracked in **tc-perh.14**. Until that lands, this
+journey is covered only by unit/integration tests at the package
+boundary.
+
+---
+
 ## Coupling summary
 
-**Smoke scenarios (30) cover:** J1, J5–J7, J10–J11, J13–J28 (23 journeys
-end-to-end); partial coverage of J8, J9 (via error/warning paths only).
+**Smoke scenarios (36) cover:** J1, J5–J7, J10–J11, J13–J29 (24 journeys
+end-to-end); partial coverage of J8, J9 (via error/warning paths only);
+J10 and J11 are full-coverage for the no-flag forms only — the
+`push --set-upstream`/`-u` and `rebase <branch>` positional forms are
+GAP at the smoke layer (unit/integration coverage only). J30
+(events.jsonl) is fully GAP, tracked in tc-perh.14.
 
 **Gaps (journeys without full smoke coverage):**
 
-| journey                                    | gap                         | smoke proposal | priority |
-| ------------------------------------------ | --------------------------- | -------------- | -------- |
-| J2 bootstrap from on-disk repos            | smoke starts from empty dir | future S       | low      |
-| J3 add a repo                              | mid-flight workspace change | future S       | medium   |
-| J4 remove a repo                           | mid-flight workspace change | future S       | low      |
-| J8 happy-path discover/tree/status         | rendered-output assertions  | extend S15/S16 | low      |
-| J9 happy-path flake-check/pre-commit-check | same                        | extend S15/S16 | low      |
-| J12 nix passthrough                        | not covered                 | future S       | medium   |
-| J17 binary-level corrupt-lock              | smoke asserts via unit only | future S       | medium   |
+| journey                                    | gap                                          | smoke proposal       | priority |
+| ------------------------------------------ | -------------------------------------------- | -------------------- | -------- |
+| J2 bootstrap from on-disk repos            | smoke starts from empty dir                  | future S             | low      |
+| J3 add a repo                              | mid-flight workspace change                  | future S             | medium   |
+| J4 remove a repo                           | mid-flight workspace change                  | future S             | low      |
+| J8 happy-path discover/tree/status         | rendered-output assertions                   | extend S15/S16       | low      |
+| J9 happy-path flake-check/pre-commit-check | same                                         | extend S15/S16       | low      |
+| J10 push --set-upstream/-u                 | flag variant not exercised                   | extend S21           | medium   |
+| J11 rebase <branch> positional             | no-fetch / missing-ref-skip path not smoked  | extend S22           | medium   |
+| J12 nix passthrough                        | not covered                                  | future S             | medium   |
+| J17 binary-level corrupt-lock              | smoke asserts via unit only                  | future S             | medium   |
+| J30 events.jsonl observability             | no end-to-end event-stream smoke             | tc-perh.14           | medium   |
 
 **Closed by tc-perh.9.26 (S18–S22b):**
 
@@ -573,7 +724,18 @@ end-to-end); partial coverage of J8, J9 (via error/warning paths only).
 - J28 format happy-path → **S23** (nix fmt per-repo, topo order verified via stdout)
 - S18/S19 simplified: noop-fmt drv references removed (build/apply no longer run nix fmt)
 
+**Closed by the worktree-set work (S24–S29):**
+
+- J29 coordinated worktree set workflow → **S24 `worktree-add`**,
+  **S25 `worktree-add-already-checked-out`**, **S26 `worktree-list`**,
+  **S27 `worktree-remove`**, **S28 `worktree-prune`**,
+  **S29 `verbs-in-a-set`** (P1 invariant: canonical checkouts
+  unchanged by verbs run inside a set).
+
 ---
 
-_Last updated: 2026-06-14 (tc-perh.9.27 adds S23, simplifies S18/S19: 1 new scenario).
-23 of 28 documented journeys now have full smoke coverage._
+_Last updated: 2026-06-17 (tc-perh.15 adds J29 worktree-set workflow + J30
+events.jsonl observability; updates J7/J10/J11 for events.jsonl /
+`--set-upstream` / `rebase <branch>`; folds S24–S29 into the summary).
+24 of 30 documented journeys now have full smoke coverage; J30 is GAP,
+tracked in tc-perh.14._
