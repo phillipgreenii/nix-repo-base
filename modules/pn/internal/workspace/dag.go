@@ -14,6 +14,8 @@ import (
 // the slug/remote-matching approach. Edge discovery for the lock command uses
 // buildEdges (edges.go) instead.
 func buildDAG(cfg *WorkspaceConfig, declaredInputs map[string][]string) ([]string, map[string][]string) {
+	// Alpha (not topoAlpha): buildDAG constructs the dependency graph that
+	// topoAlpha consumes — using topoAlpha here would be circular.
 	repoKeys := orderedRepoNames(cfg.Repos)
 
 	// repo key -> bool for every workspace repo (used for membership tests).

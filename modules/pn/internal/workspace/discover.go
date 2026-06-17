@@ -29,6 +29,9 @@ type DiscoverOptions struct {
 // construction (slug conflicts, terminal ambiguity, cycles) are returned.
 func (ws *Workspace) Discover(opts DiscoverOptions) ([]Repo, error) {
 	ctx := context.Background()
+	// Alpha (not topoAlpha): Discover runs before any lock exists and feeds
+	// the lock-derivation pipeline — using topoAlpha would be circular.
+	// Iteration is parallel via the worker pool anyway.
 	names := orderedRepoNames(ws.config.Repos)
 	repoInputs := make(map[string]map[string]string, len(names))
 	gitRemotesByRepo := make(map[string]map[string]string, len(names))

@@ -45,7 +45,7 @@ type WorktreePruneOptions struct{}
 func (w *Workspace) WorktreeAdd(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreeAddOptions) error {
 	branch := opts.Branch
 	setDir := filepath.Join(w.WorktreesDir(), branch)
-	names := orderedRepoNames(w.Config().Repos)
+	names := w.topoAlpha(ctx)
 
 	// --- Pre-flight checks (all before creating anything) ---
 
@@ -153,7 +153,7 @@ func (w *Workspace) WorktreeRemove(ctx context.Context, out io.Writer, errOut io
 		return fmt.Errorf("worktree remove: set directory does not exist: %s", setDir)
 	}
 
-	names := orderedRepoNames(w.Config().Repos)
+	names := w.topoAlpha(ctx)
 
 	for _, repo := range names {
 		canonical := filepath.Join(w.Root(), repo)
@@ -185,7 +185,7 @@ func (w *Workspace) WorktreeRemove(ctx context.Context, out io.Writer, errOut io
 // stale .git/worktrees admin entries left when a set dir was deleted manually
 // or a partial add failed.
 func (w *Workspace) WorktreePrune(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreePruneOptions) error {
-	names := orderedRepoNames(w.Config().Repos)
+	names := w.topoAlpha(ctx)
 	for _, repo := range names {
 		fmt.Fprintf(out, "  --== worktree prune %s ==--  \n", repo)
 		canonical := filepath.Join(w.Root(), repo)

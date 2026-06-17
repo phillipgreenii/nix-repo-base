@@ -33,6 +33,8 @@ type InputSpec struct {
 // or whose eval fails entirely contribute an empty inner map (no edges).
 func (ws *Workspace) gatherInputURLs(ctx context.Context) (map[string]map[string]InputSpec, error) {
 	result := make(map[string]map[string]InputSpec)
+	// Alpha (not topoAlpha): gatherInputURLs feeds buildEdges which feeds the
+	// lock — using topoAlpha would be circular.
 	names := orderedRepoNames(ws.config.Repos)
 
 	for _, key := range names {
@@ -148,6 +150,8 @@ func buildEdges(
 	repos map[string]RepoConfig,
 	inputURLs map[string]map[string]InputSpec,
 ) ([]LockEdge, []string, error) {
+	// Alpha (not topoAlpha): buildEdges constructs the lock — cannot depend
+	// on the lock-derived topological order.
 	repoKeys := orderedRepoNames(repos)
 
 	// Build canonical URL → repo key index, detecting duplicates.

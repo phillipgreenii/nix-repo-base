@@ -49,6 +49,8 @@ func (ws *Workspace) Tree(ctx context.Context, w io.Writer, opts TreeOptions) er
 	if err != nil {
 		return err
 	}
+	// Alpha (not topoAlpha): tree is a user-visible display; alphabetical
+	// listing is the expected UX.
 	repoKeys := orderedRepoNames(ws.config.Repos)
 	dependsOn := edgesToDependsOn(edges, repoKeys)
 	if err != nil {

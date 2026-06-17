@@ -92,6 +92,8 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 // mark-applied don't fail on a repo that hasn't been cloned yet.
 func (ws *Workspace) allRepoDirs(overrides map[string]string) []string {
 	var dirs []string
+	// Alpha (not topoAlpha): callers use the result as a set of paths for
+	// existence checks (rebuild gate, mark-applied) — order is not semantic.
 	for _, key := range orderedRepoNames(ws.config.Repos) {
 		dir := filepath.Join(ws.root, key)
 		if ov, ok := overrides[key]; ok {

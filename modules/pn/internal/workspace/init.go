@@ -97,6 +97,8 @@ func (w *Workspace) Init(ctx context.Context, out io.Writer, opts InitOptions) e
 	}
 
 	// 2. Resolve flake_path for every repo; persist non-defaults to config.
+	// Alpha (not topoAlpha): init runs before any lock exists, and each repo's
+	// flake_path is resolved independently — order is not semantic.
 	for _, name := range orderedRepoNames(w.config.Repos) {
 		r := w.config.Repos[name]
 		if r.FlakePath != "" {
