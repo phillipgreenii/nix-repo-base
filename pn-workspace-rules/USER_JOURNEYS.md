@@ -245,7 +245,6 @@ pn workspace push -u --remote <name>     # same, but override the push remote fo
 - Success (`--set-upstream`/`-u`): for any repo whose current branch has
   no upstream, pn resolves the push remote via this convention chain
   (highest priority first) and runs `git push -u <remote> <current-branch>`:
-
   1. `--remote <name>` flag — explicit override, applied to every repo.
      If the named remote doesn't exist in a repo, that repo is skipped
      with an error to stderr; the loop continues.
@@ -259,10 +258,12 @@ pn workspace push -u --remote <name>     # same, but override the push remote fo
   This is the explicit one-time step to publish a fresh worktree set's
   branches; subsequent `push`/`rebase`/`update` invocations then track
   normally.
-- Error: a single repo's *push* failure stops the chain. Remote
-  *resolution* failures are per-repo skip-and-continue (error to stderr).
+
+- Error: a single repo's _push_ failure stops the chain. Remote
+  _resolution_ failures are per-repo skip-and-continue (error to stderr).
 
 To configure a non-origin default push remote for a multi-remote repo:
+
 ```
 git -C <repo> config remote.pushDefault <name>
 ```
@@ -718,18 +719,18 @@ GAP at the smoke layer (unit/integration coverage only). J30
 
 **Gaps (journeys without full smoke coverage):**
 
-| journey                                    | gap                                          | smoke proposal       | priority |
-| ------------------------------------------ | -------------------------------------------- | -------------------- | -------- |
-| J2 bootstrap from on-disk repos            | smoke starts from empty dir                  | future S             | low      |
-| J3 add a repo                              | mid-flight workspace change                  | future S             | medium   |
-| J4 remove a repo                           | mid-flight workspace change                  | future S             | low      |
-| J8 happy-path discover/tree/status         | rendered-output assertions                   | extend S15/S16       | low      |
-| J9 happy-path flake-check/pre-commit-check | same                                         | extend S15/S16       | low      |
-| J10 push --set-upstream/-u                 | flag variant not exercised                   | extend S21           | medium   |
-| J11 rebase <branch> positional             | no-fetch / missing-ref-skip path not smoked  | extend S22           | medium   |
-| J12 nix passthrough                        | not covered                                  | future S             | medium   |
-| J17 binary-level corrupt-lock              | smoke asserts via unit only                  | future S             | medium   |
-| J30 events.jsonl observability             | no end-to-end event-stream smoke             | tc-perh.14           | medium   |
+| journey                                    | gap                                         | smoke proposal | priority |
+| ------------------------------------------ | ------------------------------------------- | -------------- | -------- |
+| J2 bootstrap from on-disk repos            | smoke starts from empty dir                 | future S       | low      |
+| J3 add a repo                              | mid-flight workspace change                 | future S       | medium   |
+| J4 remove a repo                           | mid-flight workspace change                 | future S       | low      |
+| J8 happy-path discover/tree/status         | rendered-output assertions                  | extend S15/S16 | low      |
+| J9 happy-path flake-check/pre-commit-check | same                                        | extend S15/S16 | low      |
+| J10 push --set-upstream/-u                 | flag variant not exercised                  | extend S21     | medium   |
+| J11 rebase <branch> positional             | no-fetch / missing-ref-skip path not smoked | extend S22     | medium   |
+| J12 nix passthrough                        | not covered                                 | future S       | medium   |
+| J17 binary-level corrupt-lock              | smoke asserts via unit only                 | future S       | medium   |
+| J30 events.jsonl observability             | no end-to-end event-stream smoke            | tc-perh.14     | medium   |
 
 **Closed by tc-perh.9.26 (S18–S22b):**
 
