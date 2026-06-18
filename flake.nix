@@ -186,10 +186,7 @@
         # JSONL event stream is collected into Loki (pull/filelog). Inert until a
         # machine flake imports it; see darwin/default.nix and darwin/modules/pn.
         darwinModules.default = ./darwin;
-        homeModules.install-metadata = (import ./lib/version.nix).mkInstallMetadata {
-          flakeSelf = self;
-          name = "phillipg-nix-repo-base";
-        };
+        homeModules.install-metadata = ./home-modules/install-metadata.nix;
 
         # Single default overlay for this flake's own packages. Surfaces the pn
         # workspace tool as pkgs.pn so consumers (and homeModules.pn) consume it
