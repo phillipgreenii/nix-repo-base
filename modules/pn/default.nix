@@ -11,7 +11,7 @@ goBuilders.mkGoBinary {
   name = "pn";
   src = ./.;
   description = "pn-workspace multi-repo Nix workflow tool";
-  vendorHash = "sha256-18WMBXrf57u/nU/mfFzZusfEgOYaxnx8/9vBzdnrVKU=";
+  gomod2nixToml = ./gomod2nix.toml;
   runtimeDeps = [
     pkgs.nix
     pkgs.git
