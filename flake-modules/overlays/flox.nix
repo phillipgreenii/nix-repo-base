@@ -5,5 +5,5 @@
     floxPkgs = inputs.flox.packages.${prev.stdenv.hostPlatform.system};
   };
 
-  config.phillipgreenii.alignment.requires = [ "flox" ];
+  phillipgreenii.alignment.requires = [ "flox" ];
 }

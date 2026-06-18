@@ -8,5 +8,5 @@
       ;
   };
 
-  config.phillipgreenii.alignment.requires = [ "nix-vscode-extensions" ];
+  phillipgreenii.alignment.requires = [ "nix-vscode-extensions" ];
 }

@@ -11,5 +11,5 @@
   };
 
   # Plumb requirement for the consumer-input-alignment check.
-  config.phillipgreenii.alignment.requires = [ "nixpkgs-unstable" ];
+  phillipgreenii.alignment.requires = [ "nixpkgs-unstable" ];
 }

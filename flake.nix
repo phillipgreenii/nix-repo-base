@@ -154,6 +154,23 @@
                 else
                   throw "pn darwin module did not register logSources.pn"
               );
+
+            # Eval-time check: fixture files exist and lock declares all heavy inputs.
+            consumer-fixture-eval =
+              pkgs.runCommand "consumer-fixture-eval"
+                {
+                  nativeBuildInputs = [ pkgs.jq ];
+                }
+                ''
+                  set -euo pipefail
+                  test -f ${./tests/consumer-fixture}/flake.nix
+                  test -f ${./tests/consumer-fixture}/flake.lock
+                  ${pkgs.jq}/bin/jq -e '.nodes | has("nixpkgs-unstable")' ${./tests/consumer-fixture}/flake.lock >/dev/null
+                  ${pkgs.jq}/bin/jq -e '.nodes | has("llm-agents")' ${./tests/consumer-fixture}/flake.lock >/dev/null
+                  ${pkgs.jq}/bin/jq -e '.nodes | has("flox")' ${./tests/consumer-fixture}/flake.lock >/dev/null
+                  ${pkgs.jq}/bin/jq -e '.nodes | has("nix-vscode-extensions")' ${./tests/consumer-fixture}/flake.lock >/dev/null
+                  touch $out
+                '';
           }
           // ulScripts.checks;
         };
