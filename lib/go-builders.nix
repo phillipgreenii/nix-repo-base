@@ -1,7 +1,10 @@
 # mkGoBuilders — Go-equivalent of mkBashBuilders. Provides:
-#   - mkGoApp: build a Go app whose version is keyed to its own source digest
-#     and whose vendor FOD name is pinned, so editing source never re-vendors
-#     and unrelated packages/commits never rebuild it (see nrb-n9f).
+#   - mkGoApp: build a Go app via gomod2nix (buildGoApplication), keyed to its
+#     own source digest (ADR 0006) so editing source gives per-edit `--version`
+#     attribution without rebuilding sibling packages. Dependencies are vendored
+#     as per-module content-addressed FODs read from a committed `gomod2nix.toml`
+#     (ADR 0008), so there is no `vendorHash` to bump and no whole-repo FOD to
+#     invalidate.
 #   - mkGoBinary: opinionated wrapper over mkGoApp that also generates a man
 #     page (help2man) and shell completions.
 {
@@ -16,7 +19,6 @@ rec {
     {
       name,
       src,
-      vendorHash ? null,
       description ? "",
       runtimeDeps ? [ ],
       completions ? {
@@ -31,18 +33,17 @@ rec {
       versionPath ? "main.Version",
       # gomod2nix engine (ADR 0008): mkGoBinary is a CLOSED arg set (no `...`)
       # and calls mkGoApp with an explicit attr list, so these must be threaded
-      # explicitly or pn cannot reach the gomod2nix engine. Default null keeps
-      # the existing buildGoModule behavior unchanged.
-      gomod2nixToml ? null,
+      # explicitly or pn cannot reach mkGoApp. `gomod2nixToml` is required by
+      # mkGoApp; pn passes it.
+      gomod2nixToml,
       modRoot ? null,
     }:
-    # Delegate to mkGoApp for the per-source version + pinned vendor FOD; this
+    # Delegate to mkGoApp for the per-source version + gomod2nix build; this
     # opinionated wrapper only layers on the man-page / completion postInstall.
     mkGoApp {
       pname = name;
       inherit
         src
-        vendorHash
         versionPath
         gomod2nixToml
         modRoot
@@ -98,33 +99,55 @@ rec {
       meta = { inherit description; };
     };
 
-  # mkGoApp — build a Go application whose identity is keyed to its OWN source
-  # rather than the whole flake. Unlike mkGoBinary (opinionated: forces a man
-  # page + `<bin> completion` generation), this is a thin, unopinionated wrapper
-  # that forwards every other buildGoModule argument untouched, so callers keep
-  # their bespoke postInstall / subPackages / nativeBuildInputs / meta.
+  # mkGoApp — build a Go application via gomod2nix (buildGoApplication), keyed to
+  # its OWN source rather than the whole flake. Unlike mkGoBinary (opinionated:
+  # forces a man page + `<bin> completion` generation), this is a thin,
+  # unopinionated wrapper that forwards every other buildGoApplication argument
+  # untouched, so callers keep their bespoke postInstall / subPackages /
+  # nativeBuildInputs / meta.
   #
-  # Why it exists (nrb-n9f, refining nrb-c7a): the old convention threaded
-  # `version = mkVersion self` into buildGoModule. That hashed the WHOLE repo,
-  # so any edit or commit anywhere changed every package's version — which
-  # renamed each `-go-modules` FOD and forced a full re-vendor + rebuild of all
-  # Go packages on every apply (a ~26-minute apply that never cached). This
-  # wrapper fixes both halves:
-  #
+  # Two halves (ADR 0006 + ADR 0008):
   #   1. `version` is derived from THIS package's own `src` digest, so it
   #      changes iff the package's files change — giving per-edit `nvd` /
   #      `--version` attribution AND isolation (a sibling package, or a docs
   #      commit, never rebuilds it).
-  #   2. the vendored modules (`-go-modules`) are pinned to a stable,
-  #      version-independent name via buildGoModule's supported
-  #      `passthru.overrideModAttrs` hook, so editing source never re-vendors.
-  #      The output stays content-addressed by `vendorHash`; vendoring re-runs
-  #      only when `vendorHash` changes — i.e. when dependencies change.
+  #   2. Dependencies are vendored as per-module content-addressed FODs read
+  #      from a committed `gomod2nix.toml` beside `go.mod`. There is no
+  #      `vendorHash` to bump and no monolithic vendor FOD to invalidate; first-
+  #      party local `replace => ../sibling` modules are a native path dep read
+  #      live from source. To add/bump a dep: `go get` + `go mod tidy` +
+  #      `nix run github:nix-community/gomod2nix -- generate`, then commit the toml.
+  #
+  # Usage (ADR 0008 §"The pattern"). The committed `gomod2nix.toml` always sits
+  # beside `go.mod`; the consumer never names it — mkGoApp derives `pwd` and
+  # passes `modules = pwd + "/gomod2nix.toml"`.
+  #
+  #   Pattern A — single module at the package root (the common case):
+  #     mkGoApp {
+  #       pname = "<name>";
+  #       src = lib.cleanSource ./.;   # go.mod + gomod2nix.toml at the root
+  #       subPackages = [ "cmd/<name>" ];
+  #       # NO modRoot. mkGoApp sets pwd = src.
+  #     }
+  #
+  #   Pattern B — a local `replace => ../sibling` (pa-monitor, ccpool, pr-pool):
+  #     mkGoApp {
+  #       pname = "<name>";
+  #       # Root src at the PARENT so the sibling is inside ONE store tree.
+  #       src = lib.fileset.toSource {
+  #         root = ./..;
+  #         fileset = lib.fileset.unions [ ./. ../<sibling> ];
+  #       };
+  #       modRoot = "<name>";          # mkGoApp sets pwd = src + "/<name>"
+  #       subPackages = [ "cmd/<name>" ];
+  #     }
+  #
+  # The local-replace symlink in Pattern B resolves because `pwd` and the sibling
+  # live in the same rooted store copy.
   mkGoApp =
     {
       pname,
       src,
-      vendorHash ? null,
       # Go linker target for the version string. Defaults to lowercase
       # `main.version`; pass "main.Version" for packages that export it
       # capitalised.
@@ -132,24 +155,10 @@ rec {
       # Human-facing base; the per-source digest is appended for uniqueness.
       baseVersion ? "0.0.0",
       ldflags ? [ ],
-      # First-party modules pulled in via a local `replace => <relPath>` directive.
-      # buildGoModule's `go mod vendor` copies these into the vendorHash-pinned
-      # `-go-modules` FOD, which FREEZES them: the FOD is content-addressed by
-      # (constant name, vendorHash), so it is never rebuilt on a source edit and the
-      # build silently compiles a stale copy (or, after a GC, fails with a hash
-      # mismatch) — every local edit otherwise forces a manual `vendorHash` bump.
-      # See bead pg2-gjzz for the full write-up. To keep local code "live" we:
-      #   1. strip each module from the FOD (so its hash tracks ONLY third-party
-      #      deps and never drifts on a local edit), and
-      #   2. overlay the current source back into `vendor/` at build time.
-      # Each entry: { goImportPath = "github.com/org/mod"; relPath = "../mod"; }
-      # where relPath is relative to modRoot (the build's working directory).
-      localReplaceModules ? [ ],
-      # gomod2nix engine (ADR 0008): when set, build with buildGoApplication and
-      # IGNORE vendorHash/localReplaceModules. `gomod2nixToml` is the committed
-      # path (conventionally ./gomod2nix.toml beside go.mod). No consumer opts
-      # into this yet; the buildGoModule branch below remains the default.
-      gomod2nixToml ? null,
+      # Committed gomod2nix lockfile, conventionally ./gomod2nix.toml beside
+      # go.mod (REQUIRED). mkGoApp resolves its location from `pwd`, so callers
+      # pass the toml only to signal it is committed — its actual path is derived.
+      gomod2nixToml,
       modRoot ? null,
       ...
     }@args:
@@ -157,106 +166,35 @@ rec {
       # 8-char digest of the package's own (filtered) source tree via the shared
       # helper, so this digest changes iff a file included in `src` changes —
       # never for sibling packages. `src` may also be a list of paths (the helper
-      # joins them); single-path behaviour is identical to the old inline form.
-      # See ADR 0006.
+      # joins them). See ADR 0006.
       version = "${baseVersion}-${(import ./version.nix).mkSrcDigest src}";
 
-      # gomod2nix engine (ADR 0008): selected when `gomod2nixToml != null`.
-      # `pwd` carries module/replace resolution; `modRoot` stays in `forwarded`
-      # so buildGoApplication uses it as the build working dir (verified in the
-      # spike) — it is intentionally NOT stripped.
-      gomod2nixApp =
-        let
-          pwd = if modRoot != null then src + "/" + modRoot else src;
-          forwarded = builtins.removeAttrs args [
-            "versionPath"
-            "baseVersion"
-            "ldflags"
-            "version"
-            "vendorHash"
-            "localReplaceModules"
-            "gomod2nixToml"
-          ];
-        in
-        pkgs.buildGoApplication (
-          forwarded
-          // {
-            inherit version pwd;
-            inherit (pkgs) go; # pin to our nixpkgs Go, not gomod2nix's
-            modules = pwd + "/gomod2nix.toml";
-            ldflags = ldflags ++ [ "-X ${versionPath}=${version}" ];
-          }
-        );
-
-      # buildGoModule engine (existing; remove in Phase 4). Default branch — no
-      # consumer passes gomod2nixToml yet, so every package still builds here.
-      buildGoModuleApp =
-        let
-          # Strip the gomod2nix-only params (`gomod2nixToml`, `modRoot`) — they
-          # are not buildGoModule args. `modRoot` is then re-added below ONLY when
-          # non-null: buildGoModule honors a real `modRoot` (sets sourceRoot to the
-          # subdir so postConfigure's cwd is the module dir and a `../sibling`
-          # localReplace overlay resolves), but forwarding `modRoot = null` breaks
-          # it (`cd: null directory`). Pre-ADR-0008 callers never set `modRoot`, so
-          # this preserves their behavior exactly while letting a Pattern-B caller
-          # that sets `modRoot` keep working on the buildGoModule engine too.
-          forwarded = builtins.removeAttrs args [
-            "versionPath"
-            "baseVersion"
-            "ldflags"
-            "version"
-            "vendorHash"
-            "localReplaceModules"
-            "gomod2nixToml"
-            "modRoot"
-          ];
-          # (1) Drop the local module's contents from the FOD, AFTER `go mod vendor`
-          #     has run (cwd = modRoot, vendor/ still local) and BEFORE it is copied to
-          #     $out. vendor/modules.txt keeps listing the module; only its files go,
-          #     so the FOD hash no longer depends on first-party source.
-          stripLocalFromModules = lib.concatMapStringsSep "\n" (m: ''
-            rm -rf "vendor/${m.goImportPath}"
-          '') localReplaceModules;
-          # (2) After buildGoModule's configurePhase copies the FOD into ./vendor,
-          #     overlay the live source so the build always sees current local code.
-          #     The FOD is copied read-only from the store, so make vendor/ writable
-          #     first (else creating the overlaid dir fails with EACCES). The per-module
-          #     chmod + go.mod/go.sum strip keeps the copy a valid vendored dep (vendored
-          #     modules must not carry their own module files).
-          overlayLocalModules = ''
-            chmod -R u+w vendor
-          ''
-          + lib.concatMapStringsSep "\n" (m: ''
-            rm -rf "vendor/${m.goImportPath}"
-            mkdir -p "$(dirname "vendor/${m.goImportPath}")"
-            cp -r --reflink=auto "${m.relPath}" "vendor/${m.goImportPath}"
-            chmod -R u+w "vendor/${m.goImportPath}"
-            rm -f "vendor/${m.goImportPath}/go.mod" "vendor/${m.goImportPath}/go.sum"
-          '') localReplaceModules;
-        in
-        pkgs.buildGoModule (
-          forwarded
-          // {
-            inherit version vendorHash;
-            ldflags = ldflags ++ [ "-X ${versionPath}=${version}" ];
-            passthru = (args.passthru or { }) // {
-              overrideModAttrs =
-                _:
-                {
-                  name = "${pname}-go-modules";
-                }
-                // lib.optionalAttrs (localReplaceModules != [ ]) {
-                  postBuild = stripLocalFromModules;
-                };
-            };
-          }
-          // lib.optionalAttrs (localReplaceModules != [ ]) {
-            postConfigure = (args.postConfigure or "") + "\n" + overlayLocalModules;
-          }
-          # Forward `modRoot` to buildGoModule ONLY when set, so the default
-          # (null) caller behaves exactly as before this dual-engine change.
-          // lib.optionalAttrs (modRoot != null) { inherit modRoot; }
-        );
+      # `pwd` carries module/replace resolution: it is `src` in Pattern A and
+      # `src + "/" + modRoot` in Pattern B (where the sibling replace resolves
+      # within the same rooted store copy). `modRoot` stays in `forwarded` so
+      # buildGoApplication uses it as the build working dir — it is intentionally
+      # NOT stripped.
+      pwd = if modRoot != null then src + "/" + modRoot else src;
+      forwarded = builtins.removeAttrs args [
+        "pname"
+        "versionPath"
+        "baseVersion"
+        "ldflags"
+        "version"
+        "gomod2nixToml"
+      ];
     in
-    if gomod2nixToml != null then gomod2nixApp else buildGoModuleApp;
+    # `gomod2nixToml` is required (the committed lockfile must exist beside
+    # go.mod) but its location is derived from `pwd`, so it is asserted rather
+    # than threaded by value.
+    assert gomod2nixToml != null;
+    pkgs.buildGoApplication (
+      forwarded
+      // {
+        inherit pname version pwd;
+        inherit (pkgs) go; # pin to our nixpkgs Go, not gomod2nix's
+        modules = pwd + "/gomod2nix.toml";
+        ldflags = ldflags ++ [ "-X ${versionPath}=${version}" ];
+      }
+    );
 }
