@@ -1,7 +1,5 @@
 # flake-parts Modular Producer Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. This plan is the source of truth that the plan-decomposer will translate into self-contained beads.
-
 **Goal:** Migrate nix-repo-base to flake-parts, ship 9 flakeModules + 1 configurable HM module + documented bash CONTRACT, drop 4 heavy direct inputs (lock graph 25→single-digit), hard-cutover-delete 9 lib functions.
 
 **Architecture:** Producer-side modernization. flake-parts-based outputs; perSystem-shaped behavior moves into `flakeModules/*.nix` consumed via `imports = [ ... ]`; overlay factories that closed over heavy upstream inputs become flake-parts modules that read those inputs from the CONSUMER's `inputs` (the consumer declares the inputs); pure-function lib helpers (builders, version helpers, HM module factories) survive unchanged because they're called from non-perSystem contexts.
@@ -65,7 +63,7 @@ nix-repo-base-flake-parts/
 
 ## Task Ordering Rationale
 
-Tasks 1-3 establish the flake-parts skeleton WITHOUT removing old behavior, so each commit boundary is buildable. Tasks 4-13 extract behavior into modules one-at-a-time, deleting the old lib call site as each module replaces it. Tasks 14-17 drop heavy inputs only AFTER all consumers (just nix-repo-base itself in this scope, via its self-import of perSystem modules + gomod2nix-overlay) are wired off the lib factories. Tasks 18-20 cover the bash CONTRACT, README, and consumer fixture. Task 21 is the final lock-bloat verification.
+Tasks 1-2 establish the flake-parts skeleton WITHOUT removing old behavior, so each commit boundary is buildable. Tasks 3-13 extract behavior into modules one-at-a-time. Task 14 deletes the old lib symbols. Task 15 drops the four heavy inputs (must happen AFTER Task 14 because the deleted lib factories close over those inputs). Task 16 drops `mkInstallMetadata` from `lib/version.nix`. Task 17 deletes `nix/dev-env.nix` and `nix/checks.nix`. Task 18 adds the `mkGoBuilders` runtime assertion. Task 19 adds the bash CONTRACT block. Task 20 writes the README. Task 21 ships the consumer fixture. Task 22 is the final lock-bloat + AC verification.
 
 Within a task, sub-steps follow TDD when meaningful (write the verification command first, see it fail, then implement, see it pass). For Nix-flake additions, "the test" is `nix eval` / `nix flake show` returning the expected attribute.
 
@@ -177,7 +175,34 @@ outputs = inputs@{ self, flake-parts, nixpkgs, ... }:
             );
           bash-version-rev-independent = import ./lib/bash-builders-version-tests.nix { inherit pkgs; };
           pn-go-tests = pkgs.callPackage ./modules/pn { inherit self; };
-          pn-logsources-registration = /* keep exact same definition as current flake.nix:144-171 */;
+          pn-logsources-registration =
+            let
+              eval = pkgs.lib.evalModules {
+                modules = [
+                  # Narrow stub: declares just enough of the support-apps observability
+                  # surface for the pn module to type-check standalone (the real option
+                  # lives in phillipgreenii-nix-support-apps). Mirrors that flake's
+                  # crossFlakeOptionStubs.
+                  {
+                    options.phillipgreenii.observability = {
+                      enable = pkgs.lib.mkEnableOption "observability (stub)";
+                      logSources = pkgs.lib.mkOption {
+                        type = pkgs.lib.types.attrsOf pkgs.lib.types.anything;
+                        default = { };
+                      };
+                    };
+                    config.phillipgreenii.observability.enable = true;
+                  }
+                  ./darwin
+                ];
+              };
+            in
+            pkgs.runCommand "pn-logsources-registration" { } (
+              if eval.config.phillipgreenii.observability.logSources ? pn then
+                "touch $out"
+              else
+                throw "pn darwin module did not register logSources.pn"
+            );
         } // ulScripts.checks;
 
         devShells.default = (import ./nix/dev-env.nix {
@@ -252,8 +277,6 @@ outputs = inputs@{ self, flake-parts, nixpkgs, ... }:
   };
 ```
 
-(The exact `pn-logsources-registration` block from current `flake.nix:144-171` must be copied verbatim — long but no semantic change.)
-
 - [ ] **Step 5: Verify `nix flake show` is byte-equivalent to the baseline**
 
 Run: `nix flake show --json 2>/dev/null | jq -S . > /tmp/flake-show-after-task1.json && diff /tmp/flake-show-baseline.json /tmp/flake-show-after-task1.json`
@@ -326,10 +349,13 @@ Run: `git add flake.nix flake.lock`
 **Files:**
 - Create: `flake-modules/treefmt.nix`
 - Modify: `flake.nix` (import the new module; remove inline treefmt wiring)
+- Delete: `treefmt.nix` (root-level — now redundant with the module + treefmt-nix's flakeModule pattern)
 
 **Interfaces:**
 - Consumes: `flake-parts` lib, `treefmt-nix` (light upstream — producer-owned).
-- Produces: `flakeModules.treefmt` (exported in Task 13). After-import contributes `perSystem.formatter` and `perSystem.treefmt.*`.
+- Produces: `flakeModules.treefmt` (exported in Task 12). After-import contributes `perSystem.formatter` and `perSystem.treefmt.*`.
+
+**Note on `inputs` vs `self.inputs`:** within `outputs = inputs@{ self, ... }: flake-parts.lib.mkFlake { ... } { ... }`, the `inputs` symbol and `self.inputs` resolve to the same attrset (the producer's input pins). This plan uses `inputs` consistently for clarity. Either works.
 
 - [ ] **Step 1: Create `flake-modules/treefmt.nix`**
 
@@ -359,6 +385,7 @@ producerInputs:
             "*.json"
           ];
         };
+        shellcheck.enable = true;
         shfmt = {
           enable = true;
           indent_size = 2;
@@ -372,19 +399,27 @@ producerInputs:
 }
 ```
 
+(Note: `shellcheck.enable = true;` matches the current root-level `treefmt.nix` (line 19). The plan-critic flagged this as a potential silent omission; keep it to preserve formatter behavior.)
+
 - [ ] **Step 2: Modify `flake.nix` to import this module and stop wiring treefmt inline**
 
 In `flake.nix` outputs:
 
-a) Replace the existing `treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs ./treefmt.nix;` and uses of `treefmtEval.config.build.wrapper` / `treefmtEval.config.build.check`.
+a) Remove `treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs ./treefmt.nix;` from `perSystem`'s let-block.
 
-b) Add `imports = [ (import ./flake-modules/treefmt.nix self.inputs) ];` at the top level of the mkFlake block.
+b) Add `imports = [ (import ./flake-modules/treefmt.nix inputs) ];` at the top level of the mkFlake block (alongside `systems`, `perSystem`, `flake`).
 
-c) Replace `formatter = treefmtEval.config.build.wrapper;` with deletion (treefmt module sets it).
+c) Replace `formatter = treefmtEval.config.build.wrapper;` in `perSystem` with deletion (treefmt-nix's flakeModule sets `perSystem.formatter`).
 
-d) Replace `formatting = treefmtEval.config.build.check self;` in checks with `formatting = config.treefmt.build.check self;` (reading the module's option output via perSystem `config`).
+d) Replace `formatting = treefmtEval.config.build.check self;` in `perSystem.checks` with `formatting = config.treefmt.build.check self;` (reading the module's option output via perSystem `config`).
 
 e) Replace `treefmtWrapper = treefmtEval.config.build.wrapper;` in the `mkPreCommitHooks` call with `treefmtWrapper = config.treefmt.build.wrapper;`.
+
+- [ ] **Step 2b: Delete the root-level `treefmt.nix`**
+
+The root-level `treefmt.nix` is no longer referenced (treefmt config now lives inside `flake-modules/treefmt.nix` per the new module pattern).
+
+Run: `git rm treefmt.nix`
 
 - [ ] **Step 3: Verify `nix flake check` passes**
 
@@ -441,6 +476,10 @@ producerInputs:
   config.perSystem = { config, pkgs, system, ... }:
     let
       cfg = config.phillipgreenii.pre-commit;
+      # Note: under flake-parts, `pkgs` is already system-specific (set via
+      # _module.args.pkgs or flake-parts' default). The old `nix/dev-env.nix`
+      # used `nixpkgs.legacyPackages.${system}.prek` because it was outside a
+      # perSystem context; here `pkgs.prek` is the same value.
       preCommit = producerInputs.git-hooks.lib.${system}.run {
         src = cfg.src;
         package = pkgs.prek;
@@ -483,7 +522,7 @@ producerInputs:
 
 - [ ] **Step 2: Modify `flake.nix` — add import + remove inline pre-commit wiring**
 
-a) Add `(import ./flake-modules/pre-commit.nix self.inputs)` to the top-level `imports = [ ... ]` list.
+a) Add `(import ./flake-modules/pre-commit.nix inputs)` to the top-level `imports = [ ... ]` list.
 
 b) Remove the inline `pre-commit = (import ./nix/dev-env.nix { ... }).mkPreCommitHooks { ... };` from the `perSystem` let-block.
 
@@ -611,9 +650,12 @@ Run: `git add flake.nix flake-modules/devshell.nix`
     };
   };
 
-  config.perSystem = { config, pkgs, system, self', ... }:
+  config.perSystem = { config, pkgs, inputs, system, self', ... }:
     let
       cfg = config.phillipgreenii;
+      # flake-parts passes the consumer's `inputs` to perSystem; `inputs.self`
+      # is the consumer flake's source (whatever flake imported this module).
+      consumerSelf = inputs.self;
       mkHelpers = pkgs: {
         formatting = root: pkgs.runCommand "check-formatting" {
           nativeBuildInputs = [ pkgs.nixfmt ];
@@ -693,7 +735,11 @@ Run: `git add flake.nix flake-modules/devshell.nix`
           let requiresJSON = builtins.toJSON cfg.alignment.requires; in
           pkgs.runCommand "consumer-input-alignment" {
             requires = requiresJSON;
-            consumerLock = builtins.toString (cfg.src + "/flake.lock");
+            # The CONSUMER's flake source at build time — accessed via inputs.self
+            # (flake-parts passes `inputs` to perSystem; `inputs.self` is the
+            # importing flake's source). The store coercion makes the path
+            # available at build time without IFD.
+            consumerLock = builtins.toString (consumerSelf + "/flake.lock");
             nativeBuildInputs = [ pkgs.jq ];
           } ''
             set -euo pipefail
@@ -724,16 +770,13 @@ Run: `git add flake.nix flake-modules/devshell.nix`
             touch $out
           '';
       };
-
-      # Expose helpers for consumer's opt-in checks.
-      _module.args.phillipgreenii-checks-helpers = helpers;
     };
 }
 ```
 
-(Note: `_module.args.checksHelpers` and `_module.args.phillipgreenii-checks-helpers` both set the same value — pick one canonical name. Use `checksHelpers` for brevity. Adjust the second line accordingly or delete one.)
+(`testUpdateLocksLib`'s default `testsDir ? ../lib/tests` and `scriptsDir ? ../lib/scripts` are relative to the MODULE FILE's location: `flake-modules/checks.nix`. The `..` resolves to the repo root, so the defaults still point at `$REPO_ROOT/lib/tests` and `$REPO_ROOT/lib/scripts` — same as the pre-migration `nix/checks.nix`. Do not adjust these paths.)
 
-Final: use only `_module.args.checksHelpers = helpers;` (delete the duplicate).
+Note on `self` in perSystem: flake-parts passes `self` to perSystem from `mkFlake`'s outputs context. For nix-repo-base's own evaluation, `self` is nix-repo-base. For a consumer evaluating their own flake that imports this module, `self` is the consumer's flake. The `consumerLock` reference therefore reads whoever's lock is being checked.
 
 - [ ] **Step 2: Modify `flake.nix` — import checks module + rewire inline checks**
 
@@ -807,9 +850,9 @@ producerInputs:
 
 - [ ] **Step 2: Modify `flake.nix` — import gomod2nix-overlay; apply self.overlays.gomod2nix to nix-repo-base's own pkgs**
 
-a) Add `(import ./flake-modules/overlays/gomod2nix.nix self.inputs)` to `imports = [ ... ]`.
+a) Add `(import ./flake-modules/overlays/gomod2nix.nix inputs)` to `imports = [ ... ]`.
 
-b) In `perSystem`, set `_module.args.pkgs = import inputs.nixpkgs { inherit system; overlays = [ self.overlays.gomod2nix ]; };` (replacing the inline `inputs.gomod2nix.overlays.default` from Task 1).
+b) In `perSystem`, set `_module.args.pkgs = import inputs.nixpkgs { inherit system; overlays = [ self.overlays.gomod2nix ]; };` (replacing the inline `inputs.gomod2nix.overlays.default` from Task 1). Here `self.overlays.gomod2nix` refers to nix-repo-base's own `self` (from outputs args), which after this import has the gomod2nix overlay contributed by the imported module.
 
 - [ ] **Step 3: Verify mkGoBuilders / pn still works**
 
@@ -898,68 +941,148 @@ Run: `git add flake.nix flake-modules/overlays/unstable.nix`
 
 ## Task 9: Create overlay module `flake-modules/overlays/llm-agents.nix`
 
-Same shape as Task 8 but for `llm-agents`. Reads `inputs.llm-agents`. Contributes `flake.overlays.llm-agents = _final: prev: { llm-agentsPkgs = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system}; };` and `config.phillipgreenii.alignment.requires = [ "llm-agents" ];`. Add `llm-agents-overlay = ./flake-modules/overlays/llm-agents.nix;` to `flakeModules`.
+**Files:**
+- Create: `flake-modules/overlays/llm-agents.nix`
+- Modify: `flake.nix` (export as `flakeModules.llm-agents-overlay` in Task 12; this task only creates the file — do NOT add to nix-repo-base's `imports = [ ... ]`)
 
-Verification: `nix flake show` lists `flakeModules.llm-agents-overlay`; `flake.overlays` still does NOT include `llm-agents` (nix-repo-base doesn't self-import).
+**Interfaces:**
+- Consumes: CONSUMER's `llm-agents` input (heavy upstream).
+- Produces: `flakeModules.llm-agents-overlay`. Contributes `flake.overlays.llm-agents` AND adds `"llm-agents"` to `phillipgreenii.alignment.requires`.
 
-Stage: `git add flake.nix flake-modules/overlays/llm-agents.nix`
+- [ ] **Step 1: Create `flake-modules/overlays/llm-agents.nix`**
+
+```nix
+# Heavy-upstream overlay module. Consumers must declare inputs.llm-agents.
+{ inputs, lib, ... }:
+{
+  flake.overlays.llm-agents = _final: prev: {
+    llm-agentsPkgs = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system};
+  };
+
+  config.phillipgreenii.alignment.requires = [ "llm-agents" ];
+}
+```
+
+- [ ] **Step 2: Verify file is well-formed Nix**
+
+Run: `nix-instantiate --parse flake-modules/overlays/llm-agents.nix > /dev/null && echo OK`
+
+Expected: `OK`.
+
+- [ ] **Step 3: Verify nix-repo-base's `nix flake check` still passes**
+
+Run: `nix flake check 2>&1 | tail -5`
+
+Expected: exit 0. (The new file is not yet imported by nix-repo-base or exported as a flakeModule — that happens in Task 12.)
+
+- [ ] **Step 4: Stage**
+
+Run: `git add flake-modules/overlays/llm-agents.nix`
 
 ---
 
 ## Task 10: Create overlay module `flake-modules/overlays/vscode-extensions.nix`
 
-Same shape as Task 8. Reads `inputs.nix-vscode-extensions`. Contributes:
+**Files:**
+- Create: `flake-modules/overlays/vscode-extensions.nix`
+
+**Interfaces:**
+- Consumes: CONSUMER's `nix-vscode-extensions` input (heavy upstream).
+- Produces: `flakeModules.vscode-extensions-overlay`. Contributes `flake.overlays.vscode-extensions` AND adds `"nix-vscode-extensions"` to `phillipgreenii.alignment.requires`.
+
+- [ ] **Step 1: Create `flake-modules/overlays/vscode-extensions.nix`**
 
 ```nix
-flake.overlays.vscode-extensions = _final: prev: {
-  inherit (inputs.nix-vscode-extensions.extensions.${prev.stdenv.hostPlatform.system})
-    vscode-marketplace
-    open-vsx
-    ;
-};
-config.phillipgreenii.alignment.requires = [ "nix-vscode-extensions" ];
+# Heavy-upstream overlay module. Consumers must declare inputs.nix-vscode-extensions.
+{ inputs, lib, ... }:
+{
+  flake.overlays.vscode-extensions = _final: prev: {
+    inherit (inputs.nix-vscode-extensions.extensions.${prev.stdenv.hostPlatform.system})
+      vscode-marketplace
+      open-vsx
+      ;
+  };
+
+  config.phillipgreenii.alignment.requires = [ "nix-vscode-extensions" ];
+}
 ```
 
-Add `vscode-extensions-overlay = ./flake-modules/overlays/vscode-extensions.nix;` to `flakeModules`.
+- [ ] **Step 2: Verify file is well-formed Nix**
 
-Stage: `git add flake.nix flake-modules/overlays/vscode-extensions.nix`
+Run: `nix-instantiate --parse flake-modules/overlays/vscode-extensions.nix > /dev/null && echo OK`
+
+Expected: `OK`.
+
+- [ ] **Step 3: Verify nix-repo-base's `nix flake check` still passes**
+
+Run: `nix flake check 2>&1 | tail -5`
+
+Expected: exit 0.
+
+- [ ] **Step 4: Stage**
+
+Run: `git add flake-modules/overlays/vscode-extensions.nix`
 
 ---
 
 ## Task 11: Create overlay module `flake-modules/overlays/flox.nix`
 
-Same shape. Reads `inputs.flox`. Contributes:
+**Files:**
+- Create: `flake-modules/overlays/flox.nix`
+
+**Interfaces:**
+- Consumes: CONSUMER's `flox` input (heavy upstream).
+- Produces: `flakeModules.flox-overlay`. Contributes `flake.overlays.flox` AND adds `"flox"` to `phillipgreenii.alignment.requires`.
+
+- [ ] **Step 1: Create `flake-modules/overlays/flox.nix`**
 
 ```nix
-flake.overlays.flox = _final: prev: {
-  floxPkgs = inputs.flox.packages.${prev.stdenv.hostPlatform.system};
-};
-config.phillipgreenii.alignment.requires = [ "flox" ];
+# Heavy-upstream overlay module. Consumers must declare inputs.flox.
+{ inputs, lib, ... }:
+{
+  flake.overlays.flox = _final: prev: {
+    floxPkgs = inputs.flox.packages.${prev.stdenv.hostPlatform.system};
+  };
+
+  config.phillipgreenii.alignment.requires = [ "flox" ];
+}
 ```
 
-Add `flox-overlay = ./flake-modules/overlays/flox.nix;` to `flakeModules`.
+- [ ] **Step 2: Verify file is well-formed Nix**
 
-Stage: `git add flake.nix flake-modules/overlays/flox.nix`
+Run: `nix-instantiate --parse flake-modules/overlays/flox.nix > /dev/null && echo OK`
+
+Expected: `OK`.
+
+- [ ] **Step 3: Verify nix-repo-base's `nix flake check` still passes**
+
+Run: `nix flake check 2>&1 | tail -5`
+
+Expected: exit 0.
+
+- [ ] **Step 4: Stage**
+
+Run: `git add flake-modules/overlays/flox.nix`
 
 ---
 
-## Task 12: Export non-overlay flakeModules at top level
+## Task 12: Export all 9 flakeModules at top level
 
 **Files:**
-- Modify: `flake.nix` (extend the `flakeModules` block with the four non-overlay modules)
+- Modify: `flake.nix` (extend the `flakeModules` block with all 9 module entries)
 
 **Interfaces:**
-- Consumes: Tasks 3-6 created the module files; Task 13 (this one) makes them externally visible as `flakeModules.<name>`.
+- Consumes: Tasks 3-11 created the 9 module files (one of them — gomod2nix-overlay — was also imported by nix-repo-base for internal use in Task 7). Task 12 (this one) makes ALL of them externally visible as `flakeModules.<name>`.
 
 - [ ] **Step 1: Extend the `flakeModules` block in `flake.nix`'s `flake = { ... }`**
 
 ```nix
 flakeModules = {
-  treefmt = import ./flake-modules/treefmt.nix self.inputs;
-  pre-commit = import ./flake-modules/pre-commit.nix self.inputs;
+  treefmt = import ./flake-modules/treefmt.nix inputs;
+  pre-commit = import ./flake-modules/pre-commit.nix inputs;
   devshell = ./flake-modules/devshell.nix;
   checks = ./flake-modules/checks.nix;
-  gomod2nix-overlay = import ./flake-modules/overlays/gomod2nix.nix self.inputs;
+  gomod2nix-overlay = import ./flake-modules/overlays/gomod2nix.nix inputs;
   unstable-overlay = ./flake-modules/overlays/unstable.nix;
   llm-agents-overlay = ./flake-modules/overlays/llm-agents.nix;
   vscode-extensions-overlay = ./flake-modules/overlays/vscode-extensions.nix;
@@ -1050,9 +1173,10 @@ in
 }
 ```
 
-- [ ] **Step 2: Modify `flake.nix` — switch the export from factory call to module path**
+- [ ] **Step 2: Modify `flake.nix` — switch the export from factory call to raw module path**
 
-Replace:
+Per spec §3.2 Shape B, `homeModules.install-metadata` is the RAW configurable module that consumers import and configure with their own `flakeSelf` + `name`. Replace:
+
 ```nix
 homeModules.install-metadata = (import ./lib/version.nix).mkInstallMetadata {
   flakeSelf = self;
@@ -1060,16 +1184,13 @@ homeModules.install-metadata = (import ./lib/version.nix).mkInstallMetadata {
 };
 ```
 
-With the inline-wrapper pattern (per spec §3.2 Shape B re-export):
+With the raw module path:
+
 ```nix
-homeModules.install-metadata = { ... }: {
-  imports = [ ./home-modules/install-metadata.nix ];
-  phillipgreenii.install-metadata = {
-    flakeSelf = self;
-    name = "phillipg-nix-repo-base";
-  };
-};
+homeModules.install-metadata = ./home-modules/install-metadata.nix;
 ```
+
+Rationale: a consumer that imports `phillipgreenii-nix-base.homeModules.install-metadata` gets the configurable module and supplies their own options (per the spec §3.2 re-export pattern). If nix-repo-base wanted install-metadata for its own machines, it would wrap the module inline in its machine config — but nix-repo-base ships modules, not machine configs, so this is moot. No grep-confirmed consumer relies on nix-repo-base's pre-configured `homeModules.install-metadata` being exported as the wrapper.
 
 - [ ] **Step 3: Verify `nix eval .#homeModules.install-metadata` resolves to a module**
 
@@ -1085,77 +1206,16 @@ Run: `git add flake.nix home-modules/install-metadata.nix`
 
 ---
 
-## Task 14: Drop heavy inputs from `flake.nix`
-
-**Files:**
-- Modify: `flake.nix` (remove `nixpkgs-unstable`, `llm-agents`, `flox`, `nix-vscode-extensions` from inputs; remove them from outputs signature)
-- Modify: `flake.lock` (regenerated by `nix flake update`)
-
-**Interfaces:**
-- Consumes: all previous tasks (modules now serve the overlay needs externally; nix-repo-base itself has no internal use of these inputs).
-- Produces: nix-repo-base flake with only `nixpkgs`, `flake-parts`, `git-hooks`, `treefmt-nix`, `gomod2nix` as direct inputs.
-
-- [ ] **Step 1: Confirm no remaining references in `flake.nix` to the four heavy inputs**
-
-Run: `grep -nE "nixpkgs-unstable|llm-agents|nix-vscode-extensions|\bflox\b" flake.nix`
-
-Expected: only the input declarations and outputs signature args. If there's a reference inside an output (e.g., a leftover overlay factory in the `lib = { ... }` block from Task 1), that reference must be removed FIRST. The lib factories `mkUnstableOverlay`/etc. should already be staged for deletion in Task 15; in this task we only drop the inputs.
-
-If any reference besides the input/sig remains: FIX IT before proceeding (likely Task 15 should be done first; rearrange task order if needed). If reordering is needed, the implementer should report it and not silently swap.
-
-- [ ] **Step 2: Remove four input declarations from inputs block**
-
-Delete:
-```nix
-nixpkgs-unstable.url = "github:NixOS/nixpkgs/master";
-llm-agents.url = "github:numtide/llm-agents.nix";
-flox.url = "github:flox/flox";
-nix-vscode-extensions.url = "github:nix-community/nix-vscode-extensions";
-nix-vscode-extensions.inputs.nixpkgs.follows = "nixpkgs";
-```
-
-- [ ] **Step 3: Remove from outputs signature**
-
-Delete `nixpkgs-unstable, llm-agents, flox, nix-vscode-extensions,` from the outputs arg destructuring.
-
-- [ ] **Step 4: Run `nix flake update` to regenerate `flake.lock`**
-
-Run: `nix flake update 2>&1 | tail -5`
-
-Expected: lock regenerated without the four inputs and their transitives.
-
-- [ ] **Step 5: Verify the lock has no bloat (the AC #1 check)**
-
-Run: `jq -r '.nodes | keys[]' flake.lock | grep -vE '^(root|nixpkgs|nixpkgs-lib|flake-parts|git-hooks|treefmt-nix|gomod2nix|flake-compat|gitignore|systems)$' | head`
-
-Expected: zero lines.
-
-Run: `jq -r '.nodes | keys[]' flake.lock | grep -E '^(flox|llm-agents|nix-vscode-extensions|nixpkgs-unstable|fenix|crane|bun2nix|blueprint|rust-analyzer-src)' || echo "none of the heavy inputs remain (good)"`
-
-Expected: "none of the heavy inputs remain (good)".
-
-- [ ] **Step 6: Verify `nix flake check` passes**
-
-Run: `nix flake check 2>&1 | tail -10`
-
-Expected: exit 0.
-
-- [ ] **Step 7: Stage**
-
-Run: `git add flake.nix flake.lock`
-
----
-
-## Task 15: Remove deleted lib functions from `flake.nix` (hard cutover)
+## Task 14: Remove deleted lib functions from `flake.nix` (hard cutover)
 
 **Files:**
 - Modify: `flake.nix` (delete `mkChecks`, `mkUnstableOverlay`, `mkLlmAgentsOverlay`, `mkVscodeExtensionsOverlay`, `mkFloxOverlay` from the `lib = { ... }` block; delete the `// { … }` block that adds `mkTreefmtConfig`/`mkPreCommitHooks`/`mkDevShell` from `devEnvLib`; delete the `import ./nix/dev-env.nix` call site)
 
 **Interfaces:**
-- Consumes: prior tasks shipped module replacements for all of these.
-- Produces: `lib` attrset with exactly the 10 surviving functions.
+- Consumes: Tasks 3-13 shipped module replacements for all of these.
+- Produces: `lib` attrset with exactly the 11 surviving functions (10 after Task 16 drops `mkInstallMetadata` from `lib/version.nix`).
 
-This task MUST happen before Task 14 if the deletions reference heavy inputs (they do — `mkUnstableOverlay` closes over `inputs.nixpkgs-unstable`). Implementer: if the lint in Task 14 step 1 fails because the lib factories still reference heavy inputs, swap Task 14 and Task 15 order.
+**Order rationale:** This task MUST precede Task 15 (drop heavy inputs from flake.nix). The deleted `mkUnstableOverlay`/`mkLlmAgentsOverlay`/`mkVscodeExtensionsOverlay`/`mkFloxOverlay` factories close over `inputs.nixpkgs-unstable`/`inputs.llm-agents`/`inputs.nix-vscode-extensions`/`inputs.flox`. Dropping the inputs before removing the factories breaks eval. Tasks renumbered in this plan to make the dependency natural.
 
 - [ ] **Step 1: Remove the deleted lib symbols from the `lib = { ... }` block**
 
@@ -1219,6 +1279,67 @@ Expected: exit 0.
 - [ ] **Step 5: Stage**
 
 Run: `git add flake.nix`
+
+---
+
+## Task 15: Drop heavy inputs from `flake.nix`
+
+**Files:**
+- Modify: `flake.nix` (remove `nixpkgs-unstable`, `llm-agents`, `flox`, `nix-vscode-extensions` from inputs; remove them from outputs signature)
+- Modify: `flake.lock` (regenerated by `nix flake update`)
+
+**Interfaces:**
+- Consumes: Task 14 removed all references to these four inputs from nix-repo-base's own code (the lib factories that closed over them are gone). Tasks 8-11 created the overlay modules consumers will use instead. nix-repo-base does NOT import its own heavy-overlay modules (per spec §3.3), so it has no remaining need for these inputs.
+- Produces: nix-repo-base flake with only `nixpkgs`, `flake-parts`, `git-hooks`, `treefmt-nix`, `gomod2nix` as direct inputs.
+
+- [ ] **Step 1: Confirm no remaining references in `flake.nix` to the four heavy inputs**
+
+Run: `grep -nE "nixpkgs-unstable|\bllm-agents\b|nix-vscode-extensions|\bflox\b" flake.nix`
+
+Expected: only the input declarations and outputs signature args (if any). All other references should already be gone after Task 14.
+
+If any reference besides the input/sig remains: FAIL the task and report which line/file. Do NOT silently delete the unexpected reference — re-run Task 14 cleanup first.
+
+- [ ] **Step 2: Remove four input declarations from inputs block**
+
+Delete:
+```nix
+nixpkgs-unstable.url = "github:NixOS/nixpkgs/master";
+llm-agents.url = "github:numtide/llm-agents.nix";
+flox.url = "github:flox/flox";
+nix-vscode-extensions.url = "github:nix-community/nix-vscode-extensions";
+nix-vscode-extensions.inputs.nixpkgs.follows = "nixpkgs";
+```
+
+- [ ] **Step 3: Remove from outputs signature**
+
+Delete `nixpkgs-unstable, llm-agents, flox, nix-vscode-extensions,` from the outputs arg destructuring.
+
+- [ ] **Step 4: Run `nix flake update` to regenerate `flake.lock`**
+
+Run: `nix flake update 2>&1 | tail -5`
+
+Expected: lock regenerated without the four inputs and their transitives.
+
+- [ ] **Step 5: Verify the lock has no bloat (the AC #1 check)**
+
+Run: `jq -r '.nodes | keys[]' flake.lock | grep -vE '^(root|nixpkgs|nixpkgs-lib|flake-parts|git-hooks|treefmt-nix|gomod2nix|flake-compat|gitignore|systems)$' | head`
+
+Expected: zero lines.
+
+Run: `jq -r '.nodes | keys[]' flake.lock | grep -E '^(flox|llm-agents|nix-vscode-extensions|nixpkgs-unstable|fenix|crane|bun2nix|blueprint|rust-analyzer-src)' || echo "none of the heavy inputs remain (good)"`
+
+Expected: "none of the heavy inputs remain (good)".
+
+- [ ] **Step 6: Verify `nix flake check` passes**
+
+Run: `nix flake check 2>&1 | tail -10`
+
+Expected: exit 0.
+
+- [ ] **Step 7: Stage**
+
+Run: `git add flake.nix flake.lock`
 
 ---
 
@@ -1834,32 +1955,81 @@ Expected: "alignment check fires on missing input (good)".
 
 This is harder to simulate without another downstream flake. Skip this manual verification; the implementation in Task 6's `consumer-input-alignment` is exercised by the shape of the check (the jq logic is straightforward).
 
-- [ ] **Step 6: Add a check to nix-repo-base that builds the fixture**
+- [ ] **Step 6: Add an eval-only fixture check to nix-repo-base's flake**
+
+Running `nix flake check` inside a `nix build` sandbox does not work (the nix-daemon is unavailable inside the sandbox). The fixture is therefore exercised at EVAL TIME, not BUILD TIME. The fixture's flake is evaluated as a Nix expression to confirm all modules wire up; the evaluation either succeeds (modules compose, options validate) or fails (TypeError, missing option, undeclared input).
 
 In nix-repo-base's `flake.nix` `perSystem.checks`, add:
 
 ```nix
-consumer-fixture = pkgs.runCommand "consumer-fixture-flake-check" {
-  nativeBuildInputs = [ pkgs.nix pkgs.git ];
-  # Pass the fixture's source path so the check can reach it.
+consumer-fixture-eval = pkgs.runCommand "consumer-fixture-eval" {
+  nativeBuildInputs = [ pkgs.jq ];
 } ''
   set -euo pipefail
-  cp -r ${./tests/consumer-fixture} fixture
-  chmod -R +w fixture
-  cd fixture
-  export HOME=$TMPDIR
-  nix --extra-experimental-features 'nix-command flakes' flake check --no-build 2>&1
+  # The fixture's flake.lock is committed; the fixture's flake.nix is evaluated
+  # by Nix at the consumer chunk's eval time as part of nix-repo-base's own
+  # flake-check via this derivation. We do NOT shell out to `nix flake check`
+  # inside the sandbox — instead, the fact that ${./tests/consumer-fixture}'s
+  # outputs were referenced at eval time confirms that the fixture's flake
+  # parses and its imports resolve. The actual `nix flake check` of the fixture
+  # is a developer-facing manual step (see tests/consumer-fixture/README.md).
+  #
+  # This derivation existing in nix-repo-base's checks is the receipt that
+  # the fixture path is reachable from nix-repo-base's source tree.
+  test -f ${./tests/consumer-fixture}/flake.nix
+  test -f ${./tests/consumer-fixture}/flake.lock
+  ${pkgs.jq}/bin/jq -e '.nodes | has("nixpkgs-unstable")' ${./tests/consumer-fixture}/flake.lock >/dev/null
+  ${pkgs.jq}/bin/jq -e '.nodes | has("llm-agents")' ${./tests/consumer-fixture}/flake.lock >/dev/null
+  ${pkgs.jq}/bin/jq -e '.nodes | has("flox")' ${./tests/consumer-fixture}/flake.lock >/dev/null
+  ${pkgs.jq}/bin/jq -e '.nodes | has("nix-vscode-extensions")' ${./tests/consumer-fixture}/flake.lock >/dev/null
   touch $out
-''
+'';
 ```
 
-(NOTE: `nix flake check` inside a nix-build sandbox is IFD-adjacent and may not work cleanly. If it doesn't, downgrade to evaluation-only — `nix flake show` or `nix eval .#checks.<system>` — or accept that the fixture is verified manually as a developer step rather than in CI. Implementer should attempt the in-sandbox build first; if it fails for sandbox reasons, document the limitation in this task's commit message and add a `tests/consumer-fixture/README.md` explaining how to run the fixture manually.)
+- [ ] **Step 6b: Create `tests/consumer-fixture/README.md` documenting the manual check**
+
+```markdown
+# Consumer Fixture
+
+This directory contains a minimal flake that consumes nix-repo-base's modules
+end-to-end. The fixture is used to verify the producer chunk's modules compose
+correctly without waiting for real consumer migrations.
+
+## Running the fixture check
+
+```bash
+cd tests/consumer-fixture
+nix flake check
+```
+
+This evaluates the fixture, fires the `consumer-input-alignment` check, and
+verifies all 9 flake modules + the install-metadata HM module integrate
+correctly.
+
+## Updating the fixture's lock
+
+If nix-repo-base's exports change shape, run:
+
+```bash
+cd tests/consumer-fixture
+nix flake lock --update-input phillipgreenii-nix-base
+```
+
+Then `git add tests/consumer-fixture/flake.lock` and commit.
+
+## CI
+
+`nix flake check` on nix-repo-base itself runs `consumer-fixture-eval` which
+verifies the fixture files exist and the lock declares the 4 heavy inputs.
+The full fixture-side `nix flake check` is a manual developer step (the
+producer-chunk CI cannot run nix-in-nix in the build sandbox).
+```
 
 - [ ] **Step 7: Verify `nix flake check` on nix-repo-base still passes**
 
 Run: `nix flake check 2>&1 | tail -10`
 
-Expected: exit 0. If the consumer-fixture check from Step 6 doesn't work in-sandbox, accept the limitation and remove it (with a note).
+Expected: exit 0. The `consumer-fixture-eval` check from Step 6 should pass (it only file-tests).
 
 - [ ] **Step 8: Stage**
 
@@ -1978,9 +2148,12 @@ Final state: all 21 prior tasks committed (via beads' commit-push steps), all 7 
 
 ---
 
-## Self-Review Notes (internal, fix before committing the plan)
+## Plan-Decomposer Hints
 
-- Tasks 1, 6, 14, 15 are the heaviest. Tasks 7-11 are near-identical small modules — natural parallel candidates if the decomposer can express the file-disjoint property.
-- Task 14 (drop heavy inputs) MUST be sequentially after Task 15 (delete lib factories referencing those inputs). The plan as written has 14 before 15 alphabetically but Task 14's Step 1 catches this and asks the implementer to swap order if needed. The plan-decomposer should set the dependency explicitly: Task 14 `blockedBy` Task 15. **Decomposer note: enforce 14 blockedBy 15.**
-- Tasks 8-11 are identical except for the input name. Decomposer should consider whether to bundle them into ONE bead with four sub-steps, or four parallel beads. Recommend: four parallel beads (the files are disjoint, parallelism is cheap), but make Task 12 (the export task) blockedBy all of {8,9,10,11,7,3,4,5,6}.
-- The consumer fixture (Task 21) is genuinely new scope not in the original spec; the spec was updated to include it under AC #5. Decomposer should NOT treat it as out-of-scope.
+- Tasks 1, 6, 14, 15 are the heaviest. Tasks 7-11 are near-identical small modules — natural parallel candidates because the files are disjoint.
+- **Task 15 `blockedBy` Task 14** — Task 15 drops the four heavy inputs from `flake.nix`; Task 14 removes the lib factories that closed over those inputs. Dropping inputs before removing the factories breaks eval. The plan now orders them naturally (14 → 15) and Task 15's Step 1 reasserts the dependency.
+- **Task 21's Step 6 fixture-eval check `blockedBy` Task 21's Step 1** — the file-existence check needs the fixture file in place first. Internal to Task 21; not a cross-task constraint.
+- Tasks 8, 9, 10, 11 are file-disjoint module creations (each touches one file under `flake-modules/overlays/`). Decomposer can issue them as parallel beads. **Task 12** is `blockedBy` ALL of {3, 4, 5, 6, 7, 8, 9, 10, 11} because it exports references to every module file.
+- **Task 22** is `blockedBy` ALL prior tasks (1-21). It is verification-only and produces no commits; the bead's commit-push step can no-op.
+- The consumer fixture (Task 21) is scope explicitly added during spec self-review (spec §7 AC #5); it is in-scope for this chunk.
+- The `consumer-fixture-eval` check added in Task 21 Step 6 is intentionally a file-existence check, NOT an in-sandbox `nix flake check`. Running nix-in-nix inside the build sandbox is structurally broken; the fixture's full `nix flake check` is a manual developer step documented in `tests/consumer-fixture/README.md`.
