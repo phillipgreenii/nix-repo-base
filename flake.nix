@@ -19,7 +19,6 @@
     flox.url = "github:flox/flox";
     nix-vscode-extensions.url = "github:nix-community/nix-vscode-extensions";
     nix-vscode-extensions.inputs.nixpkgs.follows = "nixpkgs";
-    flake-utils.url = "github:numtide/flake-utils";
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
     git-hooks.url = "github:cachix/git-hooks.nix";
@@ -32,7 +31,7 @@
     };
   };
 
-  outputs = inputs@{ self, flake-parts, nixpkgs, nixpkgs-unstable, llm-agents, flox, nix-vscode-extensions, flake-utils, git-hooks, treefmt-nix, gomod2nix, ... }:
+  outputs = inputs@{ self, flake-parts, nixpkgs, nixpkgs-unstable, llm-agents, flox, nix-vscode-extensions, git-hooks, treefmt-nix, gomod2nix, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-darwin" ];
 
