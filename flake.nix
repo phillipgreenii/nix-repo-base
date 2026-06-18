@@ -45,6 +45,7 @@
         (import ./flake-modules/pre-commit.nix inputs)
         ./flake-modules/devshell.nix
         ./flake-modules/checks.nix
+        (import ./flake-modules/overlays/gomod2nix.nix inputs)
       ];
 
       systems = [
@@ -75,7 +76,7 @@
         {
           _module.args.pkgs = import inputs.nixpkgs {
             inherit system;
-            overlays = [ inputs.gomod2nix.overlays.default ];
+            overlays = [ self.overlays.gomod2nix ];
           };
 
           packages = {
