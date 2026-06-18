@@ -167,6 +167,18 @@
         };
 
       flake = {
+        flakeModules = {
+          treefmt = import ./flake-modules/treefmt.nix inputs;
+          pre-commit = import ./flake-modules/pre-commit.nix inputs;
+          devshell = ./flake-modules/devshell.nix;
+          checks = ./flake-modules/checks.nix;
+          gomod2nix-overlay = import ./flake-modules/overlays/gomod2nix.nix inputs;
+          unstable-overlay = ./flake-modules/overlays/unstable.nix;
+          llm-agents-overlay = ./flake-modules/overlays/llm-agents.nix;
+          vscode-extensions-overlay = ./flake-modules/overlays/vscode-extensions.nix;
+          flox-overlay = ./flake-modules/overlays/flox.nix;
+        };
+
         homeModules.pn = import ./home/pn/default.nix;
         # repo-base's first darwin module set, exported as the aggregate
         # darwinModules.default (mirrors agent-support). Currently carries the pn
