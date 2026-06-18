@@ -33,11 +33,12 @@
 
   outputs = inputs@{ self, flake-parts, nixpkgs, nixpkgs-unstable, llm-agents, flox, nix-vscode-extensions, git-hooks, treefmt-nix, gomod2nix, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [ (import ./flake-modules/treefmt.nix inputs) ];
+
       systems = [ "x86_64-linux" "aarch64-darwin" ];
 
       perSystem = { config, pkgs, system, self', inputs', ... }:
         let
-          treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
           checks-lib = import ./nix/checks.nix { inherit pkgs; };
           pre-commit = (import ./nix/dev-env.nix {
             inherit (inputs) treefmt-nix git-hooks;
@@ -45,7 +46,7 @@
           }).mkPreCommitHooks {
             inherit system;
             src = ./.;
-            treefmtWrapper = treefmtEval.config.build.wrapper;
+            treefmtWrapper = config.treefmt.build.wrapper;
           };
           bashBuilders = (import ./nix/packages.nix { }).mkBashBuilders {
             inherit pkgs self;
@@ -61,8 +62,6 @@
             inherit system;
             overlays = [ inputs.gomod2nix.overlays.default ];
           };
-
-          formatter = treefmtEval.config.build.wrapper;
 
           packages = {
             # Packaged shared bash lib. Consumed by determine-ul-lib-dir and
@@ -93,7 +92,7 @@
           };
 
           checks = {
-            formatting = treefmtEval.config.build.check self;
+            formatting = config.treefmt.build.check self;
             linting = checks-lib.linting ./.;
             shellcheck = checks-lib.shellcheck {
               scripts = [
