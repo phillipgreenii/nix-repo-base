@@ -33,21 +33,15 @@
 
   outputs = inputs@{ self, flake-parts, nixpkgs, nixpkgs-unstable, llm-agents, flox, nix-vscode-extensions, git-hooks, treefmt-nix, gomod2nix, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ (import ./flake-modules/treefmt.nix inputs) ];
+      imports = [ (import ./flake-modules/pre-commit.nix inputs) ];
 
       systems = [ "x86_64-linux" "aarch64-darwin" ];
+
+      phillipgreenii.pre-commit.src = ./.;
 
       perSystem = { config, pkgs, system, self', inputs', ... }:
         let
           checks-lib = import ./nix/checks.nix { inherit pkgs; };
-          pre-commit = (import ./nix/dev-env.nix {
-            inherit (inputs) treefmt-nix git-hooks;
-            inherit nixpkgs;
-          }).mkPreCommitHooks {
-            inherit system;
-            src = ./.;
-            treefmtWrapper = config.treefmt.build.wrapper;
-          };
           bashBuilders = (import ./nix/packages.nix { }).mkBashBuilders {
             inherit pkgs self;
             inherit (pkgs) lib;
@@ -75,13 +69,6 @@
             # Autofix helper
             fix-lint = pkgs.writeShellScriptBin "fix-lint" ''
               ${pkgs.lib.getExe pkgs.statix} fix ${./.}
-            '';
-
-            # Install pre-commit hooks
-            install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
-              ${pre-commit.shellHook}
-              echo "Pre-commit hooks installed successfully!"
-              echo "Run 'pre-commit run --all-files' to test them."
             '';
 
             # Update-locks resolver
@@ -161,7 +148,7 @@
             inherit nixpkgs;
           }).mkDevShell {
             inherit pkgs;
-            pre-commit-shellHook = pre-commit.shellHook;
+            pre-commit-shellHook = config.preCommitShellHook;
           };
         };
 
