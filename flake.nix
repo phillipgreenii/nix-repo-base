@@ -44,6 +44,7 @@
       imports = [
         (import ./flake-modules/pre-commit.nix inputs)
         ./flake-modules/devshell.nix
+        ./flake-modules/checks.nix
       ];
 
       systems = [
@@ -52,16 +53,16 @@
       ];
 
       phillipgreenii.pre-commit.src = ./.;
+      phillipgreenii.src = ./.;
 
       perSystem =
         {
-          config,
           pkgs,
           system,
+          checksHelpers,
           ...
         }:
         let
-          checks-lib = import ./nix/checks.nix { inherit pkgs; };
           bashBuilders = (import ./nix/packages.nix { }).mkBashBuilders {
             inherit pkgs self;
             inherit (pkgs) lib;
@@ -99,15 +100,14 @@
           };
 
           checks = {
-            formatting = config.treefmt.build.check self;
-            linting = checks-lib.linting ./.;
-            shellcheck = checks-lib.shellcheck {
+            # formatting, linting, consumer-input-alignment auto-contributed by checks module
+            shellcheck = checksHelpers.shellcheck {
               scripts = [
                 ./lib/scripts/update-locks-lib.bash
                 ./lib/scripts/update-cache-lib.bash
               ];
             };
-            test-update-locks-lib = checks-lib.testUpdateLocksLib { };
+            test-update-locks-lib = checksHelpers.testUpdateLocksLib { };
 
             # Pure-function unit tests for lib/version.nix:mkVersion.
             version-lib =
@@ -163,7 +163,6 @@
               );
           }
           // ulScripts.checks;
-
         };
 
       flake = {
