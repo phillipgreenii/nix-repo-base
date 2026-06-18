@@ -13,7 +13,16 @@
   # `self` is accepted for signature parity with mkBashBuilders but unused here.
   ...
 }:
-
+assert
+  pkgs ? buildGoApplication
+  || throw ''
+    mkGoBuilders requires pkgs.buildGoApplication (gomod2nix's overlay).
+    Either:
+      - Import phillipgreenii-nix-base.flakeModules.gomod2nix-overlay and
+        apply self.overlays.gomod2nix to your pkgs, OR
+      - Declare inputs.gomod2nix directly and apply
+        inputs.gomod2nix.overlays.default to your pkgs.
+  '';
 rec {
   mkGoBinary =
     {
