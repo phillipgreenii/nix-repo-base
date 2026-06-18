@@ -35,9 +35,6 @@
     inputs@{
       self,
       flake-parts,
-      nixpkgs,
-      git-hooks,
-      treefmt-nix,
       ...
     }:
     flake-parts.lib.mkFlake { inherit inputs; } {
@@ -204,20 +201,6 @@
           // {
             inherit ((import ./nix/packages.nix { })) mkBashBuilders mkGoBuilders mkManPage;
           }
-          # Development environment helpers
-          // {
-            inherit
-              (
-                (import ./nix/dev-env.nix {
-                  inherit (inputs) treefmt-nix git-hooks;
-                  inherit nixpkgs;
-                })
-              )
-              mkTreefmtConfig
-              mkPreCommitHooks
-              mkDevShell
-              ;
-          }
           # Module generation helpers
           // {
             inherit ((import ./nix/module-helpers.nix { }))
@@ -226,33 +209,6 @@
               mkDockRegistration
               mkProgramModule
               ;
-          }
-          // {
-            # Check helpers — returns attrset of check functions for a given pkgs
-            mkChecks = pkgs: import ./nix/checks.nix { inherit pkgs; };
-
-            # Overlay factories
-            mkUnstableOverlay = _final: prev: {
-              unstable = import inputs.nixpkgs-unstable {
-                inherit (prev.stdenv.hostPlatform) system;
-                config.allowUnfree = true;
-              };
-            };
-
-            mkLlmAgentsOverlay = _final: prev: {
-              llm-agentsPkgs = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system};
-            };
-
-            mkFloxOverlay = _final: prev: {
-              floxPkgs = inputs.flox.packages.${prev.stdenv.hostPlatform.system};
-            };
-
-            mkVscodeExtensionsOverlay = _final: prev: {
-              inherit (inputs.nix-vscode-extensions.extensions.${prev.stdenv.hostPlatform.system})
-                vscode-marketplace
-                open-vsx
-                ;
-            };
           };
       };
     };
