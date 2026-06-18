@@ -1,5 +1,5 @@
 # Version helper library
-# Provides git hash extraction and install-metadata derivation generation.
+# Provides git hash extraction and version string generation.
 #
 # Version strings are computed at flake-eval time from the source flake's
 # `lastModifiedDate`, git revision, and (for dirty trees) `narHash`. See
@@ -66,33 +66,4 @@ in
   # Returns: first8(sha256(colon-joined string representations))
   # NOTE: this is NOT a NAR content hash; it is a hash of the store-path strings.
   inherit mkSrcDigest;
-
-  # Returns a home-manager module that installs a small JSON metadata file
-  # for the given repo. The derivation name embeds the version so nvd shows
-  # a version bump on every commit, mirroring what it shows for packages.
-  #
-  # Output path: $out/share/pn/<name>-install-metadata.json
-  # JSON content: { name, version, lastModified }
-  #
-  # Usage (in a repo's flake.nix, outside eachDefaultSystem):
-  #   homeModules.install-metadata =
-  #     phillipgreenii-nix-base.lib.mkInstallMetadata { flakeSelf = self; name = "my-repo"; };
-  mkInstallMetadata =
-    { flakeSelf, name }:
-    let
-      version = mkVersion flakeSelf;
-    in
-    { pkgs, ... }:
-    {
-      home.packages = [
-        (pkgs.writeTextFile {
-          name = "${name}-install-metadata-${version}";
-          destination = "/share/pn/${name}-install-metadata.json";
-          text = builtins.toJSON {
-            inherit name version;
-            lastModified = toString flakeSelf.lastModifiedDate;
-          };
-        })
-      ];
-    };
 }
