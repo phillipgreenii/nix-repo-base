@@ -28,7 +28,6 @@
       ];
 
       imports = [
-        phillipgreenii-nix-base.flakeModules.treefmt
         phillipgreenii-nix-base.flakeModules.pre-commit
         phillipgreenii-nix-base.flakeModules.devshell
         phillipgreenii-nix-base.flakeModules.checks
