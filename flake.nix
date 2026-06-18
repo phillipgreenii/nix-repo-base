@@ -31,15 +31,35 @@
     };
   };
 
-  outputs = inputs@{ self, flake-parts, nixpkgs, nixpkgs-unstable, llm-agents, flox, nix-vscode-extensions, git-hooks, treefmt-nix, gomod2nix, ... }:
+  outputs =
+    inputs@{
+      self,
+      flake-parts,
+      nixpkgs,
+      git-hooks,
+      treefmt-nix,
+      ...
+    }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ (import ./flake-modules/pre-commit.nix inputs) ];
+      imports = [
+        (import ./flake-modules/pre-commit.nix inputs)
+        ./flake-modules/devshell.nix
+      ];
 
-      systems = [ "x86_64-linux" "aarch64-darwin" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
 
       phillipgreenii.pre-commit.src = ./.;
 
-      perSystem = { config, pkgs, system, self', inputs', ... }:
+      perSystem =
+        {
+          config,
+          pkgs,
+          system,
+          ...
+        }:
         let
           checks-lib = import ./nix/checks.nix { inherit pkgs; };
           bashBuilders = (import ./nix/packages.nix { }).mkBashBuilders {
@@ -141,15 +161,9 @@
                 else
                   throw "pn darwin module did not register logSources.pn"
               );
-          } // ulScripts.checks;
+          }
+          // ulScripts.checks;
 
-          devShells.default = (import ./nix/dev-env.nix {
-            inherit (inputs) treefmt-nix git-hooks;
-            inherit nixpkgs;
-          }).mkDevShell {
-            inherit pkgs;
-            pre-commit-shellHook = config.preCommitShellHook;
-          };
         };
 
       flake = {
@@ -183,10 +197,17 @@
           }
           # Development environment helpers
           // {
-            inherit ((import ./nix/dev-env.nix {
-              inherit (inputs) treefmt-nix git-hooks;
-              inherit nixpkgs;
-            })) mkTreefmtConfig mkPreCommitHooks mkDevShell;
+            inherit
+              (
+                (import ./nix/dev-env.nix {
+                  inherit (inputs) treefmt-nix git-hooks;
+                  inherit nixpkgs;
+                })
+              )
+              mkTreefmtConfig
+              mkPreCommitHooks
+              mkDevShell
+              ;
           }
           # Module generation helpers
           // {

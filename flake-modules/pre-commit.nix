@@ -22,10 +22,16 @@ in
     };
   };
 
-  config.perSystem = { config, pkgs, system, ... }:
+  config.perSystem =
+    {
+      config,
+      pkgs,
+      system,
+      ...
+    }:
     let
       preCommit = producerInputs.git-hooks.lib.${system}.run {
-        src = topLevelCfg.src;
+        inherit (topLevelCfg) src;
         package = pkgs.prek;
         tools.dotnet-sdk = pkgs.runCommand "dotnet-stub" { } "mkdir $out";
         hooks = {
@@ -33,9 +39,19 @@ in
             enable = true;
             package = config.treefmt.build.wrapper;
           };
-          statix = { enable = true; name = "statix"; };
-          deadnix = { enable = true; name = "deadnix"; };
-          shellcheck = { enable = true; name = "shellcheck"; args = [ "--severity=error" ]; };
+          statix = {
+            enable = true;
+            name = "statix";
+          };
+          deadnix = {
+            enable = true;
+            name = "deadnix";
+          };
+          shellcheck = {
+            enable = true;
+            name = "shellcheck";
+            args = [ "--severity=error" ];
+          };
           check-merge-conflicts.enable = true;
           trailing-whitespace = {
             enable = true;
@@ -46,7 +62,8 @@ in
             entry = "${pkgs.python3Packages.pre-commit-hooks}/bin/end-of-file-fixer";
           };
           check-case-conflicts.enable = true;
-        } // topLevelCfg.extraHooks;
+        }
+        // topLevelCfg.extraHooks;
       };
     in
     {
