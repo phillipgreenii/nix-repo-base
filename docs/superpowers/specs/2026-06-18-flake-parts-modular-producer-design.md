@@ -104,6 +104,15 @@ pre-commit needs the formatter wrapper. Consumers who import pre-commit do
 NOT need to also import treefmt — it composes in automatically. (Consumers
 who want treefmt WITHOUT pre-commit import treefmt alone.)
 
+**Consumer source root options default to `inputs.self`.** Both
+`phillipgreenii.src` (used by formatting + linting) and
+`phillipgreenii.pre-commit.src` (used by git-hooks for hook registration)
+default to the consumer's flake root (i.e., `inputs.self.outPath`). Consumers
+who want subdirectory scoping for formatting/linting can override
+`phillipgreenii.src` to a path; `pre-commit.src` rarely needs overriding.
+This removes the duplicate-config foot-gun where every consumer had to set
+both options to `./.` redundantly.
+
 `flakeModules.checks.helpers` exposes the following per-system functions
 (identical signatures to today's `lib.mkChecks pkgs`):
 
@@ -112,7 +121,7 @@ who want treefmt WITHOUT pre-commit import treefmt alone.)
 - `helpers.shellcheck :: { scripts, exclude ? [], allowWarnings ? false } -> derivation`
 - `helpers.testBashScripts :: { package, tests, extraInputs ? [] } -> derivation`
 - `helpers.testPythonProject :: { package, src, name, checkLibDir ? null } -> derivation`
-- `helpers.testUpdateLocksLib :: { testsDir ? ../lib/tests, scriptsDir ? ../lib/scripts } -> derivation`
+- `helpers.testUpdateLocksLib :: { testsDir ? ../lib/tests, scriptsDir ? ../lib/scripts } -> derivation` — the `..` defaults resolve relative to `flake-modules/checks.nix` (i.e., to nix-repo-base's own `lib/tests` and `lib/scripts`). Override if you vendor the module elsewhere.
 
 The module auto-contributes `perSystem.checks.formatting = helpers.formatting
 config.phillipgreenii.src` and `perSystem.checks.linting = helpers.linting
@@ -269,11 +278,11 @@ upstreams are no longer declared by nix-repo-base.
 **nix-repo-base does NOT import its own heavy-overlay modules into its own
 flake.nix.** It exports them via `flakeModules.<name>-overlay` for consumers
 but has no internal need for them (no internal use of unstable/llm-agents/flox/
-vscode-extensions). It DOES import its own perSystem modules
-(checks/devshell/pre-commit/treefmt) and its own light-overlay module
-(gomod2nix-overlay) for internal use. This avoids the chicken-and-egg
-where nix-repo-base would need to declare the heavy inputs it's trying to
-shed.
+vscode-extensions). It DOES import its own `flakeModules.{checks, devshell,
+pre-commit}` (treefmt comes in transitively via pre-commit) and its own
+light-overlay module (`flakeModules.gomod2nix-overlay`) for internal use.
+This avoids the chicken-and-egg where nix-repo-base would need to declare
+the heavy inputs it's trying to shed.
 
 ### 3.4 Inputs before / after
 
@@ -452,12 +461,16 @@ under `nix flake check`. The check uses two eval-time inputs:
   (module-system list merging accumulates the requirements across all imported
   modules).
 - The CONSUMER's `flake.lock` — read at build time inside the check derivation
-  via `${self}/flake.lock`, where `self` is bound by flake-parts to the
-  CONSUMER's flake (not nix-repo-base's). This works because flake-parts
-  evaluates modules in the importing flake's context; the perSystem block's
-  `self` arg is therefore the consumer's. The flake.lock string is in the
-  consumer's source tree and available to `pkgs.runCommand` at build time
-  (no IFD required — it's a build-time `cat`, not eval-time `readFile`).
+  via `${inputs.self}/flake.lock`. flake-parts passes `inputs` into perSystem
+  modules from the importing flake's outputs context, so `inputs.self` is the
+  consumer's flake (not nix-repo-base's). The lock is available to
+  `pkgs.runCommand` at build time via store-path coercion (no IFD required —
+  it's a build-time `cat`, not eval-time `readFile`).
+
+Note: the alignment check intentionally uses `inputs.self` rather than
+`config.phillipgreenii.src`. `src` defaults to `inputs.self` but may be
+overridden to a subdirectory for scoping formatting/linting; the alignment
+check always wants the TOP-LEVEL `flake.lock`, never a subdirectory's view.
 
 Implementation sketch:
 

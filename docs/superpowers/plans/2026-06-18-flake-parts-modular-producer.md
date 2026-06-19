@@ -528,9 +528,7 @@ b) Remove the inline `pre-commit = (import ./nix/dev-env.nix { ... }).mkPreCommi
 
 c) Remove `install-pre-commit-hooks` from `perSystem.packages` (the module contributes it).
 
-d) Set `phillipgreenii.pre-commit.src = ./.;` at the top level (or inside perSystem if the option is perSystem-scoped — check what the module actually declares; per the spec it's a top-level option but its CONFIG is perSystem).
-
-   Wait — the option declared above is `options.phillipgreenii.pre-commit.src` (top-level, not perSystem) but `config.perSystem` reads it. Since flake-parts modules can declare top-level options that are READ inside perSystem, this works. Set `phillipgreenii.pre-commit.src = ./.;` at top level of `mkFlake { ... }`.
+d) Do NOT set `phillipgreenii.pre-commit.src` explicitly. The option's default is `inputs.self.outPath` (the consumer's flake root), which is what nix-repo-base wants. Only override if scoping to a subdirectory.
 
 e) In `checks`, the `pre-commit` check key is now contributed by the module — remove any pre-existing `pre-commit` from the inline checks block if present.
 
@@ -629,14 +627,22 @@ Run: `git add flake.nix flake-modules/devshell.nix`
 
 ```nix
 # No producer-input closure needed — checks helpers use only consumer pkgs.
-# Consumer must set `phillipgreenii.src = ./.;` for the auto-contributed
-# formatting + linting checks to wire up.
-{ lib, ... }:
+# `phillipgreenii.src` defaults to inputs.self (the consumer's flake root);
+# consumers only override it to scope formatting/linting to a subdirectory.
+# The consumer-input-alignment check ALWAYS reads inputs.self/flake.lock,
+# independent of phillipgreenii.src.
+{ lib, inputs, ... }:
 {
   options.phillipgreenii = {
     src = lib.mkOption {
       type = lib.types.path;
-      description = "Source path used by auto-contributed checks (formatting, linting).";
+      default = inputs.self.outPath;
+      defaultText = lib.literalExpression "inputs.self";
+      description = ''
+        Source root used by the auto-contributed formatting + linting checks.
+        Defaults to the consumer's flake root; override only to scope these
+        checks to a subdirectory.
+      '';
     };
     alignment.requires = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -782,7 +788,7 @@ Note on `self` in perSystem: flake-parts passes `self` to perSystem from `mkFlak
 
 a) Add `./flake-modules/checks.nix` to `imports = [ ... ]`.
 
-b) Set `phillipgreenii.src = ./.;` at top level of mkFlake (if not already set in Task 4).
+b) Do NOT set `phillipgreenii.src` explicitly. The option's default is `inputs.self.outPath` (the consumer's flake root), which is what nix-repo-base wants. Only override if scoping to a subdirectory.
 
 c) Remove inline definitions: `linting`, `shellcheck` (the one for update-locks-lib scripts), `test-update-locks-lib`. Replace with usages of `checksHelpers` from perSystem:
 
@@ -1662,8 +1668,8 @@ Shared Nix infrastructure consumed by other nix-* flakes via flake-parts modules
 
 | Surface | Form | Notes |
 |---|---|---|
-| `flakeModules.checks` | flake-part | Auto-contributes `perSystem.checks.{formatting, linting, consumer-input-alignment}`. Exposes `_module.args.checksHelpers` (formatting, linting, shellcheck, testBashScripts, testPythonProject, testUpdateLocksLib) for opt-in checks. Requires `phillipgreenii.src = ./.;`. |
-| `flakeModules.pre-commit` | flake-part | Implicitly imports `flakeModules.treefmt`. Contributes `perSystem.checks.pre-commit` + `perSystem.packages.install-pre-commit-hooks`. Requires `phillipgreenii.pre-commit.src = ./.;`. |
+| `flakeModules.checks` | flake-part | Auto-contributes `perSystem.checks.{formatting, linting, consumer-input-alignment}`. Exposes `_module.args.checksHelpers` (formatting, linting, shellcheck, testBashScripts, testPythonProject, testUpdateLocksLib) for opt-in checks. `phillipgreenii.src` defaults to `inputs.self`; override only for subdirectory scoping. |
+| `flakeModules.pre-commit` | flake-part | Implicitly imports `flakeModules.treefmt`. Contributes `perSystem.checks.pre-commit` + `perSystem.packages.install-pre-commit-hooks`. `phillipgreenii.pre-commit.src` defaults to `inputs.self`. |
 | `flakeModules.devshell` | flake-part | Contributes `perSystem.devShells.default`. Reads `_module.args.preCommitShellHook` (set by pre-commit module) for the shellHook. |
 | `flakeModules.treefmt` | flake-part | Standard treefmt-nix wrapper (nixfmt, prettier, shfmt). Contributes `perSystem.formatter`. |
 | `flakeModules.unstable-overlay` | flake-part | Contributes `flake.overlays.unstable`; consumer must declare `inputs.nixpkgs-unstable`. |
@@ -1744,7 +1750,8 @@ Shared Nix infrastructure consumed by other nix-* flakes via flake-parts modules
         # it reads the alignment.requires list populated by the four overlay modules
         # above and verifies the corresponding inputs are declared without duplicates.
       ];
-      phillipgreenii.src = ./.;
+      # phillipgreenii.src defaults to inputs.self; no setting needed for the
+      # common case.
       flake.darwinConfigurations.example = inputs.nix-darwin.lib.darwinSystem {
         modules = [
           # ...
@@ -1801,8 +1808,8 @@ or duplicated.
 
 | Old API (deleted) | New API |
 |---|---|
-| `lib.mkChecks pkgs` | `imports = [ flakeModules.checks ]; phillipgreenii.src = ./.;` |
-| `lib.mkPreCommitHooks { … }` | `imports = [ flakeModules.pre-commit ]; phillipgreenii.pre-commit.src = ./.;` |
+| `lib.mkChecks pkgs` | `imports = [ flakeModules.checks ];` (src defaults to inputs.self) |
+| `lib.mkPreCommitHooks { … }` | `imports = [ flakeModules.pre-commit ];` (src defaults to inputs.self) |
 | `lib.mkDevShell { … }` | `imports = [ flakeModules.devshell ]; phillipgreenii.devshell.extraInputs = [...];` |
 | `lib.mkTreefmtConfig { … }` | `imports = [ flakeModules.treefmt ];` (pre-commit imports treefmt implicitly) |
 | `lib.mkInstallMetadata { flakeSelf, name }` | `homeModules.install-metadata = { ... }: { imports = [ inputs.phillipgreenii-nix-base.homeModules.install-metadata ]; phillipgreenii.install-metadata = { flakeSelf = self; name = "..."; }; };` |
@@ -1857,7 +1864,7 @@ Run: `git add README.md`
       systems = [ "x86_64-linux" "aarch64-darwin" ];
 
       imports = [
-        phillipgreenii-nix-base.flakeModules.treefmt
+        # pre-commit transitively imports treefmt; no separate treefmt import
         phillipgreenii-nix-base.flakeModules.pre-commit
         phillipgreenii-nix-base.flakeModules.devshell
         phillipgreenii-nix-base.flakeModules.checks
@@ -1868,10 +1875,7 @@ Run: `git add README.md`
         phillipgreenii-nix-base.flakeModules.flox-overlay
       ];
 
-      phillipgreenii = {
-        src = ./.;
-        pre-commit.src = ./.;
-      };
+      # phillipgreenii.src / phillipgreenii.pre-commit.src default to inputs.self.
 
       perSystem = { config, pkgs, system, ... }: {
         _module.args.pkgs = import inputs.nixpkgs {
