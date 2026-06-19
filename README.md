@@ -43,15 +43,14 @@ Shared Nix infrastructure consumed by other nix-\* flakes via flake-parts module
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-darwin" ];
       imports = [
-        phillipgreenii-nix-base.flakeModules.treefmt
+        # pre-commit transitively pulls in treefmt; no separate treefmt import needed
         phillipgreenii-nix-base.flakeModules.pre-commit
         phillipgreenii-nix-base.flakeModules.devshell
         phillipgreenii-nix-base.flakeModules.checks
       ];
-      phillipgreenii = {
-        src = ./.;
-        pre-commit.src = ./.;
-      };
+      # phillipgreenii.src and phillipgreenii.pre-commit.src default to your
+      # flake root (inputs.self). Set them only if you want to scope
+      # formatting/linting to a subdirectory.
     };
 }
 ```
@@ -83,7 +82,7 @@ Shared Nix infrastructure consumed by other nix-\* flakes via flake-parts module
         phillipgreenii-nix-base.flakeModules.vscode-extensions-overlay
         phillipgreenii-nix-base.flakeModules.flox-overlay
       ];
-      phillipgreenii.src = ./.;
+      # phillipgreenii.src defaults to inputs.self (no setting needed).
     };
 }
 ```
@@ -119,8 +118,8 @@ The `consumer-input-alignment` check (auto-contributed by `flakeModules.checks`)
 
 | Old API (deleted)                                   | New API                                                                             |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `lib.mkChecks pkgs`                                 | `imports = [ flakeModules.checks ]; phillipgreenii.src = ./.;`                      |
-| `lib.mkPreCommitHooks { … }`                        | `imports = [ flakeModules.pre-commit ]; phillipgreenii.pre-commit.src = ./.;`       |
+| `lib.mkChecks pkgs`                                 | `imports = [ flakeModules.checks ];` (src defaults to inputs.self)                  |
+| `lib.mkPreCommitHooks { … }`                        | `imports = [ flakeModules.pre-commit ];` (src defaults to inputs.self)              |
 | `lib.mkDevShell { … }`                              | `imports = [ flakeModules.devshell ]; phillipgreenii.devshell.extraInputs = [...];` |
 | `lib.mkTreefmtConfig { … }`                         | `imports = [ flakeModules.treefmt ];` (pre-commit imports treefmt implicitly)       |
 | `lib.mkInstallMetadata { flakeSelf, name }`         | Import `homeModules.install-metadata` and set options.                              |

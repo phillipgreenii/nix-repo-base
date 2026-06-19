@@ -2,11 +2,11 @@
 # Consumers import this module; they do NOT need to declare treefmt-nix
 # themselves (it appears as a transitive node in their lock).
 producerInputs:
-{ lib, flake-parts-lib, ... }:
+{ ... }:
 {
   imports = [ producerInputs.treefmt-nix.flakeModule ];
 
-  perSystem = { config, pkgs, ... }: {
+  perSystem = { pkgs, ... }: {
     treefmt = {
       projectRootFile = "flake.nix";
       programs = {

@@ -45,8 +45,8 @@
         "aarch64-darwin"
       ];
 
-      phillipgreenii.pre-commit.src = ./.;
-      phillipgreenii.src = ./.;
+      # phillipgreenii.{src, pre-commit.src} default to inputs.self via the
+      # checks and pre-commit modules; no explicit settings needed here.
 
       perSystem =
         {

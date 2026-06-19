@@ -28,6 +28,7 @@
       ];
 
       imports = [
+        # pre-commit transitively imports treefmt
         phillipgreenii-nix-base.flakeModules.pre-commit
         phillipgreenii-nix-base.flakeModules.devshell
         phillipgreenii-nix-base.flakeModules.checks
@@ -38,10 +39,8 @@
         phillipgreenii-nix-base.flakeModules.flox-overlay
       ];
 
-      phillipgreenii = {
-        src = ./.;
-        pre-commit.src = ./.;
-      };
+      # phillipgreenii.src / phillipgreenii.pre-commit.src default to inputs.self;
+      # consumers do not need to set them unless they want subdirectory scoping.
 
       perSystem =
         {

@@ -1,7 +1,14 @@
 # No producer-input closure needed — checks helpers use only consumer pkgs.
-# Consumer must set phillipgreenii.src = ./.; for the auto-contributed
-# formatting + linting checks to wire up.
-{ lib, config, ... }:
+# `phillipgreenii.src` defaults to the consumer's flake root (inputs.self);
+# consumers only need to set it if they want to scope formatting/linting to a
+# subdirectory. The consumer-input-alignment check ALWAYS reads the consumer's
+# top-level flake.lock (via inputs.self), independent of phillipgreenii.src.
+{
+  lib,
+  config,
+  inputs,
+  ...
+}:
 let
   topLevelCfg = config.phillipgreenii;
 in
@@ -9,7 +16,13 @@ in
   options.phillipgreenii = {
     src = lib.mkOption {
       type = lib.types.path;
-      description = "Source path used by auto-contributed checks (formatting, linting).";
+      default = inputs.self.outPath;
+      defaultText = lib.literalExpression "inputs.self";
+      description = ''
+        Source root used by the auto-contributed formatting + linting checks.
+        Defaults to the consumer's flake root; override only to scope these
+        checks to a subdirectory.
+      '';
     };
     alignment.requires = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -168,7 +181,12 @@ in
           pkgs.runCommand "consumer-input-alignment"
             {
               requires = requiresJSON;
-              consumerLock = builtins.toString (topLevelCfg.src + "/flake.lock");
+              # ALWAYS read the consumer's top-level flake.lock via inputs.self —
+              # NOT phillipgreenii.src, which may be scoped to a subdirectory for
+              # formatting/linting purposes. flake-parts binds inputs.self to the
+              # importing flake (consumer at consumer's eval; nix-repo-base at
+              # nix-repo-base's eval), so this always reads the right lock.
+              consumerLock = builtins.toString (inputs.self + "/flake.lock");
               nativeBuildInputs = [ pkgs.jq ];
             }
             ''

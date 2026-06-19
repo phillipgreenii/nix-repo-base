@@ -3,7 +3,12 @@
 # needs the formatter wrapper. Consumers who import pre-commit get treefmt
 # automatically; they do NOT need to import treefmt separately.
 producerInputs:
-{ lib, config, ... }:
+{
+  lib,
+  config,
+  inputs,
+  ...
+}:
 let
   topLevelCfg = config.phillipgreenii.pre-commit;
 in
@@ -13,7 +18,12 @@ in
   options.phillipgreenii.pre-commit = {
     src = lib.mkOption {
       type = lib.types.path;
-      description = "Source path passed to git-hooks for hook registration.";
+      default = inputs.self.outPath;
+      defaultText = lib.literalExpression "inputs.self";
+      description = ''
+        Source path passed to git-hooks for hook registration. Defaults to the
+        consumer's flake root; rarely needs overriding.
+      '';
     };
     extraHooks = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
