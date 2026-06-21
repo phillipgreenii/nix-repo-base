@@ -9,6 +9,12 @@ producerInputs:
   perSystem = { pkgs, ... }: {
     treefmt = {
       projectRootFile = "flake.nix";
+      # Generated nvfetcher manifests (_sources/) are tool-owned and regenerated;
+      # never prettier/nixfmt them. Mirrors the pre-commit `excludes` default so a
+      # single convention governs generated-path skipping. The producer has no
+      # `_sources/`, so this is a no-op here; nvfetcher-using consumers get correct
+      # behaviour with zero per-repo config. Definitions concatenate (extendable).
+      settings.global.excludes = [ "_sources/*" ];
       programs = {
         nixfmt = {
           enable = true;

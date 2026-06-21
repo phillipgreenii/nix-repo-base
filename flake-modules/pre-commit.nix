@@ -30,6 +30,21 @@ in
       default = { };
       description = "Additional hooks merged into the standard set.";
     };
+    excludes = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "^_sources/" ];
+      description = ''
+        File patterns (git-hooks/pre-commit regexes) excluded from ALL hooks
+        (deadnix, end-of-file-fixer, trailing-whitespace, shellcheck, etc.).
+
+        Defaults to nvfetcher's generated `_sources/` tree: those files are
+        tool-generated and regenerated, so formatting/linting them is both wrong
+        and unstable. The producer itself has no `_sources/`, so the default is a
+        harmless no-op here while giving every nvfetcher-using consumer correct
+        behaviour with zero per-repo config. Consumers can extend this list for
+        other generated/vendored paths; definitions concatenate.
+      '';
+    };
   };
 
   config.perSystem =
@@ -41,7 +56,10 @@ in
     }:
     let
       preCommit = producerInputs.git-hooks.lib.${system}.run {
-        inherit (topLevelCfg) src;
+        # `excludes` becomes a top-level pre-commit `exclude` regex applied to
+        # every hook (git-hooks modules/pre-commit.nix). Single source of truth
+        # for generated-path exclusion — see the option doc above.
+        inherit (topLevelCfg) src excludes;
         package = pkgs.prek;
         tools.dotnet-sdk = pkgs.runCommand "dotnet-stub" { } "mkdir $out";
         hooks = {
