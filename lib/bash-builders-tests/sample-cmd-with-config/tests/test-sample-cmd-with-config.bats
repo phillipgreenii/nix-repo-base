@@ -7,8 +7,8 @@ setup() {
   TEST_DIR="$(mktemp -d)"
   export TEST_DIR
 
-  # Set up config vars (simulates what the builder injects)
-  SAMPLE_GREETING="howdy"
+  # Set up config vars (simulates what the builder injects). SAMPLE_GREETING is
+  # set per-test inside the `bash -c` blocks below, not here.
   echo '{"name": "testuser"}' > "$TEST_DIR/config.json"
   SAMPLE_CONFIG="$TEST_DIR/config.json"
   export SAMPLE_EXPORTED="exported-value"

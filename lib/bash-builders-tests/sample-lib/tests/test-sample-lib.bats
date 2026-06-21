@@ -12,7 +12,9 @@ setup() {
     # LIB_PATH is a directory (local dev) — source the .bash file by name
     source "${LIB_PATH}/sample-lib.bash"
   else
-    # LIB_PATH is a file (nix composed library) — source directly
+    # LIB_PATH is a file (nix composed library) — source directly. Path is only
+    # known at runtime (store path), so shellcheck cannot follow it statically.
+    # shellcheck source=/dev/null
     source "${LIB_PATH}"
   fi
 }

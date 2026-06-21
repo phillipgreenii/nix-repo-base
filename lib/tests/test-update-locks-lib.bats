@@ -36,7 +36,7 @@ MOCK
   chmod +x "$MOCK_BIN/nix"
   export PATH="$MOCK_BIN:$PATH"
 
-  cd "$TEST_DIR"
+  cd "$TEST_DIR" || return 1
   git init
   git config user.email "test@test.com"
   git config user.name "Test"
@@ -166,7 +166,7 @@ MOCK
   # HEAD advanced, and the only change is the stamp file.
   [ "$(git rev-parse HEAD)" != "$before_hash" ]
   run git show --name-only --format= HEAD
-  [[ "$output" =~ ".update-locks/steps/noop-step" ]]
+  [[ "$output" == *".update-locks/steps/noop-step"* ]]
   [ "$(git show --name-only --format= HEAD | grep -vc '^$')" -eq 1 ]
 }
 
@@ -194,8 +194,8 @@ MOCK
 
   [ "$(git log -1 --format=%s)" = "update: test step" ]
   run git show --name-only --format= HEAD
-  [[ "$output" =~ "file.txt" ]]
-  [[ "$output" =~ ".update-locks/steps/test-step" ]]
+  [[ "$output" == *"file.txt"* ]]
+  [[ "$output" == *".update-locks/steps/test-step"* ]]
 }
 
 # --- ul_run_step: deferral (exit 75) ---
@@ -213,8 +213,8 @@ MOCK
   git diff --cached --quiet
   # A stamp-only commit landed.
   run git show --name-only --format= HEAD
-  [[ "$output" =~ ".update-locks/steps/defer-step" ]]
-  [[ ! "$output" =~ "file.txt" ]]
+  [[ "$output" == *".update-locks/steps/defer-step"* ]]
+  [[ "$output" != *"file.txt"* ]]
   # Counted as a pass (deferred), not a failure.
   [ "$_UL_STEPS_DEFERRED" -eq 1 ]
   [ "$_UL_STEPS_FAILED" -eq 0 ]
@@ -231,7 +231,7 @@ MOCK
   [ "$(git rev-parse HEAD)" != "$before" ]
   [ "$_UL_STEPS_DEFERRED" -eq 1 ]
   run git show --name-only --format= HEAD
-  [[ "$output" =~ ".update-locks/steps/defer-noop" ]]
+  [[ "$output" == *".update-locks/steps/defer-noop"* ]]
 }
 
 @test "ul_run_step other non-zero is a full rollback (no stamp) and a failure" {
@@ -481,7 +481,7 @@ MOCK
   [[ "$output" =~ "Upgraded: 1" ]]
   [[ "$output" =~ "Upgrades applied:" ]]
   [[ "$output" =~ "test-step" ]]
-  [[ "$output" =~ "upgrade(s) applied" ]]
+  [[ "$output" == *"upgrade(s) applied"* ]]
 }
 
 @test "ul_finalize reports zero upgrades when only no-op steps ran" {

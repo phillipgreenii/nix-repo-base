@@ -82,7 +82,9 @@ in
             }
             ''
               ${lib.concatMapStringsSep "\n" (
-                script: "${p.shellcheck}/bin/shellcheck ${excludeArgs} ${script}${errorHandling}"
+                # --severity=warning keeps this check consistent with the treefmt
+                # shellcheck formatter and the pre-commit shellcheck hook (tc-neh26).
+                script: "${p.shellcheck}/bin/shellcheck --severity=warning ${excludeArgs} ${script}${errorHandling}"
               ) scripts}
               touch $out
             '';

@@ -57,10 +57,16 @@ in
             enable = true;
             name = "deadnix";
           };
+          # Severity matches the treefmt shellcheck formatter and
+          # checksHelpers.shellcheck (all three = warning) so a single, consistent
+          # policy governs shellcheck everywhere. error was too lenient (let
+          # info/style findings pass the hook but fail `nix flake check`); style
+          # was too strict (info-level false positives: bats subshell SC2030/2031,
+          # source-following SC1091, indirectly-invoked SC2329). See tc-neh26.
           shellcheck = {
             enable = true;
             name = "shellcheck";
-            args = [ "--severity=error" ];
+            args = [ "--severity=warning" ];
           };
           check-merge-conflicts.enable = true;
           trailing-whitespace = {
