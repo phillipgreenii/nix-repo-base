@@ -1,4 +1,4 @@
-# Next-session prompt — nix-* consumer migrations (post-producer chunk)
+# Next-session prompt — nix-\* consumer migrations (post-producer chunk)
 
 The producer-side chunk closed on 2026-06-18. nix-repo-base now ships
 flake-parts modules; the lib factories are gone. Three consumer flakes still

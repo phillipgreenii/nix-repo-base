@@ -87,17 +87,17 @@ contributor or a function called from non-perSystem contexts.
 
 **Becomes a flake module (9 total):**
 
-| Module | Contributes | Imports (implicit) | Consumer-declared input |
-|---|---|---|---|
-| `flakeModules.checks` | `perSystem.checks.{formatting,linting,consumer-input-alignment}` + `config.phillipgreenii.checks.helpers.*` | — | — |
-| `flakeModules.pre-commit` | `perSystem.checks.pre-commit` + `perSystem.packages.install-pre-commit-hooks` | `flakeModules.treefmt` | — |
-| `flakeModules.devshell` | `perSystem.devShells.default` | — | — |
-| `flakeModules.treefmt` | `perSystem.formatter` + `perSystem.treefmt.*` (treefmt-nix's standard option tree) | — | — |
-| `flakeModules.unstable-overlay` | `flake.overlays.unstable` | — | `nixpkgs-unstable` |
-| `flakeModules.llm-agents-overlay` | `flake.overlays.llm-agents` | — | `llm-agents` |
-| `flakeModules.vscode-extensions-overlay` | `flake.overlays.vscode-extensions` | — | `nix-vscode-extensions` |
-| `flakeModules.flox-overlay` | `flake.overlays.flox` | — | `flox` |
-| `flakeModules.gomod2nix-overlay` | `flake.overlays.gomod2nix` | — | — (light upstream, see §3.3) |
+| Module                                   | Contributes                                                                                                 | Imports (implicit)     | Consumer-declared input      |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------- | ---------------------------- |
+| `flakeModules.checks`                    | `perSystem.checks.{formatting,linting,consumer-input-alignment}` + `config.phillipgreenii.checks.helpers.*` | —                      | —                            |
+| `flakeModules.pre-commit`                | `perSystem.checks.pre-commit` + `perSystem.packages.install-pre-commit-hooks`                               | `flakeModules.treefmt` | —                            |
+| `flakeModules.devshell`                  | `perSystem.devShells.default`                                                                               | —                      | —                            |
+| `flakeModules.treefmt`                   | `perSystem.formatter` + `perSystem.treefmt.*` (treefmt-nix's standard option tree)                          | —                      | —                            |
+| `flakeModules.unstable-overlay`          | `flake.overlays.unstable`                                                                                   | —                      | `nixpkgs-unstable`           |
+| `flakeModules.llm-agents-overlay`        | `flake.overlays.llm-agents`                                                                                 | —                      | `llm-agents`                 |
+| `flakeModules.vscode-extensions-overlay` | `flake.overlays.vscode-extensions`                                                                          | —                      | `nix-vscode-extensions`      |
+| `flakeModules.flox-overlay`              | `flake.overlays.flox`                                                                                       | —                      | `flox`                       |
+| `flakeModules.gomod2nix-overlay`         | `flake.overlays.gomod2nix`                                                                                  | —                      | — (light upstream, see §3.3) |
 
 `flakeModules.pre-commit` IMPORTS `flakeModules.treefmt` implicitly because
 pre-commit needs the formatter wrapper. Consumers who import pre-commit do
@@ -128,7 +128,7 @@ config.phillipgreenii.src` and `perSystem.checks.linting = helpers.linting
 config.phillipgreenii.src` when `config.phillipgreenii.src` is set
 (`mkOption { type = lib.types.path; }`, no default). The
 `consumer-input-alignment` check (§5) is also auto-contributed unconditionally.
-All other checks (shellcheck, the test* helpers) are opt-in: consumer wires
+All other checks (shellcheck, the test\* helpers) are opt-in: consumer wires
 them by hand in `perSystem.checks.<name> = config.phillipgreenii.checks.helpers.<name> {...}`.
 
 **Becomes a configurable HM module (1):**
@@ -164,25 +164,25 @@ the configured behavior with no further options to set.
 
 Three categories, all unchanged in shape (just survive the cutover):
 
-*Builder factories — called from overlay contexts (e.g. nix-personal's
+_Builder factories — called from overlay contexts (e.g. nix-personal's
 `mkCmuxScriptsOverlay` reaches `mkBashBuilders` from inside `overlays.default`);
-module config is not in scope there. Lib is the universal API.*
+module config is not in scope there. Lib is the universal API._
 
 - `lib.mkBashBuilders` — unchanged.
 - `lib.mkGoBuilders` — adds a runtime assertion `assert pkgs ? buildGoApplication;`
   with an error message pointing the caller at `flakeModules.gomod2nix-overlay`
-  + `inputs.gomod2nix`. Otherwise unchanged.
+  - `inputs.gomod2nix`. Otherwise unchanged.
 - `lib.mkManPage` — unchanged.
 
-*Pure version helpers — used inside package derivations and HM modules; not
-flake-output-shaped.*
+_Pure version helpers — used inside package derivations and HM modules; not
+flake-output-shaped._
 
 - `lib.mkGitHash` — unchanged.
 - `lib.mkVersion` — unchanged.
 - `lib.mkSrcDigest` — unchanged.
 
-*HM/NixOS module factories — return modules consumed inside another module's
-`imports` list. Same shape rationale as the builders.*
+_HM/NixOS module factories — return modules consumed inside another module's
+`imports` list. Same shape rationale as the builders._
 
 - `lib.mkSimplePackageModule` — unchanged.
 - `lib.mkEnableablePackageModule` — unchanged.
@@ -202,7 +202,7 @@ unchanged.
   outputs from the 5 overlay modules are SIBLINGS, not replacements. A consumer
   applies them by listing whichever they want:
   `nixpkgs.overlays = [ phillipgreenii-nix-base.overlays.default
-  phillipgreenii-nix-base.overlays.unstable ... ];`
+phillipgreenii-nix-base.overlays.unstable ... ];`
 - `darwinModules.default` — unchanged (the aggregate carrying the pn darwin
   module).
 - `homeModules.pn` — unchanged (the pn home-manager module).
@@ -219,8 +219,8 @@ Each flake module needs upstream inputs. Two ownership patterns, distinguished
 by which `inputs` closure the module uses:
 
 - **Light upstream** (small, stable, single canonical pin): nix-repo-base owns
-  the input. The module file is written as a *function that takes
-  nix-repo-base's own `inputs` as a parameter* and returns the flake-parts
+  the input. The module file is written as a _function that takes
+  nix-repo-base's own `inputs` as a parameter_ and returns the flake-parts
   module. Nix-repo-base's `flake.nix` calls this function with
   `nix-repo-base-self.inputs.<name>` baked in. The resulting module is what's
   exported as `flakeModules.<name>`. Consumers do not declare these inputs
@@ -229,6 +229,7 @@ by which `inputs` closure the module uses:
   (the producer's canonical, typically `follows`-overridden).
 
   Pattern:
+
   ```nix
   # flake-modules/treefmt.nix
   producerInputs:                # <- closed over at producer-export time
@@ -250,6 +251,7 @@ by which `inputs` closure the module uses:
   Examples: `nixpkgs-unstable`, `llm-agents`, `flox`, `nix-vscode-extensions`.
 
   Pattern:
+
   ```nix
   # flake-modules/overlays/unstable.nix
   { inputs, ... }: {            # <- inputs HERE is the consumer's inputs
@@ -268,7 +270,7 @@ by which `inputs` closure the module uses:
   Critical: the overlay function (`final: _prev: { unstable = ...; }`) closes
   over the `inputs` it received — i.e., the CONSUMER's inputs at the
   consumer's mkFlake eval time. The consumer's `nixpkgs.overlays = [
-  phillipgreenii-nix-base.overlays.unstable ]` therefore uses the consumer's
+phillipgreenii-nix-base.overlays.unstable ]` therefore uses the consumer's
   pin of `nixpkgs-unstable`, not nix-repo-base's (nix-repo-base no longer
   declares one).
 
@@ -391,7 +393,7 @@ documenting:
     commit (`<commit-msg>`). On a no-op exit 0 (no content change): writes
     stamp, commits stamp-only.
   - On exit `$UL_RC_ATTEMPTED` (75): rolls back content (`git reset --hard
-    HEAD; git clean -fd`), writes + commits stamp-only with a "deferred"
+HEAD; git clean -fd`), writes + commits stamp-only with a "deferred"
     message.
   - On any other non-zero exit: rolls back content, records failure, does NOT
     commit.
@@ -560,15 +562,15 @@ The chunk is complete when ALL of the following pass:
    alignment check's effectiveness is verified by AC #5's fixture.
 3. **`nix flake show` returns** the expected top-level outputs:
    - `flakeModules.{checks, pre-commit, devshell, treefmt, unstable-overlay,
-     llm-agents-overlay, vscode-extensions-overlay, flox-overlay,
-     gomod2nix-overlay}`
+llm-agents-overlay, vscode-extensions-overlay, flox-overlay,
+gomod2nix-overlay}`
    - `homeModules.{pn, install-metadata}` (`pn` = existing aggregate;
      `install-metadata` = the new Shape B configurable module)
    - `darwinModules.default`
    - `overlays.default` (unchanged — surfaces pn)
    - `lib.{mkBashBuilders, mkGoBuilders, mkManPage, mkGitHash, mkVersion,
-     mkSrcDigest, mkSimplePackageModule, mkEnableablePackageModule,
-     mkDockRegistration, mkProgramModule}` (NOT: `mkChecks`, `mkPreCommitHooks`,
+mkSrcDigest, mkSimplePackageModule, mkEnableablePackageModule,
+mkDockRegistration, mkProgramModule}` (NOT: `mkChecks`, `mkPreCommitHooks`,
      `mkDevShell`, `mkTreefmtConfig`, `mkInstallMetadata`, `mkUnstableOverlay`,
      `mkLlmAgentsOverlay`, `mkVscodeExtensionsOverlay`, `mkFloxOverlay`)
    - `packages.<system>.{update-locks-lib, determine-ul-lib-dir, pn, fix-lint}`
@@ -577,7 +579,7 @@ The chunk is complete when ALL of the following pass:
      own packages because nix-repo-base imports its own `flakeModules.pre-commit`,
      which DOES contribute it under nix-repo-base's perSystem.packages.
 4. **All deleted lib symbols are absent** from `nix eval .#lib --apply
-   'lib: builtins.attrNames lib'`.
+'lib: builtins.attrNames lib'`.
 5. **A consumer-fixture flake under `tests/consumer-fixture/`** evaluates
    cleanly: imports the 9 flake modules + 1 HM module, declares the 4 heavy
    inputs and `gomod2nix`, exercises `lib.mkBashBuilders`/`mkGoBuilders`/`mkManPage`
@@ -628,7 +630,7 @@ ships so consumers don't remain broken on the next pull:
 - **homelab module-import migration** — homelab already uses flake-parts.
   Swaps the `nixBaseLib = inputs.phillipgreenii-nix-base.lib;` indirection for
   `imports = [ phillipgreenii-nix-base.flakeModules.{treefmt, pre-commit,
-  devshell} ];`. Smallest of the three consumer migrations.
+devshell} ];`. Smallest of the three consumer migrations.
 - **nix-overlay anchor switch** — when the CONTRACT block ships, update
   nix-overlay's `update-locks.sh` and `verify-provenance.sh` to reference
   anchor names instead of line numbers (tiny doc change). Was AC #7 in an
