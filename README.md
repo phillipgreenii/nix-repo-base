@@ -124,3 +124,9 @@ The `consumer-input-alignment` check (auto-contributed by `flakeModules.checks`)
 | `lib.mkTreefmtConfig { … }`                         | `imports = [ flakeModules.treefmt ];` (pre-commit imports treefmt implicitly)       |
 | `lib.mkInstallMetadata { flakeSelf, name }`         | Import `homeModules.install-metadata` and set options.                              |
 | `lib.mkUnstableOverlay` / `mkLlmAgentsOverlay` etc. | `imports = [ flakeModules.<x>-overlay ]; nixpkgs.overlays = [ self.overlays.<x> ];` |
+
+## Repo tooling
+
+| Script                          | Purpose                                                                                                                                                                                                                                                               |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/sync-repo-settings.sh` | Idempotently sync GitHub repo settings (merge modes, auto-merge, branch features) across the four `phillipgreenii/nix-*` repos to a canonical set. Run with `--dry-run` to audit only. Source of truth for tc-olcz3. Re-run when a new repo is added or to fix drift. |
