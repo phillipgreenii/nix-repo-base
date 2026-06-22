@@ -17,3 +17,6 @@ result-*
 
 # claude-code git worktrees
 .worktrees/
+
+# sp-bd-bridge per-session cache (local-only)
+.perles/
