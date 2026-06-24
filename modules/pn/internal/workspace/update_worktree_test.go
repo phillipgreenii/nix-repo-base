@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -116,7 +117,8 @@ func TestUpdateViaWorktree_PushSucceedsFfDefers(t *testing.T) {
 	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
 
 	w, _ := Open(root, f)
-	err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"})
+	var out bytes.Buffer
+	err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"})
 	if err == nil {
 		t.Fatalf("expected non-nil error (deferred), got nil")
 	}
@@ -125,19 +127,19 @@ func TestUpdateViaWorktree_PushSucceedsFfDefers(t *testing.T) {
 		t.Errorf("revs.json must record pushed rev even on defer; got %q", rl.Repos["foo"].Rev)
 	}
 	for _, c := range f.Calls() {
-		if c.Name == "git" && len(c.Args) >= 3 && c.Args[2] == "worktree" && c.Args[1] == foo && stringsContain(c.Args, "remove") {
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[2] == "worktree" && c.Args[1] == foo && slices.Contains(c.Args, "remove") {
 			t.Fatalf("must not remove worktree on defer")
 		}
 	}
-}
-
-func stringsContain(ss []string, s string) bool {
-	for _, x := range ss {
-		if x == s {
-			return true
-		}
+	// The asymmetric-defer recovery is a RESET to the pushed remote, not a merge
+	// (ADR 0009 N1). The run must surface that hint so the user doesn't re-merge.
+	s := out.String()
+	if !strings.Contains(s, "deferred") {
+		t.Errorf("summary should mark foo deferred; got:\n%s", s)
 	}
-	return false
+	if !strings.Contains(s, "reset --hard origin/main") {
+		t.Errorf("defer must print the reset-not-merge recovery hint; got:\n%s", s)
+	}
 }
 
 func TestUpdateViaWorktree_OtherBranchRefFf(t *testing.T) {
@@ -269,10 +271,10 @@ func TestUpdateViaWorktree_PushFails(t *testing.T) {
 		t.Errorf("revs.json must not record foo when push fails; got %+v", rl.Repos["foo"])
 	}
 	for _, c := range f.Calls() {
-		if c.Name == "git" && stringsContain(c.Args, "merge") {
+		if c.Name == "git" && slices.Contains(c.Args, "merge") {
 			t.Errorf("merge --ff-only must not run after push failure; got %v", c.Args)
 		}
-		if c.Name == "git" && len(c.Args) >= 3 && c.Args[2] == "worktree" && stringsContain(c.Args, "remove") {
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[2] == "worktree" && slices.Contains(c.Args, "remove") {
 			t.Errorf("worktree remove must not run after push failure; got %v", c.Args)
 		}
 	}
@@ -307,6 +309,201 @@ func TestUpdateViaWorktree_WorktreeRemoveFailIsOkWithResidue(t *testing.T) {
 	if !strings.Contains(s, "prune") {
 		t.Errorf("summary should surface the cleanup hint (prune) on residue; got:\n%s", s)
 	}
+}
+
+// assertLeftBehind asserts a failed/deferred per-repo run: the summary names the
+// stopping `step` and the left-behind worktree path, and step 8's `worktree
+// remove` was never reached (leave-on-failure).
+func assertLeftBehind(t *testing.T, f *exec.FakeRunner, summary, foo, wt, step string) {
+	t.Helper()
+	if !strings.Contains(summary, step) {
+		t.Errorf("summary should name stopping step %q; got:\n%s", step, summary)
+	}
+	if !strings.Contains(summary, wt) {
+		t.Errorf("summary should name left-behind worktree %q; got:\n%s", wt, summary)
+	}
+	for _, c := range f.Calls() {
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[1] == foo && c.Args[2] == "worktree" && slices.Contains(c.Args, "remove") {
+			t.Errorf("must not remove worktree on failure/defer; got %v", c.Args)
+		}
+	}
+}
+
+// TestUpdateViaWorktree_FetchOriginFails: step-2 `git -C <wt> fetch origin`
+// failure errors the run at "fetch-origin", before relock, leaving the worktree.
+func TestUpdateViaWorktree_FetchOriginFails(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected error when step-2 fetch origin fails")
+	}
+	assertLeftBehind(t, f, out.String(), foo, wt, "fetch-origin")
+}
+
+// TestUpdateViaWorktree_UpdateLocksFails: step-3 `./update-locks.sh` failure
+// errors the run at "update-locks" and leaves the worktree behind.
+func TestUpdateViaWorktree_UpdateLocksFails(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("./update-locks.sh", nil,
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "./update-locks.sh", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected error when update-locks fails")
+	}
+	assertLeftBehind(t, f, out.String(), foo, wt, "update-locks")
+}
+
+// TestUpdateViaWorktree_RebaseLocalMainConflictAborts: step-4 `git -C <wt>
+// rebase main` conflict errors at "rebase-local-main" and must run `rebase
+// --abort` before leaving the worktree behind.
+func TestUpdateViaWorktree_RebaseLocalMainConflictAborts(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "main"},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", wt, "rebase", "--abort"}, exec.Result{}, nil)
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected error on step-4 rebase-local-main conflict")
+	}
+	if !calledWith(f, "git", []string{"-C", wt, "rebase", "--abort"}) {
+		t.Fatalf("expected rebase --abort after step-4 conflict")
+	}
+	assertLeftBehind(t, f, out.String(), foo, wt, "rebase-local-main")
+}
+
+// TestUpdateViaWorktree_RefetchOriginFails: step-5's second `git -C <wt> fetch
+// origin` (the re-fetch catching remote drift) failure errors at
+// "refetch-origin". The two identical fetch-origin scripts are consumed FIFO:
+// the first (step 2) succeeds, the second (step 5) fails.
+func TestUpdateViaWorktree_RefetchOriginFails(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil) // step 2 OK
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, // step 5 re-fetch FAILS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected error when step-5 re-fetch origin fails")
+	}
+	assertLeftBehind(t, f, out.String(), foo, wt, "refetch-origin")
+}
+
+// TestUpdateViaWorktree_RebaseOriginMain2ConflictAborts: step-5's second rebase
+// onto origin/main conflicts → errors at "rebase-origin-main-2" and aborts. The
+// two identical `rebase origin/main` scripts are consumed FIFO: step 3 succeeds,
+// step 5 fails.
+func TestUpdateViaWorktree_RebaseOriginMain2ConflictAborts(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil) // step 3 OK
+	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, // step 5 rebase FAILS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", wt, "rebase", "--abort"}, exec.Result{}, nil)
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected error on step-5 rebase-origin-main-2 conflict")
+	}
+	if !calledWith(f, "git", []string{"-C", wt, "rebase", "--abort"}) {
+		t.Fatalf("expected rebase --abort after step-5 conflict")
+	}
+	assertLeftBehind(t, f, out.String(), foo, wt, "rebase-origin-main-2")
+}
+
+// TestUpdateViaWorktree_OtherBranchRefFfDefers: the step-7 ref-only ff
+// (`git -C <primary> fetch . <branch>:main`, taken when main is not checked out)
+// fails → the run defers (errors). Because push (step 6) already advanced remote
+// main, the pushed rev is still recorded in revs.json, and the worktree + branch
+// are left for manual recovery. (The SUCCESS of this path is covered by
+// TestUpdateViaWorktree_OtherBranchRefFf.)
+func TestUpdateViaWorktree_OtherBranchRefFfDefers(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("feature-x\n")}, nil)
+	f.AddResponse("git", []string{"-C", foo, "fetch", ".", branch + ":main"},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected deferred error when step-7 ref-ff fails on a feature branch")
+	}
+	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
+	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
+		t.Errorf("revs.json must record pushed rev even on ff-ref defer; got %q", rl.Repos["foo"].Rev)
+	}
+	assertLeftBehind(t, f, out.String(), foo, wt, "ff-ref")
+}
+
+// TestUpdateViaWorktree_CaptureRevFails: after the rebases succeed, capturing
+// the integrated tip (`git -C <wt> rev-parse HEAD`) fails → the run errors at
+// "capture-rev" before any push, records no rev, and leaves the worktree behind.
+func TestUpdateViaWorktree_CaptureRevFails(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rev-parse", "HEAD"},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected error when capturing the integrated rev fails")
+	}
+	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
+	if _, ok := rl.Repos["foo"]; ok {
+		t.Errorf("revs.json must not record foo when capture-rev fails (pre-push); got %+v", rl.Repos["foo"])
+	}
+	// push must never run if we couldn't capture the rev.
+	if calledWith(f, "git", []string{"-C", wt, "push", "origin", "HEAD:main"}) {
+		t.Errorf("push must not run after capture-rev failure")
+	}
+	assertLeftBehind(t, f, out.String(), foo, wt, "capture-rev")
 }
 
 func TestUpdateViaWorktree_RefusesInsideSet(t *testing.T) {
