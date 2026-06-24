@@ -136,9 +136,11 @@ Key points for agents:
   `pn workspace update` from inside a set is an error. Use `pn workspace update --in-place`,
   which relocks the set's worktrees in place and preserves the set's P1 invariant.
 
-- **Concurrent runs are unsupported.** Two simultaneous `pn workspace update` invocations in the
-  same workspace share the branch name `pn-update/<run-ts>` and collide; the second run fails
-  fast.
+- **Concurrent runs are not coordinated.** Two simultaneous `pn workspace update` invocations in
+  the same workspace get **distinct** branch names (the `pn-update/<run-ts>` stamp is a sub-second
+  timestamp + PID), so they do not collide at `git worktree add`. They are still unsafe to run
+  together: both push to remote `main`, so the second run to reach a given repo's push has it
+  rejected (non-fast-forward) and that repo fails. Run updates serially.
 
 ### Resuming a left-behind worktree
 

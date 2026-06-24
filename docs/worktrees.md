@@ -100,9 +100,11 @@ would conflict with the set's own invariants.
 
 ### Concurrent runs
 
-Running two `pn workspace update` invocations simultaneously in the same workspace is
-**unsupported**. Both share the branch name `pn-update/<run-ts>` and will collide; the second run
-fails fast.
+Running two `pn workspace update` invocations simultaneously in the same workspace is **not
+coordinated**. Each gets a **distinct** branch name (the `pn-update/<run-ts>` stamp is a sub-second
+timestamp + PID), so they do not collide at `git worktree add`; but both push to remote `main`, so
+the second run to reach a given repo's push has it rejected (non-fast-forward) and that repo fails.
+Run updates serially.
 
 ---
 

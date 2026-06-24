@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,9 +127,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	// Seed from the existing rev-lock so untouched repos keep their entries.
 	revs := make(map[string]LockedRepo, len(names))
 	if ws.revLock != nil {
-		for k, v := range ws.revLock.Repos {
-			revs[k] = v
-		}
+		maps.Copy(revs, ws.revLock.Repos)
 	}
 
 	outcomes := make([]repoOutcome, 0, len(names))

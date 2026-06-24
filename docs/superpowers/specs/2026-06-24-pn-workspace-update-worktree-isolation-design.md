@@ -59,12 +59,14 @@ each repo relocked against real remote siblings exactly as today.
    defer only when `main` itself is checked out and dirty.
 6. **Worktree location** `{root}/.worktrees/.pn-update/<repo>-<run-ts>`; **branch**
    `pn-update/<run-ts>` (one timestamp per `update` invocation, shared as the
-   branch name across all repos — each in its own repo). `<run-ts>` must be
-   high-resolution (and ideally PID-tagged): `git worktree add -b` refuses a
-   pre-existing branch, so two invocations sharing a coarse timestamp would
-   collide. **Concurrent `pn workspace update` runs in the same workspace are
-   unsupported** (and should fail fast on the branch/worktree collision rather
-   than half-create).
+   branch name across all repos — each in its own repo). `<run-ts>` is
+   high-resolution and PID-tagged (a sub-second timestamp + PID), so distinct
+   invocations get distinct branch names and worktree dirs and never collide at
+   `git worktree add -b`. **Concurrent `pn workspace update` runs in the same
+   workspace are still not coordinated**: they do not collide on the
+   branch/worktree, but both push to remote `main`, so the second run to reach a
+   given repo's step-6 push has that push rejected (non-fast-forward) and that
+   repo fails — run updates serially.
 7. **Cascade = just continue.** On a per-repo failure, keep processing remaining
    repos and aggregate failures (today's behavior). Downstream repos that relock
    against an un-bumped upstream are the user's to reconcile from the per-repo
@@ -348,8 +350,11 @@ prune` + `git branch -D`.
   the pushed remote rev.
 - **`ResolveULLibDir` failure path.** With the resolver forced to return `""`,
   assert the worktree flow errors rather than silently relocking (B1).
-- **Branch-collision guard.** Two updates sharing a `<run-ts>` (or a concurrent
-  run) fail fast with a clear error, not a partial worktree.
+- **Distinct run stamps.** The per-run stamp is sub-second + PID, so concurrent
+  updates get distinct branch/worktree names and never collide at `git worktree
+  add -b`; a losing run instead has its step-6 push rejected (non-fast-forward)
+  and that repo fails — it does not half-create a worktree. (There is no explicit
+  collision pre-flight guard; stamp uniqueness is the safety property.)
 
 ## Follow-up implementation beads (proposed — to create on approval, via `bd`)
 

@@ -119,9 +119,14 @@ The full algorithm, edge cases, and test plan are in
   injecting a resolved `UL_LIB_DIR`; the worktree flow hard-errors on an empty
   `ResolveULLibDir` result rather than silently taking the store fallback. The
   in-place flow has no such requirement.
-- **Concurrent runs unsupported.** All repos in one invocation share the branch
-  name `pn-update/<run-ts>`; a second concurrent `update` in the same workspace
-  collides on the branch/worktree and must fail fast.
+- **Concurrent runs are not coordinated.** All repos in one invocation share the
+  branch name `pn-update/<run-ts>`, but the per-run stamp is a sub-second
+  timestamp _plus PID_, so two concurrent `update` runs get **distinct** branch
+  names and worktree dirs and do _not_ collide at `git worktree add -b`. They are
+  still unsafe to run together: both push to remote `main`, so whichever run
+  reaches a given repo's step-6 push second has that push rejected
+  (non-fast-forward — remote `main` already advanced) and that repo fails. Run
+  updates serially.
 - `update-locks.sh` toggles `core.fsmonitor`, which lives in the shared
   `.git/config`; during a repo's run the primary's fsmonitor is briefly disabled
   and restored on exit — perf-only, self-healing, but a shared-state interaction

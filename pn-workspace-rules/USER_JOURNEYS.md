@@ -201,7 +201,7 @@ pn workspace upgrade --in-place     # update phase direct-on-main
   ```
 - Error: a flake input no longer resolves; a build fails on the new lock.
 - Side effect: `update` appends JSONL events
-  (`run.start` / `project.start` / `project.end` / `run.end`) to
+  (`run_start` / `project_result` / `run_end`) to
   `${XDG_STATE_HOME}/pn/events.jsonl` so downstream tooling can observe
   per-repo timing and exit status. See **J30** for the consumer-side
   journey.
@@ -220,8 +220,11 @@ pn workspace worktree prune
 git -C <repo> branch -D pn-update/<run-ts>
 ```
 
-**Concurrent runs:** unsupported. Two simultaneous `pn workspace update` calls in the same
-workspace share the branch name `pn-update/<run-ts>` and collide; the second run fails fast.
+**Concurrent runs:** not coordinated. Two simultaneous `pn workspace update` calls in the same
+workspace get **distinct** branch names (the `pn-update/<run-ts>` stamp is a sub-second timestamp +
+PID), so they do not collide at `git worktree add`; but both push to remote `main`, so the second
+to reach a given repo's push has it rejected (non-fast-forward) and that repo fails. Run updates
+serially.
 
 **Inside a coordinated worktree set:** bare `pn workspace update` errors — use
 `pn workspace update --in-place`, which relocks the set's worktrees in place.
@@ -740,12 +743,11 @@ tail -F ${XDG_STATE_HOME:-$HOME/.local/state}/pn/events.jsonl   # consumer side
   (default `~/.local/state/pn/events.jsonl`). The directory is created
   on first write.
 - Event kinds emitted by `update`:
-  - `run.start` — one per invocation, at the top of the run.
-  - `project.start` — one per repo, in topo order, before that repo's
-    `update-locks.sh` is spawned.
-  - `project.end` — one per repo, after the repo's update finishes,
-    carrying its exit status.
-  - `run.end` — one per invocation, at the bottom of the run.
+  - `run_start` — one per invocation, at the top of the run.
+  - `project_result` — one per repo, in topo order, emitted after that
+    repo's update finishes; carries its outcome (`ok`/`failed`/`deferred`),
+    the step any failure stopped at, and a recovery note.
+  - `run_end` — one per invocation, at the bottom of the run.
 - The file is append-only across invocations; consumers should tail or
   seek by offset rather than reread it whole.
 - `XDG_STATE_HOME` is honored to keep test runs isolated from the real

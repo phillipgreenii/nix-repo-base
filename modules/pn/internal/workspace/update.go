@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"path/filepath"
 	"strings"
 
@@ -106,9 +107,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 	// Start from the existing rev-lock so untouched repos keep their entries.
 	revs := make(map[string]LockedRepo, len(names))
 	if ws.revLock != nil {
-		for k, v := range ws.revLock.Repos {
-			revs[k] = v
-		}
+		maps.Copy(revs, ws.revLock.Repos)
 	}
 
 	var failed []string
