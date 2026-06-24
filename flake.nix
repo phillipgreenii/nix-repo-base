@@ -56,6 +56,8 @@
           ...
         }:
         let
+          inherit (pkgs) lib;
+          inherit ((import ./nix/packages.nix { })) mkClaudeMarketplaceBuilders;
           bashBuilders = (import ./nix/packages.nix { }).mkBashBuilders {
             inherit pkgs self;
             inherit (pkgs) lib;
@@ -90,6 +92,24 @@
 
             # pn Go binary (single tool replacing the former pn-* bash scripts).
             pn = pkgs.callPackage ./modules/pn { inherit self; };
+
+            # This repo's own Claude Code marketplace, bundled into the store with
+            # content-derived per-plugin version stamping. Identity:
+            # phillipg-nix-repo-base-marketplace-local. The fileset is NARROWED to
+            # just the marketplace manifest + plugin dirs (NOT ./.) to avoid closure
+            # bloat and re-realize on unrelated edits. See ADR-0010 +
+            # docs/claude-marketplaces.md.
+            phillipg-nix-repo-base-marketplace =
+              (mkClaudeMarketplaceBuilders { inherit pkgs lib; }).mkClaudeMarketplace
+                {
+                  src = lib.fileset.toSource {
+                    root = ./.;
+                    fileset = lib.fileset.unions [
+                      ./.claude-plugin/marketplace.json
+                      ./pn-workspace-rules
+                    ];
+                  };
+                };
           };
 
           checks = {
@@ -108,6 +128,18 @@
                 failures = pkgs.lib.runTests (import ./lib/version-tests.nix);
               in
               pkgs.runCommand "check-version-lib" { } (
+                if failures == [ ] then
+                  "touch $out"
+                else
+                  "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
+              );
+
+            # Pure-function unit tests for lib/claude-marketplace.nix.
+            claude-marketplace-lib =
+              let
+                failures = pkgs.lib.runTests (import ./lib/claude-marketplace-tests.nix { inherit pkgs; });
+              in
+              pkgs.runCommand "check-claude-marketplace-lib" { } (
                 if failures == [ ] then
                   "touch $out"
                 else
@@ -211,7 +243,12 @@
           (import ./lib/version.nix)
           # Bash builders framework + package helpers
           // {
-            inherit ((import ./nix/packages.nix { })) mkBashBuilders mkGoBuilders mkManPage;
+            inherit ((import ./nix/packages.nix { }))
+              mkBashBuilders
+              mkGoBuilders
+              mkManPage
+              mkClaudeMarketplaceBuilders
+              ;
           }
           # Module generation helpers
           // {

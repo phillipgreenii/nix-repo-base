@@ -1,7 +1,7 @@
 # ADR-0003: Claude Code marketplace convention for nix-\* repos
 
 **Date:** 2026-06-01
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-0010](0010-claude-marketplace-builder-and-identity.md))
 **Deciders:** phillipgreenii
 
 ## Context
@@ -20,7 +20,13 @@ for how nix-\* repos expose Claude plugins.
 
 ## Consequences
 
-Phase 1 installs pn-workspace-rules@pn-workspace manually on monorepod.
+Phase 1 installed `pn-workspace-rules@pn-workspace` manually on monorepod.
 Phase 4 adds auto-install. Other nix-\* repos follow this convention when adding Claude plugins.
+
+**Amended by [ADR-0010](0010-claude-marketplace-builder-and-identity.md):** the
+`mkClaudeMarketplace` builder fulfils the "Phase 4 auto-install" intent, and the
+installed marketplace identity is now `<repo>-marketplace-local` (the source
+`marketplace.json` `name` is the bare repo name, here `phillipg-nix-repo-base`,
+not the old `pn-workspace`). The plugin name `pn-workspace-rules` is unchanged.
 
 Reference: docs/superpowers/specs/2026-05-31-monorepo-nix-refactor-phase-1-design.md §5
