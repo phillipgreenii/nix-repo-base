@@ -1,6 +1,110 @@
 # Working with worktrees
 
-> **Two models exist.** The newer **coordinated-set model** (`pn workspace worktree`) creates a full workspace of worktrees — every repo on a shared feature branch — and is the recommended approach for cross-repo feature work. The older **single-override model** (`--override-path` / `PN_WORKSPACE_OVERRIDE_PATHS`) patches one or more repo paths into an existing workspace run; it is still valid for single-repo overrides. Both are documented here.
+> **Three models exist.** The **ephemeral-update model** (the `update`/`upgrade` default) creates short-lived per-repo worktrees on throwaway branches for each run of `pn workspace update`, keeping the canonical clones free during the long relock. The **coordinated-set model** (`pn workspace worktree`) creates a full workspace of worktrees — every repo on a shared feature branch — and is the recommended approach for cross-repo feature work. The older **single-override model** (`--override-path` / `PN_WORKSPACE_OVERRIDE_PATHS`) patches one or more repo paths into an existing workspace run; it is still valid for single-repo overrides. All three are documented here.
+
+## Per-repo ephemeral update worktrees (the `update` default)
+
+`pn workspace update` (and the update phase of `upgrade`) isolates each repo's relock work in a
+short-lived git worktree on a throwaway branch. The canonical clones and their `main` branches
+stay free during the long `update-locks.sh` run; `main` is only touched by a fast fast-forward at
+the very end. See [ADR 0009](adr/0009-pn-workspace-update-worktree-isolation.md) for the full
+rationale.
+
+### How it works
+
+For each repo in topological order:
+
+1. Create a worktree at `<root>/.worktrees/.pn-update/<repo>-<run-ts>` on branch
+   `pn-update/<run-ts>`, branched off local `main`.
+2. Run `./update-locks.sh` in that worktree (the same script as before — nothing changes about
+   what gets locked or how).
+3. Rebase the result onto local `main` (catching any unpushed local commits), then onto
+   `origin/main` (catching any remote advances). Local-before-remote order is deliberate.
+4. Push the branch to remote `main` from the worktree.
+5. Fast-forward the primary `main` — smart integration based on the primary's state:
+   - **Clean `main` checkout** → `git merge --ff-only`
+   - **Another branch checked out** (main not checked out) → ref-only fast-forward
+     (`git fetch . pn-update/<run-ts>:main`), leaving in-progress work on the other branch
+     completely untouched
+   - **Dirty `main` checkout** → defer: leave the worktree + branch, report, continue to next
+     repo
+
+6. Remove the worktree and branch on success.
+
+### Leave-on-failure and resuming a left-behind worktree
+
+Any failed step leaves that repo's worktree and branch in place for inspection. The sweep
+continues to the next repo. The end-of-run summary names each repo's outcome, the step it stopped
+at, the actual git error, and a recovery hint.
+
+To resume or clean up a left-behind worktree:
+
+```bash
+# Inspect the worktree — it is a normal git working tree
+ls <root>/.worktrees/.pn-update/<repo>-<run-ts>
+git -C <root>/.worktrees/.pn-update/<repo>-<run-ts> log --oneline -5
+
+# If the relock is already done, finish the fast-forward manually:
+git -C <root>/<repo> merge --ff-only pn-update/<run-ts>
+
+# To discard and clean up:
+git worktree remove --force <root>/.worktrees/.pn-update/<repo>-<run-ts>
+git -C <root>/<repo> branch -D pn-update/<run-ts>
+# Or, to prune all stale update worktrees at once:
+pn workspace worktree prune
+git -C <root>/<repo> branch -D pn-update/<run-ts>
+```
+
+### Asymmetric-defer recovery
+
+If a repo's defer happens _after_ the push (step 4 succeeded, step 5 failed), remote `main` is
+already ahead of local `main`. The run summary will say so and tell you to _reset_ local main to
+the remote, **not** to merge:
+
+```bash
+# When main IS checked out in the primary:
+git -C <root>/<repo> reset --hard origin/main
+
+# When main is NOT checked out (on another branch):
+git -C <root>/<repo> branch -f main origin/main
+```
+
+Do not use `git merge origin/main` here — the remote `main` already contains the pushed update
+commits; a merge would create duplicates.
+
+### `--in-place` escape hatch
+
+`pn workspace update --in-place` (and `pn workspace upgrade --in-place`) runs the original
+direct-on-`main` flow, including the upfront dirty-repo skip. Use it when:
+
+- You want to debug a relock without the worktree machinery.
+- The worktree flow itself is failing and you need to fall back.
+
+The default worktree flow does **not** skip a dirty repo upfront — the worktree isolates the
+primary, so the long run proceeds regardless. Only a dirty `main` _checkout_ defers at
+integration.
+
+### `update` inside a coordinated worktree set requires `--in-place`
+
+Running bare `pn workspace update` from inside a coordinated set (created by
+`pn workspace worktree add`) is an error. The worktree-isolation flow only runs from the canonical
+workspace root. Inside a set, use:
+
+```bash
+pn workspace update --in-place
+```
+
+This relocks the set's worktrees in place, which is the correct behavior for a set: the set's
+per-repo working trees are already isolated, so the worktree-isolation machinery is redundant and
+would conflict with the set's own invariants.
+
+### Concurrent runs
+
+Running two `pn workspace update` invocations simultaneously in the same workspace is
+**unsupported**. Both share the branch name `pn-update/<run-ts>` and will collide; the second run
+fails fast.
+
+---
 
 ## Coordinated worktree sets (recommended for cross-repo work)
 

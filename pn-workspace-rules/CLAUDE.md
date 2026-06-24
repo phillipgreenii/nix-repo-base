@@ -88,8 +88,10 @@ pn workspace build                       Build the current host's system config
 pn workspace apply                       Activate (USER ONLY)
 pn workspace pre-commit-check            Run pre-commit checks across all repos
 pn workspace flake-check                 Run `nix flake check` across all repos
-pn workspace update                      Refresh flake locks across all repos (terminal required)
+pn workspace update                      Refresh flake locks across all repos, worktree-isolated by default (terminal required)
+pn workspace update --in-place           Same, but directly on primary main (old behavior; required inside a coordinated set)
 pn workspace upgrade                     Update + apply (USER ONLY for the apply step)
+pn workspace upgrade --in-place          Update phase runs directly on primary main instead of in an isolated worktree
 pn workspace rebase                      Rebase each repo onto its remote tracking branch
 pn workspace rebase <branch>             Rebase each repo onto a local ref (no fetch)
 pn workspace format                      Run `nix fmt` in each workspace repo
@@ -109,6 +111,68 @@ pn workspace worktree prune              Prune stale git worktree admin entries 
 ```
 
 All subcommands accept `--terminal <name>` to override `workspace.terminal`.
+
+## `pn workspace update` / `upgrade` — worktree-isolated default
+
+`pn workspace update` (and the update phase of `upgrade`) **runs in worktree isolation by
+default**. For each repo in topological order it creates an ephemeral worktree + branch off local
+`main`, runs `./update-locks.sh` there, rebases + pushes, fast-forwards the primary `main`, and
+removes the worktree on success. The canonical clones and their `main` branches stay free during
+the long relock; `main` is only touched by a fast fast-forward at the end.
+
+Key points for agents:
+
+- **Dirty-repo behavior differs by mode.** The default worktree flow does _not_ skip a dirty repo
+  upfront — the worktree isolates the primary. Only a dirty `main` _checkout_ defers at
+  integration (worktree + branch are left for inspection; run continues to the next repo).
+  `--in-place` retains the old behavior, including the upfront dirty-repo skip.
+
+- **`--in-place` escape hatch.** `pn workspace update --in-place` (and
+  `pn workspace upgrade --in-place`) runs the original direct-on-`main` flow. Use it when the
+  worktree machinery itself is broken, when relocking inside a coordinated worktree set, or when
+  you explicitly want the in-place behavior.
+
+- **Inside a coordinated worktree set, `update` requires `--in-place`.** Running bare
+  `pn workspace update` from inside a set is an error. Use `pn workspace update --in-place`,
+  which relocks the set's worktrees in place and preserves the set's P1 invariant.
+
+- **Concurrent runs are unsupported.** Two simultaneous `pn workspace update` invocations in the
+  same workspace share the branch name `pn-update/<run-ts>` and collide; the second run fails
+  fast.
+
+### Resuming a left-behind worktree
+
+If a step fails, the repo's worktree and branch are left at
+`<root>/.worktrees/.pn-update/<repo>-<run-ts>` on branch `pn-update/<run-ts>`. The run summary
+names the failed step, the git error, and a recovery hint.
+
+To clean up (discard):
+
+```bash
+git worktree remove --force <root>/.worktrees/.pn-update/<repo>-<run-ts>
+git -C <root>/<repo> branch -D pn-update/<run-ts>
+# or prune all stale update worktrees at once:
+pn workspace worktree prune
+git -C <root>/<repo> branch -D pn-update/<run-ts>
+```
+
+### Asymmetric-defer recovery
+
+If a defer occurs _after_ the push (remote `main` already advanced, local `main` still behind),
+**reset** local main to the remote — do NOT merge:
+
+```bash
+# main IS checked out:
+git -C <root>/<repo> reset --hard origin/main
+
+# main is NOT checked out (on another branch):
+git -C <root>/<repo> branch -f main origin/main
+```
+
+The run summary will call this out explicitly when it detects this state.
+
+Full details: [`docs/worktrees.md`](../docs/worktrees.md#per-repo-ephemeral-update-worktrees-the-update-default)
+and [ADR 0009](../docs/adr/0009-pn-workspace-update-worktree-isolation.md).
 
 ## Environment Variables
 

@@ -157,18 +157,48 @@ terminal (consumer) dir. Nix daemon check runs; no formatter step
 
 **Trigger:** weekly / periodic refresh of nix flake inputs.
 
-**Commands:**
+**Commands (default — worktree-isolated):**
 
 ```
-pn workspace update      # nix flake update per-repo in topo order
-pn workspace apply       # rebuild on the updated locks
+pn workspace update      # worktree-isolated relock per-repo in topo order (default)
+pn workspace apply       # rebuild on the updated locks (USER ONLY)
 # or:
-pn workspace upgrade     # update + apply in one shot
+pn workspace upgrade     # update + apply in one shot (USER ONLY for apply)
+```
+
+**How the default worktree flow works:** for each repo in topo order, `pn workspace update`
+creates an ephemeral worktree + branch off local `main` at
+`.worktrees/.pn-update/<repo>-<run-ts>` on branch `pn-update/<run-ts>`, runs
+`./update-locks.sh` there, rebases + pushes, then fast-forwards the primary `main`. The
+canonical clones stay free during the long relock; `main` is only touched by a fast fast-forward
+at the end.
+
+**Smart integration:** on a clean `main` checkout → `merge --ff-only`; when `main` is not
+checked out (working on another branch) → ref-only fast-forward leaving in-progress work
+untouched; when `main` is checked out and dirty → defer (worktree + branch left, run continues).
+
+**`--in-place` flag:** runs the original direct-on-`main` flow (including the upfront dirty-repo
+skip). Required when calling `update` from inside a coordinated worktree set.
+
+```
+pn workspace update --in-place      # old direct-on-main behavior
+pn workspace upgrade --in-place     # update phase direct-on-main
 ```
 
 **Outcomes:**
 
-- Success: every flake.lock advanced; consumer build succeeds.
+- Success: every flake.lock advanced; consumer build succeeds; ephemeral worktrees removed.
+- Failure (any step): that repo's worktree + branch are left at
+  `.worktrees/.pn-update/<repo>-<run-ts>` / `pn-update/<run-ts>`. Sweep continues to the next
+  repo. End-of-run summary names each repo's outcome, the step that failed, the git error, and a
+  recovery hint.
+- Deferred (dirty `main` checkout): worktree + branch left; integration skipped for that repo.
+- Asymmetric defer (push succeeded but fast-forward failed — remote `main` now ahead of local):
+  **reset** local main to the pushed remote, do NOT merge:
+  ```
+  git -C <root>/<repo> reset --hard origin/main       # when on main
+  git -C <root>/<repo> branch -f main origin/main     # when on another branch
+  ```
 - Error: a flake input no longer resolves; a build fails on the new lock.
 - Side effect: `update` appends JSONL events
   (`run.start` / `project.start` / `project.end` / `run.end`) to
@@ -176,12 +206,32 @@ pn workspace upgrade     # update + apply in one shot
   per-repo timing and exit status. See **J30** for the consumer-side
   journey.
 
-**Smoke:** ✓ **S20 `happy-path-update`** — two-repo file:// bare-remote
-fixture; each repo's `update-locks.sh` writes `updated.txt` and appends
-its name to `$WORKSPACE_ROOT/order.log`; asserts both markers exist and
-`order.log` records `producer` then `consumer` (topo order verified).
-Consumer's `flake.nix` declares producer as input so the lock detects
-the dependency edge.
+**Resuming a left-behind worktree:**
+
+```bash
+# Inspect:
+git -C .worktrees/.pn-update/<repo>-<run-ts> log --oneline -5
+
+# Clean up (discard):
+git worktree remove --force .worktrees/.pn-update/<repo>-<run-ts>
+git -C <repo> branch -D pn-update/<run-ts>
+# or prune all at once then delete branches:
+pn workspace worktree prune
+git -C <repo> branch -D pn-update/<run-ts>
+```
+
+**Concurrent runs:** unsupported. Two simultaneous `pn workspace update` calls in the same
+workspace share the branch name `pn-update/<run-ts>` and collide; the second run fails fast.
+
+**Inside a coordinated worktree set:** bare `pn workspace update` errors — use
+`pn workspace update --in-place`, which relocks the set's worktrees in place.
+
+**Smoke:** ✓ **S20 `happy-path-update`** (pinned to `--in-place` flow) and **S33
+`worktree-update`** (worktree-isolated default) — two-repo file:// bare-remote fixture; each
+repo's `update-locks.sh` writes `updated.txt` and appends its name to
+`$WORKSPACE_ROOT/order.log`; asserts both markers exist and `order.log` records `producer` then
+`consumer` (topo order verified). Consumer's `flake.nix` declares producer as input so the lock
+detects the dependency edge.
 
 ---
 
@@ -624,10 +674,11 @@ cd <worktrees_dir>/<branch>                 # cd-into-set; normal `pn workspace`
 The set directory is itself an ordinary workspace root: it carries copies
 of `pn-workspace.toml`, `pn-workspace.lock.json`, and
 `pn-workspace.revs.json`, plus one git worktree per repo named after the
-`[repos.<key>]` map keys. All normal `pn workspace` verbs (build, status,
-update, rebase, push, format, …) "just work" inside the set because
-upward search finds the set's own `pn-workspace.toml` and all repo paths
-resolve to `{set}/{repo}`. No verb has set-specific logic.
+`[repos.<key>]` map keys. Most `pn workspace` verbs (build, status, rebase,
+push, format, …) "just work" inside the set. **Exception:** bare
+`pn workspace update` errors inside a set — use
+`pn workspace update --in-place` instead (relocks the set's worktrees in
+place, preserving the set's P1 invariant).
 
 The set directory location is controlled by the `worktrees_dir` field in
 `pn-workspace.toml` (default: `.worktrees`).
@@ -710,7 +761,7 @@ boundary.
 
 ## Coupling summary
 
-**Smoke scenarios (36) cover:** J1, J5–J7, J10–J11, J13–J29 (24 journeys
+**Smoke scenarios (37) cover:** J1, J5–J7, J10–J11, J13–J29 (24 journeys
 end-to-end); partial coverage of J8, J9 (via error/warning paths only);
 J10 and J11 are full-coverage for the no-flag forms only — the
 `push --set-upstream`/`-u` and `rebase <branch>` positional forms are
@@ -753,10 +804,14 @@ GAP at the smoke layer (unit/integration coverage only). J30
   **S29 `verbs-in-a-set`** (P1 invariant: canonical checkouts
   unchanged by verbs run inside a set).
 
+**Closed by the worktree-isolation-update work (S20 pinned, S33 added):**
+
+- J7 update happy-path (default worktree-isolated flow) → **S33 `worktree-update`**
+- S20 `happy-path-update` pinned to `--in-place` flow.
+
 ---
 
-_Last updated: 2026-06-17 (tc-perh.16 adds convention-based remote
-resolution to `push --set-upstream` and the `--remote` override flag;
-updates J10 to document the 7-step resolution chain).
-24 of 30 documented journeys now have full smoke coverage; J30 is GAP,
-tracked in tc-perh.14._
+_Last updated: 2026-06-24 (worktree-isolated `update` default: J7 and J29 updated to reflect
+`--in-place` requirement in sets, new S33 smoke, asymmetric-defer recovery, and concurrent-run
+caveat. See ADR 0009).
+24 of 30 documented journeys now have full smoke coverage; J30 is GAP, tracked in tc-perh.14._
