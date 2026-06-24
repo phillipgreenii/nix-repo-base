@@ -623,6 +623,35 @@ func TestWorktreeList_ListsSets(t *testing.T) {
 	_ = f.Calls()
 }
 
+// TestWorktreeList_SkipsDotEntries: a dot-prefixed dir under worktrees_dir
+// (e.g. the .pn-update update-worktree area) is not listed as a set.
+func TestWorktreeList_SkipsDotEntries(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.foo]\nurl = \"github:o/foo\"\n")
+	wtDir := filepath.Join(root, ".worktrees")
+	if err := os.MkdirAll(filepath.Join(wtDir, "my-feature"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(wtDir, ".pn-update"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := w.WorktreeList(context.Background(), &buf, &bytes.Buffer{}, WorktreeListOptions{}); err != nil {
+		t.Fatalf("WorktreeList: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "my-feature") {
+		t.Errorf("expected my-feature listed, got %q", got)
+	}
+	if strings.Contains(got, ".pn-update") {
+		t.Errorf(".pn-update must not be listed as a set, got %q", got)
+	}
+}
+
 func TestWorktreeList_NoWorktreesDir(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 

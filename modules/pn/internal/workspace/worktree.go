@@ -135,6 +135,11 @@ func (w *Workspace) WorktreeList(ctx context.Context, out io.Writer, errOut io.W
 			continue
 		}
 		setName := e.Name()
+		// Dot-prefixed dirs (e.g. .pn-update, the ephemeral update-worktree area)
+		// are not coordinated sets — skip them.
+		if strings.HasPrefix(setName, ".") {
+			continue
+		}
 		// The set dir name IS the branch by construction. Print the name directly.
 		fmt.Fprintf(out, "%s\t%s\n", setName, setName)
 	}
