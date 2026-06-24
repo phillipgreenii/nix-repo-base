@@ -27,10 +27,10 @@ const (
 const updateWorktreesSubdir = ".pn-update"
 
 // updateRunStampFn produces the per-run suffix used for the shared branch name
-// and per-repo worktree dir names. Time + PID so concurrent runs don't collide
-// on a coarse timestamp. A package var so tests can pin it deterministically.
+// and per-repo worktree dir names. Timestamp (sub-second) + PID to avoid
+// collisions between runs. A package var so tests can pin it deterministically.
 var updateRunStampFn = func() string {
-	return fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102-150405"), os.Getpid())
+	return fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102-150405.000"), os.Getpid())
 }
 
 // primaryMainState probes the primary checkout's branch + cleanliness to decide
@@ -43,6 +43,10 @@ func (ws *Workspace) primaryMainState(ctx context.Context, primary string) prima
 	if err == nil {
 		cur = strings.TrimSpace(string(res.Stdout))
 	}
+	// A detached HEAD (rev-parse --abbrev-ref HEAD prints "HEAD") and a probe
+	// error both intentionally fall into primaryOnOtherBranch: step 7 then
+	// advances main via `fetch . branch:main`, a ref-only ff that never touches
+	// the non-main working tree.
 	if cur != "main" {
 		return primaryOnOtherBranch
 	}
@@ -52,10 +56,21 @@ func (ws *Workspace) primaryMainState(ctx context.Context, primary string) prima
 	return primaryOnCleanMain
 }
 
+// repoStatus is the outcome classification for a per-repo worktree update. It is
+// a string alias so eventlog "outcome" fields and the != statusOK comparisons
+// keep working without conversions.
+type repoStatus = string
+
+const (
+	statusOK       repoStatus = "ok"
+	statusFailed   repoStatus = "failed"
+	statusDeferred repoStatus = "deferred"
+)
+
 // repoOutcome records one repo's worktree-update result for the run summary.
 type repoOutcome struct {
 	name       string
-	status     string // "ok" | "failed" | "deferred"
+	status     repoStatus
 	failedStep string
 	worktree   string // left-behind worktree path when status != ok
 	branch     string // left-behind branch when status != ok
@@ -111,12 +126,12 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		if oc.rev != "" {
 			revs[name] = LockedRepo{URL: displayURL(ws.config.Repos[name]), Rev: oc.rev}
 		}
-		level, outcome := "info", "ok"
-		if oc.status != "ok" {
+		level, outcome := "info", statusOK
+		if oc.status != statusOK {
 			level, outcome = "error", oc.status
 		}
 		_ = opts.Log.Emit(level, "project_result", "project "+oc.status, map[string]any{
-			"name": oc.name, "outcome": outcome, "failed_step": oc.failedStep,
+			"name": oc.name, "outcome": outcome, "failed_step": oc.failedStep, "note": oc.note,
 		})
 		outcomes = append(outcomes, oc)
 	}
@@ -129,7 +144,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 
 	var failed []string
 	for _, oc := range outcomes {
-		if oc.status != "ok" {
+		if oc.status != statusOK {
 			failed = append(failed, oc.name)
 		}
 	}
@@ -157,59 +172,68 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		_, err := ws.runner.Run(ctx, "git", append([]string{"-C"}, args...), exec.RunOptions{Stdout: out, Stderr: out})
 		return err
 	}
-	fail := func(step, note string) repoOutcome {
-		oc.status, oc.failedStep, oc.note = "failed", step, note
+	fail := func(step string, cause error, hint string) repoOutcome {
+		oc.status, oc.failedStep = statusFailed, step
+		switch {
+		case cause != nil && hint != "":
+			oc.note = hint + ": " + cause.Error()
+		case cause != nil:
+			oc.note = cause.Error()
+		default:
+			oc.note = hint
+		}
 		fmt.Fprintf(out, "  ✗ %s: failed at %s — worktree left at %s (branch %s)\n", name, step, wt, branch)
 		return oc
 	}
 
 	// Step 1: create worktree + branch off local main.
 	if err := git(primary, "worktree", "add", "-b", branch, wt, "main"); err != nil {
-		oc.status, oc.failedStep, oc.worktree, oc.branch = "failed", "worktree-add", "", ""
+		oc.status, oc.failedStep, oc.worktree, oc.branch = statusFailed, "worktree-add", "", ""
+		oc.note = err.Error()
 		fmt.Fprintf(out, "  ✗ %s: worktree add failed (stale leftover? run `pn workspace worktree prune`): %v\n", name, err)
 		return oc
 	}
 
 	// Step 2: sync branch to remote main.
 	if err := git(wt, "fetch", "origin"); err != nil {
-		return fail("fetch-origin", "")
+		return fail("fetch-origin", err, "")
 	}
 	if err := git(wt, "rebase", "origin/main"); err != nil {
 		_ = git(wt, "rebase", "--abort")
-		return fail("rebase-origin-main", "rebase conflict aborted")
+		return fail("rebase-origin-main", err, "rebase conflict aborted")
 	}
 
 	// Step 3: run the existing update-locks in the worktree.
 	if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
 		Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out,
 	}); err != nil {
-		return fail("update-locks", "")
+		return fail("update-locks", err, "")
 	}
 
 	// Step 4: rebase onto local main FIRST (catch unpushed local commits).
 	if err := git(wt, "rebase", "main"); err != nil {
 		_ = git(wt, "rebase", "--abort")
-		return fail("rebase-local-main", "rebase conflict aborted")
+		return fail("rebase-local-main", err, "rebase conflict aborted")
 	}
 
 	// Step 5: re-fetch + rebase onto origin/main (catch remote drift).
 	if err := git(wt, "fetch", "origin"); err != nil {
-		return fail("refetch-origin", "")
+		return fail("refetch-origin", err, "")
 	}
 	if err := git(wt, "rebase", "origin/main"); err != nil {
 		_ = git(wt, "rebase", "--abort")
-		return fail("rebase-origin-main-2", "rebase conflict aborted")
+		return fail("rebase-origin-main-2", err, "rebase conflict aborted")
 	}
 
 	// Capture the integrated tip (the rev downstream consumers relock against).
 	rev, err := captureHead(ctx, ws.runner, wt)
 	if err != nil {
-		return fail("capture-rev", "")
+		return fail("capture-rev", err, "")
 	}
 
 	// Step 6: publish — push branch to remote main from the worktree.
 	if err := git(wt, "push", "origin", "HEAD:main"); err != nil {
-		return fail("push", "remote main may have advanced; resolve manually and re-run")
+		return fail("push", err, "remote main may have advanced; resolve manually and re-run")
 	}
 	// Remote main is now at rev. Record it even if step 7 defers, so revs.json
 	// matches what downstream repos will relock against (ADR 0009 N1).
@@ -219,20 +243,20 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 	switch ws.primaryMainState(ctx, primary) {
 	case primaryOnCleanMain:
 		if err := git(primary, "merge", "--ff-only", branch); err != nil {
-			oc.status, oc.failedStep = "deferred", "ff-merge"
+			oc.status, oc.failedStep = statusDeferred, "ff-merge"
 			oc.note = fmt.Sprintf("remote main advanced; reset local: git -C %s reset --hard origin/main", primary)
 			fmt.Fprintf(out, "  ⚠ %s: ff-merge deferred — %s (worktree at %s)\n", name, oc.note, wt)
 			return oc
 		}
 	case primaryOnOtherBranch:
 		if err := git(primary, "fetch", ".", branch+":main"); err != nil {
-			oc.status, oc.failedStep = "deferred", "ff-ref"
+			oc.status, oc.failedStep = statusDeferred, "ff-ref"
 			oc.note = fmt.Sprintf("local main diverged; reset: git -C %s branch -f main origin/main", primary)
 			fmt.Fprintf(out, "  ⚠ %s: main ff deferred — %s (worktree at %s)\n", name, oc.note, wt)
 			return oc
 		}
 	case primaryOnDirtyMain:
-		oc.status, oc.failedStep = "deferred", "integrate"
+		oc.status, oc.failedStep = statusDeferred, "integrate"
 		oc.note = "primary on dirty main; commit/stash then ff main from the branch"
 		fmt.Fprintf(out, "  ⚠ %s: integration deferred — primary on dirty main; worktree at %s (branch %s)\n", name, wt, branch)
 		return oc
@@ -240,25 +264,29 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 
 	// Step 8: success — remove worktree, then branch.
 	if err := git(primary, "worktree", "remove", wt); err != nil {
-		oc.status, oc.note = "ok", "integrated, but worktree remove failed — run `pn workspace worktree prune`"
+		oc.status, oc.note = statusOK, "integrated, but worktree remove failed — run `pn workspace worktree prune`"
 		fmt.Fprintf(out, "  ⚠ %s: integrated, but worktree remove failed\n", name)
 		return oc
 	}
 	_ = git(primary, "branch", "-d", branch)
-	oc.status, oc.worktree, oc.branch = "ok", "", ""
+	oc.status, oc.worktree, oc.branch = statusOK, "", ""
 	fmt.Fprintf(out, "  ✓ %s: updated and integrated\n", name)
 	return oc
 }
 
 // printUpdateSummary prints one line per repo: outcome and, for non-ok repos,
-// the worktree/branch left behind and the recovery note.
+// the worktree/branch left behind and the recovery note. An "ok" outcome with a
+// note (e.g. worktree-remove failure left residue on disk) surfaces its hint too.
 func printUpdateSummary(out io.Writer, outcomes []repoOutcome) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "=== Update Summary ===")
 	for _, oc := range outcomes {
 		switch oc.status {
-		case "ok":
+		case statusOK:
 			fmt.Fprintf(out, "  ✓ %s — ok\n", oc.name)
+			if oc.note != "" {
+				fmt.Fprintf(out, "      ↳ %s\n", oc.note)
+			}
 		default:
 			fmt.Fprintf(out, "  ✗ %s — %s@%s; worktree %s (branch %s)\n", oc.name, oc.status, oc.failedStep, oc.worktree, oc.branch)
 			if oc.note != "" {

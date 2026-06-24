@@ -218,3 +218,92 @@ func calledWith(f *exec.FakeRunner, name string, args []string) bool {
 	}
 	return false
 }
+
+// TestUpdateViaWorktree_WorktreeAddFails: when step-1 `worktree add` fails the
+// run errors, but the worktree/branch are cleared on this path (nothing was
+// created), so the summary must NOT name a left-behind worktree path for foo.
+func TestUpdateViaWorktree_WorktreeAddFails(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected error when worktree add fails")
+	}
+	// worktree/branch cleared → summary must not point users at a phantom path.
+	if strings.Contains(out.String(), wt) {
+		t.Errorf("summary should not name a left-behind worktree path on worktree-add failure; got:\n%s", out.String())
+	}
+}
+
+// TestUpdateViaWorktree_PushFails: a failed step-6 push errors the run, records
+// NO rev for foo (rev is only set after push succeeds), and never reaches the
+// integration steps (merge --ff-only / worktree remove).
+func TestUpdateViaWorktree_PushFails(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	// Steps 1–5 + capture-rev succeed; push fails.
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("dead00000000000000000000000000000000beef\n")}, nil)
+	f.AddResponse("git", []string{"-C", wt, "push", "origin", "HEAD:main"},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected error when push fails")
+	}
+	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
+	if _, ok := rl.Repos["foo"]; ok {
+		t.Errorf("revs.json must not record foo when push fails; got %+v", rl.Repos["foo"])
+	}
+	for _, c := range f.Calls() {
+		if c.Name == "git" && stringsContain(c.Args, "merge") {
+			t.Errorf("merge --ff-only must not run after push failure; got %v", c.Args)
+		}
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[2] == "worktree" && stringsContain(c.Args, "remove") {
+			t.Errorf("worktree remove must not run after push failure; got %v", c.Args)
+		}
+	}
+}
+
+// TestUpdateViaWorktree_WorktreeRemoveFailIsOkWithResidue: integration succeeds
+// (merge --ff-only) but step-8 `worktree remove` fails. The outcome is "ok"
+// (integration landed) yet the summary must surface the cleanup hint so the
+// left-behind worktree is discoverable. `branch -d` is not reached on this path.
+func TestUpdateViaWorktree_WorktreeRemoveFailIsOkWithResidue(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	// Integration landed → run succeeds (no error) even though cleanup failed.
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err != nil {
+		t.Fatalf("worktree-remove failure should still be ok; got %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "✓ foo") {
+		t.Errorf("summary should mark foo ok; got:\n%s", s)
+	}
+	if !strings.Contains(s, "prune") {
+		t.Errorf("summary should surface the cleanup hint (prune) on residue; got:\n%s", s)
+	}
+}
