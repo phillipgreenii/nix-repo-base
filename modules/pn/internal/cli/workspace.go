@@ -54,7 +54,7 @@ Environment variables:
 	ws.AddCommand(workspaceUpgradeCmd(&terminalFlag))
 	ws.AddCommand(workspaceDiscoverCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
-	ws.AddCommand(workspaceWorktreeCmd(&terminalFlag))
+	ws.AddCommand(workspaceWorktreeCmd())
 	parent.AddCommand(ws)
 }
 
@@ -449,19 +449,19 @@ func workspaceCloneCmd(terminal *string) *cobra.Command {
 // workspaceWorktreeCmd returns the `pn workspace worktree` parent command with
 // add/list/remove/prune subcommands. These are scaffolding-only commands and
 // are NOT wired through runWithHooks and NOT registered in knownHookCommands.
-func workspaceWorktreeCmd(terminal *string) *cobra.Command {
+func workspaceWorktreeCmd() *cobra.Command {
 	wt := &cobra.Command{
 		Use:   "worktree",
 		Short: "Manage coordinated git worktree sets",
 	}
-	wt.AddCommand(workspaceWorktreeAddCmd(terminal))
+	wt.AddCommand(workspaceWorktreeAddCmd())
 	wt.AddCommand(workspaceWorktreeListCmd())
 	wt.AddCommand(workspaceWorktreeRemoveCmd())
 	wt.AddCommand(workspaceWorktreePruneCmd())
 	return wt
 }
 
-func workspaceWorktreeAddCmd(terminal *string) *cobra.Command {
+func workspaceWorktreeAddCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "add <branch> [<commit-ish>]",
 		Short: "Create a coordinated worktree set on <branch> across all workspace repos",
@@ -473,8 +473,7 @@ func workspaceWorktreeAddCmd(terminal *string) *cobra.Command {
 			}
 			defer w.Close()
 			opts := workspace.WorktreeAddOptions{
-				Branch:   args[0],
-				Terminal: *terminal,
+				Branch: args[0],
 			}
 			if len(args) == 2 {
 				opts.CommitIsh = args[1]

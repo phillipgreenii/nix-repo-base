@@ -368,7 +368,7 @@ func runScenario(t *testing.T, name string) {
 	// Copy pn-workspace.toml (required).
 	tomlSrc := filepath.Join(scenarioDir, "pn-workspace.toml")
 	tomlDst := filepath.Join(wsRoot, "pn-workspace.toml")
-	if err := copyFile(tomlDst, tomlSrc); err != nil {
+	if err := copyFile(tomlSrc, tomlDst); err != nil {
 		t.Fatalf("copy pn-workspace.toml: %v", err)
 	}
 
@@ -377,7 +377,7 @@ func runScenario(t *testing.T, name string) {
 		src := filepath.Join(scenarioDir, lockFile)
 		if _, err := os.Stat(src); err == nil {
 			dst := filepath.Join(wsRoot, lockFile)
-			if err := copyFile(dst, src); err != nil {
+			if err := copyFile(src, dst); err != nil {
 				t.Fatalf("copy %s: %v", lockFile, err)
 			}
 		}

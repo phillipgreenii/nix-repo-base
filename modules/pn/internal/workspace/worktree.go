@@ -20,8 +20,6 @@ type WorktreeAddOptions struct {
 	// CommitIsh is an optional start-point for the new branch. When empty,
 	// git uses the canonical repo's current HEAD (exactly as git worktree add does).
 	CommitIsh string
-	// Terminal is accepted for uniformity but has no behavioral effect.
-	Terminal string
 }
 
 // WorktreeListOptions configures WorktreeList.
@@ -140,8 +138,9 @@ func (w *Workspace) WorktreeList(ctx context.Context, out io.Writer, errOut io.W
 		if strings.HasPrefix(setName, ".") {
 			continue
 		}
-		// The set dir name IS the branch by construction. Print the name directly.
-		fmt.Fprintf(out, "%s\t%s\n", setName, setName)
+		// The set dir name IS the branch by construction, so a second branch
+		// column would just duplicate it — print the name once.
+		fmt.Fprintln(out, setName)
 	}
 	return nil
 }

@@ -110,7 +110,8 @@ func buildPNBinary(t *testing.T, moduleRoot string) string {
 var pnBinTmpDirs []string
 
 // copyFile copies src to dst. Creates dst with mode 0o644.
-func copyFile(dst, src string) error {
+// Arg order matches workspace.copyFile (src, dst) to avoid a cross-package foot-gun.
+func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
