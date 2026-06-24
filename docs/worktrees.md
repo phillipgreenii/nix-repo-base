@@ -142,7 +142,7 @@ The `worktrees_dir` field in `pn-workspace.toml`'s `[workspace]` table configure
 - **P1 guarantee:** no `pn workspace` verb run from inside a set modifies the canonical checkouts' working state (HEAD, branch, index, working tree). New commits/branches/objects land in the shared object store. `update`/`rebase` may update shared remote-tracking refs and `FETCH_HEAD` but never the primary's working tree or checked-out branch.
 - **Hooks must use workspace-relative paths.** Hooks that hard-code absolute canonical paths escape the set and violate P1. Use `{root}/{repo}` construction (where `root` is resolved from cwd or `PN_WORKSPACE_ROOT`) rather than hard-coded absolute paths.
 
-For the full agent-rules treatment of coordinated worktrees — including the `rebase [branch]` and `push --set-upstream` forms, the `WORKSPACE_ROOT` recompute-from-`SCRIPT_DIR` note, and the detailed P1 explanation — see [`pn-workspace-rules/CLAUDE.md`](../pn-workspace-rules/CLAUDE.md), section **Coordinated Worktree Sets**.
+For the full agent-rules treatment of coordinated worktrees — including the `rebase [branch]` and `push --set-upstream` forms, the `WORKSPACE_ROOT` recompute-from-`SCRIPT_DIR` note, and the detailed P1 explanation — see [`pn-workspace-rules/skills/pn-workspace-rules/SKILL.md`](../pn-workspace-rules/skills/pn-workspace-rules/SKILL.md), section **Coordinated Worktree Sets**.
 
 ---
 

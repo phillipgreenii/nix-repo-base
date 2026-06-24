@@ -34,6 +34,20 @@ the manifest or invent a `-<digest>` fallback.
    - Set `"defaultEnabled": true` in a plugin's `plugin.json` to have it on by
      default. **Absent ⇒ off** — so every plugin you want loaded must declare it.
 
+   **Plugin content must be a skill/agent/hook — NOT a root `CLAUDE.md`.**
+   Verified on Claude Code 2.1.186: a plugin-root `CLAUDE.md` is **not** injected
+   into agent context, and `plugin.json` `type`/`content` fields are silently
+   ignored (`claude plugin validate` flags them as Unknown). The marketplace still
+   registers and enables the plugin, but the `CLAUDE.md`/`type: rules` convention
+   from ADR-0003 does nothing. To deliver rules/context, ship a skill at
+   `<plugin>/skills/<name>/SKILL.md` with `name` + `description` frontmatter (skills
+   load on-invoke by their `description`, so write a strong triggering description);
+   for always-on context that no skill description fits, put it in a project/user
+   `CLAUDE.md` instead of a plugin. Proof: `claude plugin details <plugin>@<mkt>`
+   shows `Skills (1)` and a nonzero always-on token cost for a skill-shipping plugin
+   vs `Skills (0)` / ~0 tokens for a root-`CLAUDE.md` plugin. `pn-workspace-rules`
+   ships `pn-workspace-rules/skills/pn-workspace-rules/SKILL.md`.
+
 2. **Build + expose it** in `perSystem.packages`:
 
    ```nix
@@ -94,6 +108,7 @@ Build + inspect it:
 nix build .#phillipg-nix-repo-base-marketplace
 cat result/.claude-plugin/marketplace.json          # name = …-marketplace-local
 cat result/pn-workspace-rules/.claude-plugin/plugin.json  # version = 1.0.0+<digest>
+ls result/pn-workspace-rules/skills/pn-workspace-rules/SKILL.md  # the loaded content
 claude plugin validate ./result
 ```
 

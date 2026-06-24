@@ -1,6 +1,27 @@
+---
+name: pn-workspace-rules
+description: >-
+  Use when working in a repo that participates in a `pn-workspace.toml` /
+  phillipgreenii nix-* workspace — ANY repo whose flake is declared as a project
+  in the workspace. Fires on: running `pn workspace build`, `pn workspace apply`,
+  `pn workspace flake-check`, `pn workspace update`/`upgrade`, `pn workspace
+  init`/`clone`/`lock`, `pn workspace rebase`/`push`/`status`/`format`/`tree`, or
+  any other `pn workspace` verb; deciding whether/when to push a nix-* branch;
+  editing `flake.nix` inputs or flake locks across the nix repos; coordinated git
+  worktrees / coordinated worktree sets spanning the nix repos; cross-repo
+  flake-input changes where one workspace repo's output is consumed by another;
+  and the completion gate of "is my task in a pn-workspace repo actually done."
+  Also fires when you see `pn-workspace.toml`, `pn-workspace.lock.json`,
+  `PN_WORKSPACE_ROOT`, `--terminal`, or `--override-input` and need the workspace
+  conventions. Do NOT use for generic nix work unrelated to the `pn` workspace
+  tooling.
+---
+
 # pn-workspace Conventions for Agents
 
 Rules for AI agents working inside a `pn-workspace.toml` workspace. These apply to ANY repo whose flake is declared as a project in the workspace.
+
+For concrete end-to-end user journeys (the commands a user runs, expected success/error outcomes, and the smoke scenario that exercises each), see `USER_JOURNEYS.md` in this skill directory.
 
 ## Cardinal Rule
 
@@ -173,8 +194,8 @@ git -C <root>/<repo> branch -f main origin/main
 
 The run summary will call this out explicitly when it detects this state.
 
-Full details: [`docs/worktrees.md`](../docs/worktrees.md#per-repo-ephemeral-update-worktrees-the-update-default)
-and [ADR 0009](../docs/adr/0009-pn-workspace-update-worktree-isolation.md).
+Full details: `docs/worktrees.md` (section "per-repo ephemeral update worktrees — the update default")
+and ADR 0009 (`docs/adr/0009-pn-workspace-update-worktree-isolation.md`) in the `phillipg-nix-repo-base` repo.
 
 ## Environment Variables
 

@@ -352,7 +352,7 @@ prune` + `git branch -D`.
   assert the worktree flow errors rather than silently relocking (B1).
 - **Distinct run stamps.** The per-run stamp is sub-second + PID, so concurrent
   updates get distinct branch/worktree names and never collide at `git worktree
-  add -b`; a losing run instead has its step-6 push rejected (non-fast-forward)
+add -b`; a losing run instead has its step-6 push rejected (non-fast-forward)
   and that repo fails — it does not half-create a worktree. (There is no explicit
   collision pre-flight guard; stamp uniqueness is the safety property.)
 

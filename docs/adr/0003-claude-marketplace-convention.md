@@ -15,6 +15,11 @@ for how nix-\* repos expose Claude plugins.
 - Structure: `<repo>/.claude-plugin/marketplace.json` + per-plugin dirs
 - marketplace.json follows Claude Code's native schema; lists plugins; owner is phillipgreenii
 - Plugin content: `<plugin-name>/.claude-plugin/plugin.json` + `<plugin-name>/CLAUDE.md`
+  - **Superseded (verified on Claude Code 2.1.186):** a plugin-root `CLAUDE.md` is
+    NOT loaded into agent context, and `plugin.json` `type`/`content` fields are
+    ignored (flagged as Unknown by `claude plugin validate`). Plugins must ship
+    `skills/`, `agents/`, or `hooks/`; rules belong in a `skills/<name>/SKILL.md`
+    with `name` + `description` frontmatter. See ADR-0010 and `docs/claude-marketplaces.md`.
 - Installation: manual via `claude plugin marketplace add <path>` in Phase 1
 - Phase 4 will automate installation via nix-agent-support's unified marketplaces config
 
