@@ -100,7 +100,7 @@ url = "github:owner/bar"
 		t.Fatalf("eventlog.New: %v", err)
 	}
 
-	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{Log: lw})
+	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true, Log: lw})
 	_ = lw.Close()
 	if err == nil {
 		t.Fatal("expected error reporting failures, got nil")
@@ -174,7 +174,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{}); err != nil {
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true}); err != nil {
 		t.Fatalf("Update with nil Log: %v", err)
 	}
 }

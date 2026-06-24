@@ -117,7 +117,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/xyz/lib/scripts"}); err != nil {
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true, ULLibDir: "/nix/store/xyz/lib/scripts"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	var found bool
@@ -178,7 +178,7 @@ url = "github:owner/bar"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{})
+	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true})
 	if err == nil {
 		t.Fatal("expected error reporting failures, got nil")
 	}
@@ -219,7 +219,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{})
+	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true})
 	if err == nil {
 		t.Fatal("expected error for failed pull, got nil")
 	}
@@ -266,7 +266,7 @@ url = "github:owner/foo"
 		t.Fatalf("Open: %v", err)
 	}
 	var out bytes.Buffer
-	if err := w.Update(context.Background(), &out, UpdateOptions{}); err != nil {
+	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	calls := f.Calls()
@@ -328,7 +328,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{}); err != nil {
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	// Only the dirty probe should be called; no pull/locks/push.
@@ -380,7 +380,7 @@ url = "github:owner/foo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{}); err != nil {
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	for _, c := range f.Calls() {
@@ -456,7 +456,7 @@ url = "github:owner/foo"
 	defer w.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancelled
-	err = w.Update(ctx, &bytes.Buffer{}, UpdateOptions{})
+	err = w.Update(ctx, &bytes.Buffer{}, UpdateOptions{InPlace: true})
 	if err == nil {
 		t.Fatal("expected error on pre-cancelled context")
 	}

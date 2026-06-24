@@ -120,7 +120,7 @@ url = "github:owner/app"
 	}
 
 	var out bytes.Buffer
-	if err := w.Update(context.Background(), &out, UpdateOptions{}); err != nil {
+	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 

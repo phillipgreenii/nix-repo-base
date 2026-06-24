@@ -124,7 +124,7 @@ url = "github:owner/dep"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Upgrade(context.Background(), io.Discard, UpgradeOptions{}); err != nil {
+	if err := w.Upgrade(context.Background(), io.Discard, UpgradeOptions{InPlace: true}); err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}
 	// Ensure the apply command was invoked (Apply ran after Update).

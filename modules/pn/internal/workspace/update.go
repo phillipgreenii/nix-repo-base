@@ -73,11 +73,6 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 	return ws.updateViaWorktree(ctx, out, opts)
 }
 
-// TEMP stub — replaced by update_worktree.go in Task 4.
-func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts UpdateOptions) error {
-	return ws.updateInPlace(ctx, out, opts)
-}
-
 // updateInPlace pulls each workspace repo, runs its ./update-locks.sh, and pushes.
 // Repos without an upstream skip pull/push but still attempt update-locks.
 // Repos with a dirty working tree are skipped (non-fatal).
