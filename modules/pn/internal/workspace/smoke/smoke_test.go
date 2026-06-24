@@ -328,6 +328,15 @@ func TestSmoke_S32_UpdateEventsJSONL(t *testing.T) {
 	runScenario(t, "s32-update-events-jsonl")
 }
 
+// TestSmoke_S33_WorktreeUpdate: single bare-remote repo; the default
+// (worktree-isolated) update relocks in an ephemeral worktree, pushes the
+// branch to remote main, fast-forwards the primary main, and removes the
+// worktree. Asserts the relock commit reached both the primary and the remote
+// and that no .pn-update worktree remains.
+func TestSmoke_S33_WorktreeUpdate(t *testing.T) {
+	runScenario(t, "s33-worktree-update")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -509,6 +518,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS31RebaseBranch(t, wsRoot)
 	case "s32-update-events-jsonl":
 		assertS32EventsJSONL(t, wsRoot, env)
+	case "s33-worktree-update":
+		assertS33WorktreeUpdate(t, wsRoot)
 	}
 }
 

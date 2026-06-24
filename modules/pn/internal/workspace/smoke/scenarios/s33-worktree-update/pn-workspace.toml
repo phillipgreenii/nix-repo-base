@@ -1,0 +1,6 @@
+[workspace]
+name = "smoke-s33"
+terminal = "solo"
+
+[repos.solo]
+url = "file:///PLACEHOLDER_solo"

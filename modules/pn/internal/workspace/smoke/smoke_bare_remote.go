@@ -735,3 +735,35 @@ func assertS32EventsJSONL(t *testing.T, wsRoot string, env []string) {
 		t.Errorf("S32: expected 2 project_result events (one per repo), got %d; events: %v", projectResults, recs)
 	}
 }
+
+// --- S33 extra: worktree update integrated to primary + remote; no leftover ---
+
+func assertS33WorktreeUpdate(t *testing.T, wsRoot string) {
+	t.Helper()
+	primary := filepath.Join(wsRoot, "solo")
+	bare := filepath.Join(wsRoot, "remotes", "solo.git")
+
+	logOut, err := exec.Command("git", "-C", primary, "log", "--oneline", "-n", "5").Output()
+	if err != nil {
+		t.Fatalf("S33: git log primary: %v", err)
+	}
+	if !strings.Contains(string(logOut), "update-locks: bump locked.txt") {
+		t.Errorf("S33: primary main missing relock commit; log:\n%s", logOut)
+	}
+
+	remoteHead, err := exec.Command("git", "-C", bare, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("S33: git rev-parse remote: %v", err)
+	}
+	primHead, err := exec.Command("git", "-C", primary, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("S33: git rev-parse primary: %v", err)
+	}
+	if strings.TrimSpace(string(remoteHead)) != strings.TrimSpace(string(primHead)) {
+		t.Errorf("S33: remote main %s != primary main %s", strings.TrimSpace(string(remoteHead)), strings.TrimSpace(string(primHead)))
+	}
+
+	if entries, err := os.ReadDir(filepath.Join(wsRoot, ".worktrees", ".pn-update")); err == nil && len(entries) > 0 {
+		t.Errorf("S33: .pn-update worktree left behind: %v", entries)
+	}
+}

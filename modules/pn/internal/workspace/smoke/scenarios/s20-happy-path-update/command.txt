@@ -2,4 +2,4 @@
 workspace init
 workspace clone
 workspace lock
-workspace update
+workspace update --in-place

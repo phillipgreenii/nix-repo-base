@@ -44,6 +44,10 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 	if err := os.MkdirAll(xdgState, 0o755); err != nil {
 		t.Fatalf("buildScrubbedEnv: create xdg state: %v", err)
 	}
+	ulLib := filepath.Join(tempHome, "ullib")
+	if err := os.MkdirAll(ulLib, 0o755); err != nil {
+		t.Fatalf("buildScrubbedEnv: create ullib: %v", err)
+	}
 
 	// Override map: keys to override or set.
 	overrides := map[string]string{
@@ -60,6 +64,7 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 		"GIT_COMMITTER_NAME":  "pn-smoke-test",
 		"GIT_COMMITTER_EMAIL": "pn-smoke@test.invalid",
 		"PN_WORKSPACE_ROOT":   wsRoot,
+		"UL_LIB_DIR":          ulLib,
 	}
 
 	// Build a new env slice from os.Environ(), replacing overridden keys.
