@@ -74,6 +74,9 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	}
 
 	oldProfile := readSystemProfile()
+	// Capture the git version before the rebuild so we can tell, afterwards,
+	// whether this apply swapped in a new git binary.
+	oldGitVersion := ws.gitVersion(ctx)
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
 	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out}); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
@@ -84,7 +87,33 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		_, _ = ws.runner.Run(ctx, "nvd", []string{"diff", oldProfile, newProfile}, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out})
 	}
 
+	// If this apply installed a new git, the running `git fsmonitor--daemon`
+	// is still executing the OLD git binary and will not auto-restart. Kill it
+	// so the next git command spawns a fresh daemon from the new binary.
+	if newGitVersion := ws.gitVersion(ctx); oldGitVersion != "" && newGitVersion != "" && newGitVersion != oldGitVersion {
+		ws.restartFsmonitorDaemon(ctx, out)
+	}
+
 	return ws.markApplied(ctx, allDirs)
+}
+
+// gitVersion returns the trimmed output of `git --version`, or "" if git is not
+// available. Used to detect whether an apply swapped in a new git binary.
+func (ws *Workspace) gitVersion(ctx context.Context) string {
+	res, err := ws.runner.Run(ctx, "git", []string{"--version"}, exec.RunOptions{})
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(res.Stdout))
+}
+
+// restartFsmonitorDaemon terminates any running `git fsmonitor--daemon` so the
+// next git command spawns a fresh one from the just-installed git binary. It is
+// best-effort: pkill exits non-zero when no daemon is running, which is not an
+// error here.
+func (ws *Workspace) restartFsmonitorDaemon(ctx context.Context, out io.Writer) {
+	fmt.Fprintln(out, "  --== git updated: restarting fsmonitor daemon ==--  ")
+	_, _ = ws.runner.Run(ctx, "pkill", []string{"-f", "git fsmonitor--daemon"}, exec.RunOptions{})
 }
 
 // allRepoDirs returns the clone dir for every declared repo that exists on

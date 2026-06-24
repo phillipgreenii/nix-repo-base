@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -75,6 +76,130 @@ func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 	}
 	if !streamed {
 		t.Errorf("apply command should stream output (Opts.Stdout set)")
+	}
+}
+
+// calledPkillFsmonitor reports whether the FakeRunner saw the
+// `pkill -f 'git fsmonitor--daemon'` invocation.
+func calledPkillFsmonitor(calls []exec.Call) bool {
+	for _, c := range calls {
+		if c.Name == "pkill" && len(c.Args) == 2 && c.Args[0] == "-f" && c.Args[1] == "git fsmonitor--daemon" {
+			return true
+		}
+	}
+	return false
+}
+
+// applyTestRunner scripts a successful single-repo apply (daemon check, the
+// darwin-rebuild command, and markApplied's rev-parse) for terminal "leaf".
+func applyTestRunner(t *testing.T, root string) (*exec.FakeRunner, string) {
+	t.Helper()
+	leafDir := filepath.Join(root, "leaf")
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
+	f.AddResponse("sudo", []string{
+		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
+	}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
+	return f, leafDir
+}
+
+const applySingleRepoTOML = `
+[workspace]
+terminal = "leaf"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+
+[repos.leaf]
+url = "github:owner/leaf"
+`
+
+// TestApply_RestartsFsmonitorWhenGitVersionChanges asserts that pkill is invoked
+// when the git version differs before vs after the rebuild.
+func TestApply_RestartsFsmonitorWhenGitVersionChanges(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+
+	f, _ := applyTestRunner(t, root)
+	// git --version: old then new (changed) — FIFO consumption.
+	f.AddResponse("git", []string{"--version"}, exec.Result{Stdout: []byte("git version 2.43.0\n")}, nil)
+	f.AddResponse("git", []string{"--version"}, exec.Result{Stdout: []byte("git version 2.45.0\n")}, nil)
+	f.AddResponse("pkill", []string{"-f", "git fsmonitor--daemon"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !calledPkillFsmonitor(f.Calls()) {
+		t.Errorf("expected pkill of fsmonitor daemon when git version changed; calls:\n%+v", f.Calls())
+	}
+}
+
+// TestApply_NoFsmonitorRestartWhenGitUnchanged asserts that pkill is NOT invoked
+// when the git version is identical before and after the rebuild.
+func TestApply_NoFsmonitorRestartWhenGitUnchanged(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+
+	f, _ := applyTestRunner(t, root)
+	// git --version: same string both times — no version change.
+	f.AddResponse("git", []string{"--version"}, exec.Result{Stdout: []byte("git version 2.43.0\n")}, nil)
+	f.AddResponse("git", []string{"--version"}, exec.Result{Stdout: []byte("git version 2.43.0\n")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if calledPkillFsmonitor(f.Calls()) {
+		t.Errorf("pkill must not run when git version is unchanged; calls:\n%+v", f.Calls())
+	}
+}
+
+// TestApply_NoFsmonitorRestartOnSkippedRebuild asserts that the skip-rebuild
+// (no-op) path neither checks the git version nor kills the daemon.
+func TestApply_NoFsmonitorRestartOnSkippedRebuild(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	leafDir := filepath.Join(root, "leaf")
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
+	// needsRebuild: clean tree + HEAD matches the recorded applied hash → no rebuild.
+	f.AddResponse("git", []string{"-C", leafDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
+	// Pre-seed the applied-hash so HEAD ("abc") matches and the rebuild is skipped.
+	if err := os.MkdirAll(appliedHashDir(), 0o755); err != nil {
+		t.Fatalf("mkdir applied-hash dir: %v", err)
+	}
+	if err := os.WriteFile(appliedHashFile(leafDir), []byte("abc\n"), 0o644); err != nil {
+		t.Fatalf("seed applied hash: %v", err)
+	}
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if calledPkillFsmonitor(f.Calls()) {
+		t.Errorf("pkill must not run on the skip-rebuild path; calls:\n%+v", f.Calls())
+	}
+	for _, c := range f.Calls() {
+		if c.Name == "git" && len(c.Args) == 1 && c.Args[0] == "--version" {
+			t.Errorf("git --version must not be probed on the skip-rebuild path; calls:\n%+v", f.Calls())
+		}
 	}
 }
 
