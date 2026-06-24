@@ -52,7 +52,7 @@ url = "github:owner/myterm"
 	openWorkspace = func() (*workspace.Workspace, error) { return w, nil }
 	t.Cleanup(func() { openWorkspace = orig })
 
-	stdout, _, err := runCobraCmd(t, []string{"update"})
+	stdout, _, err := runCobraCmd(t, []string{"update", "--in-place"})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
