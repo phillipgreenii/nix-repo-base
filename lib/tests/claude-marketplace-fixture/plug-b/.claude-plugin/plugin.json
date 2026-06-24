@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "1.0",
+  "name": "plug-b",
+  "displayName": "Plugin B",
+  "description": "Fixture plugin B",
+  "version": "2.3.4",
+  "type": "rules",
+  "content": "CLAUDE.md"
+}

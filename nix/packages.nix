@@ -39,4 +39,10 @@ _: {
   # Factory for Go binary packaging (mkGoBinary)
   # Usage: goBuilders = mkGoBuilders { inherit pkgs self; };
   mkGoBuilders = import ../lib/go-builders.nix;
+
+  # Factory for Claude Code marketplace packaging
+  # (mkClaudePlugin, mkClaudeMarketplace, mkDirectoryMarketplaceSettings).
+  # Usage: mp = mkClaudeMarketplaceBuilders { inherit pkgs lib; };
+  # See docs/claude-marketplaces.md and ADR-0010.
+  mkClaudeMarketplaceBuilders = import ../lib/claude-marketplace.nix;
 }

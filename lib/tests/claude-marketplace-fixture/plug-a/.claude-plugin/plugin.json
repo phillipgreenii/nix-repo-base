@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0",
+  "name": "plug-a",
+  "displayName": "Plugin A",
+  "description": "Fixture plugin A",
+  "version": "1.0.0",
+  "type": "rules",
+  "content": "CLAUDE.md",
+  "defaultEnabled": true
+}

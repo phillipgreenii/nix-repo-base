@@ -1,0 +1,19 @@
+{
+  "name": "fixture-repo",
+  "owner": {
+    "name": "phillipgreenii"
+  },
+  "description": "Test fixture marketplace for lib/claude-marketplace.nix unit tests",
+  "plugins": [
+    {
+      "name": "plug-a",
+      "source": "./plug-a",
+      "description": "Plugin A (defaultEnabled true)"
+    },
+    {
+      "name": "plug-b",
+      "source": "./plug-b",
+      "description": "Plugin B (defaultEnabled absent ⇒ false)"
+    }
+  ]
+}
