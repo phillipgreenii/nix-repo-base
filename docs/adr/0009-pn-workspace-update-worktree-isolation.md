@@ -1,6 +1,6 @@
 # `pn workspace update` isolates per-repo work in ephemeral git worktrees
 
-**Status**: Accepted
+**Status**: Proposed
 **Date**: 2026-06-24
 **Deciders**: Phillip Green II
 
@@ -24,10 +24,11 @@ are unusable for other work until it finishes. Phillip wants the long, churny
 part kept **off** the primary checkouts, touching the primary `main` only with a
 fast fast-forward at the very end, so the clones stay free for parallel work.
 
-A coordinated worktree _set_ already exists (ADR-adjacent
-`2026-06-16-pn-workspace-coordinated-worktrees` design): one directory that is a
-complete workspace whose repos are worktrees on a shared branch, relocked via
-local `--override-input git+file://` paths. That model is **wrong for update**:
+A coordinated worktree _set_ already exists (the
+`docs/superpowers/specs/2026-06-16-pn-workspace-coordinated-worktrees-design.md`
+design spec): one directory that is a complete workspace whose repos are
+worktrees on a shared branch, relocked via local `--override-input git+file://`
+paths. That model is **wrong for update**:
 it would lock each repo against its local sibling worktree path, not the remote
 commit the lock must record. Update's correctness depends on relocking against
 pushed remote revs.
@@ -53,8 +54,9 @@ direct-on-`main` flow.**
 
 3. **Integration is a fast-forward, smart about the primary's state.** After
    relocking, the branch is rebased onto local `main` (catching unpushed local
-   commits) then `origin/main` (catching remote advances), pushed to remote
-   `main` from the worktree, and the local primary `main` is advanced:
+   commits) then `origin/main` (catching remote advances) — the local-before-remote
+   order is deliberate — pushed to remote `main` from the worktree, and the local
+   primary `main` is advanced:
    `merge --ff-only` when on a clean `main`; a ref-only fast-forward
    (`fetch . <branch>:main`) when `main` is not checked out (so in-progress work
    on another branch is undisturbed); **defer** (leave the worktree + branch,
@@ -104,6 +106,22 @@ The full algorithm, edge cases, and test plan are in
   leave-on-failure recoverability.
 - A failed/aborted run can leave residue (worktree + branch) that the user (or
   `pn workspace worktree prune`) must clean up.
+- **Asymmetric defer state.** If local `main` had unpushed commits _and_
+  `origin/main` advanced during the run, the push (step 6) advances remote `main`
+  before the step-7 ff fails — leaving **remote `main` advanced and authoritative
+  while local `main` is behind, holding orphaned duplicate-SHA commits**. The same
+  state can arise from a crash between push and ff. Recovery is to _reset_ local
+  `main` to the pushed remote (`git branch -f main origin/main`, or
+  `git reset --hard origin/main` when on `main`), **not** a merge — the run summary
+  prints this.
+- **Requires non-empty injected `UL_LIB_DIR`.** Each worktree clobbers
+  `WORKSPACE_ROOT` to `SCRIPT_DIR/..`, so the only safe relock path is `pn`
+  injecting a resolved `UL_LIB_DIR`; the worktree flow hard-errors on an empty
+  `ResolveULLibDir` result rather than silently taking the store fallback. The
+  in-place flow has no such requirement.
+- **Concurrent runs unsupported.** All repos in one invocation share the branch
+  name `pn-update/<run-ts>`; a second concurrent `update` in the same workspace
+  collides on the branch/worktree and must fail fast.
 - `update-locks.sh` toggles `core.fsmonitor`, which lives in the shared
   `.git/config`; during a repo's run the primary's fsmonitor is briefly disabled
   and restored on exit — perf-only, self-healing, but a shared-state interaction
@@ -111,8 +129,11 @@ The full algorithm, edge cases, and test plan are in
 
 ### Neutral
 
-- `--in-place` retains the exact prior behavior, including the dirty-repo skip,
-  for anyone who wants the old flow or to debug.
+- **Dirty-repo handling differs by mode.** `--in-place` retains the exact prior
+  behavior, including the upfront dirty-repo skip, for anyone who wants the old
+  flow or to debug. The default worktree flow does **not** skip a dirty repo — the
+  worktree isolates the primary, so the long run proceeds regardless; only a dirty
+  `main` _checkout_ defers at integration.
 - The coordinated worktree _set_ model is unaffected and remains the tool for
   cross-repo feature work; this decision concerns `update` only.
 - Worktrees live inside the workspace root (`.worktrees/.pn-update/`), so the
