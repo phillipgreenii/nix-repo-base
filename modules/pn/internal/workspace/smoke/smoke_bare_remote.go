@@ -509,9 +509,10 @@ func assertS29VerbsInASet(t *testing.T, wsRoot, pnBin string, env []string) {
 		t.Errorf("S29: consumer/built.txt not found in set after workspace build")
 	}
 
-	// Run update.
-	if r := runCommand(t, pnBin, setDir, []string{"workspace", "update"}, setEnvFull); r.ExitCode != 0 {
-		t.Errorf("S29: workspace update in set failed (exit %d)\nstdout: %s\nstderr: %s",
+	// Run update --in-place (worktree-isolation flow is refused inside a set;
+	// --in-place relocks the set's own worktrees without touching canonical main).
+	if r := runCommand(t, pnBin, setDir, []string{"workspace", "update", "--in-place"}, setEnvFull); r.ExitCode != 0 {
+		t.Errorf("S29: workspace update --in-place in set failed (exit %d)\nstdout: %s\nstderr: %s",
 			r.ExitCode, r.Stdout, r.Stderr)
 	}
 

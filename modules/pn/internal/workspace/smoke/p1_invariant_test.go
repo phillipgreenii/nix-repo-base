@@ -118,7 +118,7 @@ func TestSmoke_P1Invariant(t *testing.T) {
 		{name: "tree", args: []string{"workspace", "tree"}},
 		{name: "build", args: []string{"workspace", "build"}},
 		{name: "apply", args: []string{"workspace", "apply"}},
-		{name: "update", args: []string{"workspace", "update"}},
+		{name: "update", args: []string{"workspace", "update", "--in-place"}},
 		{name: "push", args: []string{"workspace", "push"}},
 		{name: "push --set-upstream", args: []string{"workspace", "push", "--set-upstream"}},
 		{name: "rebase", args: []string{"workspace", "rebase"}},

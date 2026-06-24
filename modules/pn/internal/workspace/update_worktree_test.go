@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -305,5 +306,42 @@ func TestUpdateViaWorktree_WorktreeRemoveFailIsOkWithResidue(t *testing.T) {
 	}
 	if !strings.Contains(s, "prune") {
 		t.Errorf("summary should surface the cleanup hint (prune) on residue; got:\n%s", s)
+	}
+}
+
+func TestUpdateViaWorktree_RefusesInsideSet(t *testing.T) {
+	// A coordinated set lives at <base>/.worktrees/<branch>; rooting pn there must
+	// refuse the worktree flow and point at --in-place. (.worktrees is the default
+	// worktrees_dir name, so inCoordinatedSet() detects it structurally.)
+	base := t.TempDir()
+	setRoot := filepath.Join(base, ".worktrees", "feature-x")
+	if err := os.MkdirAll(setRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), "[workspace]\nterminal=\"foo\"\n[repos.foo]\nurl=\"github:o/foo\"\n")
+
+	w, err := Open(setRoot, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"}); err == nil || !strings.Contains(err.Error(), "--in-place") {
+		t.Fatalf("expected refuse-in-set error mentioning --in-place, got %v", err)
+	}
+
+	// --in-place must still work inside a set (no guard there): script the in-place
+	// no-upstream flow for the single repo.
+	foo := filepath.Join(setRoot, "foo")
+	f2 := exec.NewFakeRunner()
+	f2.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f2.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f2.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	f2.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	f2.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc0000000000000000000000000000000000000\n")}, nil)
+	w2, err := Open(setRoot, f2)
+	if err != nil {
+		t.Fatalf("Open(2): %v", err)
+	}
+	if err := w2.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true, ULLibDir: "/x"}); err != nil {
+		t.Fatalf("--in-place inside set should work: %v", err)
 	}
 }

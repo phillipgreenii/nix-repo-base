@@ -33,6 +33,17 @@ var updateRunStampFn = func() string {
 	return fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102-150405.000"), os.Getpid())
 }
 
+// inCoordinatedSet reports whether ws.root is a coordinated worktree set created
+// by `pn workspace worktree add` — i.e. it lives directly under the configured
+// worktrees dir (<worktrees_dir>/<branch>). The worktree-isolation update flow is
+// invalid inside a set: the set's repos are worktrees on a shared feature branch
+// with `main` checked out in the canonical clones, so a nested worktree-add +
+// push-to-main + ff-main would violate the set's P1 invariant. Detection is
+// structural — a set always lives directly under the worktrees dir.
+func (ws *Workspace) inCoordinatedSet() bool {
+	return filepath.Base(filepath.Dir(ws.root)) == filepath.Base(ws.config.WorktreesDirName())
+}
+
 // primaryMainState probes the primary checkout's branch + cleanliness to decide
 // how step 7 advances main. A non-"main" current branch (or a probe error) is
 // treated as primaryOnOtherBranch: main is not checked out, so its ref can be
@@ -85,6 +96,9 @@ type repoOutcome struct {
 func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts UpdateOptions) error {
 	if _, err := ws.requireTerminal(ctx, opts.Terminal); err != nil {
 		return err
+	}
+	if ws.inCoordinatedSet() {
+		return fmt.Errorf("update: refusing the worktree-isolation flow inside a coordinated worktree set (%s); run `pn workspace update --in-place` to relock the set in place", ws.root)
 	}
 	// Resolve UL_LIB_DIR once: explicit option → pre-set env (lets CI/smoke inject
 	// without nix) → nix resolver. Each consumer update-locks.sh clobbers
