@@ -229,7 +229,7 @@ pn workspace status
 pn workspace build
 pn workspace rebase main                      # rebase each worktree's branch onto local main
 pn workspace push --set-upstream              # publish my-feature to origin for the first time
-pn workspace update                           # pull + relock inside the set
+pn workspace update --in-place                # relock inside the set (bare `update` is refused in a set)
 ```
 
 The set is itself an ordinary workspace root. `pn workspace` verbs "just work" because upward search finds the set's own `pn-workspace.toml` and all repo paths resolve to `{set}/{repo}`. No command-specific worktree logic exists — the verbs are unchanged.

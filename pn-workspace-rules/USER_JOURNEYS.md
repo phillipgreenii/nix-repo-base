@@ -226,12 +226,13 @@ workspace share the branch name `pn-update/<run-ts>` and collide; the second run
 **Inside a coordinated worktree set:** bare `pn workspace update` errors — use
 `pn workspace update --in-place`, which relocks the set's worktrees in place.
 
-**Smoke:** ✓ **S20 `happy-path-update`** (pinned to `--in-place` flow) and **S33
-`worktree-update`** (worktree-isolated default) — two-repo file:// bare-remote fixture; each
-repo's `update-locks.sh` writes `updated.txt` and appends its name to
+**Smoke:** ✓ **S20 `happy-path-update`** (now pinned to `--in-place`) — two-repo file:// bare-remote
+fixture; each repo's `update-locks.sh` writes `updated.txt` and appends its name to
 `$WORKSPACE_ROOT/order.log`; asserts both markers exist and `order.log` records `producer` then
-`consumer` (topo order verified). Consumer's `flake.nix` declares producer as input so the lock
-detects the dependency edge.
+`consumer` (topo order). ✓ **S33 `worktree-update`** (the worktree-isolated default) — a single
+`solo` bare-remote repo whose `update-locks.sh` commits a `locked.txt` bump; asserts the relock
+commit reached both the primary `main` and the bare remote and that no `.pn-update` worktree
+remains afterward.
 
 ---
 

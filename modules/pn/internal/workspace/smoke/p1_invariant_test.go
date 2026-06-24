@@ -102,9 +102,9 @@ func TestSmoke_P1Invariant(t *testing.T) {
 
 	// --- 5. Verb table. Each runs from INSIDE the set (cwd=setDir, set env) ---
 	type verbCase struct {
-		name            string
-		args            []string
-		needNix         bool
+		name    string
+		args    []string
+		needNix bool
 		// skipBranchCheck, when true, suppresses the local-branch NAME SET
 		// assertion for this verb. Set on verbs that are EXPECTED to add or
 		// remove branches in the canonical's shared ref store (e.g. `worktree
