@@ -340,9 +340,10 @@ func workspaceTreeCmd(terminal *string) *cobra.Command {
 }
 
 func workspaceUpdateCmd(terminal *string) *cobra.Command {
-	return &cobra.Command{
+	var inPlace bool
+	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update each workspace repo (pull + update locks)",
+		Short: "Update each workspace repo (worktree-isolated; --in-place for direct-on-main)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -351,8 +352,6 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 
-			// Best-effort: never fail the run because the event log can't open.
-			// On error lw is the nil *Writer, whose Emit/Close are safe no-ops.
 			lw, err := eventlog.New(eventlog.DefaultPath())
 			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "pn: event log unavailable: %v\n", err)
@@ -361,14 +360,17 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 			}
 
 			return runWithHooks(ctx, w, "update", func() error {
-				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal, Log: lw})
+				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal, Log: lw, InPlace: inPlace})
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&inPlace, "in-place", false, "update each repo directly on its primary main instead of in an isolated worktree")
+	return cmd
 }
 
 func workspaceUpgradeCmd(terminal *string) *cobra.Command {
-	return &cobra.Command{
+	var inPlace bool
+	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Update + apply each workspace repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -379,10 +381,12 @@ func workspaceUpgradeCmd(terminal *string) *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "upgrade", func() error {
-				return w.Upgrade(ctx, out, workspace.UpgradeOptions{Terminal: *terminal})
+				return w.Upgrade(ctx, out, workspace.UpgradeOptions{Terminal: *terminal, InPlace: inPlace})
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&inPlace, "in-place", false, "update phase runs directly on primary main instead of in an isolated worktree")
+	return cmd
 }
 
 func workspaceDiscoverCmd(terminal *string) *cobra.Command {

@@ -405,6 +405,40 @@ url = "github:owner/foo"
 	}
 }
 
+// TestUpdate_InPlaceDispatch: with InPlace=true, Update runs the legacy
+// direct-on-main flow (dirty check → no upstream → update-locks → rev capture)
+// and never creates a worktree.
+func TestUpdate_InPlaceDispatch(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+	foo := filepath.Join(root, "foo")
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc0000000000000000000000000000000000000\n")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true, ULLibDir: "/nix/store/x/lib/scripts"}); err != nil {
+		t.Fatalf("Update --in-place: %v", err)
+	}
+	for _, c := range f.Calls() {
+		if len(c.Args) >= 2 && c.Args[0] == "-C" && c.Name == "git" && len(c.Args) > 2 && c.Args[2] == "worktree" {
+			t.Fatalf("in-place must not call git worktree; got %v", c.Args)
+		}
+	}
+}
+
 func TestUpdate_RespectsCancelledContext(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `

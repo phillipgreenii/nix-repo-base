@@ -23,6 +23,10 @@ type UpdateOptions struct {
 	// Recreate forces full lock recreation (currently treated as an
 	// indicator for Upgrade; see upgrade.go).
 	Recreate bool
+	// InPlace selects the legacy direct-on-main flow (pull → update-locks →
+	// push in each primary checkout). When false (the default), Update isolates
+	// each repo in an ephemeral worktree and fast-forwards back to main.
+	InPlace bool
 	// ULLibDir, when set, is exported as UL_LIB_DIR to each update-locks.sh so
 	// it skips its own determine-ul-lib-dir resolution. Resolve it once per run
 	// via ResolveULLibDir. Empty leaves each script to resolve for itself.
@@ -58,7 +62,23 @@ func (ws *Workspace) ulSubprocessEnv(ulLibDir string) map[string]string {
 	return env
 }
 
-// Update pulls each workspace repo, runs its ./update-locks.sh, and pushes.
+// Update runs the workspace update. By default each repo is updated in an
+// ephemeral git worktree and fast-forwarded back onto the primary main
+// (updateViaWorktree); opts.InPlace selects the legacy direct-on-main flow
+// (updateInPlace). See ADR 0009.
+func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptions) error {
+	if opts.InPlace {
+		return ws.updateInPlace(ctx, out, opts)
+	}
+	return ws.updateViaWorktree(ctx, out, opts)
+}
+
+// TEMP stub — replaced by update_worktree.go in Task 4.
+func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts UpdateOptions) error {
+	return ws.updateInPlace(ctx, out, opts)
+}
+
+// updateInPlace pulls each workspace repo, runs its ./update-locks.sh, and pushes.
 // Repos without an upstream skip pull/push but still attempt update-locks.
 // Repos with a dirty working tree are skipped (non-fatal).
 //
@@ -78,8 +98,8 @@ func (ws *Workspace) ulSubprocessEnv(ulLibDir string) map[string]string {
 //
 // Repos are processed in topological order (dependencies before consumers) so
 // that downstream repos re-lock against already-updated upstreams.
-// Update is a required-terminal command: it errors when no terminal is configured.
-func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptions) error {
+// updateInPlace is a required-terminal command: it errors when no terminal is configured.
+func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts UpdateOptions) error {
 	if _, err := ws.requireTerminal(ctx, opts.Terminal); err != nil {
 		return err
 	}
