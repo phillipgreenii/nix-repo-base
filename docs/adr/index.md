@@ -10,8 +10,9 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0003](0003-claude-marketplace-convention.md)           | Claude Code marketplace convention for `nix-*` repos                    | Accepted (amended by 0010)                     |
 | [0004](0004-pn-workspace-init-scope.md)                 | `pn-workspace-init` scope: clone, lock, reconcile                       | Accepted                                       |
 | [0005](0005-mkGoBuilders-factory.md)                    | `mkGoBuilders` factory for Go applications                              | Accepted (version contract superseded by 0006) |
-| [0006](0006-source-content-digest-versioning.md)        | Per-source content-digest versioning for custom artifacts               | Accepted                                       |
+| [0006](0006-source-content-digest-versioning.md)        | Per-source content-digest versioning for custom artifacts               | Accepted (amended by 0011)                     |
 | [0007](0007-local-replace-go-modules-overlay.md)        | Keep first-party local-replace Go modules "live" via `mkGoApp` overlay  | Superseded by 0008                             |
 | [0008](0008-adopt-gomod2nix-for-go-packages.md)         | Adopt `gomod2nix` for Go packages (`mkGoApp`/`mkGoBinary`)              | Accepted                                       |
 | [0009](0009-pn-workspace-update-worktree-isolation.md)  | `pn workspace update` isolates per-repo work in ephemeral git worktrees | Proposed                                       |
 | [0010](0010-claude-marketplace-builder-and-identity.md) | `mkClaudeMarketplace` builder + local-marketplace identity convention   | Accepted                                       |
+| [0011](0011-source-digest-in-derivation-version.md)     | Per-source digest in the derivation `version` for bash & python         | Accepted                                       |

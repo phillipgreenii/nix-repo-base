@@ -1,0 +1,4 @@
+[project]
+name = "demo-py"
+version = "0.0.0"
+description = "demo python package for the per-source-digest version test"

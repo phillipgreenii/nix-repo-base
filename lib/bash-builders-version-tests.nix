@@ -22,8 +22,16 @@ let
         src = ./fixtures/demo;
         description = "demo script for rev-independence test";
       };
-  drvA = (mk "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").script.drvPath;
-  drvB = (mk "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").script.drvPath;
+  scriptA = (mk "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").script;
+  scriptB = (mk "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").script;
+  drvA = scriptA.drvPath;
+  drvB = scriptB.drvPath;
+
+  # The nvd-visible derivation `version` must now carry the per-source digest
+  # (ADR 0011): not the bare "0.0.0" placeholder, contains a "-" separator, and
+  # is rev-independent (identical across two self.rev values).
+  versionA = scriptA.version;
+  versionB = scriptB.version;
 
   # Library-sensitivity test: changing a sourced library's content must change
   # the script's drvPath (srcDigest covers library store paths transitively).
@@ -53,6 +61,8 @@ pkgs.runCommand "bash-version-rev-independent"
       drvB
       drvLib1
       drvLib2
+      versionA
+      versionB
       ;
   }
   ''
@@ -65,6 +75,20 @@ pkgs.runCommand "bash-version-rev-independent"
       echo "FAIL: library content does not affect drvPath"; echo "  $drvLib1"; exit 1
     fi
     echo "OK: script drvPath changes when library content changes"
+
+    if [ "$versionA" = "0.0.0" ]; then
+      echo "FAIL: script version is the bare placeholder, missing the digest:"; echo "  $versionA"; exit 1
+    fi
+    case "$versionA" in
+      *-*) ;;
+      *) echo "FAIL: script version does not contain a '-' digest separator:"; echo "  $versionA"; exit 1 ;;
+    esac
+    echo "OK: script version carries the per-source digest ($versionA)"
+
+    if [ "$versionA" != "$versionB" ]; then
+      echo "FAIL: script version depends on repo rev:"; echo "  $versionA"; echo "  $versionB"; exit 1
+    fi
+    echo "OK: script version is rev-independent"
 
     touch $out
   ''

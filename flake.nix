@@ -150,6 +150,10 @@
             # must produce the same script drvPath. See ADR 0006.
             bash-version-rev-independent = import ./lib/bash-builders-version-tests.nix { inherit pkgs; };
 
+            # Per-source digest in the Python derivation version (ADR 0011): the
+            # mkPythonBuilders factory's mkPythonPackage must stamp 0.0.0-<digest>.
+            python-version-digest = import ./lib/python-package-version-tests.nix { inherit pkgs; };
+
             # Go test suite for pn. buildGoModule runs `go test ./...` during
             # the check phase, so building the package is equivalent to running
             # the tests. Exposing it as a check ensures `nix flake check`
@@ -249,6 +253,10 @@
               mkManPage
               mkClaudeMarketplaceBuilders
               ;
+          }
+          # Python package builder factory (per-source digest versioning; ADR 0011)
+          // {
+            mkPythonBuilders = import ./lib/python-package.nix;
           }
           # Module generation helpers
           // {

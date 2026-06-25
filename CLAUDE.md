@@ -39,4 +39,6 @@ family.
 
 Custom artifacts version from a per-source content digest, never the repo git rev (ADR
 [0006](docs/adr/0006-source-content-digest-versioning.md)). Do not thread a repo `gitHash` into a
-package build.
+package build. The per-source digest now ALSO appears in the derivation `version` for bash and
+python builders (matching Go), so it surfaces in `nvd` / the darwin "Package changes" report
+(ADR [0011](docs/adr/0011-source-digest-in-derivation-version.md)).

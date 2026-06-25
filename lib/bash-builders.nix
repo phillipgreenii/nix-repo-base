@@ -92,7 +92,7 @@ let
   #   testSupport    — optional path to a bats test support directory
   #   testDeps       — additional packages needed at test time
   #
-  # Returns: { script, manPage, tldr, completion, check, packages, internalPackages }
+  # Returns: { script, tldr, completion, check, packages, internalPackages }
   mkBashScript =
     {
       name,
@@ -105,6 +105,8 @@ let
       exportedConfig ? { },
       testSupport ? null,
       testDeps ? [ ],
+      baseVersion ? "0.0.0",
+      manPage ? true,
     }:
     let
       # Check for optional files
@@ -159,7 +161,7 @@ let
       # The main script derivation
       script = pkgs.stdenv.mkDerivation {
         pname = name;
-        version = "0.0.0"; # placeholder, replaced at build time
+        version = "${baseVersion}-${srcDigest}"; # nvd-visible per-source digest (ADR 0011); runtime --version adds the date in buildPhase
 
         inherit src;
 
@@ -168,6 +170,8 @@ let
         nativeBuildInputs = [
           pkgs.makeWrapper
           pkgs.shellcheck
+          pkgs.help2man
+          pkgs.libfaketime
         ];
 
         # runtimeDeps are NOT in buildInputs — they're purely runtime, added to
@@ -232,6 +236,25 @@ let
             cp ${src}/${name}.md $out/share/tldr/pages.common/${name}.md
           ''}
 
+          ${lib.optionalString manPage ''
+            # Man page via help2man, folded into the script derivation so it inherits the
+            # script's version (ADR 0011). faketime fixes the date for reproducibility.
+            # Best-effort (mirrors mkGoApp's _try): --no-discard-stderr handles a --help
+            # that writes to stderr, and a script help2man cannot parse is skipped with a
+            # warning rather than failing the whole build.
+            mkdir -p $out/share/man/man1
+            if faketime '2020-01-01 00:00:00' \
+                 help2man --no-info --no-discard-stderr \
+                   --name="${description}" \
+                   --output=$out/share/man/man1/${name}.1 \
+                   $out/bin/${name}; then
+              :
+            else
+              echo "mkBashScript: help2man could not generate a man page for ${name} (no parseable --help); skipping" >&2
+              rm -f $out/share/man/man1/${name}.1
+            fi
+          ''}
+
           runHook postInstall
         '';
 
@@ -241,23 +264,6 @@ let
           mainProgram = name;
         };
       };
-
-      # Man page via help2man
-      manPage =
-        pkgs.runCommand "${name}-man"
-          {
-            nativeBuildInputs = [
-              pkgs.help2man
-              pkgs.libfaketime
-            ];
-          }
-          ''
-            mkdir -p $out/share/man/man1
-            faketime '2020-01-01 00:00:00' \
-              help2man --no-info \
-                --name="${description}" \
-                ${script}/bin/${name} > $out/share/man/man1/${name}.1
-          '';
 
       # tldr attrs (if .md exists)
       tldr =
@@ -310,23 +316,12 @@ let
     {
       inherit
         script
-        manPage
         tldr
         completion
         check
         ;
-      packages =
-        if public then
-          [
-            script
-            manPage
-          ]
-        else
-          [ ];
-      internalPackages = [
-        script
-        manPage
-      ];
+      packages = if public then [ script ] else [ ];
+      internalPackages = [ script ];
     };
   # mkBashModule — aggregate mkBashScript and mkBashLibrary outputs into a single record
   #

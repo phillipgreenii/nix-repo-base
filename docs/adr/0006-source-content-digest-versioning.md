@@ -1,6 +1,6 @@
 # 0006 — Per-source content-digest versioning for custom artifacts
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-0011](0011-source-digest-in-derivation-version.md))
 **Date:** 2026-06-11
 **Deciders:** phillipg (with Claude)
 **Tracking:** pg2-xx4g
