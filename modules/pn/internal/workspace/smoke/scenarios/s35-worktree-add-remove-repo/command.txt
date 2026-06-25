@@ -1,0 +1,7 @@
+# Bootstrap, then create a subset set {producer, consumer}.
+# The add-repo (extra) + remove-repo (extra) round trip and P1 assertions are
+# in assertS35WorktreeAddRemoveRepo.
+workspace init
+workspace clone
+workspace lock
+workspace worktree add feature-x --repos producer,consumer

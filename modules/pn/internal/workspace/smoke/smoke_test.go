@@ -363,6 +363,24 @@ func TestSmoke_S33_WorktreeUpdate(t *testing.T) {
 	runScenario(t, "s33-worktree-update")
 }
 
+// TestSmoke_S34_WorktreeSubset: three-repo workspace (producer, consumer, extra;
+// consumer depends on producer). pn workspace worktree add feature-x
+// --repos producer,consumer creates a SUBSET set containing only producer +
+// consumer; extra has no worktree, and the set's own pn-workspace.toml lists
+// only the two members (canonical config unchanged).
+func TestSmoke_S34_WorktreeSubset(t *testing.T) {
+	runScenario(t, "s34-worktree-subset")
+}
+
+// TestSmoke_S35_WorktreeAddRemoveRepo: three-repo workspace; after creating a
+// subset set {producer, consumer}, the assertion hook adds `extra` to the live
+// set (worktree + membership appear) and removes it again (worktree gone, membership
+// shrinks, branch left in canonical extra), asserting the canonical clones stay
+// unchanged throughout (P1).
+func TestSmoke_S35_WorktreeAddRemoveRepo(t *testing.T) {
+	runScenario(t, "s35-worktree-add-remove-repo")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -551,6 +569,10 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS32EventsJSONL(t, wsRoot, env)
 	case "s33-worktree-update":
 		assertS33WorktreeUpdate(t, wsRoot)
+	case "s34-worktree-subset":
+		assertS34WorktreeSubset(t, wsRoot)
+	case "s35-worktree-add-remove-repo":
+		assertS35WorktreeAddRemoveRepo(t, wsRoot, pnBin, env)
 	}
 }
 

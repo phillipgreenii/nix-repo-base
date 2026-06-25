@@ -768,3 +768,138 @@ func assertS33WorktreeUpdate(t *testing.T, wsRoot string) {
 		t.Errorf("S33: .pn-update worktree left behind: %v", entries)
 	}
 }
+
+// --- S34 extra: subset set contains only the chosen repos ---
+
+func assertS34WorktreeSubset(t *testing.T, wsRoot string) {
+	t.Helper()
+	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+
+	// 1. Set dir must exist.
+	if _, err := os.Stat(setDir); os.IsNotExist(err) {
+		t.Errorf("S34: worktree set dir %s does not exist", setDir)
+		return
+	}
+
+	// 2. producer + consumer worktrees must exist and be on feature-x.
+	for _, repo := range []string{"producer", "consumer"} {
+		repoDir := filepath.Join(setDir, repo)
+		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+			t.Errorf("S34: member repo dir %s does not exist", repoDir)
+			continue
+		}
+		cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+		cmd.Env = os.Environ()
+		out, err := cmd.Output()
+		if err != nil {
+			t.Errorf("S34: git rev-parse HEAD in %s: %v", repoDir, err)
+			continue
+		}
+		if branch := strings.TrimSpace(string(out)); branch != "feature-x" {
+			t.Errorf("S34: %s in set is on branch %q, want feature-x", repo, branch)
+		}
+	}
+
+	// 3. extra must NOT have a worktree in the set.
+	if _, err := os.Stat(filepath.Join(setDir, "extra")); err == nil {
+		t.Errorf("S34: excluded repo 'extra' should not have a worktree in the subset set")
+	}
+
+	// 4. The set's pn-workspace.toml lists ONLY producer + consumer (not extra).
+	cfgBytes, err := os.ReadFile(filepath.Join(setDir, "pn-workspace.toml"))
+	if err != nil {
+		t.Errorf("S34: read set pn-workspace.toml: %v", err)
+		return
+	}
+	cfg := string(cfgBytes)
+	if !strings.Contains(cfg, "[repos.producer]") || !strings.Contains(cfg, "[repos.consumer]") {
+		t.Errorf("S34: set config must list producer + consumer; got:\n%s", cfg)
+	}
+	if strings.Contains(cfg, "[repos.extra]") {
+		t.Errorf("S34: set config must NOT list excluded repo extra; got:\n%s", cfg)
+	}
+
+	// 5. Canonical pn-workspace.toml must be unchanged (still lists all three).
+	canonBytes, err := os.ReadFile(filepath.Join(wsRoot, "pn-workspace.toml"))
+	if err != nil {
+		t.Errorf("S34: read canonical pn-workspace.toml: %v", err)
+		return
+	}
+	if !strings.Contains(string(canonBytes), "[repos.extra]") {
+		t.Errorf("S34: canonical config must be unchanged and still list extra; got:\n%s", string(canonBytes))
+	}
+}
+
+// --- S35 extra: add-repo then remove-repo round trip + P1 unchanged ---
+
+func assertS35WorktreeAddRemoveRepo(t *testing.T, wsRoot, pnBin string, env []string) {
+	t.Helper()
+	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+
+	// The subset set {producer, consumer} was created by command.txt.
+	if _, err := os.Stat(setDir); os.IsNotExist(err) {
+		t.Fatalf("S35: subset set dir %s does not exist (worktree add may have failed)", setDir)
+	}
+
+	// Snapshot the canonical extra repo (P1: must be unchanged at the end).
+	extraCanon := filepath.Join(wsRoot, "extra")
+	headBefore := gitHeadSHA(t, extraCanon)
+	statusBefore := gitStatusPorcelain(t, extraCanon)
+
+	// Step 1: add-repo extra to the live set.
+	r := runCommand(t, pnBin, wsRoot, []string{"workspace", "worktree", "add-repo", "feature-x", "extra"}, env)
+	if r.ExitCode != 0 {
+		t.Fatalf("S35: add-repo failed (exit %d)\nstdout: %s\nstderr: %s", r.ExitCode, r.Stdout, r.Stderr)
+	}
+	// extra worktree must now exist and be on feature-x.
+	extraSet := filepath.Join(setDir, "extra")
+	if _, err := os.Stat(extraSet); os.IsNotExist(err) {
+		t.Errorf("S35: after add-repo, extra worktree %s does not exist", extraSet)
+	}
+	// Set membership must now include extra.
+	if cfg := readFileString(t, filepath.Join(setDir, "pn-workspace.toml")); !strings.Contains(cfg, "[repos.extra]") {
+		t.Errorf("S35: after add-repo, set config must list extra; got:\n%s", cfg)
+	}
+
+	// Step 2: remove-repo extra from the live set.
+	r2 := runCommand(t, pnBin, wsRoot, []string{"workspace", "worktree", "remove-repo", "feature-x", "extra"}, env)
+	if r2.ExitCode != 0 {
+		t.Fatalf("S35: remove-repo failed (exit %d)\nstdout: %s\nstderr: %s", r2.ExitCode, r2.Stdout, r2.Stderr)
+	}
+	// extra worktree must be gone.
+	if _, err := os.Stat(extraSet); err == nil {
+		t.Errorf("S35: after remove-repo, extra worktree %s still exists", extraSet)
+	}
+	// Set membership must no longer include extra.
+	if cfg := readFileString(t, filepath.Join(setDir, "pn-workspace.toml")); strings.Contains(cfg, "[repos.extra]") {
+		t.Errorf("S35: after remove-repo, set config must NOT list extra; got:\n%s", cfg)
+	}
+
+	// remove-repo must NOT delete the feature-x branch in canonical extra.
+	cmd := exec.Command("git", "-C", extraCanon, "branch", "--list", "feature-x")
+	cmd.Env = os.Environ()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Errorf("S35: git branch --list feature-x in %s: %v", extraCanon, err)
+	} else if strings.TrimSpace(string(out)) == "" {
+		t.Errorf("S35: remove-repo deleted feature-x from canonical extra (must leave branch behind)")
+	}
+
+	// P1: the canonical extra checkout's HEAD + working state are unchanged.
+	if h := gitHeadSHA(t, extraCanon); h != headBefore {
+		t.Errorf("S35: canonical extra HEAD changed: %q -> %q (P1 violated)", headBefore, h)
+	}
+	if s := gitStatusPorcelain(t, extraCanon); s != statusBefore {
+		t.Errorf("S35: canonical extra working state changed (P1 violated): %q -> %q", statusBefore, s)
+	}
+}
+
+// readFileString reads a file and returns its contents as a string (test helper).
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
