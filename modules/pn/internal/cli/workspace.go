@@ -455,6 +455,8 @@ func workspaceWorktreeCmd() *cobra.Command {
 		Short: "Manage coordinated git worktree sets",
 	}
 	wt.AddCommand(workspaceWorktreeAddCmd())
+	wt.AddCommand(workspaceWorktreeAddRepoCmd())
+	wt.AddCommand(workspaceWorktreeRemoveRepoCmd())
 	wt.AddCommand(workspaceWorktreeListCmd())
 	wt.AddCommand(workspaceWorktreeRemoveCmd())
 	wt.AddCommand(workspaceWorktreePruneCmd())
@@ -462,10 +464,18 @@ func workspaceWorktreeCmd() *cobra.Command {
 }
 
 func workspaceWorktreeAddCmd() *cobra.Command {
-	return &cobra.Command{
+	var repos []string
+	cmd := &cobra.Command{
 		Use:   "add <branch> [<commit-ish>]",
-		Short: "Create a coordinated worktree set on <branch> across all workspace repos",
-		Args:  cobra.RangeArgs(1, 2),
+		Short: "Create a coordinated worktree set on <branch> (all repos, or a subset via --repos)",
+		Long: `Create a coordinated worktree set on <branch>.
+
+Without --repos the set contains every repo in pn-workspace.toml. With --repos
+the set contains only the named subset; the set's own pn-workspace.toml records
+that membership (the canonical config is untouched). A workspace dependency that
+is excluded from the subset resolves against its locked flake input rather than a
+set-internal override, and a notice names each such consumer->dependency edge.`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -474,6 +484,7 @@ func workspaceWorktreeAddCmd() *cobra.Command {
 			defer w.Close()
 			opts := workspace.WorktreeAddOptions{
 				Branch: args[0],
+				Repos:  repos,
 			}
 			if len(args) == 2 {
 				opts.CommitIsh = args[1]
@@ -481,6 +492,51 @@ func workspaceWorktreeAddCmd() *cobra.Command {
 			return w.WorktreeAdd(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), opts)
 		},
 	}
+	cmd.Flags().StringSliceVar(&repos, "repos", nil, "subset of repo keys to include (comma-separated or repeated); default: all repos")
+	return cmd
+}
+
+func workspaceWorktreeAddRepoCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "add-repo <branch> <repo>",
+		Short: "Add a single repo to an existing coordinated worktree set",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			return w.WorktreeAddRepo(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workspace.WorktreeAddRepoOptions{
+				Branch: args[0],
+				Repo:   args[1],
+			})
+		},
+	}
+}
+
+func workspaceWorktreeRemoveRepoCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:     "remove-repo <branch> <repo>",
+		Aliases: []string{"rm-repo"},
+		Short:   "Remove a single repo from an existing coordinated worktree set (does NOT delete the branch)",
+		Args:    cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			return w.WorktreeRemoveRepo(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workspace.WorktreeRemoveRepoOptions{
+				Branch: args[0],
+				Repo:   args[1],
+				Force:  force,
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "force removal even if the worktree is dirty or locked")
+	return cmd
 }
 
 func workspaceWorktreeListCmd() *cobra.Command {

@@ -950,6 +950,92 @@ func TestWorkspaceWorktreePrune_OpenFailurePropagates(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// worktree add --repos (subset)
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceWorktreeAdd_ReposFlagAccepted(t *testing.T) {
+	// --repos must be accepted without "unknown flag" error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "add", "--repos", "foo,bar", "my-branch"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("worktree add --repos: flag not wired: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// worktree add-repo
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceWorktreeAddRepo_ArgsRequired(t *testing.T) {
+	// add-repo requires exactly 2 positional args (branch + repo).
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "add-repo", "my-branch"})
+	if err == nil {
+		t.Error("worktree add-repo with 1 arg: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreeAddRepo_TooManyArgsRejected(t *testing.T) {
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "add-repo", "my-branch", "repo", "extra"})
+	if err == nil {
+		t.Error("worktree add-repo with 3 args: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreeAddRepo_OpenFailurePropagates(t *testing.T) {
+	orig := openWorkspace
+	openWorkspace = func() (*workspace.Workspace, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { openWorkspace = orig })
+
+	_, _, err := runCobraCmd(t, []string{"worktree", "add-repo", "my-branch", "repo"})
+	if err == nil {
+		t.Error("worktree add-repo: expected error when workspace open fails, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// worktree remove-repo
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceWorktreeRemoveRepo_ArgsRequired(t *testing.T) {
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "remove-repo", "my-branch"})
+	if err == nil {
+		t.Error("worktree remove-repo with 1 arg: expected cobra arg error, got nil")
+	}
+}
+
+func TestWorkspaceWorktreeRemoveRepo_ForceFlagAccepted(t *testing.T) {
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "remove-repo", "--force", "my-branch", "repo"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("worktree remove-repo --force: flag not wired: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreeRemoveRepo_AliasRmRepo(t *testing.T) {
+	// rm-repo is an alias for remove-repo; must be accepted (will fail on missing
+	// set, but not as an unknown command).
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"worktree", "rm-repo", "my-branch", "repo"})
+	if err != nil && strings.Contains(err.Error(), "unknown command") {
+		t.Errorf("worktree rm-repo alias not wired: %v", err)
+	}
+}
+
+func TestWorkspaceWorktreeRemoveRepo_OpenFailurePropagates(t *testing.T) {
+	orig := openWorkspace
+	openWorkspace = func() (*workspace.Workspace, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { openWorkspace = orig })
+
+	_, _, err := runCobraCmd(t, []string{"worktree", "remove-repo", "my-branch", "repo"})
+	if err == nil {
+		t.Error("worktree remove-repo: expected error when workspace open fails, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Persistent --terminal flag wiring: verify it is truly persistent
 // (inherited by every subcommand via the parent ws command)
 // ---------------------------------------------------------------------------

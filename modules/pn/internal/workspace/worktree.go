@@ -26,6 +26,24 @@ type WorktreeAddOptions struct {
 	Repos []string
 }
 
+// WorktreeAddRepoOptions configures WorktreeAddRepo.
+type WorktreeAddRepoOptions struct {
+	// Branch names the existing set (the set lives at <worktrees_dir>/<branch>).
+	Branch string
+	// Repo is the workspace repo key to add to the set.
+	Repo string
+}
+
+// WorktreeRemoveRepoOptions configures WorktreeRemoveRepo.
+type WorktreeRemoveRepoOptions struct {
+	// Branch names the existing set.
+	Branch string
+	// Repo is the workspace repo key to remove from the set.
+	Repo string
+	// Force passes --force to git worktree remove (dirty/locked worktrees).
+	Force bool
+}
+
 // WorktreeListOptions configures WorktreeList.
 type WorktreeListOptions struct{}
 
@@ -222,6 +240,143 @@ func (w *Workspace) memberRepos(ctx context.Context, requested []string) ([]stri
 		}
 	}
 	return out, nil
+}
+
+// WorktreeAddRepo adds a single workspace repo to an existing set. It mirrors
+// `git worktree add`: pre-flights (set exists, repo is a known workspace repo
+// in the canonical root, repo is not already a member, branch not checked out
+// elsewhere), runs `git worktree add` for the one repo on the set's branch, then
+// rewrites the set's filtered config/lock/revs to include the new member.
+func (w *Workspace) WorktreeAddRepo(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreeAddRepoOptions) error {
+	branch := opts.Branch
+	repo := opts.Repo
+	setDir := filepath.Join(w.WorktreesDir(), branch)
+
+	// Pre-flight: set must exist.
+	if !dirExists(setDir) {
+		return fmt.Errorf("worktree add-repo: set directory does not exist: %s (create it with `pn workspace worktree add %s`)", setDir, branch)
+	}
+	// Pre-flight: repo must be a declared workspace repo.
+	if _, ok := w.config.Repos[repo]; !ok {
+		return fmt.Errorf("worktree add-repo: unknown repo %q (not declared in %s)", repo, ConfigFileName)
+	}
+	// Pre-flight: repo must exist on disk in the canonical root.
+	canonical := filepath.Join(w.Root(), repo)
+	if !isGitRepo(canonical) {
+		return fmt.Errorf("worktree add-repo: repo %q not found at %s (run `pn workspace clone` first)", repo, canonical)
+	}
+	// Pre-flight: repo must not already be a member of the set.
+	members, err := w.readSetMembers(setDir)
+	if err != nil {
+		return fmt.Errorf("worktree add-repo: %w", err)
+	}
+	if members[repo] {
+		return fmt.Errorf("worktree add-repo: repo %q is already a member of set %q", repo, branch)
+	}
+	// Pre-flight: branch must not be checked out in another worktree of this repo
+	// (the set's own existing worktrees do not include this repo yet).
+	if err := w.assertBranchNotCheckedOut(ctx, canonical, repo, branch); err != nil {
+		return err
+	}
+
+	// Add the worktree for the one repo on the set's branch.
+	if err := w.gitWorktreeAddOne(ctx, out, setDir, repo, branch, ""); err != nil {
+		return err
+	}
+
+	// Recompute membership and rewrite the set's filtered config/lock/revs.
+	members[repo] = true
+	if err := w.rewriteSetMembership(errOut, setDir, members); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WorktreeRemoveRepo removes a single workspace repo from an existing set. It
+// mirrors `git worktree remove`: pre-flights (set exists, repo is a member,
+// it is not the last member), runs `git worktree remove` (refusing dirty/locked
+// unless Force), then rewrites the set's filtered config/lock/revs to drop the
+// member. Does NOT delete the branch.
+func (w *Workspace) WorktreeRemoveRepo(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreeRemoveRepoOptions) error {
+	branch := opts.Branch
+	repo := opts.Repo
+	setDir := filepath.Join(w.WorktreesDir(), branch)
+
+	// Pre-flight: set must exist.
+	if !dirExists(setDir) {
+		return fmt.Errorf("worktree remove-repo: set directory does not exist: %s", setDir)
+	}
+	// Pre-flight: repo must be a member.
+	members, err := w.readSetMembers(setDir)
+	if err != nil {
+		return fmt.Errorf("worktree remove-repo: %w", err)
+	}
+	if !members[repo] {
+		return fmt.Errorf("worktree remove-repo: repo %q is not a member of set %q", repo, branch)
+	}
+	// Pre-flight: refuse removing the last repo (would leave an empty,
+	// inconsistent set — the user should `worktree remove %s` instead).
+	if len(members) == 1 {
+		return fmt.Errorf("worktree remove-repo: refusing to remove the last repo %q from set %q (use `pn workspace worktree remove %s` to delete the whole set)", repo, branch, branch)
+	}
+
+	// Remove the worktree for the one repo (mirror force semantics).
+	canonical := filepath.Join(w.Root(), repo)
+	setRepo := filepath.Join(setDir, repo)
+	if dirExists(setRepo) {
+		fmt.Fprintf(out, "  --== worktree remove %s ==--  \n", repo)
+		gitArgs := []string{"-C", canonical, "worktree", "remove", setRepo}
+		if opts.Force {
+			gitArgs = append(gitArgs, "--force")
+		}
+		if _, err := w.runner.Run(ctx, "git", gitArgs, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+			return fmt.Errorf("worktree remove-repo: git worktree remove in repo %q: %w", repo, err)
+		}
+	}
+
+	// Recompute membership and rewrite the set's filtered config/lock/revs.
+	delete(members, repo)
+	if err := w.rewriteSetMembership(errOut, setDir, members); err != nil {
+		return err
+	}
+	return nil
+}
+
+// readSetMembers reads the member repo keys from a set's pn-workspace.toml.
+func (w *Workspace) readSetMembers(setDir string) (map[string]bool, error) {
+	data, err := os.ReadFile(filepath.Join(setDir, ConfigFileName))
+	if err != nil {
+		return nil, fmt.Errorf("read set %s: %w", ConfigFileName, err)
+	}
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse set %s: %w", ConfigFileName, err)
+	}
+	members := make(map[string]bool, len(cfg.Repos))
+	for k := range cfg.Repos {
+		members[k] = true
+	}
+	return members, nil
+}
+
+// rewriteSetMembership rewrites the set's pn-workspace.toml / .lock.json /
+// .revs.json filtered to memberSet, derived from the CANONICAL config/lock/revs
+// (w is rooted at canonical). Emits the excluded-dep notice to errOut. Used by
+// add-repo / remove-repo, which always produce a subset of the canonical config.
+func (w *Workspace) rewriteSetMembership(errOut io.Writer, setDir string, memberSet map[string]bool) error {
+	if err := writeConfigTOMLTo(filepath.Join(setDir, ConfigFileName), filterConfig(w.config, memberSet)); err != nil {
+		return fmt.Errorf("write set %s: %w", ConfigFileName, err)
+	}
+	if err := WriteLock(filepath.Join(setDir, LockFileName), filterLock(w.lock, memberSet)); err != nil {
+		return fmt.Errorf("write set %s: %w", LockFileName, err)
+	}
+	if fileExists(filepath.Join(setDir, RevLockFileName)) || fileExists(filepath.Join(w.Root(), RevLockFileName)) {
+		if err := WriteRevLock(filepath.Join(setDir, RevLockFileName), filterRevLock(w.revLock, memberSet)); err != nil {
+			return fmt.Errorf("write set %s: %w", RevLockFileName, err)
+		}
+	}
+	w.noticeExcludedDeps(errOut, memberSet)
+	return nil
 }
 
 // WorktreeList lists the worktree sets under w.WorktreesDir(), one per line.
