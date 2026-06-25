@@ -39,14 +39,30 @@ the manifest or invent a `-<digest>` fallback.
    into agent context, and `plugin.json` `type`/`content` fields are silently
    ignored (`claude plugin validate` flags them as Unknown). The marketplace still
    registers and enables the plugin, but the `CLAUDE.md`/`type: rules` convention
-   from ADR-0003 does nothing. To deliver rules/context, ship a skill at
-   `<plugin>/skills/<name>/SKILL.md` with `name` + `description` frontmatter (skills
-   load on-invoke by their `description`, so write a strong triggering description);
-   for always-on context that no skill description fits, put it in a project/user
-   `CLAUDE.md` instead of a plugin. Proof: `claude plugin details <plugin>@<mkt>`
-   shows `Skills (1)` and a nonzero always-on token cost for a skill-shipping plugin
-   vs `Skills (0)` / ~0 tokens for a root-`CLAUDE.md` plugin. `pn-workspace-rules`
-   ships `pn-workspace-rules/skills/pn-workspace-rules/SKILL.md`.
+   from ADR-0003 does nothing.
+
+   **Pick the delivery vehicle by when the content must apply:**
+   - **Always-on rules → a SessionStart HOOK plugin.** Ship
+     `<plugin>/hooks/hooks.json` declaring a `SessionStart` hook whose command
+     prints the rules to stdout as `additionalContext`
+     (`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`,
+     exit 0). The hook fires on **every** session — interactive and headless
+     `claude -p` alike — so the rules are unconditionally in context. This is the
+     only plugin vehicle that is genuinely always-on: a skill body is on-invoke,
+     and a plugin-root `CLAUDE.md` is inert. Reference the hook command by **bare
+     name** (resolved on `PATH`), not an absolute store path; the plugin's
+     home-manager module installs that binary on `PATH`. Example: agent-support's
+     `agent-rules` plugin (`agent-rules/hooks/hooks.json` → `agent-rules-session-start`).
+   - **Context-specific / on-invoke rules → a SKILL.** Ship
+     `<plugin>/skills/<name>/SKILL.md` with `name` + `description` frontmatter; the
+     body loads only when its `description` triggers, so write a strong triggering
+     description. This is correct when the rules apply to a specific context rather
+     than every turn — e.g. `pn-workspace-rules` ships
+     `pn-workspace-rules/skills/pn-workspace-rules/SKILL.md`.
+
+   Proof: `claude plugin details <plugin>@<mkt>` shows `Skills (1)` and a nonzero
+   always-on token cost for a skill-shipping plugin vs `Skills (0)` / ~0 tokens for
+   a root-`CLAUDE.md` plugin.
 
 2. **Build + expose it** in `perSystem.packages`:
 
