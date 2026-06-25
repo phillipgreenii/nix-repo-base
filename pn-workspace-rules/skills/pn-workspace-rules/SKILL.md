@@ -27,6 +27,26 @@ For concrete end-to-end user journeys (the commands a user runs, expected succes
 
 **Never modify `flake.nix` to point input URLs at local paths.** `pn workspace build/apply/flake-check` inject `--override-input <alias> git+file://<local-path>` at build/eval time — the lock file and flake.nix stay clean. Local-path URLs in `flake.nix` break every other consumer (CI, teammates, future you on another machine).
 
+## Expected (Acceptable) Warnings
+
+`pn workspace build` and `pn workspace apply` print Nix's `warning: not writing modified lock file` on the **success path**. This is **benign and expected** — do not treat it as an error and do not re-investigate it.
+
+**Why it appears:** the warning comes from Nix, not from `pn`. Because every build/apply injects `--override-input <alias> git+file://<local-path>` for each workspace sibling (see Cardinal Rule above), the lock Nix evaluates differs from the committed `flake.lock`. Nix detects the divergence and, since flake inputs were overridden on the command line, intentionally does **not** persist the modified lock — so it warns instead.
+
+**One bullet per overridden input.** Nix emits a separate `not writing modified lock file` line for each `--override-input`. An input STILL appears even when its local rev matches what `flake.lock` records: the redirect from a `github:` (or other) URL to `git+file://` is itself counted as a change, and the override emitter performs no rev-equality check (`helpers.go:55-91` adds one override per consumer edge unconditionally).
+
+**Why it MUST NOT be suppressed in code:**
+
+- No Nix flag silences just this warning. `--no-warn-dirty` is unrelated (it targets dirty-git-tree warnings, not lock divergence).
+- `pn` streams Nix's stderr verbatim — it does not parse or filter it (`build.go:56`, `apply.go:81` pass the live sink straight through to `exec.go:79-81`'s `io.MultiWriter`, which copies stderr unmodified).
+- Filtering this one line would be brittle and could mask a **real** lock-divergence warning that signals an actual problem.
+
+**Policy:**
+
+- You MUST treat `not writing modified lock file` as a normal, expected line on a successful `pn workspace build`/`apply`.
+- You MUST NOT "fix" it by writing local paths into `flake.lock` (the lock equivalent of the Cardinal Rule violation). Doing so corrupts the lock for every other consumer.
+- You SHOULD NOT add stderr filtering to `pn` to hide it, for the reasons above.
+
 ## Completion Gate
 
 After completing any task in a project that participates in a `pn-workspace.toml`, you MUST run `pn workspace build` from the workspace root before declaring the task complete. Cross-project changes (a new flake output consumed by another workspace repo, for instance) only show up here.

@@ -121,7 +121,10 @@ compiles cross-repo.
 **Outcomes:**
 
 - Success: the terminal's nix build succeeds with `--override-input`
-  args injected for workspace producers; exits 0.
+  args injected for workspace producers; exits 0. Nix prints
+  `warning: not writing modified lock file` (one line per overridden
+  input) on this success path — it is benign and expected, not an
+  error. See **Expected (Acceptable) Warnings** in `SKILL.md`.
 - Error: nix build failure; exits non-zero with build output on stderr.
 
 Note: `pn workspace build` does NOT run `nix fmt`. To format all repos
@@ -144,7 +147,10 @@ that (one marker, not two).
 
 **Outcomes:** same as `build` but with the configured `apply` command
 (typically `nixos-rebuild switch`). Does NOT run `nix fmt`; run
-`pn workspace format` first if you want to format.
+`pn workspace format` first if you want to format. As with `build`, Nix
+prints the benign `warning: not writing modified lock file` (one line
+per overridden input) on the success path — expected, not an error.
+See **Expected (Acceptable) Warnings** in `SKILL.md`.
 
 **Smoke:** ✓ **S19 `happy-path-apply`** — same shape as S18 with
 `apply_command = "./apply.sh"`; asserts exit 0 and `applied.txt` in
