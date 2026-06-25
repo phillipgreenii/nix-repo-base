@@ -1,0 +1,3 @@
+# Marker: this scenario requires a working `nix` (setup.sh runs `nix build`;
+# the workspace command runs `nix fmt`). runScenario skips this scenario
+# (rather than hard-failing in setup.sh) when nix is unavailable on the host.

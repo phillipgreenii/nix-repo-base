@@ -85,9 +85,35 @@ func checkPreconditions() {
 
 // nixAvailable reports whether nix is on PATH with nix-command+flakes.
 // Used by scenarios that require nix to skip themselves when unavailable.
-func nixAvailable() bool {
+// It is a package-level var so tests can stub it to simulate a no-nix host
+// without uninstalling nix.
+var nixAvailable = func() bool {
 	_, err := exec.LookPath("nix")
 	return err == nil
+}
+
+// requiresNixMarker is the name of the per-scenario marker file that declares
+// the scenario needs a working `nix` (its setup.sh or command invokes
+// `nix build`/`nix fmt`). Scenarios carrying this marker are skipped — not
+// failed — by runScenario when nix is unavailable.
+const requiresNixMarker = "requires-nix"
+
+// scenarioRequiresNix reports whether the scenario directory declares a nix
+// prerequisite via the requires-nix marker file.
+func scenarioRequiresNix(scenarioDir string) bool {
+	_, err := os.Stat(filepath.Join(scenarioDir, requiresNixMarker))
+	return err == nil
+}
+
+// skipScenarioIfNixUnavailable skips the test (with a clear reason) when the
+// scenario requires nix but nix is unavailable on this host. This prevents a
+// nix-dependent scenario (e.g. S23, whose setup.sh runs `nix build` and whose
+// command runs `nix fmt`) from hard-failing in setup.sh when nix is missing.
+func skipScenarioIfNixUnavailable(t *testing.T, scenarioDir string) {
+	t.Helper()
+	if scenarioRequiresNix(scenarioDir) && !nixAvailable() {
+		t.Skipf("scenario requires nix (marker %q present) but nix is not available on this host", requiresNixMarker)
+	}
 }
 
 // TestSmoke_S1_FreshBootstrap: empty dir + two-repo config → init → clone → lock.
@@ -350,6 +376,11 @@ func runScenario(t *testing.T, name string) {
 	if _, err := os.Stat(scenarioDir); os.IsNotExist(err) {
 		t.Fatalf("scenario directory not found: %s", scenarioDir)
 	}
+
+	// Skip (don't fail) scenarios that require nix when nix is unavailable.
+	// Must run before setup.sh, which for nix-dependent scenarios (e.g. S23)
+	// invokes `nix build` and would otherwise hard-fail with a setup error.
+	skipScenarioIfNixUnavailable(t, scenarioDir)
 
 	// Create a fresh temp workspace for this scenario.
 	wsRoot := t.TempDir()
