@@ -20,6 +20,10 @@ type WorktreeAddOptions struct {
 	// CommitIsh is an optional start-point for the new branch. When empty,
 	// git uses the canonical repo's current HEAD (exactly as git worktree add does).
 	CommitIsh string
+	// Repos optionally restricts the set to a subset of the workspace repos.
+	// When empty, the set contains every repo in pn-workspace.toml (the default).
+	// Each entry must be a configured repo key; unknown keys are an error.
+	Repos []string
 }
 
 // WorktreeListOptions configures WorktreeList.
@@ -43,11 +47,16 @@ type WorktreePruneOptions struct{}
 func (w *Workspace) WorktreeAdd(ctx context.Context, out io.Writer, errOut io.Writer, opts WorktreeAddOptions) error {
 	branch := opts.Branch
 	setDir := filepath.Join(w.WorktreesDir(), branch)
-	names := w.topoAlpha(ctx)
+
+	// Resolve the member repos (subset or all), validated + topo-ordered.
+	names, err := w.memberRepos(ctx, opts.Repos)
+	if err != nil {
+		return fmt.Errorf("worktree add: %w", err)
+	}
 
 	// --- Pre-flight checks (all before creating anything) ---
 
-	// 1. Every config repo must exist on disk in the canonical root.
+	// 1. Every member repo must exist on disk in the canonical root.
 	for _, repo := range names {
 		canonical := filepath.Join(w.Root(), repo)
 		if !isGitRepo(canonical) {
@@ -60,7 +69,7 @@ func (w *Workspace) WorktreeAdd(ctx context.Context, out io.Writer, errOut io.Wr
 		return fmt.Errorf("worktree add: set directory already exists: %s", setDir)
 	}
 
-	// 3. For every repo, <branch> must NOT already be checked out in any worktree.
+	// 3. For every member repo, <branch> must NOT already be checked out in any worktree.
 	for _, repo := range names {
 		canonical := filepath.Join(w.Root(), repo)
 		if err := w.assertBranchNotCheckedOut(ctx, canonical, repo, branch); err != nil {
@@ -73,48 +82,146 @@ func (w *Workspace) WorktreeAdd(ctx context.Context, out io.Writer, errOut io.Wr
 		return fmt.Errorf("worktree add: create set dir %s: %w", setDir, err)
 	}
 
-	// --- git worktree add per repo ---
+	// --- git worktree add per member repo ---
 	for _, repo := range names {
-		fmt.Fprintf(out, "  --== worktree add %s ==--  \n", repo)
-		canonical := filepath.Join(w.Root(), repo)
-		setRepo := filepath.Join(setDir, repo)
-
-		// Check if <branch> already exists locally in this repo.
-		branchExists := w.localBranchExists(ctx, canonical, branch)
-
-		var gitArgs []string
-		if branchExists {
-			// Branch exists: check it out.
-			gitArgs = []string{"-C", canonical, "worktree", "add", setRepo, branch}
-		} else {
-			// Branch does not exist: create it with -b.
-			gitArgs = []string{"-C", canonical, "worktree", "add", "-b", branch, setRepo}
-			if opts.CommitIsh != "" {
-				gitArgs = append(gitArgs, opts.CommitIsh)
-			}
-		}
-
-		if _, err := w.runner.Run(ctx, "git", gitArgs, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
-			return fmt.Errorf("worktree add: git worktree add in repo %q: %w", repo, err)
+		if err := w.gitWorktreeAddOne(ctx, out, setDir, repo, branch, opts.CommitIsh); err != nil {
+			return err
 		}
 	}
 
-	// --- Copy config/lock/revs into the set dir ---
-	if err := copyFile(filepath.Join(w.Root(), ConfigFileName), filepath.Join(setDir, ConfigFileName)); err != nil {
-		return fmt.Errorf("worktree add: copy %s: %w", ConfigFileName, err)
-	}
-	if err := copyFile(filepath.Join(w.Root(), LockFileName), filepath.Join(setDir, LockFileName)); err != nil {
-		return fmt.Errorf("worktree add: copy %s: %w", LockFileName, err)
-	}
-	// RevLock is optional.
-	revsSrc := filepath.Join(w.Root(), RevLockFileName)
-	if fileExists(revsSrc) {
-		if err := copyFile(revsSrc, filepath.Join(setDir, RevLockFileName)); err != nil {
-			return fmt.Errorf("worktree add: copy %s: %w", RevLockFileName, err)
-		}
+	// --- Write the set's config/lock/revs (filtered to the member set) ---
+	if err := w.writeSetMembership(out, errOut, setDir, names); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+// gitWorktreeAddOne runs `git worktree add` for one repo into the set dir,
+// mirroring git worktree add semantics: check out <branch> if it exists locally,
+// otherwise create it with -b from the optional commit-ish (default: HEAD).
+func (w *Workspace) gitWorktreeAddOne(ctx context.Context, out io.Writer, setDir, repo, branch, commitIsh string) error {
+	fmt.Fprintf(out, "  --== worktree add %s ==--  \n", repo)
+	canonical := filepath.Join(w.Root(), repo)
+	setRepo := filepath.Join(setDir, repo)
+
+	branchExists := w.localBranchExists(ctx, canonical, branch)
+
+	var gitArgs []string
+	if branchExists {
+		gitArgs = []string{"-C", canonical, "worktree", "add", setRepo, branch}
+	} else {
+		gitArgs = []string{"-C", canonical, "worktree", "add", "-b", branch, setRepo}
+		if commitIsh != "" {
+			gitArgs = append(gitArgs, commitIsh)
+		}
+	}
+
+	if _, err := w.runner.Run(ctx, "git", gitArgs, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+		return fmt.Errorf("worktree add: git worktree add in repo %q: %w", repo, err)
+	}
+	return nil
+}
+
+// writeSetMembership writes the set's pn-workspace.toml, .lock.json, and (if
+// present) .revs.json, restricted to the given member repos. When members
+// covers every config repo the files are byte-identical to the canonical ones;
+// for a strict subset the config/lock/revs are filtered and a notice is written
+// to errOut naming any consumer→dep edges that fall back to canonical because
+// the dependency is excluded from the set.
+func (w *Workspace) writeSetMembership(out io.Writer, errOut io.Writer, setDir string, names []string) error {
+	memberSet := make(map[string]bool, len(names))
+	for _, n := range names {
+		memberSet[n] = true
+	}
+	isFullSet := len(names) == len(w.config.Repos)
+
+	// Config: copy verbatim for a full set, else write the filtered subset.
+	if isFullSet {
+		if err := copyFile(filepath.Join(w.Root(), ConfigFileName), filepath.Join(setDir, ConfigFileName)); err != nil {
+			return fmt.Errorf("worktree add: copy %s: %w", ConfigFileName, err)
+		}
+	} else {
+		subCfg := filterConfig(w.config, memberSet)
+		if err := writeConfigTOMLTo(filepath.Join(setDir, ConfigFileName), subCfg); err != nil {
+			return fmt.Errorf("worktree add: write filtered %s: %w", ConfigFileName, err)
+		}
+	}
+
+	// Lock: copy verbatim for a full set, else write the filtered subset.
+	if isFullSet {
+		if err := copyFile(filepath.Join(w.Root(), LockFileName), filepath.Join(setDir, LockFileName)); err != nil {
+			return fmt.Errorf("worktree add: copy %s: %w", LockFileName, err)
+		}
+	} else {
+		subLock := filterLock(w.lock, memberSet)
+		if err := WriteLock(filepath.Join(setDir, LockFileName), subLock); err != nil {
+			return fmt.Errorf("worktree add: write filtered %s: %w", LockFileName, err)
+		}
+		w.noticeExcludedDeps(errOut, memberSet)
+	}
+
+	// RevLock is optional; copy verbatim for a full set, else filter.
+	revsSrc := filepath.Join(w.Root(), RevLockFileName)
+	if fileExists(revsSrc) {
+		if isFullSet {
+			if err := copyFile(revsSrc, filepath.Join(setDir, RevLockFileName)); err != nil {
+				return fmt.Errorf("worktree add: copy %s: %w", RevLockFileName, err)
+			}
+		} else {
+			subRevs := filterRevLock(w.revLock, memberSet)
+			if err := WriteRevLock(filepath.Join(setDir, RevLockFileName), subRevs); err != nil {
+				return fmt.Errorf("worktree add: write filtered %s: %w", RevLockFileName, err)
+			}
+		}
+	}
+	return nil
+}
+
+// noticeExcludedDeps writes a notice to errOut for every workspace dependency
+// edge whose consumer is a member but whose target is excluded from the set.
+// Such an input resolves against the consumer's own locked flake input
+// (canonical) rather than a set-internal override — deterministic, but worth
+// flagging so the agent is not surprised that the excluded dep is not live.
+func (w *Workspace) noticeExcludedDeps(errOut io.Writer, memberSet map[string]bool) {
+	if w.lock == nil || errOut == nil {
+		return
+	}
+	for _, e := range excludedDepEdges(w.lock, memberSet) {
+		fmt.Fprintf(errOut,
+			"pn: worktree set excludes %q, a workspace dependency of %q (via input %q); it will resolve against its locked flake input, not a set-internal override\n",
+			e.Target, e.Consumer, e.Alias)
+	}
+}
+
+// memberRepos resolves the set members. When requested is empty, returns every
+// config repo in topological order. Otherwise validates each requested key
+// against the config (erroring on unknown keys) and returns the subset in
+// topological order.
+func (w *Workspace) memberRepos(ctx context.Context, requested []string) ([]string, error) {
+	all := w.topoAlpha(ctx)
+	if len(requested) == 0 {
+		return all, nil
+	}
+	want := make(map[string]bool, len(requested))
+	var unknown []string
+	for _, r := range requested {
+		if _, ok := w.config.Repos[r]; !ok {
+			unknown = append(unknown, r)
+			continue
+		}
+		want[r] = true
+	}
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf("unknown repo(s): %s (not declared in %s)", strings.Join(unknown, ", "), ConfigFileName)
+	}
+	out := make([]string, 0, len(want))
+	for _, r := range all {
+		if want[r] {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // WorktreeList lists the worktree sets under w.WorktreesDir(), one per line.
