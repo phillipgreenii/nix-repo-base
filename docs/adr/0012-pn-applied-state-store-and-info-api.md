@@ -3,6 +3,7 @@
 **Status**: Accepted
 **Date**: 2026-06-26
 **Deciders**: Phillip Green II (with Claude)
+**Tracking**: pg2-k43p.2
 
 ## Context
 
