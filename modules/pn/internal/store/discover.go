@@ -57,7 +57,7 @@ func (s *Store) userProfiles() []string {
 // Mirrors bash discover_devbox_global_profile.
 func (s *Store) devboxGlobalProfile() string {
 	path := filepath.Join(s.env.Home, ".local/share/devbox/global/default/.devbox/nix/profile/default")
-	if _, err := os.Lstat(path); err == nil {
+	if _, err := os.Stat(path); err == nil {
 		return path
 	}
 	return ""
@@ -67,7 +67,7 @@ func (s *Store) devboxGlobalProfile() string {
 // Mirrors bash discover_devbox_util_profile.
 func (s *Store) devboxUtilProfile() string {
 	path := filepath.Join(s.env.Home, ".local/share/devbox/util/.devbox/nix/profile/default")
-	if _, err := os.Lstat(path); err == nil {
+	if _, err := os.Stat(path); err == nil {
 		return path
 	}
 	return ""

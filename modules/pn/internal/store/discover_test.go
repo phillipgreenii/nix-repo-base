@@ -289,7 +289,6 @@ func TestDevboxProjects_MissingSearchDirWarnsToErrOut(t *testing.T) {
 	f := exec.NewFakeRunner()
 	s := NewWithEnv(f, Env{})
 	var errBuf bytes.Buffer
-	var stdout bytes.Buffer
 
 	nonExistent := "/nonexistent-dir-" + t.Name()
 	got := s.devboxProjects(context.Background(), &errBuf, []string{nonExistent})
@@ -304,8 +303,6 @@ func TestDevboxProjects_MissingSearchDirWarnsToErrOut(t *testing.T) {
 	if !bytes.Contains(errBuf.Bytes(), []byte(nonExistent)) {
 		t.Errorf("warning %q should mention the missing dir %q", warning, nonExistent)
 	}
-	// stdout should be unaffected
-	_ = stdout
 }
 
 // ─── homeManagerGenLinks ──────────────────────────────────────────────────────
