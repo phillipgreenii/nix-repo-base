@@ -81,3 +81,28 @@ func TestSearch_emptyJQLErrors(t *testing.T) {
 		t.Fatal("want error on empty jql")
 	}
 }
+
+func TestAuthStatus_mapsHTTP(t *testing.T) {
+	cases := []struct {
+		code int
+		want AuthState
+	}{
+		{200, AuthOK}, {401, AuthUnauthenticated}, {403, AuthForbidden}, {500, AuthError},
+	}
+	for _, c := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/rest/api/3/myself" {
+				t.Errorf("path = %s", r.URL.Path)
+			}
+			w.WriteHeader(c.code)
+		}))
+		got, err := testClient(srv).AuthStatus(context.Background())
+		srv.Close()
+		if err != nil {
+			t.Fatalf("AuthStatus(%d): %v", c.code, err)
+		}
+		if got != c.want {
+			t.Errorf("AuthStatus(%d) = %s, want %s", c.code, got, c.want)
+		}
+	}
+}
