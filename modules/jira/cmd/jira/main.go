@@ -33,7 +33,7 @@ func defaultConfigPath() string {
 	return ""
 }
 
-// resolveConfig composes precedence defaults -> file -> env -> flags.
+// resolveConfig composes precedence defaults -> file -> env.
 func resolveConfig(cmd *cobra.Command) (jira.Config, error) {
 	path, _ := cmd.Flags().GetString("config")
 	if path == "" {

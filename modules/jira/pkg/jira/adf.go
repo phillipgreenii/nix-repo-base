@@ -7,7 +7,7 @@ import (
 
 // FlattenADF flattens an Atlassian Document Format body to best-effort plain
 // text. A plain JSON string is returned as-is. Unknown nodes recurse into
-// children; mention -> attrs.text (display name); link mark/inlineCard -> href.
+// children; mention -> attrs.text (display name); inlineCard -> attrs.url; link marks emit visible text only.
 func FlattenADF(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -30,9 +30,9 @@ func FlattenADF(raw json.RawMessage) string {
 func walkADF(nodes []json.RawMessage, sb *strings.Builder) {
 	for _, n := range nodes {
 		var node struct {
-			Type    string `json:"type"`
-			Text    string `json:"text"`
-			Attrs   struct {
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Attrs struct {
 				Text string `json:"text"`
 				Href string `json:"href"`
 				URL  string `json:"url"`

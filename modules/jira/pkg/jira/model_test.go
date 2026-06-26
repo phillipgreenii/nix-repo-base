@@ -2,6 +2,7 @@ package jira
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -13,7 +14,7 @@ func TestIssue_JSONRoundTrip_OmitsEmptyOptionals(t *testing.T) {
 	}
 	// Optional fields must be omitted when empty.
 	for _, k := range []string{"priority", "project", "created", "updated", "reporter", "assignee", "changelog", "comments"} {
-		if got := string(b); contains(got, `"`+k+`"`) {
+		if got := string(b); strings.Contains(got, `"`+k+`"`) {
 			t.Errorf("expected %q omitted, got %s", k, got)
 		}
 	}
@@ -25,5 +26,3 @@ func TestIssue_JSONRoundTrip_OmitsEmptyOptionals(t *testing.T) {
 		t.Errorf("round-trip mismatch: %+v", out)
 	}
 }
-
-func contains(s, sub string) bool { return len(s) >= len(sub) && (func() bool { for i := 0; i+len(sub) <= len(s); i++ { if s[i:i+len(sub)] == sub { return true } }; return false })() }

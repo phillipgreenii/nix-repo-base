@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -54,16 +55,16 @@ func (u *rawUser) toUser() *User {
 
 // rawFields is the subset of Atlassian issue fields we map.
 type rawFields struct {
-	Summary   string   `json:"summary"`
-	Labels    []string `json:"labels"`
-	Created   string   `json:"created"`
-	Updated   string   `json:"updated"`
+	Summary   string                `json:"summary"`
+	Labels    []string              `json:"labels"`
+	Created   string                `json:"created"`
+	Updated   string                `json:"updated"`
 	Status    struct{ Name string } `json:"status"`
 	IssueType struct{ Name string } `json:"issuetype"`
 	Priority  struct{ Name string } `json:"priority"`
-	Project   struct{ Key string } `json:"project"`
-	Reporter  *rawUser `json:"reporter"`
-	Assignee  *rawUser `json:"assignee"`
+	Project   struct{ Key string }  `json:"project"`
+	Reporter  *rawUser              `json:"reporter"`
+	Assignee  *rawUser              `json:"assignee"`
 }
 
 func (c *Client) mapIssue(key string, f rawFields) Issue {
@@ -155,7 +156,7 @@ func (c *Client) Search(ctx context.Context, jql string, limit int, exp ExpandOp
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/rest/api/3/search/jql", strings.NewReader(string(reqBody)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/rest/api/3/search/jql", bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, err
 	}
