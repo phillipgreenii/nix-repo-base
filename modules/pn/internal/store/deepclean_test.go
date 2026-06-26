@@ -700,3 +700,103 @@ func TestDeepClean_GoldenDryRunSummary(t *testing.T) {
 		t.Errorf("summary mismatch.\nWANT:\n%q\n\nGOT:\n%q", wantSummary, gotSummary)
 	}
 }
+
+// ─── 17. TestDeepClean_GoldenLiveSummary ────────────────────────────────────────
+
+// TestDeepClean_GoldenLiveSummary locks the exact bytes of the live-run summary
+// block (from "=== Summary ===" onward). Two sub-cases:
+//
+//   - empty runtime-roots: runtimeRootsSummary returns ""; the header must be
+//     the last line with no trailing blank line (Fix 1 regression guard).
+//   - non-empty runtime-roots: the summary line follows the header with no blank
+//     between them.
+func TestDeepClean_GoldenLiveSummary(t *testing.T) {
+	// goldenSummaryTail builds a FakeRunner scripted for a live run and returns
+	// the output slice starting at "=== Summary ===".
+	goldenSummaryTail := func(t *testing.T, printRootsStdout string, extraScript func(*exec.FakeRunner)) string {
+		t.Helper()
+		f := exec.NewFakeRunner()
+		// storeSize BEFORE gc: 12 GB
+		scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 12.0 GB (12884901888 Bytes)")
+		// storeSize AFTER gc: 8 GB — distinct values prove FIFO ordering.
+		scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 8.0 GB (8589934592 Bytes)")
+		f.AddResponse("sudo", []string{"nix-store", "--gc"}, exec.Result{}, nil)
+		f.AddResponse("nix-store", []string{"--gc", "--print-roots"},
+			exec.Result{Stdout: []byte(printRootsStdout)}, nil)
+		if extraScript != nil {
+			extraScript(f)
+		}
+
+		home := t.TempDir()
+		env := Env{Home: home}
+		var buf, errBuf bytes.Buffer
+		s := NewWithEnv(f, env)
+		if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+			DryRun: false, KeepSince: "0d", Keep: 0,
+		}); err != nil {
+			t.Fatalf("DeepClean: %v", err)
+		}
+		out := buf.String()
+		idx := strings.Index(out, "=== Summary ===")
+		if idx < 0 {
+			t.Fatalf("no Summary section in output:\n%s", out)
+		}
+		return out[idx:]
+	}
+
+	t.Run("empty runtime-roots", func(t *testing.T) {
+		noSymlinkResolution(t)
+		// print-roots returns nothing → runtimeRootsSummary == "" → no trailing blank line.
+		got := goldenSummaryTail(t, "", nil)
+
+		want := "" +
+			"=== Summary ===\n" +
+			"Store before: 12.0 GB\n" +
+			"Store after:  8.0 GB\n" +
+			"\n" +
+			"Pruned generations:\n" +
+			"  system: 0 generation(s)\n" +
+			"  home-manager: 0 generation(s)\n" +
+			"  user-profiles: 0 generation(s)\n" +
+			"  devbox-global: 0 generation(s)\n" +
+			"  devbox-util: 0 generation(s)\n" +
+			"  devbox-projects: 0 generation(s)\n" +
+			"  result-symlinks: 0 generation(s)\n" +
+			"  stale-nix-profiles: 0 generation(s)\n" +
+			"  nh-temp-roots: 0 generation(s)\n" +
+			"\n" +
+			"=== Runtime Roots ===\n"
+
+		if got != want {
+			t.Errorf("live summary (empty roots) mismatch.\nWANT:\n%q\n\nGOT:\n%q", want, got)
+		}
+	})
+
+	t.Run("non-empty runtime-roots", func(t *testing.T) {
+		noSymlinkResolution(t)
+		lsofPath := "/nix/store/aaa-app"
+		// One lsof-only root + one file root (non-lsof); only aaa-app ends up in lsofOnly.
+		printRoots := "/proc/123/maps -> " + lsofPath + " {lsof}\n" +
+			"/nix/var/nix/gcroots/auto/abc -> /nix/store/bbb-pkg\n"
+		extra := func(f *exec.FakeRunner) {
+			f.AddResponse("nix", []string{"path-info", "-S", lsofPath},
+				exec.Result{Stdout: []byte(lsofPath + " 1048576\n")}, nil)
+		}
+		got := goldenSummaryTail(t, printRoots, extra)
+
+		// Locate the header and assert no blank line between header and summary.
+		headerLine := "=== Runtime Roots ===\n"
+		idxHeader := strings.Index(got, headerLine)
+		if idxHeader < 0 {
+			t.Fatalf("Runtime Roots header not found; got:\n%q", got)
+		}
+		afterHeader := got[idxHeader+len(headerLine):]
+		// The very next line must contain the summary content, not be blank.
+		if strings.HasPrefix(afterHeader, "\n") {
+			t.Errorf("blank line after Runtime Roots header (Fix 1 regression); got tail:\n%q", afterHeader)
+		}
+		if !strings.Contains(afterHeader, "held only by running processes") {
+			t.Errorf("expected runtime roots summary after header; got tail:\n%q", afterHeader)
+		}
+	})
+}

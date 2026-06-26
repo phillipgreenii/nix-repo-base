@@ -177,7 +177,9 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	s.printPrunedCounts(out, prunedCounts)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "=== Runtime Roots ===")
-	fmt.Fprintf(out, "%s\n", runtimeRootsSummary(ctx, s.runner))
+	if summary := runtimeRootsSummary(ctx, s.runner); summary != "" {
+		fmt.Fprintln(out, summary)
+	}
 	return nil
 }
 
