@@ -20,3 +20,6 @@ result-*
 
 # sp-bd-bridge per-session cache (local-only)
 .perles/
+
+# subagent-driven-development progress ledger (scratch)
+.superpowers/
