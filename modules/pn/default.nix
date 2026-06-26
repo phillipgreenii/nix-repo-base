@@ -21,6 +21,11 @@ goBuilders.mkGoBinary {
     # runtimeDeps, so nvd is reachable at runtime (a user's ambient nix/git
     # still win; nvd, which isn't ambient, is supplied as a fallback).
     pkgs.nvd
+    # `pn osx tcc-check` shells out to `sqlite3` to probe Full Disk Access and
+    # query the TCC database. Supplied here so the binary works on a host
+    # without an ambient sqlite3 on PATH. Tests use a fake Runner and never
+    # invoke the real binary, so this is a runtime-only dep (not testDeps).
+    pkgs.sqlite
   ];
   testDeps = [
     pkgs.git

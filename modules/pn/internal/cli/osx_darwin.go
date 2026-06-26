@@ -3,8 +3,6 @@
 package cli
 
 import (
-	"context"
-
 	"github.com/spf13/cobra"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -29,7 +27,7 @@ func osxTCCCheckCmd() *cobra.Command {
 		Use:   "tcc-check",
 		Short: "Check macOS Terminal TCC permissions",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return osx.New(exec.NewRealRunner()).Check(context.Background(), osx.CheckOptions{})
+			return osx.New(exec.NewRealRunner()).Check(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), osx.CheckOptions{})
 		},
 	}
 }
