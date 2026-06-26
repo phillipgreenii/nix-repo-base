@@ -3,7 +3,6 @@ package workspace
 import (
 	"context"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,15 +109,11 @@ url = "github:owner/dep"
 		"--override-input", "dep", "git+file://" + dep,
 	}, exec.Result{}, nil)
 
-	// markApplied: git rev-parse HEAD for dep and leaf.
+	// markApplied: git rev-parse HEAD for dep and leaf, then git status --porcelain for each.
 	f.AddResponse("git", []string{"-C", dep, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
 	f.AddResponse("git", []string{"-C", leaf, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("def\n")}, nil)
-
-	// Write applied-hash dir so markApplied can write files.
-	hashDir := filepath.Join(stateDir, "zn-self-upgrade", "apply", "applied-hash")
-	if err := os.MkdirAll(hashDir, 0o755); err != nil {
-		t.Fatalf("mkdir hash dir: %v", err)
-	}
+	f.AddResponse("git", []string{"-C", dep, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", leaf, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {

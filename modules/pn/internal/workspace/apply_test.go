@@ -3,7 +3,6 @@ package workspace
 import (
 	"bytes"
 	"context"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -54,6 +53,8 @@ func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 	}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", depDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("d\n")}, nil)
 	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
+	f.AddResponse("git", []string{"-C", depDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -101,6 +102,7 @@ func applyTestRunner(t *testing.T, root string) (*exec.FakeRunner, string) {
 		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
 	}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	return f, leafDir
 }
 
@@ -167,7 +169,7 @@ func TestApply_NoFsmonitorRestartWhenGitUnchanged(t *testing.T) {
 // TestApply_NoFsmonitorRestartOnSkippedRebuild asserts that the skip-rebuild
 // (no-op) path neither checks the git version nor kills the daemon.
 func TestApply_NoFsmonitorRestartOnSkippedRebuild(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
@@ -178,12 +180,9 @@ func TestApply_NoFsmonitorRestartOnSkippedRebuild(t *testing.T) {
 	// needsRebuild: clean tree + HEAD matches the recorded applied hash → no rebuild.
 	f.AddResponse("git", []string{"-C", leafDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
-	// Pre-seed the applied-hash so HEAD ("abc") matches and the rebuild is skipped.
-	if err := os.MkdirAll(appliedHashDir(), 0o755); err != nil {
-		t.Fatalf("mkdir applied-hash dir: %v", err)
-	}
-	if err := os.WriteFile(appliedHashFile(leafDir), []byte("abc\n"), 0o644); err != nil {
-		t.Fatalf("seed applied hash: %v", err)
+	// Pre-seed the new applied-state store so HEAD ("abc") matches and the rebuild is skipped.
+	if err := writeAppliedState(leafDir, AppliedState{AppliedRef: "abc"}); err != nil {
+		t.Fatalf("seed applied state: %v", err)
 	}
 
 	w, err := Open(root, f)
