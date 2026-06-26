@@ -11,6 +11,14 @@ func addStoreCmd(parent *cobra.Command) {
 	s := &cobra.Command{
 		Use:   "store",
 		Short: "Operate on the nix store",
+		Long: `Audit and reclaim space in the local Nix store.
+
+Subcommands:
+  audit      Read-only report of profile generations, closure sizes, and store usage.
+  deepclean  Prune old generations and stale GC roots, then garbage-collect the store.
+
+Configuration lives in ~/.config/pn/store.toml (search_dirs, keep_days, keep_count).
+See docs/pn-store.md for user journeys and retention semantics.`,
 	}
 	s.AddCommand(storeAuditCmd())
 	s.AddCommand(storeDeepCleanCmd())
@@ -22,6 +30,20 @@ func storeAuditCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Audit nix store contents",
+		Long: `Audit Nix profile generations and store size.
+
+Reports, in order: System Profiles, Home Manager, User Profiles, Devbox Global,
+Devbox Projects, and Nix Store (volume used). Read-only — makes no changes.
+
+With --full, also estimates reclaimable space from dead store paths
+(runs 'sudo nix-store --gc --print-dead'; slow).
+
+Examples:
+  # Show profile generations and store usage
+  pn store audit
+
+  # Include the reclaimable-space estimate
+  pn store audit --full`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return store.New(exec.NewRealRunner()).Audit(
 				cmd.Context(),
