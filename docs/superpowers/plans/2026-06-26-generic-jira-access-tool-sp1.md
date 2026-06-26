@@ -21,7 +21,7 @@
 - **Build**: `mkGoBinary` + a committed git-tracked `gomod2nix.toml` (Pattern A: `src = ./.`, no `modRoot`). Regenerate the toml with `go mod tidy && nix run github:nix-community/gomod2nix -- generate` when deps change.
 - **Reuse-first**: lift the client logic from `phillipg-nix-ziprecruiter/modules/pg-pr-zr/cmd/pg-pr-issues-jira-zr/main.go` (already implements the envelope, `/search/jql`, truncation, basic auth, `GET /issue/<id>`); lift the ADF walker from `phillipgreenii-nix-support-apps/packages/activity-collector/internal/collector/jira/jira.go`.
 - **SP1 acceptance is unit/contract-level only** (no live tenant); the tool ships only generic defaults (`secret.source = env`).
-- **Validation before "done"**: `cd modules/jira && go test ./...` green; repo-base pre-commit (`prek run --all-files`) green; `nix flake check` and `pn workspace build` green.
+- **Validation before "done"**: `cd modules/jira && go test ./...` green; `gofmt -l modules/jira` clean (repo-base `treefmt` has NO Go formatter — Go formatting is not gate-enforced, so run `gofmt -l` manually); repo-base pre-commit (`prek run --all-files`) green; `nix flake check` and `pn workspace build` green.
 - **Commits**: this work is on branch `generic-jira-access-tool` in repo-base. Do not push.
 
 ## File Structure

@@ -446,7 +446,13 @@ Per workspace rules, before SP1 is complete:
   string** (e.g. `ziprecruiter`, `zr-jira`) and **no OS-specific command name**
   (`security`, `secret-tool`), and that **`pkg/jira` imports no `pg-pr` package**
   (the invariant that keeps repo-base off an `agent-support` back-edge).
-- repo-base pre-commit (gofmt + golangci-lint) MUST pass.
+- repo-base pre-commit / `nix flake check` MUST pass. NOTE: repo-base's
+  `treefmt` does **not** currently include a Go formatter (it formats nix /
+  prettier / shell only) and there is no golangci-lint hook, so Go formatting is
+  **not** enforced by the existing gate. Until a Go formatter is added to
+  `treefmt` (tracked as a follow-up bead), `gofmt -l modules/jira` MUST be run
+  manually and report clean as part of this gate. Go tests run via `mkGoBinary`
+  `doCheck` (the `jira-go-tests` flake check).
 - `nix flake check` and `pn workspace build` MUST be green.
 
 ## 10. Migration path (SP2–SP6, outline)
