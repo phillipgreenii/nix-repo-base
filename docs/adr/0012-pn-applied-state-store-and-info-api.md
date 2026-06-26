@@ -69,12 +69,12 @@ that previously wrote or read that path MUST use the new store. There is one sou
 {
   "wsid":     "<string>",
   "root":     "<string>",
-  "terminal": <bool>,
+  "terminal": "<string>",
   "repos": [
     {
       "name":        "<string>",
       "path":        "<string>",
-      "applied_ref": "<string | null>",
+      "applied_ref": "<string>",
       "dirty":       <bool>
     }
   ]
@@ -83,9 +83,11 @@ that previously wrote or read that path MUST use the new store. There is one sou
 
 - `wsid` — the `[workspace].id` slug from `pn-workspace.toml`. Empty string if not set.
 - `root` — absolute path to the workspace root directory.
-- `terminal` — `true` if the workspace has no further parent workspace.
-- `repos` — ordered by topological sort (`topoAlpha`); each entry's `applied_ref` and `dirty` come
-  from the applied-state store (null / false if the store is absent).
+- `terminal` — the repo key of the terminal flake, taken from `[workspace].terminal` in
+  `pn-workspace.toml`.
+- `repos` — ordered by topological sort (`topoAlpha`); each entry's `applied_ref` is the empty
+  string (`""`) when the repo has no applied-state record (the field is always present; never
+  `null`). `dirty` is `false` when the store is absent.
 
 This schema is a **stable consumed API**. Fields MUST NOT be removed or renamed without a
 superseding ADR. New optional fields MAY be added.
@@ -125,10 +127,20 @@ machine. A `wsid` MUST be unique per machine at apply time.
 ### Negative
 
 - The applied-state file is written to `$XDG_DATA_HOME`, which is machine-local and not version
-  controlled. A fresh clone with no prior apply has no record; `applied_ref` will be null until
-  the first successful apply.
+  controlled. A fresh clone with no prior apply has no record; `applied_ref` will be an empty
+  string until the first successful apply.
 - Retiring `zn-self-upgrade/apply/applied-hash` is a one-way migration; existing upgrade-state
-  from the old path is silently dropped (the next apply re-creates it at the new path).
+  from the old path is silently dropped (the next apply re-creates it at the new path). Because
+  the legacy store is not migrated, the first `pn workspace apply` after this ships finds no
+  record and therefore forces a one-time full rebuild of every repo (benign; subsequent applies
+  skip correctly).
+- The applied-state store is keyed by the repo checkout path that was applied. `pn workspace apply`
+  with `OverridePaths` (e.g. a coordinated-worktree / override apply) records state under the
+  override path, whereas `pn workspace info` always reads the canonical `<root>/<name>` path. So
+  after an override-path apply, `pn workspace info` (and any consumer of it, e.g. Phase 2's
+  `pb gate check`) reports an empty `applied_ref` for that repo. The common case — a normal apply
+  from the workspace root with no overrides — is unaffected (both paths resolve identically).
+  Resolving this for the override flow is deferred to Phase 2 (tracked as a follow-up bead).
 - A workspace moved to a new path on disk loses its applied-state record (the SHA-256 key changes).
   Users MUST re-run `pn workspace apply` after moving a checkout.
 

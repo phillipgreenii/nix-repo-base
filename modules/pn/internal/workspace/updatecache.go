@@ -17,8 +17,10 @@ var hexFilenameRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // needsRebuild reports whether apply must rebuild. Returns true if force is set,
 // any repo's working tree is dirty, any repo's HEAD differs from the recorded
-// applied hash, or any repo has no recorded hash. Returns false (with a notice)
-// only when every repo is clean and unchanged.
+// applied hash, or any repo has no recorded hash (absent store triggers rebuild).
+// A corrupt or unreadable store returns an error (fail-closed) rather than
+// triggering a rebuild. Returns false (with a notice) only when every repo is
+// clean and unchanged.
 func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []string, force bool, out io.Writer) (bool, error) {
 	if force {
 		return true, nil
