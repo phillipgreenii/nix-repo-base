@@ -203,6 +203,8 @@ func (s *Store) processProfile(ctx context.Context, out io.Writer, counts map[st
 	}
 	gens, err := listGenerations(ctx, s.runner, profile, sudo)
 	if err != nil {
+		// Intentional bash-parity: a profile whose nix-env listing fails prunes
+		// nothing and the run continues.
 		gens = nil
 	}
 	nums := generationsToPrune(gens, keepDays, keepCount, now)

@@ -39,12 +39,13 @@ func TestGenerationsToPrune_KeepCountZeroDisablesCount(t *testing.T) {
 }
 
 func TestGenerationsToPrune_TimeProtects(t *testing.T) {
+	now := time.Now()
 	g := []generation{
-		{Num: 1, Date: time.Now().Add(-3 * 24 * time.Hour).Format("2006-01-02"), Current: false},
-		{Num: 2, Date: time.Now().Format("2006-01-02"), Current: true},
+		{Num: 1, Date: now.Add(-3 * 24 * time.Hour).Format("2006-01-02"), Current: false},
+		{Num: 2, Date: now.Format("2006-01-02"), Current: true},
 	}
 	// keepDays=7 protects gen1 (3d old); keepCount=0 → gen1 kept by time
-	if got := generationsToPrune(g, 7, 0, time.Now()); len(got) != 0 {
+	if got := generationsToPrune(g, 7, 0, now); len(got) != 0 {
 		t.Fatalf("expected none (time-protected), got %v", got)
 	}
 }
@@ -94,6 +95,42 @@ func TestListGenerations_ParsesCurrent(t *testing.T) {
 	}
 	if len(g) != 2 || g[0].Num != 1 || g[0].Date != "2024-01-01" || !g[1].Current {
 		t.Fatalf("parsed wrong: %+v", g)
+	}
+}
+
+func TestListGenerations_Sudo(t *testing.T) {
+	f := exec.NewFakeRunner()
+	f.AddResponse("sudo", []string{"nix-env", "--profile", "/p", "--list-generations"}, exec.Result{Stdout: []byte(
+		"   1   2024-01-01 12:00:00   (current)\n")}, nil)
+	g, err := listGenerations(context.Background(), f, "/p", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g) != 1 || g[0].Num != 1 || g[0].Date != "2024-01-01" || !g[0].Current {
+		t.Fatalf("parsed wrong with sudo=true: %+v", g)
+	}
+	calls := f.Calls()
+	if len(calls) != 1 || calls[0].Name != "sudo" {
+		t.Fatalf("expected call recorded with name 'sudo', got %+v", calls)
+	}
+}
+
+func TestListGenerations_SkipsMalformed(t *testing.T) {
+	// blank line, single-token line, non-integer-first-field → all skipped
+	// one valid line → returned
+	stdout := "\n" +
+		"   onlyonetoken\n" +
+		"   notanint 2024-01-01 12:00:00\n" +
+		"   1   2024-06-01 12:00:00   (current)\n"
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix-env", []string{"--profile", "/p", "--list-generations"},
+		exec.Result{Stdout: []byte(stdout)}, nil)
+	g, err := listGenerations(context.Background(), f, "/p", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g) != 1 || g[0].Num != 1 || g[0].Date != "2024-06-01" || !g[0].Current {
+		t.Fatalf("expected only the valid generation, got %+v", g)
 	}
 }
 

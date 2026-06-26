@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -114,14 +115,7 @@ func findCall(calls []exec.Call, name string, argsContain ...string) *exec.Call 
 		}
 		all := true
 		for _, want := range argsContain {
-			found := false
-			for _, a := range c.Args {
-				if a == want {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.Contains(c.Args, want) {
 				all = false
 				break
 			}
@@ -136,10 +130,8 @@ func findCall(calls []exec.Call, name string, argsContain ...string) *exec.Call 
 // hasDeleteGenerations reports whether any call deleted generations.
 func hasDeleteGenerations(calls []exec.Call) bool {
 	for _, c := range calls {
-		for _, a := range c.Args {
-			if a == "--delete-generations" {
-				return true
-			}
+		if slices.Contains(c.Args, "--delete-generations") {
+			return true
 		}
 	}
 	return false

@@ -29,7 +29,7 @@ func listGenerations(ctx context.Context, r exec.Runner, profile string, sudo bo
 		return nil, err
 	}
 	var out []generation
-	for _, line := range strings.Split(string(res.Stdout), "\n") {
+	for line := range strings.SplitSeq(string(res.Stdout), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -51,10 +51,7 @@ func generationsToPrune(gens []generation, keepDays, keepCount int, now time.Tim
 	}
 	countProtected := map[int]bool{}
 	if keepCount > 0 {
-		start := total - keepCount
-		if start < 0 {
-			start = 0
-		}
+		start := max(0, total-keepCount)
 		for i := start; i < total; i++ {
 			countProtected[gens[i].Num] = true
 		}

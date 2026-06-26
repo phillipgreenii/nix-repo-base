@@ -96,8 +96,10 @@ func TestAudit_FullShowsReclaimable(t *testing.T) {
 		t.Fatalf("Audit(Full): %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "Reclaimable (dead paths):") {
-		t.Errorf("--full must include Reclaimable; output:\n%s", out)
+	// deadPath size is 524288 bytes = 512.0 KB (< 1 MiB threshold)
+	wantLine := "Reclaimable (dead paths): 512.0 KB"
+	if !strings.Contains(out, wantLine) {
+		t.Errorf("--full must include exact line %q; output:\n%s", wantLine, out)
 	}
 }
 

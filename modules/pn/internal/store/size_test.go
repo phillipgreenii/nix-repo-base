@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -60,7 +59,10 @@ func TestRuntimeRootsSummary_LsofOnly(t *testing.T) {
 	f.AddResponse("nix", []string{"path-info", "-S", "/nix/store/aaa-pkg"}, exec.Result{Stdout: []byte(
 		"/nix/store/aaa-pkg 1048576\n")}, nil)
 	got := runtimeRootsSummary(context.Background(), f)
-	if !strings.Contains(got, "held only by running processes") {
-		t.Fatalf("runtimeRootsSummary = %q", got)
+	// 1048576 bytes = 1.0 MB; one lsof-only path → singular "path"
+	want := "1 store path held only by running processes (up to 1.0 MB reclaimable)\n" +
+		"  Tip: Restarting applications and re-running may free additional space"
+	if got != want {
+		t.Fatalf("runtimeRootsSummary = %q, want %q", got, want)
 	}
 }

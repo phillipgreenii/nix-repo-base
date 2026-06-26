@@ -139,7 +139,7 @@ func secondField(b []byte) int64 {
 
 func nonEmptyLines(b []byte) []string {
 	var out []string
-	for _, l := range strings.Split(string(b), "\n") {
+	for l := range strings.SplitSeq(string(b), "\n") {
 		t := strings.TrimSpace(l)
 		if t != "" {
 			out = append(out, t)
