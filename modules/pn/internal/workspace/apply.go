@@ -59,6 +59,12 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		return nil
 	}
 
+	if id := ws.config.Workspace.Id; id != "" {
+		if err := checkWsidUnique(id, ws.root); err != nil {
+			return err
+		}
+	}
+
 	if err := ws.checkNixDaemon(ctx); err != nil {
 		return err
 	}
