@@ -93,6 +93,9 @@
             # pn Go binary (single tool replacing the former pn-* bash scripts).
             pn = pkgs.callPackage ./modules/pn { inherit self; };
 
+            # jira Go binary (generic Atlassian Jira access tool).
+            jira = pkgs.callPackage ./modules/jira { inherit self; };
+
             # This repo's own Claude Code marketplace, bundled into the store with
             # content-derived per-plugin version stamping. Identity:
             # phillipg-nix-repo-base-marketplace-local. The fileset is NARROWED to
@@ -160,6 +163,9 @@
             # exercises the Go tests.
             pn-go-tests = pkgs.callPackage ./modules/pn { inherit self; };
 
+            # Go test suite for jira (mirrors pn-go-tests pattern).
+            jira-go-tests = pkgs.callPackage ./modules/jira { inherit self; };
+
             # Hermetically verify the exported darwinModules.default (the aggregate
             # the machine actually imports) registers logSources.pn.
             pn-logsources-registration =
@@ -224,14 +230,17 @@
           flox-overlay = ./flake-modules/overlays/flox.nix;
         };
 
-        homeModules.pn = import ./home/pn/default.nix;
+        homeModules = {
+          pn = import ./home/pn/default.nix;
+          jira = import ./home/jira/default.nix;
+          install-metadata = ./home-modules/install-metadata.nix;
+        };
         # repo-base's first darwin module set, exported as the aggregate
         # darwinModules.default (mirrors agent-support). Currently carries the pn
         # module, which registers phillipgreenii.observability.logSources.pn so pn's
         # JSONL event stream is collected into Loki (pull/filelog). Inert until a
         # machine flake imports it; see darwin/default.nix and darwin/modules/pn.
         darwinModules.default = ./darwin;
-        homeModules.install-metadata = ./home-modules/install-metadata.nix;
 
         # Single default overlay for this flake's own packages. Surfaces the pn
         # workspace tool as pkgs.pn so consumers (and homeModules.pn) consume it
@@ -239,7 +248,7 @@
         # through _module.args. Mirrors overlays.default in the overlay /
         # support-apps flakes. Add future base packages here.
         overlays.default = final: _prev: {
-          inherit (self.packages.${final.stdenv.hostPlatform.system}) pn;
+          inherit (self.packages.${final.stdenv.hostPlatform.system}) pn jira;
         };
 
         lib =
