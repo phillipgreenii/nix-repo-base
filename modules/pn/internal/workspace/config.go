@@ -3,6 +3,7 @@ package workspace
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -18,6 +19,9 @@ type WorkspaceConfig struct {
 type WorkspaceSection struct {
 	Name        string `toml:"name"`
 	Description string `toml:"description"`
+	// Id is a stable, committed, human-readable workspace identifier (slug).
+	// It is the wsid used by pn:applied gates; machine-invariant.
+	Id string `toml:"id,omitempty"`
 	// Terminal is the repo key of the terminal flake — the one build/apply
 	// build and activate; all others are injected as local overrides.
 	Terminal string `toml:"terminal,omitempty"`
@@ -58,6 +62,8 @@ type HookCommand struct {
 	Pre  []string `toml:"pre"`
 	Post []string `toml:"post"`
 }
+
+var workspaceIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // knownHookCommands is the set of pn-workspace commands that support hooks.
 var knownHookCommands = map[string]struct{}{
@@ -156,6 +162,10 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 	}
 	if cfg.Hooks == nil {
 		cfg.Hooks = make(map[string]HookCommand)
+	}
+	// Validate workspace.id if set.
+	if cfg.Workspace.Id != "" && !workspaceIDRe.MatchString(cfg.Workspace.Id) {
+		return nil, fmt.Errorf("workspace.id %q must be a slug: lowercase letters, digits, dashes", cfg.Workspace.Id)
 	}
 	// Apply repo defaults + validate each repo.
 	for name, r := range cfg.Repos {

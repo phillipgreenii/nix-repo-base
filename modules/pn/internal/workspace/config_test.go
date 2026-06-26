@@ -443,3 +443,16 @@ func TestWorkspace_WorktreesDir(t *testing.T) {
 		})
 	}
 }
+
+func TestParseConfig_WorkspaceID(t *testing.T) {
+	cfg, err := ParseConfig([]byte("[workspace]\nid = \"my-ws-01\"\nterminal = \"r\"\n[repos.r]\nurl=\"u\"\n"))
+	if err != nil {
+		t.Fatalf("valid id rejected: %v", err)
+	}
+	if cfg.Workspace.Id != "my-ws-01" {
+		t.Fatalf("id = %q, want my-ws-01", cfg.Workspace.Id)
+	}
+	if _, err := ParseConfig([]byte("[workspace]\nid = \"Bad_ID\"\nterminal=\"r\"\n[repos.r]\nurl=\"u\"\n")); err == nil {
+		t.Fatal("malformed id (uppercase/underscore) should be rejected")
+	}
+}
