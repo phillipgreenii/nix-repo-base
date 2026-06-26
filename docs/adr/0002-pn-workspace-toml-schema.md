@@ -1,7 +1,7 @@
 # ADR-0002: pn-workspace.toml schema for multi-repo workspace management
 
 **Date:** 2026-06-01
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-0012](0012-pn-applied-state-store-and-info-api.md))
 **Deciders:** phillipgreenii
 
 ## Context
@@ -13,7 +13,7 @@ and what hooks to run around workspace commands.
 ## Decision
 
 - pn-workspace.toml lives at workspace root (machine-local, not inside any repo)
-- [workspace] section: name, description
+- [workspace] section: name, description, id (slug `^[a-z0-9][a-z0-9-]*$`, machine-invariant; the wsid used by `pn:applied` gates — see ADR-0012)
 - [repos.<key>] table-of-tables: url (flake URL), optional branch (default: "main")
 - [hooks.<command>] section: pre and post arrays of command strings
   - Commands: apply, build, flake-check, init, pre-commit-check, push, rebase, status, update, upgrade
