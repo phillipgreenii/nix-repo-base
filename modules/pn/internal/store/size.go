@@ -123,14 +123,21 @@ func runtimeRootsSummary(ctx context.Context, r exec.Runner) string {
 
 // --- small helpers ---
 
-// secondField parses the 2nd whitespace field of the first line as an int64.
-func secondField(b []byte) int64 { return secondFieldFromLine(string(b)) }
+// secondField parses the 2nd whitespace field of the FIRST line of b as an int64.
+func secondField(b []byte) int64 {
+	first := string(b)
+	if i := strings.IndexByte(first, '\n'); i >= 0 {
+		first = first[:i]
+	}
+	return secondFieldFromLine(first)
+}
 
 func nonEmptyLines(b []byte) []string {
 	var out []string
 	for _, l := range strings.Split(string(b), "\n") {
-		if strings.TrimSpace(l) != "" {
-			out = append(out, strings.TrimSpace(l))
+		t := strings.TrimSpace(l)
+		if t != "" {
+			out = append(out, t)
 		}
 	}
 	return out
