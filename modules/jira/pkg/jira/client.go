@@ -93,6 +93,127 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return c.HTTP.Do(req)
 }
 
+// ExpandOpts selects optional per-item enrichment for Search. Changelog maps to
+// Atlassian expand=changelog; Comments adds the `comment` FIELD (not a Jira
+// expand — sending expand=comments returns nothing).
+type ExpandOpts struct {
+	Changelog bool
+	Comments  bool
+}
+
+type rawChangeItem struct {
+	Field      string `json:"field"`
+	FromString string `json:"fromString"`
+	ToString   string `json:"toString"`
+}
+type rawHistory struct {
+	Author  rawUser         `json:"author"`
+	Created string          `json:"created"`
+	Items   []rawChangeItem `json:"items"`
+}
+type rawComment struct {
+	Author  rawUser         `json:"author"`
+	Created string          `json:"created"`
+	Body    json.RawMessage `json:"body"`
+}
+
+// searchFields embeds the shared rawFields and adds the comment list, which is
+// present only when Search requests the `comment` field. GetIssue never
+// requests it, so its embedded rawFields stays comment-free.
+type searchFields struct {
+	rawFields
+	Comment struct {
+		Comments []rawComment `json:"comments"`
+	} `json:"comment"`
+}
+
+// toUserOrEmpty maps a changelog/comment author, returning a non-nil *User even
+// when the source fields are empty (changelog/comment authors are values).
+func (u *rawUser) toUserOrEmpty() *User {
+	if u == nil {
+		return &User{}
+	}
+	if su := u.toUser(); su != nil {
+		return su
+	}
+	return &User{}
+}
+
+func (c *Client) Search(ctx context.Context, jql string, limit int, exp ExpandOpts) (*SearchResult, error) {
+	if strings.TrimSpace(jql) == "" {
+		return nil, fmt.Errorf("jira: empty jql")
+	}
+	fields := []string{"summary", "status", "issuetype", "labels", "priority", "project", "created", "updated", "reporter", "assignee"}
+	if exp.Comments {
+		fields = append(fields, "comment")
+	}
+	body := map[string]any{"jql": jql, "maxResults": limit, "fields": fields}
+	if exp.Changelog {
+		body["expand"] = "changelog"
+	}
+	reqBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/rest/api/3/search/jql", strings.NewReader(string(reqBody)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("jira: search: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("jira: search: status %s", resp.Status)
+	}
+	var raw struct {
+		Issues []struct {
+			Key       string       `json:"key"`
+			Fields    searchFields `json:"fields"`
+			Changelog struct {
+				Histories []rawHistory `json:"histories"`
+			} `json:"changelog"`
+		} `json:"issues"`
+		NextPageToken string `json:"nextPageToken"`
+		IsLast        *bool  `json:"isLast"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("jira: search: decode: %w", err)
+	}
+	items := make([]Issue, 0, len(raw.Issues))
+	for _, is := range raw.Issues {
+		if is.Key == "" {
+			return nil, fmt.Errorf("jira: search: issue missing key")
+		}
+		iss := c.mapIssue(is.Key, is.Fields.rawFields)
+		if exp.Changelog {
+			for _, h := range is.Changelog.Histories {
+				for _, it := range h.Items {
+					if it.Field != "status" {
+						continue
+					}
+					iss.Changelog = append(iss.Changelog, ChangelogEntry{
+						Field: it.Field, From: it.FromString, To: it.ToString,
+						Author: *h.Author.toUserOrEmpty(), At: h.Created,
+					})
+				}
+			}
+		}
+		if exp.Comments {
+			for _, cm := range is.Fields.Comment.Comments {
+				iss.Comments = append(iss.Comments, Comment{
+					Author: *cm.Author.toUserOrEmpty(), Body: FlattenADF(cm.Body), Created: cm.Created,
+				})
+			}
+		}
+		items = append(items, iss)
+	}
+	truncated := raw.NextPageToken != "" || (raw.IsLast != nil && !*raw.IsLast)
+	return &SearchResult{Items: items, Truncated: truncated}, nil
+}
+
 // GetIssue fetches one issue via GET /rest/api/3/issue/<key>.
 func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
 	key = strings.TrimSpace(key)
