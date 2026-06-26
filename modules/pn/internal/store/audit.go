@@ -3,8 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
-
-	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"io"
+	"os"
 )
 
 // AuditOptions configures Audit.
@@ -14,25 +14,92 @@ type AuditOptions struct {
 	Full bool
 }
 
-// Audit reports profile generations and Nix store size.
-//
-// TODO: port full pn-store-audit.sh semantics: profile discovery
-// (system / home-manager / user / devbox-global / devbox-projects), per-profile
-// generation listing via `nix-env --list-generations`, per-profile closure size
-// via `nix path-info -S`, and section-header formatted output. The current
-// implementation runs the minimal store-level subprocesses sufficient for
-// unit-test scaffolding; integration tests (Task 14) are expected to flag
-// behavioral gaps.
-func (s *Store) Audit(ctx context.Context, opts AuditOptions) error {
-	// Store size — the bash uses `du -sh /nix/store` (gated on platform).
-	if _, err := s.runner.Run(ctx, "du", []string{"-sh", "/nix/store"}, exec.RunOptions{}); err != nil {
-		return fmt.Errorf("store size: %w", err)
+// Audit reports profile generations and Nix store size. It writes a
+// sectioned report to out (one section per profile category, then the Nix
+// Store section). Warnings from devboxProjects (missing search dirs) go to
+// errOut. Errors from individual subprocesses are tolerated — a profile that
+// errors still prints its header; closure size becomes "unknown". Audit
+// returns nil except on a true programming error.
+func (s *Store) Audit(ctx context.Context, out, errOut io.Writer, opts AuditOptions) error {
+	cfg := LoadConfig(s.env)
+
+	// ─── System Profiles ───────────────────────────────────────────────────────
+	fmt.Fprintln(out, "=== System Profiles ===")
+	s.auditProfile(ctx, out, "system", s.systemProfile(), true)
+
+	// ─── Home Manager ──────────────────────────────────────────────────────────
+	fmt.Fprintln(out, "=== Home Manager ===")
+	hm := s.homeManagerProfile()
+	if _, err := os.Lstat(hm); err == nil {
+		s.auditProfile(ctx, out, "home-manager", hm, false)
+	} else {
+		fmt.Fprintln(out, "  (not installed)")
+		fmt.Fprintln(out)
 	}
-	if opts.Full {
-		// Reclaimable estimate — bash invokes `nix store gc --dry-run`.
-		if _, err := s.runner.Run(ctx, "nix", []string{"store", "gc", "--dry-run"}, exec.RunOptions{}); err != nil {
-			return fmt.Errorf("dead paths estimate: %w", err)
+
+	// ─── User Profiles ─────────────────────────────────────────────────────────
+	fmt.Fprintln(out, "=== User Profiles ===")
+	for _, p := range s.userProfiles() {
+		s.auditProfile(ctx, out, "user-profiles", p, false)
+	}
+
+	// ─── Devbox Global ─────────────────────────────────────────────────────────
+	fmt.Fprintln(out, "=== Devbox Global ===")
+	dbg := s.devboxGlobalProfile()
+	if dbg != "" {
+		s.auditProfile(ctx, out, "devbox-global", dbg, false)
+	} else {
+		fmt.Fprintln(out, "  (not installed)")
+		fmt.Fprintln(out)
+	}
+
+	// ─── Devbox Projects ───────────────────────────────────────────────────────
+	fmt.Fprintln(out, "=== Devbox Projects ===")
+	if len(cfg.SearchDirs) == 0 {
+		fmt.Fprintln(out, "  (no search dirs configured)")
+		fmt.Fprintln(out)
+	} else {
+		for _, p := range s.devboxProjects(ctx, errOut, cfg.SearchDirs) {
+			s.auditProfile(ctx, out, "devbox-projects", p, false)
 		}
 	}
+
+	// ─── Nix Store ─────────────────────────────────────────────────────────────
+	fmt.Fprintln(out, "=== Nix Store ===")
+	fmt.Fprintf(out, "Volume used: %s\n", storeSize(ctx, s.runner))
+	if opts.Full {
+		fmt.Fprintf(out, "Reclaimable (dead paths): %s\n", deadPathsSize(ctx, s.runner))
+	}
+
 	return nil
+}
+
+// auditProfile emits the per-profile audit block:
+//
+//	  <label>:
+//	    Profile: <profile>
+//	    <generation lines, each indented 4 spaces>
+//	    Closure size: <size>
+//	<blank line>
+//
+// Errors from listGenerations are tolerated (zero generation lines emitted).
+// Closure size becomes "unknown" if profileClosureSize fails.
+func (s *Store) auditProfile(ctx context.Context, out io.Writer, category, profile string, sudo bool) {
+	label := s.formatProfileLabel(profile, category)
+	fmt.Fprintf(out, "  %s:\n", label)
+	fmt.Fprintf(out, "    Profile: %s\n", profile)
+
+	gens, err := listGenerations(ctx, s.runner, profile, sudo)
+	if err == nil {
+		for _, g := range gens {
+			currentWord := ""
+			if g.Current {
+				currentWord = "current"
+			}
+			fmt.Fprintf(out, "    %d %s %s\n", g.Num, g.Date, currentWord)
+		}
+	}
+
+	fmt.Fprintf(out, "    Closure size: %s\n", profileClosureSize(ctx, s.runner, profile))
+	fmt.Fprintln(out)
 }

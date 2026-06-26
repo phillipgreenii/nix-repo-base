@@ -20,13 +20,21 @@ func addStoreCmd(parent *cobra.Command) {
 }
 
 func storeAuditCmd() *cobra.Command {
-	return &cobra.Command{
+	var full bool
+	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Audit nix store contents",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return store.New(exec.NewRealRunner()).Audit(context.Background(), store.AuditOptions{})
+			return store.New(exec.NewRealRunner()).Audit(
+				cmd.Context(),
+				cmd.OutOrStdout(),
+				cmd.ErrOrStderr(),
+				store.AuditOptions{Full: full},
+			)
 		},
 	}
+	cmd.Flags().BoolVar(&full, "full", false, "Include dead paths estimate (slow, requires sudo)")
+	return cmd
 }
 
 func storeDeepCleanCmd() *cobra.Command {

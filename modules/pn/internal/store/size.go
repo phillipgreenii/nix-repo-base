@@ -56,10 +56,15 @@ func storeSize(ctx context.Context, r exec.Runner) string {
 	return formatSize(bytes)
 }
 
+// evalSymlinks is the testability seam for filepath.EvalSymlinks. Tests can
+// override this to inject a controlled resolution without touching the
+// filesystem (so scripted FakeRunner responses match the raw profile path).
+var evalSymlinks = filepath.EvalSymlinks
+
 // profileClosureSize returns the human-readable closure size, or "unknown".
 func profileClosureSize(ctx context.Context, r exec.Runner, profile string) string {
 	resolved := profile
-	if rp, err := filepath.EvalSymlinks(profile); err == nil {
+	if rp, err := evalSymlinks(profile); err == nil {
 		resolved = rp
 	}
 	res, err := r.Run(ctx, "nix", []string{"path-info", "-S", resolved}, exec.RunOptions{})
