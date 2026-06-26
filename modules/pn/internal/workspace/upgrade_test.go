@@ -53,6 +53,8 @@ url = "github:owner/leaf"
 func TestUpgrade_RunsUpdateThenApply(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateDir)
+	// Apply's success path writes the applied-state store; keep it in a temp dir.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	mkRepoDir(t, root, "dep")

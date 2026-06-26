@@ -36,6 +36,9 @@ const applyLock = `{
 
 func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Apply's success path calls markApplied -> writeAppliedState; isolate the
+	// store to a temp dir so it never touches ~/.local/share (the XDG fallback).
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	mkRepoDir(t, root, "dep")
@@ -119,6 +122,8 @@ url = "github:owner/leaf"
 // when the git version differs before vs after the rebuild.
 func TestApply_RestartsFsmonitorWhenGitVersionChanges(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Apply's success path writes the applied-state store; keep it in a temp dir.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
@@ -145,6 +150,8 @@ func TestApply_RestartsFsmonitorWhenGitVersionChanges(t *testing.T) {
 // when the git version is identical before and after the rebuild.
 func TestApply_NoFsmonitorRestartWhenGitUnchanged(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Apply's success path writes the applied-state store; keep it in a temp dir.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
