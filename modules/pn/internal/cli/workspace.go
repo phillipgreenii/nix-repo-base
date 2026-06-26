@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,6 +54,7 @@ Environment variables:
 	ws.AddCommand(workspaceUpdateCmd(&terminalFlag))
 	ws.AddCommand(workspaceUpgradeCmd(&terminalFlag))
 	ws.AddCommand(workspaceDiscoverCmd(&terminalFlag))
+	ws.AddCommand(workspaceInfoCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
 	ws.AddCommand(workspaceWorktreeCmd())
 	parent.AddCommand(ws)
@@ -410,6 +412,48 @@ func workspaceDiscoverCmd(terminal *string) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func workspaceInfoCmd(_ *string) *cobra.Command {
+	var infoJSON bool
+	cmd := &cobra.Command{
+		Use:   "info",
+		Short: "Show the workspace identity and per-repo applied state",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			info, err := w.Info(cmd.Context())
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if infoJSON {
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				return enc.Encode(info)
+			}
+			fmt.Fprintf(out, "wsid:     %s\n", info.Wsid)
+			fmt.Fprintf(out, "root:     %s\n", info.Root)
+			fmt.Fprintf(out, "terminal: %s\n", info.Terminal)
+			for _, r := range info.Repos {
+				applied := r.AppliedRef
+				if applied == "" {
+					applied = "(none)"
+				}
+				dirty := ""
+				if r.Dirty {
+					dirty = " (dirty)"
+				}
+				fmt.Fprintf(out, "  %s\t%s\t%s%s\n", r.Name, r.Path, applied, dirty)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&infoJSON, "json", false, "JSON output")
+	return cmd
 }
 
 func workspaceNixCmd() *cobra.Command {
