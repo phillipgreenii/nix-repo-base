@@ -7,13 +7,11 @@
 ```nix
 # In your module's default.nix:
 { pkgs, self }:
-let
-  version = self.lib.mkVersion self;
-in
+# No `version` argument: mkGoBinary derives the version from this package's own
+# source-content digest (ADR 0006). See "Version format" below.
 (self.lib.mkGoBuilders { inherit pkgs self; }).mkGoBinary {
   name = "my-tool";
   src = ./.;
-  inherit version;
   description = "Short one-line description";
   runtimeDeps = [ pkgs.git ];
   vendorHash = "sha256-...";  # set after first build
@@ -43,7 +41,7 @@ symbol is missing.
 
 ## Optional parameters
 
-Beyond `name`, `src`, `version`, and `description`, `mkGoBinary` accepts:
+Beyond `name`, `src`, and `description`, `mkGoBinary` accepts:
 
 | Parameter          | Default                                     | Purpose                                                                                                                                                     |
 | ------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -92,9 +90,20 @@ Add the binary name to the module's `.gitignore`:
 /<binary-name>
 ```
 
-### 3. Version via `mkVersion`
+### 3. Version: derived automatically from the source-content digest
 
-The `version` field of `mkGoBinary` MUST be `self.lib.mkVersion self` (or equivalent). The factory rejects the literal `"dev"` and any version ending in `"-dev"` to enforce "live binary always non-dev."
+You do **not** pass a `version`. `mkGoBinary` / `mkGoApp` derive it from each package's own
+`src` content digest (ADR [0006](adr/0006-source-content-digest-versioning.md)), producing
+`0.0.0-<srcdigest8>` (the default `baseVersion` `0.0.0` plus an 8-hex-char `sha256` digest of
+the source paths via `lib.mkSrcDigest`). The version changes iff the package's own source
+changes, so editing one package never restamps a sibling.
+
+A caller-supplied `version` is ignored: `mkGoBinary` is a **closed** argument set that does
+not accept a `version` argument at all (passing one is an evaluation error), and `mkGoApp`
+(which accepts arbitrary extra args) **strips** any passed `version` via `removeAttrs` before
+delegating to `buildGoApplication`. There is **no** factory-level rejection of `"dev"` — the
+derived version is never `"dev"`. A tool that wants to refuse non-Nix builds enforces that
+with its own runtime guard in `main` (the `bin/pn` sentinel above), not in the factory.
 
 ### 4. Tests wired into `nix flake check`
 
@@ -128,19 +137,33 @@ fully worked example.
 
 ## Version format
 
-`mkVersion self` produces `YYYYMMDD-shortRev` from the flake's `lastModifiedDate` and `rev`. For clean git trees this is e.g. `20260531-abc1234`. For dirty trees with a `dirtyRev` this is `20260531-<7chars>`. Without any git info at all, falls through to `20260531-dev` — which the factory rejects.
+Go packages embed `0.0.0-<srcdigest8>`, where `0.0.0` is the default `baseVersion` and
+`<srcdigest8>` is `first8(sha256(...))` of the package's own source paths
+(`lib.mkSrcDigest`, ADR [0006](adr/0006-source-content-digest-versioning.md)). Example:
+`0.0.0-1a2b3c4d`. The digest is computed at eval time from `src` alone, so it is stable for
+identical source and changes on any edit (committed or dirty) — there is no
+`lastModifiedDate` / `rev` and no `"dev"` fallback.
 
-The format may evolve in `version.nix`; consumers pick up changes automatically.
+Note: `mkSrcDigest` hashes the source store-path strings, not the NAR content directly (see
+the note in `lib/version.nix`). `mkVersion` still exists in `lib/version.nix` and is consumed
+by the repo-meta module and the bash/python builders — but the Go builders no longer use it.
+
+The version is injected with `-X <versionPath>=<version>`, where `versionPath` defaults to
+`main.Version` for `mkGoBinary` (and `main.version` for the lower-level `mkGoApp`). The
+format may evolve in `go-builders.nix` / `version.nix`; consumers pick up changes
+automatically.
 
 ## Why these conventions?
 
 - **Man pages + completions**: Standardized so users get the same affordances from every tool.
-- **Version contract**: Operations/debugging needs to know which binary is running. "dev" hides that information.
+- **Version contract**: Operations/debugging needs to know which binary is running. The per-source digest (`0.0.0-<srcdigest8>`) pins a binary to exactly the source it was built from and changes on every edit.
 - **`bin/<tool>` go-run shim**: Avoid the failure mode where dev/CI use a stale committed binary instead of current source.
 - **Gitignored binary**: Compiled binaries are build artifacts, never source-of-truth.
 
 ## See also
 
-- `lib/version.nix` — `mkGitHash`, `mkVersion`, `mkInstallMetadata`.
+- `lib/version.nix` — `mkGitHash`, `mkVersion`, `mkSrcDigest`, `mkInstallMetadata`.
 - `lib/go-builders.nix` — the factory itself.
-- `docs/adr/0005-mkGoBuilders-factory.md` — the architectural decision record.
+- `docs/adr/0005-mkGoBuilders-factory.md` — the original factory decision.
+- `docs/adr/0006-source-content-digest-versioning.md` — per-source-digest versioning (replaces the `mkVersion self` contract for Go).
+- `docs/adr/0008-adopt-gomod2nix-for-go-packages.md` — gomod2nix engine (`buildGoApplication`).
