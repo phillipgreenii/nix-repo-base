@@ -1,6 +1,6 @@
 # Using mkGoBuilders
 
-`mkGoBuilders.mkGoBinary` builds a Go binary via `buildGoModule` with standard postInstall (man page + completions) and a version contract.
+`mkGoBuilders.mkGoBinary` builds a Go binary via the gomod2nix engine (`buildGoApplication`, ADR 0008) with standard postInstall (man page + completions) and a version contract.
 
 ## Quick start
 
@@ -14,7 +14,11 @@
   src = ./.;
   description = "Short one-line description";
   runtimeDeps = [ pkgs.git ];
-  vendorHash = "sha256-...";  # set after first build
+  # Required: the gomod2nix lockfile committed beside go.mod (ADR 0008). The
+  # gomod2nix engine reads pinned dependency hashes from it — there is no
+  # vendorHash. Generate / refresh and commit it with:
+  #   go mod tidy && nix run github:nix-community/gomod2nix -- generate
+  gomod2nixToml = ./gomod2nix.toml;
 }
 ```
 
@@ -41,15 +45,17 @@ symbol is missing.
 
 ## Optional parameters
 
-Beyond `name`, `src`, and `description`, `mkGoBinary` accepts:
+`mkGoBinary` requires `name`, `src`, and `gomod2nixToml` (the committed gomod2nix lockfile beside `go.mod`; the engine reads pinned dependency hashes from it — there is no `vendorHash`). It is a closed arg set — passing an unknown field (e.g. `vendorHash` or `version`) is an evaluation error. Beyond the required fields it accepts:
 
 | Parameter          | Default                                     | Purpose                                                                                                                                                     |
 | ------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `description`      | `""`                                        | One-line summary. Fed to `help2man --name=` for the man page (see note below).                                                                              |
 | `runtimeDeps`      | `[]`                                        | Runtime deps wrapped onto PATH (e.g., `pkgs.git` for shell-outs). Propagated to consumers. NOT for static linking — Go binaries link statically by default. |
 | `testDeps`         | `[]`                                        | Extra packages on PATH during `go test` (e.g., `pkgs.git` for tests that invoke `git`).                                                                     |
 | `manPage`          | `true`                                      | When `false`, skips help2man man-page generation. Useful for binaries without a `--help` that help2man can parse.                                           |
 | `completions`      | `{ bash = true; zsh = true; fish = true; }` | Per-shell completion generation. Set e.g. `completions.fish = false` to skip a shell.                                                                       |
-| `vendorHash`       | `null`                                      | Go module vendoring hash. `null` means no vendoring; otherwise set to the sha256 reported by your first `nix build`.                                        |
+| `versionPath`      | `"main.Version"`                            | Go linker symbol the version is injected into via `-X`. Override if your `main` exports it under a different name (e.g. `main.version`).                    |
+| `modRoot`          | `null`                                      | Subdirectory of `src` holding `go.mod`, when the module is not at the `src` root (Pattern B / local-replace; see CLAUDE.md "Go packages").                  |
 | `extraPostInstall` | `""`                                        | Extra shell commands appended to postInstall (escape hatch).                                                                                                |
 
 `description` is fed to `help2man --name=`, so if `manPage = true` and
