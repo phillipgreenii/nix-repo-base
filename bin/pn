@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# bin/pn — run pn from source via `go run` (dev/CI; NOT on PATH, NOT Nix-exported).
+#
+# Replaces the former modules/pn/run-from-source.sh. Used by developers and CI
+# when the compiled binary may be stale or absent (we never commit the binary).
+#
+# pn's main.go guards against version == "dev" (internal/cli/root.go rejects it as
+# "built outside the Nix derivation"), so this shim injects a real version via
+# -ldflags. That injection is pn-SPECIFIC: the default bin/<tool> shim for tools
+# without a dev-version guard is a plain `go run` (see docs/using-mkGoBuilders.md).
+# The injected version mirrors the source-digest version's "<YYYYMMDD>-<rev>" shape
+# and only needs to be non-"dev" to satisfy the guard.
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly PN_DIR="$SCRIPT_DIR/../modules/pn"
+cd "$PN_DIR"
+# pn's main.go rejects version == "dev" to refuse binaries built outside the Nix
+# derivation. Inject the sentinel "dev-wrapped": it passes the guard (the check is
+# an exact "dev" match) while staying obviously a from-source wrapper run — NOT a
+# synthesized <date>-<rev> that could be mistaken for a real Nix-built release.
+#
+# CGO_ENABLED=0 builds a pure-Go binary so the shim runs without a C toolchain on
+# PATH (pn shells out to nix/git/nvd/sqlite as subprocesses — no direct cgo).
+# Matches the homelab bin/tc-secrets go-run shim.
+exec env CGO_ENABLED=0 go run -ldflags "-X main.Version=dev-wrapped" ./cmd/pn "$@"

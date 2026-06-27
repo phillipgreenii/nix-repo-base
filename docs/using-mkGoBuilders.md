@@ -62,18 +62,26 @@ Beyond `name`, `src`, `version`, and `description`, `mkGoBinary` accepts:
 
 Every `mkGoBinary` consumer MUST ship these alongside the Nix derivation:
 
-### 1. `run-from-source.sh`
+### 1. `bin/<tool>` go-run shim
 
-A bash wrapper at the Go module root that invokes `go run`. NOT on PATH. NOT exported via Nix. Used by tests, CI, and developers when the compiled binary may be stale (or when there's no binary at all because we don't commit them).
+A bash wrapper in the repo's `bin/` directory that invokes `go run`. NOT on PATH. NOT exported via Nix. Used by CI and developers when the compiled binary may be stale (or when there's no binary at all because we don't commit them). This replaces the former `run-from-source.sh` at the module root.
 
 ```bash
 #!/usr/bin/env bash
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/../path/to/go-module"
 exec go run ./cmd/<binary-name> "$@"
 ```
+
+**Version-guarded tools inject a sentinel.** A tool whose `main` rejects the `"dev"` version (to refuse binaries built outside the Nix derivation) cannot use the plain shim above — `go run` leaves the version at `"dev"` and the tool refuses to run. Such a tool's shim injects a sentinel that passes the guard (the check is an exact `"dev"` match) while staying obviously a from-source run. Use a literal like `dev-wrapped` — **not** a synthesized `<date>-<rev>`, which would masquerade as a real Nix-built release and defeat the guard's purpose of signalling how the binary was produced:
+
+```bash
+exec go run -ldflags "-X main.Version=dev-wrapped" ./cmd/<binary-name> "$@"
+```
+
+Keep the injection coupled to the guard: tools **without** a `"dev"` guard use the plain shim (a sentinel on an unguarded tool is misleading ceremony). `bin/pn` is the canonical guarded example.
 
 ### 2. `.gitignore` entry for the binary
 
@@ -128,7 +136,7 @@ The format may evolve in `version.nix`; consumers pick up changes automatically.
 
 - **Man pages + completions**: Standardized so users get the same affordances from every tool.
 - **Version contract**: Operations/debugging needs to know which binary is running. "dev" hides that information.
-- **`run-from-source.sh`**: Avoid the failure mode where tests use a stale committed binary instead of current source.
+- **`bin/<tool>` go-run shim**: Avoid the failure mode where dev/CI use a stale committed binary instead of current source.
 - **Gitignored binary**: Compiled binaries are build artifacts, never source-of-truth.
 
 ## See also

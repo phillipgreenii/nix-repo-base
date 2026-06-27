@@ -22,7 +22,7 @@ build:
 
 # Run pn from source (for dev/CI when binary may be stale)
 run *args:
-    ./modules/pn/run-from-source.sh {{ args }}
+    ./bin/pn {{ args }}
 
 # Run nix flake check (all repo validation)
 check:
