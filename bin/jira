@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# bin/jira — run the jira tool from source via `go run` (dev/CI; NOT on PATH,
+# NOT Nix-exported). Used when the compiled binary may be stale or absent (we
+# never commit binaries).
+#
+# jira has no dev-version guard, so this is the plain shim — no -ldflags version
+# injection (that stays coupled to a guard; see docs/using-mkGoBuilders.md).
+#
+# CGO_ENABLED=0 builds a pure-Go binary so the shim runs without a C toolchain
+# on PATH. Matches the homelab bin/tc-secrets go-run shim.
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly JIRA_DIR="$SCRIPT_DIR/../modules/jira"
+cd "$JIRA_DIR"
+exec env CGO_ENABLED=0 go run ./cmd/jira "$@"
