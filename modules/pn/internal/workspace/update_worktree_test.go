@@ -64,6 +64,7 @@ url = "github:owner/foo"
 `)
 	foo = filepath.Join(root, "foo")
 	wt = filepath.Join(root, ".worktrees", updateWorktreesSubdir, "foo-TEST")
+	mkUpdateLocks(t, wt) // existence-gate: the worktree carries the committed script
 	f = exec.NewFakeRunner()
 	return root, foo, wt, f
 }

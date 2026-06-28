@@ -13,6 +13,17 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
+// mkUpdateLocks materializes a real ./update-locks.sh in dir so the update
+// flow's existence-gate runs it (the fake runner intercepts the command but
+// does not create the file). Used by fixtures that script "./update-locks.sh".
+func mkUpdateLocks(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "update-locks.sh"), "#!/usr/bin/env bash\n")
+}
+
 // TestUpdateOrder_PrefersLockTopoOrder: Update iterates the lock's topological
 // order (dependencies first, terminal last) when the lock covers the repo set —
 // here [lib, app], not the alphabetical [app, lib].
@@ -105,6 +116,7 @@ url = "github:owner/foo"
 `)
 	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	mkUpdateLocks(t, foo)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
 	// no upstream → straight to update-locks
@@ -160,6 +172,8 @@ url = "github:owner/bar"
 	f := exec.NewFakeRunner()
 	bar := filepath.Join(root, "bar")
 	foo := filepath.Join(root, "foo")
+	mkUpdateLocks(t, bar)
+	mkUpdateLocks(t, foo)
 	for _, d := range []string{bar, foo} {
 		f.AddResponse("git", []string{"-C", d, "diff", "--quiet"}, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -247,6 +261,7 @@ url = "github:owner/foo"
 
 	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	mkUpdateLocks(t, foo)
 	// dirty checks: both pass (clean).
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -371,7 +386,8 @@ url = "github:owner/foo"
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
 	// no upstream
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
-	// update-locks still runs.
+	// update-locks still runs (file present).
+	mkUpdateLocks(t, foo)
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 	// rev-parse HEAD for lock capture.
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("cafebabe0000000000000000000000000000000\n")}, nil)
@@ -418,6 +434,7 @@ terminal = "foo"
 url = "github:owner/foo"
 `)
 	foo := filepath.Join(root, "foo")
+	mkUpdateLocks(t, foo)
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)

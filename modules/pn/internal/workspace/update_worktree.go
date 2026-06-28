@@ -119,6 +119,10 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	runTS := updateRunStampFn()
 	branch := "pn-update/" + runTS
 	names := ws.topoAlpha(ctx)
+	// Derive the lock once for workspace-edge propagation. Use effectiveLock (the
+	// same source topoAlpha trusts) rather than ws.lock, which is empty on a
+	// fresh/stale checkout and would silently skip every repo (C3).
+	edgeLock, _, _ := ws.effectiveLock(ctx)
 
 	_ = opts.Log.Emit("info", "run_start", "workspace update (worktree) started", map[string]any{
 		"terminal": opts.Terminal, "projects": len(names), "branch": branch,
@@ -135,7 +139,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
 		}
-		oc := ws.updateRepoViaWorktree(ctx, out, name, branch, runTS, ulLibDir)
+		oc := ws.updateRepoViaWorktree(ctx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name))
 		if oc.rev != "" {
 			revs[name] = LockedRepo{URL: displayURL(ws.config.Repos[name]), Rev: oc.rev}
 		}
@@ -170,11 +174,12 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	return nil
 }
 
-// updateRepoViaWorktree runs the 8-step per-repo flow. It never returns an
+// updateRepoViaWorktree runs the per-repo worktree flow (worktree-add → sync →
+// propagate workspace edges → update-locks → rebase → push → integrate). It never returns an
 // error: every failure is captured in the returned repoOutcome and the worktree
 // + branch are left in place (leave-on-failure). Only a fully successful
 // integration removes them.
-func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, name, branch, runTS, ulLibDir string) repoOutcome {
+func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, name, branch, runTS, ulLibDir string, aliases []string) repoOutcome {
 	primary := filepath.Join(ws.root, name)
 	wt := filepath.Join(ws.WorktreesDir(), updateWorktreesSubdir, name+"-"+runTS)
 	oc := repoOutcome{name: name, worktree: wt, branch: branch}
@@ -216,20 +221,32 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		return fail("rebase-origin-main", err, "rebase conflict aborted")
 	}
 
-	// Step 3: run the existing update-locks in the worktree.
-	if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
-		Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out,
-	}); err != nil {
-		return fail("update-locks", err, "")
+	// Step 3: propagate workspace-edge inputs (ungated) — relock this repo's
+	// workspace-sibling flake inputs to their upstreams' just-integrated revs.
+	if err := ws.propagateWorkspaceEdges(ctx, out, name, wt, ws.resolveFlakePath(name), aliases); err != nil {
+		return fail("propagate-edges", err, "")
 	}
 
-	// Step 4: rebase onto local main FIRST (catch unpushed local commits).
+	// Step 4: run the existing update-locks in the worktree, when present. A repo
+	// without ./update-locks.sh is skipped (not failed): the propagation pass
+	// above already maintains its workspace locks.
+	if fileExists(filepath.Join(wt, "update-locks.sh")) {
+		if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
+			Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out,
+		}); err != nil {
+			return fail("update-locks", err, "")
+		}
+	} else {
+		fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (workspace inputs already propagated)\n", name)
+	}
+
+	// Step 5: rebase onto local main FIRST (catch unpushed local commits).
 	if err := git(wt, "rebase", "main"); err != nil {
 		_ = git(wt, "rebase", "--abort")
 		return fail("rebase-local-main", err, "rebase conflict aborted")
 	}
 
-	// Step 5: re-fetch + rebase onto origin/main (catch remote drift).
+	// Step 6: re-fetch + rebase onto origin/main (catch remote drift).
 	if err := git(wt, "fetch", "origin"); err != nil {
 		return fail("refetch-origin", err, "")
 	}
@@ -244,15 +261,15 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		return fail("capture-rev", err, "")
 	}
 
-	// Step 6: publish — push branch to remote main from the worktree.
+	// Step 7: publish — push branch to remote main from the worktree.
 	if err := git(wt, "push", "origin", "HEAD:main"); err != nil {
 		return fail("push", err, "remote main may have advanced; resolve manually and re-run")
 	}
-	// Remote main is now at rev. Record it even if step 7 defers, so revs.json
+	// Remote main is now at rev. Record it even if step 8 defers, so revs.json
 	// matches what downstream repos will relock against (ADR 0009 N1).
 	oc.rev = rev
 
-	// Step 7: advance local primary main (smart).
+	// Step 8: advance local primary main (smart).
 	switch ws.primaryMainState(ctx, primary) {
 	case primaryOnCleanMain:
 		if err := git(primary, "merge", "--ff-only", branch); err != nil {
@@ -275,7 +292,7 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		return oc
 	}
 
-	// Step 8: success — remove worktree, then branch.
+	// Step 9: success — remove worktree, then branch.
 	if err := git(primary, "worktree", "remove", wt); err != nil {
 		oc.status, oc.note = statusOK, "integrated, but worktree remove failed — run `pn workspace worktree prune`"
 		fmt.Fprintf(out, "  ⚠ %s: integrated, but worktree remove failed\n", name)

@@ -100,6 +100,9 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		return err
 	}
 	names := ws.topoAlpha(ctx)
+	// Derive the lock once for workspace-edge propagation; effectiveLock (not the
+	// possibly-empty ws.lock) is the source topoAlpha trusts (C3).
+	edgeLock, _, _ := ws.effectiveLock(ctx)
 	_ = opts.Log.Emit("info", "run_start", "workspace update started", map[string]any{
 		"terminal": opts.Terminal,
 		"projects": len(names),
@@ -128,6 +131,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		fmt.Fprintf(out, "  --== update %s ==--  \n", name)
 		hasUp := ws.hasUpstream(ctx, repoDir)
 		pullFailed := false
+		propagateFailed := false
 		projectFailed := false
 
 		if hasUp {
@@ -139,18 +143,38 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 				projectFailed = true
 			}
 		}
-		// Skip update-locks if pull failed: the working tree is suspect.
+		// Propagate workspace-edge inputs (ungated) before update-locks. Skip if
+		// pull failed: the working tree is suspect.
 		if !pullFailed {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("update interrupted: %w", err)
 			}
-			if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out}); err != nil {
+			if err := ws.propagateWorkspaceEdges(ctx, out, name, repoDir, ws.resolveFlakePath(name), workspaceAliasesFromLock(edgeLock, name)); err != nil {
+				fmt.Fprintf(out, "  ✗ %s: propagate-edges failed: %v\n", name, err)
+				propagateFailed = true
 				projectFailed = true
-				// Keep going to push whatever update-locks committed.
 			}
 		}
-		// Push only when pull succeeded (even on partial update-locks failure).
-		if hasUp && !pullFailed {
+		// Run update-locks (when present) only if pull and propagation succeeded:
+		// a propagation error may have left a dirty tree. A repo without
+		// ./update-locks.sh is skipped (not failed) — propagation already
+		// maintained its workspace locks.
+		if !pullFailed && !propagateFailed {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("update interrupted: %w", err)
+			}
+			if fileExists(filepath.Join(repoDir, "update-locks.sh")) {
+				if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out}); err != nil {
+					projectFailed = true
+					// Keep going to push whatever update-locks committed.
+				}
+			} else {
+				fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (workspace inputs already propagated)\n", name)
+			}
+		}
+		// Push only when pull and propagation succeeded (even on partial
+		// update-locks failure).
+		if hasUp && !pullFailed && !propagateFailed {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("update interrupted: %w", err)
 			}
@@ -164,6 +188,8 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			step := "push"
 			if pullFailed {
 				step = "pull"
+			} else if propagateFailed {
+				step = "propagate-edges"
 			}
 			_ = opts.Log.Emit("error", "project_result", "project failed", map[string]any{
 				"name": name, "outcome": "failed", "failed_step": step,
