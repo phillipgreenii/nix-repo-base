@@ -17,3 +17,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0010](0010-claude-marketplace-builder-and-identity.md) | `mkClaudeMarketplace` builder + local-marketplace identity convention   | Accepted                                       |
 | [0011](0011-source-digest-in-derivation-version.md)     | Per-source digest in the derivation `version` for bash & python         | Accepted                                       |
 | [0012](0012-pn-applied-state-store-and-info-api.md)     | `pn` applied-state store, workspace info API, and wsid registry         | Accepted                                       |
+| [0013](0013-activation-output-convention.md)            | Activation-script output convention (`mkActivationSection` + helpers)   | Accepted                                       |
