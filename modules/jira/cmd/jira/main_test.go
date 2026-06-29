@@ -50,6 +50,7 @@ func paginatedSearchServerCLI(t *testing.T) *httptest.Server {
 			_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-3","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}],"isLast":true}`))
 		default:
 			t.Errorf("unexpected token %v", body["nextPageToken"])
+			http.Error(w, "unexpected token", http.StatusBadRequest)
 		}
 	}))
 }
@@ -126,7 +127,9 @@ func TestCLI_SearchCursorEmitsNextToken(t *testing.T) {
 		Truncated bool   `json:"truncated"`
 		Next      string `json:"next_page_token"`
 	}
-	_ = json.Unmarshal([]byte(out), &got)
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
 	if !got.Truncated || got.Next != "p2" {
 		t.Errorf("cursor page must surface next_page_token=p2, truncated=true: %+v", got)
 	}
@@ -153,7 +156,9 @@ func TestCLI_SearchAll_capHitWarnsAndSucceeds(t *testing.T) {
 		Items     []map[string]any `json:"items"`
 		Truncated bool             `json:"truncated"`
 	}
-	_ = json.Unmarshal([]byte(out), &got)
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
 	if len(got.Items) != 2 || !got.Truncated {
 		t.Errorf("cap-hit envelope must be partial+truncated: %+v", got)
 	}

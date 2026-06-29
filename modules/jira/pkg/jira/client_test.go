@@ -135,7 +135,9 @@ func TestSearchPage_sendsTokenAndSurfacesNext(t *testing.T) {
 func TestSearch_firstPageOmitsToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
 		if _, present := body["nextPageToken"]; present {
 			t.Errorf("Search() must NOT send nextPageToken on the first page; body=%v", body)
 		}
@@ -165,6 +167,7 @@ func paginatedSearchServer(t *testing.T) *httptest.Server {
 			_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-3","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}],"isLast":true}`))
 		default:
 			t.Errorf("unexpected token %v", body["nextPageToken"])
+			http.Error(w, "unexpected token", http.StatusBadRequest)
 		}
 	}))
 }
@@ -176,7 +179,7 @@ func TestSearchAll_concatenatesAllPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchAll: %v", err)
 	}
-	if len(got.Items) != 3 || got.Items[0].Key != "ENG-1" || got.Items[2].Key != "ENG-3" {
+	if len(got.Items) != 3 || got.Items[0].Key != "ENG-1" || got.Items[1].Key != "ENG-2" || got.Items[2].Key != "ENG-3" {
 		t.Fatalf("items: %+v", got.Items)
 	}
 	if got.Truncated || got.NextPageToken != "" {
