@@ -108,11 +108,13 @@ type rawChangeItem struct {
 	ToString   string `json:"toString"`
 }
 type rawHistory struct {
+	ID      string          `json:"id"`
 	Author  rawUser         `json:"author"`
 	Created string          `json:"created"`
 	Items   []rawChangeItem `json:"items"`
 }
 type rawComment struct {
+	ID      string          `json:"id"`
 	Author  rawUser         `json:"author"`
 	Created string          `json:"created"`
 	Body    json.RawMessage `json:"body"`
@@ -205,6 +207,7 @@ func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp Expa
 						continue
 					}
 					iss.Changelog = append(iss.Changelog, ChangelogEntry{
+						ID:    h.ID,
 						Field: it.Field, From: it.FromString, To: it.ToString,
 						Author: *h.Author.toUserOrEmpty(), At: h.Created,
 					})
@@ -214,6 +217,7 @@ func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp Expa
 		if exp.Comments {
 			for _, cm := range is.Fields.Comment.Comments {
 				iss.Comments = append(iss.Comments, Comment{
+					ID:     cm.ID,
 					Author: *cm.Author.toUserOrEmpty(), Body: FlattenADF(cm.Body), Created: cm.Created,
 				})
 			}

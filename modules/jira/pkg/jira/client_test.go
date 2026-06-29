@@ -56,7 +56,7 @@ func TestSearch_mapsItemsExpandAndTruncation(t *testing.T) {
 		if r.URL.Path != "/rest/api/3/search/jql" || r.Method != http.MethodPost {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Done"},"issuetype":{"name":"Task"},"labels":[],"comment":{"comments":[{"author":{"displayName":"C"},"created":"2026-01-03T00:00:00.000+0000","body":"a note"}]}},"changelog":{"histories":[{"author":{"displayName":"H"},"created":"2026-01-02T00:00:00.000+0000","items":[{"field":"status","fromString":"Open","toString":"Done"}]}]}}],"nextPageToken":"more"}`))
+		_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Done"},"issuetype":{"name":"Task"},"labels":[],"comment":{"comments":[{"id":"c-501","author":{"displayName":"C"},"created":"2026-01-03T00:00:00.000+0000","body":"a note"}]}},"changelog":{"histories":[{"id":"h-900","author":{"displayName":"H"},"created":"2026-01-02T00:00:00.000+0000","items":[{"field":"status","fromString":"Open","toString":"Done"}]}]}}],"nextPageToken":"more"}`))
 	}))
 	defer srv.Close()
 	got, err := testClient(srv).Search(context.Background(), "project = ENG", 100, ExpandOpts{Changelog: true, Comments: true})
@@ -74,6 +74,15 @@ func TestSearch_mapsItemsExpandAndTruncation(t *testing.T) {
 	}
 	if len(got.Items[0].Comments) != 1 || got.Items[0].Comments[0].Body != "a note" {
 		t.Errorf("comments: %+v", got.Items[0].Comments)
+	}
+	// Stable IDs (Jira changelog-history id / comment id) are carried through so
+	// downstream consumers (activity-collector SP6) can build collision-free
+	// per-event ExternalIDs.
+	if got.Items[0].Changelog[0].ID != "h-900" {
+		t.Errorf("changelog id not mapped: %+v", got.Items[0].Changelog)
+	}
+	if got.Items[0].Comments[0].ID != "c-501" {
+		t.Errorf("comment id not mapped: %+v", got.Items[0].Comments)
 	}
 }
 

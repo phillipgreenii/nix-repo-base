@@ -22,7 +22,11 @@ type User struct {
 }
 
 // ChangelogEntry is one status transition extracted from a Jira changelog.
+// ID is the Jira changelog-history id (stable per history entry); it lets
+// consumers build collision-free per-event identifiers without re-deriving one
+// from the timestamp.
 type ChangelogEntry struct {
+	ID     string `json:"id"`
 	Field  string `json:"field"`
 	From   string `json:"from"`
 	To     string `json:"to"`
@@ -31,7 +35,10 @@ type ChangelogEntry struct {
 }
 
 // Comment is one issue comment with its body flattened from ADF to plain text.
+// ID is the Jira comment id (stable per comment), carried so consumers can build
+// collision-free per-event identifiers.
 type Comment struct {
+	ID      string `json:"id"`
 	Author  User   `json:"author"`
 	Body    string `json:"body"`
 	Created string `json:"created"` // RFC3339
