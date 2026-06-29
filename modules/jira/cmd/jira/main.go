@@ -99,14 +99,18 @@ func newIssueCmd() *cobra.Command {
 }
 
 func newSearchCmd() *cobra.Command {
-	var jql, expand string
-	var limit int
+	var jql, expand, cursor string
+	var limit, maxPages int
+	var all bool
 	c := &cobra.Command{
 		Use:   "search",
-		Short: "JQL search; writes {items,truncated} JSON",
+		Short: "JQL search; writes {items,truncated,next_page_token?} JSON",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(jql) == "" {
 				return fmt.Errorf("jira search: --jql is required")
+			}
+			if all && strings.TrimSpace(cursor) != "" {
+				return fmt.Errorf("jira search: --all and --cursor are mutually exclusive")
 			}
 			cl, cfg, err := newClient(cmd)
 			if err != nil {
@@ -124,7 +128,17 @@ func newSearchCmd() *cobra.Command {
 					exp.Comments = true
 				}
 			}
-			res, err := cl.Search(cmd.Context(), jql, limit, exp)
+			if all {
+				res, err := cl.SearchAll(cmd.Context(), jql, limit, exp, maxPages)
+				if err != nil {
+					return err
+				}
+				if res.Truncated {
+					fmt.Fprintf(cmd.ErrOrStderr(), "jira search: result truncated at max-pages=%d (%d items returned; more remain)\n", maxPages, len(res.Items))
+				}
+				return writeJSON(cmd, res)
+			}
+			res, err := cl.SearchPage(cmd.Context(), jql, limit, exp, strings.TrimSpace(cursor))
 			if err != nil {
 				return err
 			}
@@ -132,8 +146,12 @@ func newSearchCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&jql, "jql", "", "JQL query (required)")
-	c.Flags().IntVar(&limit, "limit", 0, "max results (0 = config default)")
+	c.Flags().IntVar(&limit, "limit", 0, "max results per page (0 = config default)")
 	c.Flags().StringVar(&expand, "expand", "", "comma-separated: changelog,comments")
+	c.Flags().StringVar(&cursor, "cursor", "", "fetch the single page at this nextPageToken")
+	c.Flags().BoolVar(&all, "all", false, "fetch all pages (loops nextPageToken to completeness)")
+	c.Flags().IntVar(&maxPages, "max-pages", jira.DefaultMaxSearchPages, "safety cap on pages fetched by --all")
+	_ = c.Flags().MarkHidden("max-pages")
 	return c
 }
 
