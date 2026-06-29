@@ -1,0 +1,11 @@
+[workspace]
+name = "smoke-s36"
+id = "smoke-s36"
+terminal = "consumer"
+apply_command = "./apply.sh"
+
+[repos.consumer]
+url = "file:///PLACEHOLDER_consumer"
+
+[repos.producer]
+url = "file:///PLACEHOLDER_producer"

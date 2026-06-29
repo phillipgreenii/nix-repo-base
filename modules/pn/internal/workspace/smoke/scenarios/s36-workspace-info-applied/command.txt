@@ -1,0 +1,6 @@
+# Bootstrap, apply (records applied-state), then dump workspace info as JSON.
+workspace init
+workspace clone
+workspace lock
+workspace apply
+workspace info --json

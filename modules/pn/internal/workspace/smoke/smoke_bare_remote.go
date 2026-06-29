@@ -903,3 +903,48 @@ func readFileString(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// assertS36WorkspaceInfoApplied parses the `pn workspace info --json` output
+// (the last command in s36) and asserts the schema plus that at least one repo
+// has a populated applied_ref (proving the preceding apply recorded state).
+func assertS36WorkspaceInfoApplied(t *testing.T, lastResult scenarioResult) {
+	t.Helper()
+	var info struct {
+		Wsid     string `json:"wsid"`
+		Root     string `json:"root"`
+		Terminal string `json:"terminal"`
+		Repos    []struct {
+			Name       string `json:"name"`
+			Path       string `json:"path"`
+			AppliedRef string `json:"applied_ref"`
+			Dirty      bool   `json:"dirty"`
+		} `json:"repos"`
+	}
+	if err := json.Unmarshal(lastResult.Stdout, &info); err != nil {
+		t.Fatalf("S36: parse `workspace info --json`: %v\n%s", err, string(lastResult.Stdout))
+	}
+	if info.Wsid != "smoke-s36" {
+		t.Fatalf("S36: wsid = %q, want %q", info.Wsid, "smoke-s36")
+	}
+	if info.Root == "" {
+		t.Fatalf("S36: root must be non-empty")
+	}
+	if info.Terminal != "consumer" {
+		t.Fatalf("S36: terminal = %q, want %q", info.Terminal, "consumer")
+	}
+	if len(info.Repos) == 0 {
+		t.Fatalf("S36: repos must be non-empty")
+	}
+	applied := false
+	for _, r := range info.Repos {
+		if r.Path == "" {
+			t.Fatalf("S36: repo %q has empty path", r.Name)
+		}
+		if r.AppliedRef != "" {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Fatalf("S36: no repo has a populated applied_ref after apply; info=%+v", info)
+	}
+}

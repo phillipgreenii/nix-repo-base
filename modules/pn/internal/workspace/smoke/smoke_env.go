@@ -20,6 +20,7 @@ import (
 // The scrubbed env includes:
 //   - HOME          → <tempHome> (a fresh dir under t.TempDir())
 //   - XDG_CONFIG_HOME → <tempHome>/xdg
+//   - XDG_DATA_HOME   → <tempHome>/data
 //   - XDG_STATE_HOME  → <tempHome>/state
 //   - GIT_CONFIG_GLOBAL → /dev/null
 //   - GIT_CONFIG_SYSTEM → /dev/null
@@ -44,6 +45,10 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 	if err := os.MkdirAll(xdgState, 0o755); err != nil {
 		t.Fatalf("buildScrubbedEnv: create xdg state: %v", err)
 	}
+	xdgData := filepath.Join(tempHome, "data")
+	if err := os.MkdirAll(xdgData, 0o755); err != nil {
+		t.Fatalf("buildScrubbedEnv: create xdg data: %v", err)
+	}
 	ulLib := filepath.Join(tempHome, "ullib")
 	if err := os.MkdirAll(ulLib, 0o755); err != nil {
 		t.Fatalf("buildScrubbedEnv: create ullib: %v", err)
@@ -53,6 +58,7 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 	overrides := map[string]string{
 		"HOME":                tempHome,
 		"XDG_CONFIG_HOME":     xdgConfig,
+		"XDG_DATA_HOME":       xdgData,
 		"XDG_STATE_HOME":      xdgState,
 		"GIT_CONFIG_GLOBAL":   "/dev/null",
 		"GIT_CONFIG_SYSTEM":   "/dev/null",

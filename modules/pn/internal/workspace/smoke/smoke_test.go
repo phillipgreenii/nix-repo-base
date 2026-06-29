@@ -381,6 +381,12 @@ func TestSmoke_S35_WorktreeAddRemoveRepo(t *testing.T) {
 	runScenario(t, "s35-worktree-add-remove-repo")
 }
 
+// TestSmoke_S36_WorkspaceInfoApplied verifies `pn workspace info --json` reflects
+// the applied-state store after a real apply (the pn-producer side of pn:applied).
+func TestSmoke_S36_WorkspaceInfoApplied(t *testing.T) {
+	runScenario(t, "s36-workspace-info-applied")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -573,6 +579,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS34WorktreeSubset(t, wsRoot)
 	case "s35-worktree-add-remove-repo":
 		assertS35WorktreeAddRemoveRepo(t, wsRoot, pnBin, env)
+	case "s36-workspace-info-applied":
+		assertS36WorkspaceInfoApplied(t, lastResult)
 	}
 }
 
