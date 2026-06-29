@@ -32,9 +32,15 @@ let
     else
       _act_c_ok="" ; _act_c_warn="" ; _act_c_fail="" ; _act_c_off=""
     fi
+    # act_* form a small library; a given activation section may call only
+    # some of them, so SC2329 (function never invoked) is expected and benign.
+    # shellcheck disable=SC2329
     act_ok()   { printf '%s\n' "  ''${_act_c_ok}''${_act_m_ok}''${_act_c_off}$*"; }
+    # shellcheck disable=SC2329
     act_warn() { printf '%s\n' "  ''${_act_c_warn}''${_act_m_warn}''${_act_c_off}$*"; }
+    # shellcheck disable=SC2329
     act_fail() { printf '%s\n' "  ''${_act_c_fail}''${_act_m_fail}''${_act_c_off}$*"; }
+    # shellcheck disable=SC2329
     act_info() { printf '%s\n' "    $*"; }
   '';
 
