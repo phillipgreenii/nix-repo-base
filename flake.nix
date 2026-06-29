@@ -185,6 +185,9 @@
                 # Forced color (the pn apply path).
                 forced=$(CLICOLOR_FORCE=1 LC_CTYPE=UTF-8 ${pkgs.bash}/bin/bash ${sectionFile})
                 if ! printf '%s' "$forced" | grep -q $'\033\[32m'; then echo "FAIL: no green when forced"; exit 1; fi
+                # NO_COLOR must win over CLICOLOR_FORCE.
+                nocolor=$(NO_COLOR=1 CLICOLOR_FORCE=1 LC_CTYPE=UTF-8 ${pkgs.bash}/bin/bash ${sectionFile})
+                if printf '%s' "$nocolor" | grep -q $'\033'; then echo "FAIL: NO_COLOR did not win over CLICOLOR_FORCE"; exit 1; fi
                 # ASCII fallback when locale is not UTF-8.
                 ascii=$(LC_ALL=C LC_CTYPE=C ${pkgs.bash}/bin/bash ${sectionFile})
                 if ! printf '%s' "$ascii" | grep -q '\[OK\]'; then echo "FAIL: no ASCII marker"; exit 1; fi
