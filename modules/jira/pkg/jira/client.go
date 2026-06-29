@@ -224,6 +224,35 @@ func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp Expa
 	return &SearchResult{Items: items, Truncated: truncated, NextPageToken: raw.NextPageToken}, nil
 }
 
+// DefaultMaxSearchPages bounds SearchAll so a runaway query cannot loop forever.
+// At Atlassian's ~100-item per-page ceiling this is up to ~10k issues — generous
+// for any window-bounded collector.
+const DefaultMaxSearchPages = 100
+
+// SearchAll follows nextPageToken across pages, concatenating items, until the
+// last page or maxPages is reached (maxPages <= 0 falls back to the default cap).
+// On full completion it returns Truncated=false and an empty NextPageToken; on a
+// cap-hit it returns Truncated=true and the first unfetched token.
+func (c *Client) SearchAll(ctx context.Context, jql string, limit int, exp ExpandOpts, maxPages int) (*SearchResult, error) {
+	if maxPages <= 0 {
+		maxPages = DefaultMaxSearchPages
+	}
+	all := make([]Issue, 0)
+	token := ""
+	for page := 0; page < maxPages; page++ {
+		res, err := c.SearchPage(ctx, jql, limit, exp, token)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, res.Items...)
+		if res.NextPageToken == "" {
+			return &SearchResult{Items: all, Truncated: false}, nil
+		}
+		token = res.NextPageToken
+	}
+	return &SearchResult{Items: all, Truncated: true, NextPageToken: token}, nil
+}
+
 // GetIssue fetches one issue via GET /rest/api/3/issue/<key>.
 func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
 	key = strings.TrimSpace(key)

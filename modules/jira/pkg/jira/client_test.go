@@ -150,3 +150,51 @@ func TestSearch_firstPageOmitsToken(t *testing.T) {
 		t.Errorf("complete page must be untruncated with empty token: %+v", got)
 	}
 }
+
+func paginatedSearchServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body["nextPageToken"] {
+		case nil, "":
+			_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}],"nextPageToken":"p2"}`))
+		case "p2":
+			_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-2","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}],"nextPageToken":"p3"}`))
+		case "p3":
+			_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-3","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}],"isLast":true}`))
+		default:
+			t.Errorf("unexpected token %v", body["nextPageToken"])
+		}
+	}))
+}
+
+func TestSearchAll_concatenatesAllPages(t *testing.T) {
+	srv := paginatedSearchServer(t)
+	defer srv.Close()
+	got, err := testClient(srv).SearchAll(context.Background(), "project = ENG", 100, ExpandOpts{}, DefaultMaxSearchPages)
+	if err != nil {
+		t.Fatalf("SearchAll: %v", err)
+	}
+	if len(got.Items) != 3 || got.Items[0].Key != "ENG-1" || got.Items[2].Key != "ENG-3" {
+		t.Fatalf("items: %+v", got.Items)
+	}
+	if got.Truncated || got.NextPageToken != "" {
+		t.Errorf("complete run must be untruncated with empty token: %+v", got)
+	}
+}
+
+func TestSearchAll_respectsMaxPages(t *testing.T) {
+	srv := paginatedSearchServer(t)
+	defer srv.Close()
+	got, err := testClient(srv).SearchAll(context.Background(), "project = ENG", 100, ExpandOpts{}, 2)
+	if err != nil {
+		t.Fatalf("SearchAll: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Errorf("want 2 items at maxPages=2, got %d", len(got.Items))
+	}
+	if !got.Truncated || got.NextPageToken != "p3" {
+		t.Errorf("cap-hit must be truncated with the next token p3: %+v", got)
+	}
+}
