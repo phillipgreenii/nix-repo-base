@@ -1,5 +1,10 @@
 # SP3 — pg-pr Jira Provider Adapter Implementation Plan
 
+> **Status: PLAN-READY (2026-06-29).** All Open Design Decisions are SETTLED per bd memory
+> `jira-tool-cross-cutting-decisions`. The central choice (Option A vs B) is decided: **Option (A)
+> — shell-out adapter** (decision #1). The binary defaults to `jira` and is overridable via
+> `PGPR_JIRA_BINARY` (decision #2). No further user confirmation is required before coding.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
@@ -27,10 +32,10 @@ configures this for the ZR tenant; the adapter itself is config-driven and carri
 
 ---
 
-## LEAD RECOMMENDATION — Open Design Decision
+## LEAD RECOMMENDATION — Open Design Decision (SETTLED)
 
-> **This plan implements Option (A) — shell-out adapter.** Option (B) is documented below as the
-> key alternative. The implementer MUST NOT proceed to code until the user confirms this choice.
+> **SETTLED 2026-06-29 (decision #1): Option (A) — shell-out adapter.** Option (B) is retained
+> below only as the recorded alternative. No confirmation gate remains; proceed to code.
 
 ### Option (A) — Shell-out adapter (recommended, this plan)
 
@@ -406,10 +411,16 @@ works; the `exec:` path continues to serve `pg-pr-issues-jira-zr` (UJ-5 / pr-poo
   Run: `prek run --all-files`
   Expected: green. If `treefmt` rewrites nix or markdown, re-stage and re-run.
 
-- [ ] **Step 2: Run nix flake check**
+- [ ] **Step 2: Run nix flake check, then the workspace completion gate**
 
-  Run: `nix flake check`
+  Run (in the agent-support repo): `nix flake check`
   Expected: green.
+
+  Then, per the `pn-workspace-rules` skill, run the workspace-level completion gate from the
+  workspace root (or coordinated worktree set): `pn workspace build`. Per-repo `nix flake check`
+  is necessary but not sufficient — the workspace build catches consumer-side (terminal system)
+  breakage. Expected: green (the benign `warning: not writing modified lock file` lines are
+  expected on the success path — one per `--override-input`).
 
 - [ ] **Step 3: Smoke-test the end-to-end path (requires SP1 + SP2 merged)**
 
@@ -477,36 +488,30 @@ consistent with the existing `pg-pr-issues-jira-zr` behavior (line 119–124 of
 
 ---
 
-## Open Design Decisions
+## Open Design Decisions — ALL RESOLVED (2026-06-29)
 
-These MUST be resolved before work begins. They are listed in order of urgency:
+These were resolved with the user; see bd memory `jira-tool-cross-cutting-decisions`. Recorded
+here for traceability:
 
-1. **Option (A) vs Option (B) — the central choice.** This plan implements (A) shell-out. If the
-   user prefers (B) cross-repo Go import, a different plan is needed (gomod2nix Pattern B plumbing,
-   rooted-fileset build, `go.mod replace` in agent-support). The recommendation is (A) for
-   simplicity and consistency with existing shell-out patterns in pg-pr; confirm before coding.
+1. **Option (A) vs Option (B) — the central choice. → RESOLVED: Option (A) shell-out** (decision
+   #1). pg-pr execs `jira issue <KEY>` and decodes JSON; no cross-repo Go import. Option (B) is
+   not pursued.
 
 2. **Should the generic tool also speak scriptout?** Today the generic `jira` CLI is a plain CLI
    only (SP1); pg-pr adapts to it via shell-out (Option A). If a future consumer needs scriptout
    from the generic tool, that would be a separate SP. This plan takes the position that the
    generic tool stays plain CLI and pg-pr adapts — no scriptout in repo-base.
 
-3. **Binary name discovery — `jira` vs `pg-pr-issues-jira-zr`.** The adapter defaults to `"jira"`
-   and reads `PGPR_JIRA_BINARY`. SP2 must choose: (a) put `jira` on PATH (clean, matches the
-   generic tool name), or (b) keep `pg-pr-issues-jira-zr` and set `PGPR_JIRA_BINARY=pg-pr-issues-jira-zr`.
-   Option (b) is back-compat with pr-pool's existing `search` CLI but conflates the scriptout
-   binary with the plain-CLI binary. Recommendation: SP2 installs `jira` on PATH as the primary
-   binary; the `pg-pr-issues-jira-zr` name stays as a separate alias for pr-pool's `search` path
-   (already the SP2 plan in spec §10.1).
+3. **Binary name discovery — `jira` vs `pg-pr-issues-jira-zr`. → RESOLVED (decision #2).** SP2
+   installs `jira` on PATH as the primary binary (via ambient ZR home-manager PATH, like `bd`);
+   the `pg-pr-issues-jira-zr` name is kept as a separate forwarding alias for pr-pool's `search`
+   path. The adapter therefore keeps its `"jira"` default; `PGPR_JIRA_BINARY` remains the override
+   knob but is not needed for the ZR tenant.
 
-4. **`auth_status` wiring.** `cmd/pg-pr/issue.go` calls `checkAuth` via the `scriptout.AuthChecker`
-   interface when the provider is an `execIssuesProvider`; the builtin `jira.New()` returns a
-   `*Provider` which does not implement `AuthChecker`. `scriptout.checkAuth` falls back to `AuthOK`
-   for providers that do not implement the interface (see `scriptout.go` lines 440–444). Decide:
-   (a) accept the `AuthOK` fallback for SP3 (UJ-4 is listed as `auth_status` / `op exists`); or
-   (b) implement `AuthStatus(ctx) scriptout.AuthStatus` on `*Provider` by calling `<binary>
-auth-status`. Option (a) is correct for SP3 scope; option (b) is deferred to a follow-up
-   unless UJ-4 is in scope here.
+4. **`auth_status` wiring. → RESOLVED: accept the `AuthOK` fallback for SP3.** The builtin
+   `jira.New()` returns a `*Provider` that does not implement `scriptout.AuthChecker`, so
+   `scriptout.checkAuth` falls back to `AuthOK`. Implementing `AuthStatus(ctx)` (by calling
+   `<binary> auth-status`) is deferred to a follow-up bead; UJ-4 is out of SP3 scope.
 
 5. **`cliIssue` JSON trim vs SP1 indented output.** SP1's `writeJSON` uses `enc.SetIndent("", "
 ")`, emitting pretty-printed JSON. `json.Unmarshal` handles whitespace transparently, so this

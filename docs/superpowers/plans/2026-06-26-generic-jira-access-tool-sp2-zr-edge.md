@@ -1,5 +1,19 @@
 # SP2 — Generic Jira Access Tool (ZR Edge) Implementation Plan
 
+> **Status: PLAN-READY (2026-06-29).** Open Design Decisions are SETTLED per bd memory
+> `jira-tool-cross-cutting-decisions`: config delivery = nix-generated TOML (#5); secret =
+> `secret.source = "command"` with `security … -s zr-jira …` (#4); `jira` on PATH + the
+> `pg-pr-issues-jira-zr` forwarding alias (#2). No user confirmation gate remains.
+>
+> **pn-workspace correction (supersedes Task 0 / the Precondition's `nix flake update`):** this is
+> a `pn-workspace.toml` workspace. Consumers see repo-base's **local `main`** (with the merged SP1 +
+> pagination) via `pn workspace build`'s injected `--override-input` — NOT via a `flake.lock` bump
+> and NOT via a push. Do **not** run `nix flake update phillipgreenii-nix-base` and do **not** point
+> any input URL at a local path (the Cardinal Rule). The completion gate is **`pn workspace build`**
+> from the workspace root (or a coordinated worktree set), which is necessary and sufficient where
+> bare `nix flake check` / `darwin-rebuild check` are not (the sibling locks are intentionally stale
+> against unpushed local `main`). Treat `warning: not writing modified lock file` as expected.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for
 > tracking.
@@ -684,7 +698,15 @@ update the install condition to no longer depend on `tokenFile`.
 
 ---
 
-## Open Design Decisions
+## Open Design Decisions — RESOLVED (2026-06-29)
+
+Resolved with the user; see bd memory `jira-tool-cross-cutting-decisions`. Summary: **#1 → TOML**
+(decision #5); **#2 → Path A, keep `modules/pg-pr-zr` as the alias shim**, removal deferred to a
+follow-up bead; **#3 → Option A runbook** (`docs/superpowers/plans/2026-06-29-jira-zr-keychain-setup.md`);
+**#4 → `secret.source = "command"`** against the unified `zr-jira` keychain entry; **#5 → retain the
+`pg-pr-zr-build` check** (harmless); **#6/#7 → no change needed.** Implementation used
+`(pkgs.formats.toml {}).generate` (robust, no hand-rolled escaping) per #7's note that the repo
+already uses `formats` generators. Detail retained below for traceability.
 
 ### 1. Config delivery: nix-generated TOML at `$XDG_CONFIG_HOME/jira/config.toml` vs. env vars via wrapper
 
