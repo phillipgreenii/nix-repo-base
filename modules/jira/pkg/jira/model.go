@@ -55,8 +55,10 @@ type Issue struct {
 	Comments  []Comment        `json:"comments,omitempty"`
 }
 
-// SearchResult is the search envelope: mapped items + authoritative truncation.
+// SearchResult is the search envelope: mapped items, an authoritative truncation
+// flag, and the token to fetch the next page (empty when last/complete).
 type SearchResult struct {
-	Items     []Issue `json:"items"`
-	Truncated bool    `json:"truncated"`
+	Items         []Issue `json:"items"`
+	Truncated     bool    `json:"truncated"`
+	NextPageToken string  `json:"next_page_token,omitempty"`
 }

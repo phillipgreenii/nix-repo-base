@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -104,5 +105,48 @@ func TestAuthStatus_mapsHTTP(t *testing.T) {
 		if got != c.want {
 			t.Errorf("AuthStatus(%d) = %s, want %s", c.code, got, c.want)
 		}
+	}
+}
+
+func TestSearchPage_sendsTokenAndSurfacesNext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["nextPageToken"] != "PAGE2" {
+			t.Errorf("request nextPageToken = %v, want PAGE2", body["nextPageToken"])
+		}
+		_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-9","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}],"nextPageToken":"PAGE3"}`))
+	}))
+	defer srv.Close()
+	got, err := testClient(srv).SearchPage(context.Background(), "project = ENG", 100, ExpandOpts{}, "PAGE2")
+	if err != nil {
+		t.Fatalf("SearchPage: %v", err)
+	}
+	if got.NextPageToken != "PAGE3" {
+		t.Errorf("NextPageToken = %q, want PAGE3", got.NextPageToken)
+	}
+	if !got.Truncated || len(got.Items) != 1 || got.Items[0].Key != "ENG-9" {
+		t.Errorf("bad result: %+v", got)
+	}
+}
+
+func TestSearch_firstPageOmitsToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if _, present := body["nextPageToken"]; present {
+			t.Errorf("Search() must NOT send nextPageToken on the first page; body=%v", body)
+		}
+		_, _ = w.Write([]byte(`{"issues":[],"isLast":true}`))
+	}))
+	defer srv.Close()
+	got, err := testClient(srv).Search(context.Background(), "project = ENG", 100, ExpandOpts{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got.Truncated || got.NextPageToken != "" {
+		t.Errorf("complete page must be untruncated with empty token: %+v", got)
 	}
 }

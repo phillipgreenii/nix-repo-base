@@ -140,7 +140,13 @@ func (u *rawUser) toUserOrEmpty() *User {
 	return &User{}
 }
 
+// Search fetches the first page of a JQL search. It preserves the SP1 contract
+// exactly (no nextPageToken sent); for multi-page collection use SearchAll.
 func (c *Client) Search(ctx context.Context, jql string, limit int, exp ExpandOpts) (*SearchResult, error) {
+	return c.SearchPage(ctx, jql, limit, exp, "")
+}
+
+func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp ExpandOpts, pageToken string) (*SearchResult, error) {
 	if strings.TrimSpace(jql) == "" {
 		return nil, fmt.Errorf("jira: empty jql")
 	}
@@ -149,6 +155,9 @@ func (c *Client) Search(ctx context.Context, jql string, limit int, exp ExpandOp
 		fields = append(fields, "comment")
 	}
 	body := map[string]any{"jql": jql, "maxResults": limit, "fields": fields}
+	if pageToken != "" {
+		body["nextPageToken"] = pageToken
+	}
 	if exp.Changelog {
 		body["expand"] = "changelog"
 	}
@@ -212,7 +221,7 @@ func (c *Client) Search(ctx context.Context, jql string, limit int, exp ExpandOp
 		items = append(items, iss)
 	}
 	truncated := raw.NextPageToken != "" || (raw.IsLast != nil && !*raw.IsLast)
-	return &SearchResult{Items: items, Truncated: truncated}, nil
+	return &SearchResult{Items: items, Truncated: truncated, NextPageToken: raw.NextPageToken}, nil
 }
 
 // GetIssue fetches one issue via GET /rest/api/3/issue/<key>.
