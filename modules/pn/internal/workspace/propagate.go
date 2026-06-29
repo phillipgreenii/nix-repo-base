@@ -101,8 +101,10 @@ func shortRev(rev string) string {
 // "chore(deps): bump <alias> <old> -> <new>" commits.
 //
 //   - dir is the repo (or ephemeral worktree) root; git runs with -C dir.
-//   - flakeRel is resolveFlakePath(name) (e.g. "nix" for homelab, "." normally);
-//     the flake.lock and `nix flake update` operate there.
+//   - flakeRel is resolveFlakePath(name): the path to the flake.nix FILE
+//     (e.g. "flake.nix" normally, "nix/flake.nix" for homelab). The function
+//     derives its parent directory, where flake.lock lives and `nix flake
+//     update` runs.
 //   - aliases are the workspace-input names from workspaceAliasesFromLock.
 //
 // Critical invariants:
@@ -120,11 +122,13 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 	if len(aliases) == 0 {
 		return nil
 	}
-	if flakeRel == "" {
-		flakeRel = "."
-	}
-	flakeDir := filepath.Join(dir, flakeRel)
-	lockRel := filepath.Join(flakeRel, "flake.lock")
+	// flakeRel is the flake.nix FILE path ("flake.nix", "nix/flake.nix"); the
+	// dir we cd into and locate flake.lock in is its parent. filepath.Dir maps
+	// "flake.nix" -> ".", "nix/flake.nix" -> "nix", and "" -> "." (so the empty
+	// case is handled here too).
+	flakeDirRel := filepath.Dir(flakeRel)
+	flakeDir := filepath.Join(dir, flakeDirRel)
+	lockRel := filepath.Join(flakeDirRel, "flake.lock")
 	lockPath := filepath.Join(dir, lockRel)
 
 	// No flake.lock yet (repo never locked) → nothing to propagate.

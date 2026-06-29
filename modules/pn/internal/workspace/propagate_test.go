@@ -102,16 +102,27 @@ func (r *fsNixRunner) Run(ctx context.Context, name string, args []string, opts 
 	return r.real.Run(ctx, name, args, opts)
 }
 
-// propEnv sets up a real git repo at <root>/<flakeRel> containing flake.lock,
-// returns the repo dir and a writer that overwrites flake.lock.
-func propEnv(t *testing.T, flakeRel, initialLock string) (dir string, writeLock func(string)) {
+// propEnv sets up a real git repo laid out the way PRODUCTION is: flakeFileRel
+// is the path to the flake.nix FILE (exactly what resolveFlakePath returns —
+// "flake.nix", "nix/flake.nix"), so flake.nix is written as a regular file with
+// flake.lock as its sibling. Tests therefore pass propagateWorkspaceEdges the
+// same file-form value its production callers do (update.go / update_worktree.go
+// pass ws.resolveFlakePath(name)). The earlier version of this helper treated
+// its arg as the flake DIRECTORY — that fixture-vs-caller divergence is exactly
+// what let pg2-vpy4 (ENOTDIR on <dir>/flake.nix/flake.lock) ship green.
+// Returns the repo dir and a writer that overwrites flake.lock.
+func propEnv(t *testing.T, flakeFileRel, initialLock string) (dir string, writeLock func(string)) {
 	t.Helper()
 	dir = t.TempDir()
 	runGit(t, dir, "init", "-q")
 	runGit(t, dir, "config", "user.email", "t@t")
 	runGit(t, dir, "config", "user.name", "t")
-	flakeDir := filepath.Join(dir, flakeRel)
+	flakeFile := filepath.Join(dir, flakeFileRel)
+	flakeDir := filepath.Dir(flakeFile)
 	if err := osMkdirAll(flakeDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := osWrite(flakeFile, "{ }\n"); err != nil { // flake.nix is a FILE, not a dir
 		t.Fatal(err)
 	}
 	lockPath := filepath.Join(flakeDir, "flake.lock")
@@ -137,14 +148,19 @@ func lockWith(sibRev string, lastModified int) string {
 }`, sibRev, lastModified)
 }
 
+// TestPropagate_BumpsAndCommitsOnRevChange is the root-flake happy path AND the
+// pg2-vpy4 regression: flakeRel is the file-form "flake.nix" (what
+// resolveFlakePath returns), so the function must derive "." as the flake dir and
+// read/commit flake.lock from the repo root — not stat <dir>/flake.nix/flake.lock
+// (ENOTDIR).
 func TestPropagate_BumpsAndCommitsOnRevChange(t *testing.T) {
-	dir, writeLock := propEnv(t, ".", lockWith("1111111111111111111111111111111111111111", 1))
+	dir, writeLock := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(lockWith("2222222222222222222222222222222222222222", 2))
 	}}
 	ws := &Workspace{runner: r}
 
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, ".", []string{"sib"}); err != nil {
+	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err != nil {
 		t.Fatalf("propagate: %v", err)
 	}
 	// C1: --refresh must be present.
@@ -158,6 +174,10 @@ func TestPropagate_BumpsAndCommitsOnRevChange(t *testing.T) {
 	if subj := headSubject(t, dir); subj != "chore(deps): bump sib 1111111 -> 2222222" {
 		t.Errorf("subject = %q", subj)
 	}
+	// The committed path is the root flake.lock, not "flake.nix/flake.lock".
+	if files := commitFiles(t, dir); len(files) != 1 || files[0] != "flake.lock" {
+		t.Errorf("committed files = %v, want [flake.lock]", files)
+	}
 	assertCleanTree(t, dir)
 }
 
@@ -166,13 +186,13 @@ func TestPropagate_BumpsAndCommitsOnRevChange(t *testing.T) {
 // commit AND leave a clean tree (so the subsequent rebase + update-locks
 // clean-tree gate are not tripped).
 func TestPropagate_NoCommitOnLastModifiedChurn(t *testing.T) {
-	dir, writeLock := propEnv(t, ".", lockWith("1111111111111111111111111111111111111111", 1))
+	dir, writeLock := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(lockWith("1111111111111111111111111111111111111111", 99)) // same rev, new lastModified
 	}}
 	ws := &Workspace{runner: r}
 
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, ".", []string{"sib"}); err != nil {
+	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err != nil {
 		t.Fatalf("propagate: %v", err)
 	}
 	if n := commitCount(t, dir); n != 1 {
@@ -182,10 +202,10 @@ func TestPropagate_NoCommitOnLastModifiedChurn(t *testing.T) {
 }
 
 func TestPropagate_NoOpWhenUnchanged(t *testing.T) {
-	dir, _ := propEnv(t, ".", lockWith("1111111111111111111111111111111111111111", 1))
+	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {}} // nix writes nothing
 	ws := &Workspace{runner: r}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, ".", []string{"sib"}); err != nil {
+	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err != nil {
 		t.Fatalf("propagate: %v", err)
 	}
 	if n := commitCount(t, dir); n != 1 {
@@ -194,13 +214,16 @@ func TestPropagate_NoOpWhenUnchanged(t *testing.T) {
 	assertCleanTree(t, dir)
 }
 
+// TestPropagate_FlakeInSubdir is the homelab-style case: the flake.nix FILE lives
+// in a subdir, so resolveFlakePath returns "nix/flake.nix" and the function must
+// derive "nix" as the flake dir and read/commit "nix/flake.lock".
 func TestPropagate_FlakeInSubdir(t *testing.T) {
-	dir, writeLock := propEnv(t, "nix", lockWith("1111111111111111111111111111111111111111", 1))
+	dir, writeLock := propEnv(t, "nix/flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(lockWith("3333333333333333333333333333333333333333", 2))
 	}}
 	ws := &Workspace{runner: r}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "homelab", dir, "nix", []string{"sib"}); err != nil {
+	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "homelab", dir, "nix/flake.nix", []string{"sib"}); err != nil {
 		t.Fatalf("propagate: %v", err)
 	}
 	if subj := headSubject(t, dir); !strings.HasPrefix(subj, "chore(deps): bump sib 1111111 -> 3333333") {
@@ -213,11 +236,56 @@ func TestPropagate_FlakeInSubdir(t *testing.T) {
 	assertCleanTree(t, dir)
 }
 
+// TestPropagate_FlakeRelViaResolveFlakePath drives the flakeRel value THROUGH
+// resolveFlakePath (the production source) rather than hard-coding it, so the
+// test contract can never again silently diverge from the caller's: the repo is
+// laid out under ws.root/<repoKey> with a real flake.nix file, resolveFlakePath
+// discovers it on disk and returns the FILE path "flake.nix", and that exact
+// value is fed to propagateWorkspaceEdges.
+func TestPropagate_FlakeRelViaResolveFlakePath(t *testing.T) {
+	root := t.TempDir()
+	const repoKey = "foo"
+	dir := filepath.Join(root, repoKey)
+	if err := osMkdirAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "config", "user.email", "t@t")
+	runGit(t, dir, "config", "user.name", "t")
+	if err := osWrite(filepath.Join(dir, "flake.nix"), "{ }\n"); err != nil { // FILE
+		t.Fatal(err)
+	}
+	if err := osWrite(filepath.Join(dir, "flake.lock"), lockWith("1111111111111111111111111111111111111111", 1)); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-qm", "init")
+
+	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
+		if err := osWrite(filepath.Join(dir, "flake.lock"), lockWith("2222222222222222222222222222222222222222", 2)); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	ws := &Workspace{runner: r, root: root, config: &WorkspaceConfig{}}
+
+	flakeRel := ws.resolveFlakePath(repoKey)
+	if flakeRel != "flake.nix" {
+		t.Fatalf("resolveFlakePath = %q, want %q (file path, not dir)", flakeRel, "flake.nix")
+	}
+	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, repoKey, dir, flakeRel, []string{"sib"}); err != nil {
+		t.Fatalf("propagate: %v", err)
+	}
+	if subj := headSubject(t, dir); subj != "chore(deps): bump sib 1111111 -> 2222222" {
+		t.Errorf("subject = %q", subj)
+	}
+	assertCleanTree(t, dir)
+}
+
 func TestPropagate_EmptyAliasesIsNoOp(t *testing.T) {
-	dir, _ := propEnv(t, ".", lockWith("1111111111111111111111111111111111111111", 1))
+	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner()}
 	ws := &Workspace{runner: r}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, ".", nil); err != nil {
+	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", nil); err != nil {
 		t.Fatalf("propagate: %v", err)
 	}
 	if len(r.nixArgs) != 0 {
@@ -227,10 +295,10 @@ func TestPropagate_EmptyAliasesIsNoOp(t *testing.T) {
 }
 
 func TestPropagate_NixFailureErrorsCleanly(t *testing.T) {
-	dir, _ := propEnv(t, ".", lockWith("1111111111111111111111111111111111111111", 1))
+	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), nixErr: fmt.Errorf("boom")}
 	ws := &Workspace{runner: r}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, ".", []string{"sib"}); err == nil {
+	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err == nil {
 		t.Fatal("expected error when nix flake update fails")
 	}
 	if n := commitCount(t, dir); n != 1 {
