@@ -84,7 +84,12 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	// whether this apply swapped in a new git binary.
 	oldGitVersion := ws.gitVersion(ctx)
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
-	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out}); err != nil {
+	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{
+		Dir:    terminalDir,
+		Stdout: out,
+		Stderr: out,
+		Env:    applyColorEnv(colorEnabled(os.Stdout)),
+	}); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
 	newProfile := readSystemProfile()
@@ -155,6 +160,17 @@ func readSystemProfile() string {
 		return target
 	}
 	return filepath.Join(filepath.Dir(systemProfileLink), target)
+}
+
+// applyColorEnv forces ANSI color through the apply pipe when the user's
+// terminal supports it. pn pipes darwin-rebuild's stdout, so the activation
+// script's [ -t 1 ] is always false; CLICOLOR_FORCE is how the activation
+// helpers know to emit color anyway.
+func applyColorEnv(colorOK bool) map[string]string {
+	if colorOK {
+		return map[string]string{"CLICOLOR_FORCE": "1"}
+	}
+	return nil
 }
 
 func commandExists(name string) bool {
