@@ -1,0 +1,59 @@
+# Pure string-builders for consistent system.activationScripts output.
+# Spec: docs/superpowers/specs/2026-06-29-activation-script-output-consistency-design.md
+_:
+let
+  # POSIX single-quote escaping (no lib dependency).
+  esc = s: "'" + (builtins.replaceStrings [ "'" ] [ "'\\''" ] s) + "'";
+
+  # Bash defining act_* plus color/glyph detection. Idempotent: safe to emit
+  # multiple times in one shell (last definition wins). Also injected verbatim
+  # into child scripts that run in their own process (see beads-dolt).
+  activationHelpers = ''
+    if [ -n "''${NO_COLOR:-}" ]; then
+      _act_color=0
+    elif [ -n "''${CLICOLOR_FORCE:-}" ]; then
+      _act_color=1
+    elif [ -t 1 ]; then
+      _act_color=1
+    else
+      _act_color=0
+    fi
+    case "''${LC_ALL:-''${LC_CTYPE:-}}" in
+      *UTF-8* | *utf-8* | *UTF8* | *utf8*) _act_utf8=1 ;;
+      *) _act_utf8=0 ;;
+    esac
+    if [ "$_act_utf8" = 1 ]; then
+      _act_m_ok='✓ ' ; _act_m_warn='⚠ ' ; _act_m_fail='✗ '
+    else
+      _act_m_ok='[OK]   ' ; _act_m_warn='[WARN] ' ; _act_m_fail='[FAIL] '
+    fi
+    if [ "$_act_color" = 1 ]; then
+      _act_c_ok=$'\033[32m' ; _act_c_warn=$'\033[33m' ; _act_c_fail=$'\033[31m' ; _act_c_off=$'\033[0m'
+    else
+      _act_c_ok="" ; _act_c_warn="" ; _act_c_fail="" ; _act_c_off=""
+    fi
+    act_ok()   { printf '%s\n' "  ''${_act_c_ok}''${_act_m_ok}''${_act_c_off}$*"; }
+    act_warn() { printf '%s\n' "  ''${_act_c_warn}''${_act_m_warn}''${_act_c_off}$*"; }
+    act_fail() { printf '%s\n' "  ''${_act_c_fail}''${_act_m_fail}''${_act_c_off}$*"; }
+    act_info() { printf '%s\n' "    $*"; }
+  '';
+
+  mkActivationSection =
+    {
+      tag,
+      headline ? null,
+      body,
+    }:
+    let
+      header = if headline == null then "[${tag}]" else "[${tag}] ${headline}";
+    in
+    ''
+      ${activationHelpers}
+      printf '%s\n' ${esc header}
+      ${body}
+      printf '\n'
+    '';
+in
+{
+  inherit activationHelpers mkActivationSection;
+}

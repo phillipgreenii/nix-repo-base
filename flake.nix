@@ -149,6 +149,51 @@
                   "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
               );
 
+            activation-lib =
+              let
+                failures = pkgs.lib.runTests (import ./lib/activation-tests.nix { inherit (pkgs) lib; });
+              in
+              pkgs.runCommand "check-activation-lib" { } (
+                if failures == [ ] then
+                  "touch $out"
+                else
+                  "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
+              );
+
+            activation-behavior =
+              let
+                sectionFile = pkgs.writeText "demo-section.sh" (
+                  (import ./lib/activation.nix { }).mkActivationSection {
+                    tag = "demo";
+                    headline = "checking";
+                    body = ''
+                      act_ok "all good"
+                      act_warn 'careful %s \ $HOME'
+                      act_fail "broke"
+                      act_info "fyi"
+                    '';
+                  }
+                );
+              in
+              pkgs.runCommand "check-activation-behavior" { } ''
+                set -euo pipefail
+                # runCommand stdout is a pipe (no TTY) and CLICOLOR_FORCE unset => no ANSI.
+                plain=$(LC_CTYPE=UTF-8 ${pkgs.bash}/bin/bash ${sectionFile})
+                printf '%s\n' "$plain"
+                if printf '%s' "$plain" | grep -q $'\033'; then echo "FAIL: ANSI without force"; exit 1; fi
+                if ! printf '%s' "$plain" | grep -q '✓'; then echo "FAIL: missing UTF-8 glyph"; exit 1; fi
+                # Forced color (the pn apply path).
+                forced=$(CLICOLOR_FORCE=1 LC_CTYPE=UTF-8 ${pkgs.bash}/bin/bash ${sectionFile})
+                if ! printf '%s' "$forced" | grep -q $'\033\[32m'; then echo "FAIL: no green when forced"; exit 1; fi
+                # ASCII fallback when locale is not UTF-8.
+                ascii=$(LC_ALL=C LC_CTYPE=C ${pkgs.bash}/bin/bash ${sectionFile})
+                if ! printf '%s' "$ascii" | grep -q '\[OK\]'; then echo "FAIL: no ASCII marker"; exit 1; fi
+                if printf '%s' "$ascii" | grep -q '✓'; then echo "FAIL: glyph leaked into ASCII mode"; exit 1; fi
+                # Arbitrary message stays literal (%, backslash, $).
+                if ! printf '%s' "$plain" | grep -F 'careful %s \ $HOME' >/dev/null; then echo "FAIL: msg not literal"; exit 1; fi
+                touch $out
+              '';
+
             # Rev-independence check: same src at two different self.rev values
             # must produce the same script drvPath. See ADR 0006.
             bash-version-rev-independent = import ./lib/bash-builders-version-tests.nix { inherit pkgs; };
@@ -275,7 +320,9 @@
               mkDockRegistration
               mkProgramModule
               ;
-          };
+          }
+          # Activation-script output helpers
+          // (import ./lib/activation.nix { });
       };
     };
 }
