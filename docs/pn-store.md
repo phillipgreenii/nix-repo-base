@@ -3,7 +3,7 @@
 `pn store` audits and reclaims space in the local Nix store. It has two commands:
 
 - `pn store audit` — read-only report of profile generations, closure sizes, and store volume usage.
-- `pn store deepclean` — prunes old generations and stale GC roots, then garbage-collects the store.
+- `pn store deepclean` — prunes old generations and stale GC roots, garbage-collects, then optimises (hard-links duplicate files in) the store.
 
 > Versioning and `--help` are owned by cobra: use `pn --version` and `pn store <cmd> --help`.
 > There are no per-subcommand version flags.
@@ -85,9 +85,13 @@ It processes these sections, in order, pruning per the retention rule above:
 Then a `Summary`:
 
 - **Dry run:** `DRY RUN — no changes made`, per-category `Would prune` counts, and a `Reclaimable estimate (dead paths)`.
-- **Live:** `Store before:`, the live-streamed `sudo nix-store --gc` output, `Store after:`, per-category
-  `Pruned generations:` counts, and a `Runtime Roots` summary (store paths held only by running processes —
-  restarting apps and re-running may free more).
+- **Live:** `Store before:`, the live-streamed `sudo nix-store --gc` output, an
+  `Optimising store (hard-linking duplicate files)...` line followed by the live-streamed
+  `nix store optimise` output, `Store after:`, per-category `Pruned generations:` counts, and a
+  `Runtime Roots` summary (store paths held only by running processes — restarting apps and
+  re-running may free more). Optimise runs **after** GC so it never optimises soon-to-be-deleted
+  paths, and is the batched replacement for `auto-optimise-store` (disabled so flake-update fetches
+  stay fast).
 
 ## User journeys
 
@@ -120,7 +124,8 @@ flowchart TD
     AUDIT -->|decide| DRY["deepclean --dry-run<br/>(no delete / no GC)"]
     DRY -->|looks right| LIVE["deepclean (live)"]
     LIVE --> GC["sudo nix-store --gc"]
-    GC --> RR["Runtime Roots summary"]
+    GC --> OPT["nix store optimise"]
+    OPT --> RR["Runtime Roots summary"]
     LIVE -->|re-audit| AUDIT
 ```
 

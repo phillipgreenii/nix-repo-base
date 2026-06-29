@@ -36,6 +36,7 @@ func deepcleanFixture(t *testing.T, live bool) (Env, *exec.FakeRunner) {
 		scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 10.0 GB (10737418240 Bytes)")
 		scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 9.0 GB (9663676416 Bytes)")
 		f.AddResponse("sudo", []string{"nix-store", "--gc"}, exec.Result{}, nil)
+		f.AddResponse("nix", []string{"store", "optimise"}, exec.Result{}, nil)
 		f.AddResponse("nix-store", []string{"--gc", "--print-roots"},
 			exec.Result{Stdout: []byte("")}, nil)
 	} else {
@@ -253,6 +254,41 @@ func TestDeepClean_LiveRunsSudoGC(t *testing.T) {
 	}
 	if gcCall.Opts.Stdout == nil {
 		t.Error("GC call must stream (Opts.Stdout != nil)")
+	}
+}
+
+// TestDeepClean_LiveRunsStoreOptimiseAfterGC verifies the live run hard-links
+// duplicate store files via `nix store optimise` AFTER the GC (so it only dedups
+// surviving paths), streaming progress to out. This is the batched replacement
+// for auto-optimise-store, which was disabled so flake-update fetches stay fast.
+func TestDeepClean_LiveRunsStoreOptimiseAfterGC(t *testing.T) {
+	env, f := deepcleanFixture(t, true)
+	var buf, errBuf bytes.Buffer
+	s := NewWithEnv(f, env)
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: false, KeepSince: "0d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	calls := f.Calls()
+	gcIdx, optIdx := -1, -1
+	for i := range calls {
+		c := calls[i]
+		if c.Name == "sudo" && len(c.Args) == 2 && c.Args[0] == "nix-store" && c.Args[1] == "--gc" {
+			gcIdx = i
+		}
+		if c.Name == "nix" && len(c.Args) == 2 && c.Args[0] == "store" && c.Args[1] == "optimise" {
+			optIdx = i
+			if c.Opts.Stdout == nil {
+				t.Error("optimise call must stream (Opts.Stdout != nil)")
+			}
+		}
+	}
+	if optIdx == -1 {
+		t.Fatal("live run must call `nix store optimise`")
+	}
+	if gcIdx == -1 || optIdx < gcIdx {
+		t.Errorf("optimise (idx %d) must run after gc (idx %d)", optIdx, gcIdx)
 	}
 }
 
@@ -620,6 +656,7 @@ func TestDeepClean_RuntimeRootsAfterGC(t *testing.T) {
 	scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 10.0 GB (10737418240 Bytes)")
 	scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 9.0 GB (9663676416 Bytes)")
 	f.AddResponse("sudo", []string{"nix-store", "--gc"}, exec.Result{}, nil)
+	f.AddResponse("nix", []string{"store", "optimise"}, exec.Result{}, nil)
 	// runtimeRootsSummary: an lsof-only path → non-empty summary.
 	lsofPath := "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-app"
 	f.AddResponse("nix-store", []string{"--gc", "--print-roots"},
@@ -713,6 +750,7 @@ func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 		// storeSize AFTER gc: 8 GB — distinct values prove FIFO ordering.
 		scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 8.0 GB (8589934592 Bytes)")
 		f.AddResponse("sudo", []string{"nix-store", "--gc"}, exec.Result{}, nil)
+		f.AddResponse("nix", []string{"store", "optimise"}, exec.Result{}, nil)
 		f.AddResponse("nix-store", []string{"--gc", "--print-roots"},
 			exec.Result{Stdout: []byte(printRootsStdout)}, nil)
 		if extraScript != nil {
@@ -744,6 +782,7 @@ func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 		want := "" +
 			"=== Summary ===\n" +
 			"Store before: 12.0 GB\n" +
+			"Optimising store (hard-linking duplicate files)...\n" +
 			"Store after:  8.0 GB\n" +
 			"\n" +
 			"Pruned generations:\n" +

@@ -15,7 +15,7 @@ func addStoreCmd(parent *cobra.Command) {
 
 Subcommands:
   audit      Read-only report of profile generations, closure sizes, and store usage.
-  deepclean  Prune old generations and stale GC roots, then garbage-collect the store.
+  deepclean  Prune old generations and stale GC roots, garbage-collect, then optimise the store.
 
 Configuration lives in ~/.config/pn/store.toml (search_dirs, keep_days, keep_count).
 See docs/pn-store.md for user journeys and retention semantics.`,
@@ -72,8 +72,12 @@ Cleans:
   - Stale ~/.nix-profiles/ entries (mtime older than --keep-since)
   - NH temp roots in TMPDIR
 
-After cleanup, shows runtime roots summary (store paths held by running
-processes that could be freed by restarting applications).`,
+After pruning it runs 'sudo nix-store --gc' then 'nix store optimise' (hard-links
+duplicate files; this is the batched replacement for auto-optimise-store, which
+is disabled so flake-update fetches stay fast).
+
+Finally, shows runtime roots summary (store paths held by running processes that
+could be freed by restarting applications).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return store.New(exec.NewRealRunner()).DeepClean(
 				cmd.Context(),

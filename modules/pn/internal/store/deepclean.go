@@ -66,7 +66,8 @@ var prunedCategories = []string{
 
 // DeepClean prunes old profile generations, orphaned standalone home-manager
 // profiles, stale ~/.nix-profiles entries, result symlinks, NH temp roots, and
-// (in non-dry-run mode) runs `sudo nix-store --gc`, then reports a summary.
+// (in non-dry-run mode) runs `sudo nix-store --gc` followed by
+// `nix store optimise`, then reports a summary.
 //
 // Output is sectioned (one `=== <Title> ===` header per category, each followed
 // by a blank line). Warnings from devboxProjects (missing search dirs) go to
@@ -170,6 +171,17 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	fmt.Fprintf(out, "Store before: %s\n", storeSize(ctx, s.runner))
 	if _, err := s.runner.Run(ctx, "sudo", []string{"nix-store", "--gc"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 		return fmt.Errorf("nix-store --gc: %w", err)
+	}
+	// Hard-link duplicate files in the surviving store paths. Runs AFTER the GC
+	// so it never optimises paths that are about to be deleted. This is the
+	// batched replacement for auto-optimise-store (disabled in nix-settings.nix):
+	// optimising per-fetch stalled `pn workspace update` on the "copying to the
+	// store" phase, so it is deferred to this deliberate cleanup instead. No
+	// sudo: in a multi-user (daemon) install the nix-daemon performs the
+	// privileged hard-linking on the caller's behalf.
+	fmt.Fprintln(out, "Optimising store (hard-linking duplicate files)...")
+	if _, err := s.runner.Run(ctx, "nix", []string{"store", "optimise"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+		return fmt.Errorf("nix store optimise: %w", err)
 	}
 	fmt.Fprintf(out, "Store after:  %s\n", storeSize(ctx, s.runner))
 	fmt.Fprintln(out)
