@@ -49,18 +49,21 @@ For concrete end-to-end user journeys (the commands a user runs, expected succes
 
 ## Completion Gate
 
-After completing any task in a project that participates in a `pn-workspace.toml`, you MUST run `pn workspace build` from the workspace root before declaring the task complete. Cross-project changes (a new flake output consumed by another workspace repo, for instance) only show up here.
+After completing a task in a `pn-workspace.toml` project you MUST validate it before declaring it complete — but match the validation to the change's **blast radius**. `pn workspace build` assembles the entire host system at the shared workspace root; it is the heaviest target and the one every session contends on, so running it unconditionally serializes concurrent task-completions (slow, and the reason multiple wrap-ups hang on each other). Run the lowest tier that actually exercises what you changed.
 
-```text
-pn workspace format   # optional: run nix fmt in each repo before building
-pn workspace build
-```
+Pick the tier with this checklist, top to bottom — first match wins:
 
-Per-project `nix flake check` is necessary but not sufficient. Workspace-level build catches consumer-side breakage.
+1. **Did the change touch the assembled system** — `darwinConfigurations` / darwin or home-manager modules, or system module wiring (wherever the module is defined, including a consumed repo) — **or are you about to `apply`/`upgrade`?** → **Tier 3**. Only a full build realizes the host system; `flake check` evaluates the config (and builds its `checks`) but does not realize the system derivation, so a change that evaluates clean can still fail to build.
+2. **Does every repo you edited have no consumer** — it never appears as an indented child in `pn workspace tree` (equivalently, it is not a `target` in any `pn-workspace.lock.json` edge)? In this workspace only the terminal `phillipg-nix-ziprecruiter` qualifies. → **Tier 1**.
+3. **Otherwise** you edited a repo something else consumes — the common case; every non-terminal repo here feeds at least the terminal. → **Tier 2**. A per-repo check cannot catch this: a consumer evaluates against its _locked_ input, not your local edit.
 
-`pn workspace build` and `pn workspace apply` do NOT run `nix fmt` automatically. If you want to format all repos before building, run `pn workspace format` as a separate step first.
+| Tier                                                 | Command                                                                               | What it does                                                                                                                                                         |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 — contained**                                    | `nix flake check` in each edited repo (add `nix build .#<pkg>` for a changed package) | checks only that repo's own outputs against its locked inputs; touches the fewest derivations, so concurrent runs on different repos barely overlap                  |
+| **2 — cross-repo** _(default for code changes here)_ | `pn workspace flake-check`                                                            | runs `nix flake check` in every repo with `--override-input` pinning siblings to your local clones — catches consumer-side breakage without building the host system |
+| **3 — system / pre-apply**                           | `pn workspace format` _(optional `nix fmt`)_, then `pn workspace build`               | builds the full host darwin system — the only tier that realizes the assembled system; reserve it, and do not run it from several sessions at once                   |
 
-If `pn workspace build` fails, the task is not complete. Fix the failure (in this or the consuming project) and re-run.
+If a gate fails the task is not complete: fix it (in this or the consuming project) and re-run that tier. If a higher tier later surfaces breakage a lower one missed, your change's blast radius was larger than you classified — validate at the higher tier from then on. `pn workspace build`/`apply` never run `nix fmt` themselves; run `pn workspace format` first if you want it.
 
 ## Workspace Lifecycle: Three Commands
 
@@ -98,15 +101,15 @@ Commands that need a topological order (rebase, push, status, flake-check, pre-c
 
 ## Builds and Validation
 
-| Goal                                       | Use                                    | Don't use                                                                |
-| ------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------ |
-| Build the system (current host)            | `pn workspace build`                   | `darwin-rebuild build`, `nix build .#darwinConfigurations.<host>.system` |
-| Activate the system                        | the **user** runs `pn workspace apply` | NEVER invoke from agent context                                          |
-| Run `nix flake check` on a project         | `nix flake check` inside a project dir | (no special wrapper needed)                                              |
-| Run `nix flake check` across every project | `pn workspace flake-check`             | per-repo `nix flake check`                                               |
-| Build a single package                     | `nix build .#<pkg>` inside the project | (no workspace-level wrapper)                                             |
-| Pre-commit checks across all repos         | `pn workspace pre-commit-check`        | per-repo `pre-commit run --all-files`                                    |
-| Update flake locks across all repos        | `pn workspace update`                  | per-repo `nix flake update`                                              |
+| Goal                                       | Use                                    | Don't use                                                                            |
+| ------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------ |
+| Build the system (current host)            | `pn workspace build`                   | `darwin-rebuild build`, `nix build .#darwinConfigurations.<host>.system`             |
+| Activate the system                        | the **user** runs `pn workspace apply` | NEVER invoke from agent context                                                      |
+| Run `nix flake check` on a project         | `nix flake check` inside a project dir | (no special wrapper needed)                                                          |
+| Run `nix flake check` across every project | `pn workspace flake-check`             | per-repo `nix flake check` (that's the Tier 1 completion gate — see Completion Gate) |
+| Build a single package                     | `nix build .#<pkg>` inside the project | (no workspace-level wrapper)                                                         |
+| Pre-commit checks across all repos         | `pn workspace pre-commit-check`        | per-repo `pre-commit run --all-files`                                                |
+| Update flake locks across all repos        | `pn workspace update`                  | per-repo `nix flake update`                                                          |
 
 ## When to Push
 
