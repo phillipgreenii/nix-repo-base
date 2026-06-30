@@ -49,22 +49,17 @@ workspace doctor: no errors (0 warnings). local and remote builds will match.
 ### Example: Run with Findings
 
 ```
-$ pn workspace doctor
-workspace doctor — primary checkouts (origin/main is the baseline)
+$ pn workspace doctor --fix --dry-run
+workspace doctor — primary checkouts (origin/<branch> is the baseline)
 
-=== workspace ===
-ERROR toml-valid [manual] Workspace config is malformed — cannot parse pn-workspace.toml
+=== dep ===
+  ERROR branch-current        repo "dep" is not on its default branch "main" (on "feature") [manual]
+          ↳ git -C /workspace/dep switch main
+  WARN  repos-extra            git repo "stray" is on disk but not in pn-workspace.toml [fixable]
 
-=== phillipg-nix-repo-base ===
-ERROR branch-current [fixable] Expected branch 'main', found 'feature-x'
-ERROR tree-clean [manual] 2 tracked files modified — local build will differ from remote. Commit or stash:  git -C /path/to/repo stash
-ERROR flake-lock-fresh [would fix] flake.lock pin for nixpkgs (1.2.3) ≠ workspace target (1.2.4)
-ERROR branch-synced [fixable] local main behind origin/main (behind 3); will pull
+=== lib ===
+  ERROR flake-lock-fresh      flake.lock input "dep" (→ "dep") pins abc1234 but "dep" is at def5678 [would fix]
+  SKIP  branch-synced         remote comparison skipped [—]
 
-=== phillipgreenii-nix-support-apps ===
-WARN repos-extra [fixable] nix-support-lib present on disk but not in pn-workspace.toml
-WARN lock-present [fixable] pn-workspace.lock.json missing; will derive
-SKIP branch-synced   <repo>   remote comparison skipped (--offline)   [—]
-
-workspace doctor: 5 errors (2 warnings). Fix these to make builds consistent.
+workspace doctor: 1 errors, 1 warnings.
 ```

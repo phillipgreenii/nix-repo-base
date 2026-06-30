@@ -30,6 +30,19 @@ func TestReportExitCode(t *testing.T) {
 	}
 }
 
+func TestReportExitCode_SkippedErrorNotCounted(t *testing.T) {
+	r := &DoctorReport{Findings: []Finding{{Severity: SevError, Skipped: true}}}
+	if r.HasErrors() {
+		t.Fatal("a skipped SevError must not count as an error")
+	}
+	if r.ExitCode(false) != 0 {
+		t.Fatalf("skipped error -> exit 0, got %d", r.ExitCode(false))
+	}
+	if r.ExitCode(true) != 0 {
+		t.Fatalf("only-skipped findings -> exit 0 even under strict, got %d", r.ExitCode(true))
+	}
+}
+
 func TestDoctorOrchestratorRunsChecks(t *testing.T) {
 	env := &doctorEnv{}
 	c := check{id: "stub", run: func(_ context.Context, _ *doctorEnv) []Finding {

@@ -38,6 +38,23 @@ func TestRenderDoctor_HumanCleanRun(t *testing.T) {
 	}
 }
 
+func TestRenderDoctor_SkippedNotCountedAsError(t *testing.T) {
+	r := &DoctorReport{Mode: "primary", Findings: []Finding{
+		{CheckID: "branch-synced", Repo: "dep", Severity: SevError, Skipped: true, Message: "remote comparison skipped"},
+	}}
+	var buf bytes.Buffer
+	if err := RenderDoctor(&buf, r, DoctorOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if !strings.Contains(s, "SKIP") {
+		t.Fatalf("skipped finding should render SKIP: %q", s)
+	}
+	if !strings.Contains(s, "no errors") {
+		t.Fatalf("a report whose only finding is skipped should summarize as no errors: %q", s)
+	}
+}
+
 func TestRenderDoctor_HumanGroupsAndMarks(t *testing.T) {
 	r := &DoctorReport{Mode: "primary", Findings: []Finding{
 		{CheckID: "branch-synced", Repo: "dep", Severity: SevError, Message: "ahead", Manual: "git ..."},

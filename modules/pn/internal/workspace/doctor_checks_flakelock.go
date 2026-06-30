@@ -62,7 +62,7 @@ func (ws *Workspace) checkFlakeLockFresh(ctx context.Context, env *doctorEnv) []
 	}
 
 	// Attach a single update-delegating fix to the first finding per consumer.
-	attachFlakeLockFix(ws, fs, staleConsumers)
+	attachFlakeLockFix(ws, env, fs, staleConsumers)
 	return fs
 }
 
@@ -78,7 +78,8 @@ func (ws *Workspace) edgeTarget(lock *Lock, consumer, alias string) string {
 // attachFlakeLockFix marks the first flake-lock-fresh finding fixable; the fix
 // runs `pn workspace update` (the proven relock→commit→push, topo-ordered flow).
 // This is the ONLY fix that pushes — acceptable per spec decision 9.
-func attachFlakeLockFix(ws *Workspace, fs []Finding, stale map[string]bool) {
+func attachFlakeLockFix(ws *Workspace, env *doctorEnv, fs []Finding, stale map[string]bool) {
+	term := env.terminal
 	done := map[string]bool{}
 	for i := range fs {
 		if fs[i].CheckID != "flake-lock-fresh" || fs[i].Skipped {
@@ -90,7 +91,7 @@ func attachFlakeLockFix(ws *Workspace, fs []Finding, stale map[string]bool) {
 			done[c] = true
 			fs[i].Fixable = true
 			fs[i].fix = func(ctx context.Context) error {
-				return ws.Update(ctx, osStderr(), UpdateOptions{InPlace: true})
+				return ws.Update(ctx, osStderr(), UpdateOptions{InPlace: true, Terminal: term})
 			}
 		}
 	}
