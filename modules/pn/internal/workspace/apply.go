@@ -80,9 +80,9 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	}
 
 	oldProfile := readSystemProfile()
-	// Capture the git version before the rebuild so we can tell, afterwards,
-	// whether this apply swapped in a new git binary.
-	oldGitVersion := ws.gitVersion(ctx)
+	// Capture the git binary identity before the rebuild so we can tell,
+	// afterwards, whether this apply swapped in a new git binary.
+	oldGitID := ws.gitBinaryID(ctx)
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
 	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{
 		Dir:    terminalDir,
@@ -101,17 +101,22 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	// If this apply installed a new git, the running `git fsmonitor--daemon`
 	// is still executing the OLD git binary and will not auto-restart. Kill it
 	// so the next git command spawns a fresh daemon from the new binary.
-	if newGitVersion := ws.gitVersion(ctx); oldGitVersion != "" && newGitVersion != "" && newGitVersion != oldGitVersion {
+	if newGitID := ws.gitBinaryID(ctx); oldGitID != "" && newGitID != "" && newGitID != oldGitID {
 		ws.restartFsmonitorDaemon(ctx, out)
 	}
 
 	return ws.markApplied(ctx, allDirs)
 }
 
-// gitVersion returns the trimmed output of `git --version`, or "" if git is not
-// available. Used to detect whether an apply swapped in a new git binary.
-func (ws *Workspace) gitVersion(ctx context.Context) string {
-	res, err := ws.runner.Run(ctx, "git", []string{"--version"}, exec.RunOptions{})
+// gitBinaryID returns a string identifying the installed git *binary*, via the
+// trimmed output of `git --exec-path` (which is rooted in git's Nix store path),
+// or "" if git is not available. Used to detect whether an apply swapped in a
+// new git binary. `git --version` is deliberately NOT used: a same-version Nix
+// rebuild swaps the store path while leaving the version string unchanged, so a
+// version probe would miss it and the fsmonitor daemon would keep executing the
+// stale binary.
+func (ws *Workspace) gitBinaryID(ctx context.Context) string {
+	res, err := ws.runner.Run(ctx, "git", []string{"--exec-path"}, exec.RunOptions{})
 	if err != nil {
 		return ""
 	}

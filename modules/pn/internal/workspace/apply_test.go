@@ -129,9 +129,9 @@ func TestApply_RestartsFsmonitorWhenGitVersionChanges(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
 
 	f, _ := applyTestRunner(t, root)
-	// git --version: old then new (changed) — FIFO consumption.
-	f.AddResponse("git", []string{"--version"}, exec.Result{Stdout: []byte("git version 2.43.0\n")}, nil)
-	f.AddResponse("git", []string{"--version"}, exec.Result{Stdout: []byte("git version 2.45.0\n")}, nil)
+	// git --exec-path: old then new (changed store path) — FIFO consumption.
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.43.0/libexec/git-core\n")}, nil)
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/cccccccccccccccccccccccccccccccc-git-2.45.0/libexec/git-core\n")}, nil)
 	f.AddResponse("pkill", []string{"-f", "git fsmonitor--daemon"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -146,6 +146,36 @@ func TestApply_RestartsFsmonitorWhenGitVersionChanges(t *testing.T) {
 	}
 }
 
+// TestApply_RestartsFsmonitorWhenGitBinaryChangesSameVersion asserts that pkill
+// is invoked when the git binary changes (its --exec-path / store path) even
+// though the version string is identical. A same-version Nix rebuild swaps the
+// binary store path, and the running daemon would otherwise keep executing the
+// stale binary — keying on the version string alone misses this case.
+func TestApply_RestartsFsmonitorWhenGitBinaryChangesSameVersion(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+
+	f, _ := applyTestRunner(t, root)
+	// git --exec-path: same version 2.54.0, different store path before/after.
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.54.0/libexec/git-core\n")}, nil)
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-git-2.54.0/libexec/git-core\n")}, nil)
+	f.AddResponse("pkill", []string{"-f", "git fsmonitor--daemon"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !calledPkillFsmonitor(f.Calls()) {
+		t.Errorf("expected pkill of fsmonitor daemon when git binary path changed (same version); calls:\n%+v", f.Calls())
+	}
+}
+
 // TestApply_NoFsmonitorRestartWhenGitUnchanged asserts that pkill is NOT invoked
 // when the git version is identical before and after the rebuild.
 func TestApply_NoFsmonitorRestartWhenGitUnchanged(t *testing.T) {
@@ -157,9 +187,9 @@ func TestApply_NoFsmonitorRestartWhenGitUnchanged(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
 
 	f, _ := applyTestRunner(t, root)
-	// git --version: same string both times — no version change.
-	f.AddResponse("git", []string{"--version"}, exec.Result{Stdout: []byte("git version 2.43.0\n")}, nil)
-	f.AddResponse("git", []string{"--version"}, exec.Result{Stdout: []byte("git version 2.43.0\n")}, nil)
+	// git --exec-path: same path both times — git binary unchanged.
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.43.0/libexec/git-core\n")}, nil)
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.43.0/libexec/git-core\n")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -203,8 +233,8 @@ func TestApply_NoFsmonitorRestartOnSkippedRebuild(t *testing.T) {
 		t.Errorf("pkill must not run on the skip-rebuild path; calls:\n%+v", f.Calls())
 	}
 	for _, c := range f.Calls() {
-		if c.Name == "git" && len(c.Args) == 1 && c.Args[0] == "--version" {
-			t.Errorf("git --version must not be probed on the skip-rebuild path; calls:\n%+v", f.Calls())
+		if c.Name == "git" && len(c.Args) == 1 && c.Args[0] == "--exec-path" {
+			t.Errorf("git --exec-path must not be probed on the skip-rebuild path; calls:\n%+v", f.Calls())
 		}
 	}
 }
@@ -259,6 +289,9 @@ func TestApplyColorEnv(t *testing.T) {
 		t.Fatalf("colorOK=false: want nil env, got %v", got)
 	}
 	got := applyColorEnv(true)
+	if len(got) != 1 {
+		t.Fatalf("colorOK=true: want exactly 1 env key, got %d: %v", len(got), got)
+	}
 	if got["CLICOLOR_FORCE"] != "1" {
 		t.Fatalf("colorOK=true: want CLICOLOR_FORCE=1, got %v", got)
 	}
