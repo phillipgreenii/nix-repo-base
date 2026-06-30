@@ -123,8 +123,9 @@ resolvable and `follows`-correct.
    without pushing, leaving the repo ahead of remote — non-convergent (the next
    `doctor` run would flag `branch-synced`). `update` is the proven convergent
    flow. **Consequence:** this is the one fix that pushes; it is gated behind
-   `--fix`, shown in `--dry-run`, and called out in the report. _(Review point —
-   see [Open items](#open-items).)_
+   `--fix`, shown in `--dry-run`, and called out in the report. **Resolved
+   (2026-06-30): a push is acceptable when required to make the workspace
+   consistent.**
 10. **`revs.json` is removed** (bead `pg2-f1k1`): it is write-only dead code, no
     build path reads it. The doctor therefore has **no** `revs` checks.
 
@@ -408,10 +409,6 @@ omits any revs check, so the two do not block each other.)
 
 ## Open items
 
-- **Decision 9 review point:** is it acceptable that `doctor --fix` _pushes_ when
-  remediating `flake-lock-fresh` (by delegating to `pn workspace update`)? The
-  alternative is to report-only for that finding ("run `pn workspace update`")
-  and keep `--fix` strictly non-pushing.
 - Exact `--json` field names (finalize during implementation; mirror `info`).
 
 <a name="removed-revsjson"></a>## Removed: revs.json
