@@ -177,6 +177,8 @@ func (ws *Workspace) resolveTerminalForDoctor(flag string) string {
 	return ws.config.Workspace.Terminal
 }
 
+func osStderr() *os.File { return os.Stderr }
+
 func structuralOpenFailure(err error) Finding {
 	return Finding{
 		CheckID: "lock-valid", Severity: SevError,
@@ -221,5 +223,6 @@ func (ws *Workspace) registerChecks() []check {
 		{id: "repos", run: ws.checkRepos},
 		{id: "branches", run: ws.checkBranches},
 		{id: "terminal", run: ws.checkTerminal},
+		{id: "flake-lock", run: ws.checkFlakeLockFresh},
 	}
 }
