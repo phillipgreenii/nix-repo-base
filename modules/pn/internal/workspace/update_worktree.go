@@ -286,10 +286,42 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 			return oc
 		}
 	case primaryOnDirtyMain:
-		oc.status, oc.failedStep = statusDeferred, "integrate"
-		oc.note = "primary on dirty main; commit/stash then ff main from the branch"
-		fmt.Fprintf(out, "  ⚠ %s: integration deferred — primary on dirty main; worktree at %s (branch %s)\n", name, wt, branch)
-		return oc
+		// ff-first: a dirty file that does NOT collide with the ff'd paths (the
+		// common case — update only touches lock files) fast-forwards fine. Only
+		// autostash + retry when the direct ff is genuinely blocked. (Chosen over
+		// always-autostash, which risks silently leaving main mid-merge.)
+		if err := git(primary, "merge", "--ff-only", branch); err == nil {
+			break // success → fall through to step 9 cleanup, status stays OK
+		}
+		// ff blocked by the dirty tree. Autostash the tracked changes and retry.
+		// Bare `stash push` is tracked-only by default (untracked stay put).
+		fmt.Fprintf(out, "  ↻ %s: primary main dirty — autostashing to fast-forward\n", name)
+		if err := git(primary, "stash", "push", "-m", "pn-update autostash "+branch); err != nil {
+			oc.status, oc.failedStep = statusDeferred, "integrate"
+			oc.note = "primary on dirty main; autostash failed — commit/stash then ff main from the branch"
+			fmt.Fprintf(out, "  ⚠ %s: integration deferred — autostash failed; worktree at %s (branch %s)\n", name, wt, branch)
+			return oc
+		}
+		// Retry the ff against the now-clean tree.
+		if err := git(primary, "merge", "--ff-only", branch); err != nil {
+			// Not fast-forwardable (remote advanced/diverged), not a dirty-file
+			// issue. Restore the user's tree before deferring.
+			_ = git(primary, "stash", "pop")
+			oc.status, oc.failedStep = statusDeferred, "ff-merge"
+			oc.note = fmt.Sprintf("remote main advanced; reset local: git -C %s reset --hard origin/main", primary)
+			fmt.Fprintf(out, "  ⚠ %s: ff-merge deferred (stash restored) — %s (worktree at %s)\n", name, oc.note, wt)
+			return oc
+		}
+		// ff landed; restore the stash.
+		if err := git(primary, "stash", "pop"); err != nil {
+			// HARD DEFER: integration landed but primary main is now mid-merge with
+			// conflict markers + a retained stash. Do NOT report OK, do NOT clean up.
+			oc.status, oc.failedStep = statusDeferred, "autostash-pop"
+			oc.note = fmt.Sprintf("integrated, but autostash pop conflicted on primary main — resolve conflicts in %s then drop the stash (`git -C %s stash drop`); your changes are in `git stash list`", primary, primary)
+			fmt.Fprintf(out, "  ⚠ %s: integrated but autostash pop conflicted — %s\n", name, oc.note)
+			return oc
+		}
+		// success → fall through to step 9 cleanup
 	}
 
 	// Step 9: success — remove worktree, then branch.

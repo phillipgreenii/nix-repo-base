@@ -769,6 +769,57 @@ func assertS33WorktreeUpdate(t *testing.T, wsRoot string) {
 	}
 }
 
+// --- S33b extra: dirty primary main fast-forwards via ff-first/autostash ---
+
+// assertS33bWorktreeUpdateDirtyMain verifies the ff-first dirty-main integration:
+// the relock reaches both primary and remote main (fast-forwarded), the dirty
+// flake.nix modification survives the autostash round-trip, the stash list is
+// empty, and no .pn-update worktree residue is left behind.
+func assertS33bWorktreeUpdateDirtyMain(t *testing.T, wsRoot string) {
+	t.Helper()
+	primary := filepath.Join(wsRoot, "solo")
+	bare := filepath.Join(wsRoot, "remotes", "solo.git")
+
+	logOut, err := exec.Command("git", "-C", primary, "log", "--oneline", "-n", "5").Output()
+	if err != nil {
+		t.Fatalf("S33b: git log primary: %v", err)
+	}
+	if !strings.Contains(string(logOut), "update-locks: bump locked.txt") {
+		t.Errorf("S33b: primary main missing relock commit (dirty main should still ff); log:\n%s", logOut)
+	}
+
+	remoteHead, err := exec.Command("git", "-C", bare, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("S33b: git rev-parse remote: %v", err)
+	}
+	primHead, err := exec.Command("git", "-C", primary, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("S33b: git rev-parse primary: %v", err)
+	}
+	if strings.TrimSpace(string(remoteHead)) != strings.TrimSpace(string(primHead)) {
+		t.Errorf("S33b: remote main %s != primary main %s", strings.TrimSpace(string(remoteHead)), strings.TrimSpace(string(primHead)))
+	}
+
+	// The uncommitted flake.nix change must survive (ff-direct keeps it in place;
+	// an autostash round-trip restores it).
+	flakeNix := filepath.Join(primary, "flake.nix")
+	data, err := os.ReadFile(flakeNix)
+	if err != nil {
+		t.Errorf("S33b: read primary flake.nix after update: %v", err)
+	} else if !strings.Contains(string(data), "dirty-content") {
+		t.Errorf("S33b: primary flake.nix lost 'dirty-content' after dirty-main update;\nactual content: %s", string(data))
+	}
+
+	// No retained autostash.
+	if stash := gitStashList(t, primary); len(stash) > 0 {
+		t.Errorf("S33b: stash not empty after dirty-main update: %v", stash)
+	}
+
+	if entries, err := os.ReadDir(filepath.Join(wsRoot, ".workforests", ".pn-update")); err == nil && len(entries) > 0 {
+		t.Errorf("S33b: .pn-update worktree left behind: %v", entries)
+	}
+}
+
 // --- S34 extra: subset set contains only the chosen repos ---
 
 func assertS34WorkforestSubset(t *testing.T, wsRoot string) {

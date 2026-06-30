@@ -363,6 +363,15 @@ func TestSmoke_S33_WorktreeUpdate(t *testing.T) {
 	runScenario(t, "s33-worktree-update")
 }
 
+// TestSmoke_S33b_WorktreeUpdateDirtyMain: same topology as S33 but the primary
+// main is dirty (an uncommitted flake.nix change that does not collide with the
+// relocked path). The ff-first integration fast-forwards primary main to the
+// relock and round-trips the dirty change through autostash if needed, leaving
+// the change intact, an empty stash list, and no .pn-update residue.
+func TestSmoke_S33b_WorktreeUpdateDirtyMain(t *testing.T) {
+	runScenario(t, "s33b-worktree-update-dirty-main")
+}
+
 // TestSmoke_S34_WorkforestSubset: three-repo workspace (producer, consumer, extra;
 // consumer depends on producer). pn workspace workforest add feature-x
 // --repos producer,consumer creates a SUBSET set containing only producer +
@@ -575,6 +584,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS32EventsJSONL(t, wsRoot, env)
 	case "s33-worktree-update":
 		assertS33WorktreeUpdate(t, wsRoot)
+	case "s33b-worktree-update-dirty-main":
+		assertS33bWorktreeUpdateDirtyMain(t, wsRoot)
 	case "s34-workforest-subset":
 		assertS34WorkforestSubset(t, wsRoot)
 	case "s35-workforest-add-remove-repo":

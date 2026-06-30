@@ -59,8 +59,14 @@ direct-on-`main` flow.**
    primary `main` is advanced:
    `merge --ff-only` when on a clean `main`; a ref-only fast-forward
    (`fetch . <branch>:main`) when `main` is not checked out (so in-progress work
-   on another branch is undisturbed); **defer** (leave the worktree + branch,
-   report) when `main` is checked out and dirty.
+   on another branch is undisturbed); and an **ff-first / autostash-on-failure**
+   path when `main` is checked out and dirty — attempt the ff directly (a dirty
+   file that does not collide with the relocked paths ff's fine, the common
+   lock-file case), and only on a blocked ff autostash the tracked changes, retry
+   the ff, then restore the stash. This **defers** (leaves the worktree + branch,
+   reports) only when the autostash push fails, the ff is genuinely not
+   fast-forwardable, or the autostash pop conflicts. (Chosen over always-autostash,
+   which risks silently leaving `main` mid-merge.)
 
 4. **Default flips; `--in-place` is the escape hatch.** `pn workspace update`
    (and `upgrade`'s update phase) use the worktree flow by default. `--in-place`
@@ -137,8 +143,15 @@ The full algorithm, edge cases, and test plan are in
 - **Dirty-repo handling differs by mode.** `--in-place` retains the exact prior
   behavior, including the upfront dirty-repo skip, for anyone who wants the old
   flow or to debug. The default worktree flow does **not** skip a dirty repo — the
-  worktree isolates the primary, so the long run proceeds regardless; only a dirty
-  `main` _checkout_ defers at integration.
+  worktree isolates the primary, so the long run proceeds regardless; a dirty
+  `main` _checkout_ is fast-forwarded with an ff-first / autostash-on-failure
+  step (ff attempted first, tracked changes autostashed and the ff retried only on
+  collision, then the stash re-applied). It defers only when the autostash push
+  fails, the ff is genuinely not fast-forwardable, or the autostash pop conflicts;
+  an autostash-pop conflict is a **hard** defer — integration has landed but the
+  primary `main` is mid-merge with a retained stash, so the worktree + branch are
+  left in place and the run is reported failed rather than silently OK. This was
+  chosen over always-autostash, which risks silently leaving `main` mid-merge.
 - The coordinated worktree _set_ model is unaffected and remains the tool for
   cross-repo feature work; this decision concerns `update` only.
 - Worktrees live inside the workspace root (`.worktrees/.pn-update/`), so the

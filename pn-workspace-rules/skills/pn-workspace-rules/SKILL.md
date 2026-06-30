@@ -170,8 +170,11 @@ the long relock; `main` is only touched by a fast fast-forward at the end.
 Key points for agents:
 
 - **Dirty-repo behavior differs by mode.** The default worktree flow does _not_ skip a dirty repo
-  upfront — the worktree isolates the primary. Only a dirty `main` _checkout_ defers at
-  integration (worktree + branch are left for inspection; run continues to the next repo).
+  upfront — the worktree isolates the primary. A dirty `main` _checkout_ is now **autostashed**
+  around the fast-forward (the ff is attempted first; on collision the tracked changes are stashed,
+  the ff retried, then the stash re-applied). It only defers if the autostash push fails, the ff is
+  genuinely not fast-forwardable (remote advanced/diverged), or the autostash pop conflicts — in
+  which case the worktree + branch are left for inspection and the run continues to the next repo.
   `--in-place` retains the old behavior, including the upfront dirty-repo skip.
 
 - **`--in-place` escape hatch.** `pn workspace update --in-place` (and

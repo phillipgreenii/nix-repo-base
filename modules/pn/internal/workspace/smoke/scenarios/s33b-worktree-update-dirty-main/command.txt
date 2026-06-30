@@ -1,0 +1,6 @@
+# Bootstrap (clone is idempotent — skips the pre-cloned dirty primary), then run
+# the default (worktree-isolated) update against a dirty primary main.
+workspace init
+workspace clone
+workspace lock
+workspace update

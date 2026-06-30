@@ -159,17 +159,186 @@ func TestUpdateViaWorktree_OtherBranchRefFf(t *testing.T) {
 	}
 }
 
-func TestUpdateViaWorktree_DirtyMainDefers(t *testing.T) {
+// scriptDirtyMainProbe scripts the step-8 state probe for a dirty primary main:
+// HEAD==main and `diff --quiet` reports dirty (exit 1), classifying as
+// primaryOnDirtyMain. (The `diff --cached --quiet` probe is short-circuited by
+// the dirty modified tree, so it is not issued.)
+func scriptDirtyMainProbe(f *exec.FakeRunner, foo string) {
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+}
+
+// TestUpdateViaWorktree_DirtyMainFfFirstSucceeds: dirty primary main, but the
+// FIRST `merge --ff-only` succeeds (the dirty file does not collide with the
+// ff'd paths — the common lock-file case). No autostash is issued; the worktree
+// + branch are removed and the run succeeds, recording the pushed rev.
+func TestUpdateViaWorktree_DirtyMainFfFirstSucceeds(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
 	scriptThroughPush(f, foo, wt, branch)
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
-	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	scriptDirtyMainProbe(f, foo)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "branch", "-d", branch}, exec.Result{}, nil)
 
 	w, _ := Open(root, f)
-	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"}); err == nil {
-		t.Fatalf("expected deferred error")
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"}); err != nil {
+		t.Fatalf("dirty main with a clean ff should succeed; got %v", err)
+	}
+	// No stash should be issued when the first ff succeeds.
+	for _, c := range f.Calls() {
+		if c.Name == "git" && slices.Contains(c.Args, "stash") {
+			t.Errorf("must not stash when the first ff succeeds; got %v", c.Args)
+		}
+	}
+	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
+	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
+		t.Errorf("revs.json rev = %q, want pushed tip", rl.Repos["foo"].Rev)
+	}
+}
+
+// TestUpdateViaWorktree_DirtyMainCollidesAutostashes: dirty primary main; the
+// first `merge --ff-only` FAILS (dirty file collides with an ff'd path), so the
+// flow autostashes, retries the ff (succeeds), pops the stash, and cleans up.
+// The two `merge --ff-only` scripts are consumed FIFO: fail then OK.
+func TestUpdateViaWorktree_DirtyMainCollidesAutostashes(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	scriptDirtyMainProbe(f, foo)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS (collision)
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", foo, "stash", "push", "-m", "pn-update autostash " + branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil) // retry OK
+	f.AddResponse("git", []string{"-C", foo, "stash", "pop"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "branch", "-d", branch}, exec.Result{}, nil)
+
+	w, _ := Open(root, f)
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"}); err != nil {
+		t.Fatalf("dirty main collision should autostash and succeed; got %v", err)
+	}
+	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
+	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
+		t.Errorf("revs.json rev = %q, want pushed tip", rl.Repos["foo"].Rev)
+	}
+	// A successful autostash round-trip MUST still clean up: assert the ephemeral
+	// worktree was removed (guards a regression that reports OK but skips cleanup).
+	removedWorktree := false
+	for _, c := range f.Calls() {
+		if c.Name == "git" && len(c.Args) >= 5 && c.Args[1] == foo && c.Args[2] == "worktree" && c.Args[3] == "remove" && c.Args[4] == wt {
+			removedWorktree = true
+		}
+	}
+	if !removedWorktree {
+		t.Errorf("autostash success must remove the worktree via `git -C %s worktree remove %s`; calls:\n%v", foo, wt, f.Calls())
+	}
+}
+
+// TestUpdateViaWorktree_DirtyMainStashFails: first ff fails, then `stash push`
+// itself fails → the run defers at "integrate", leaving the worktree behind.
+func TestUpdateViaWorktree_DirtyMainStashFails(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	scriptDirtyMainProbe(f, foo)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", foo, "stash", "push", "-m", "pn-update autostash " + branch}, // stash FAILS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected deferred error when autostash push fails")
+	}
+	assertLeftBehind(t, f, out.String(), foo, wt, "integrate")
+}
+
+// TestUpdateViaWorktree_DirtyMainFfFailsAfterStash: first ff fails, stash push
+// OK, but the RETRY ff still fails (remote advanced / diverged, not a dirty-file
+// issue) → restore the stash (`stash pop`) and defer at "ff-merge" with the
+// reset-not-merge recovery hint; the worktree is left behind.
+func TestUpdateViaWorktree_DirtyMainFfFailsAfterStash(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	scriptDirtyMainProbe(f, foo)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", foo, "stash", "push", "-m", "pn-update autostash " + branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // retry ff FAILS (not fast-forwardable)
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", foo, "stash", "pop"}, exec.Result{}, nil)
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected deferred error when the retry ff is not fast-forwardable")
+	}
+	s := out.String()
+	if !strings.Contains(s, "reset --hard origin/main") {
+		t.Errorf("ff-merge defer must print the reset-not-merge recovery hint; got:\n%s", s)
+	}
+	// The user's autostashed tree MUST be restored before deferring: assert the
+	// restore `stash pop` was actually issued (guards against dropping the pop and
+	// leaving primary main with the user's changes stashed away).
+	poppedStash := false
+	for _, c := range f.Calls() {
+		if c.Name == "git" && len(c.Args) >= 4 && c.Args[1] == foo && c.Args[2] == "stash" && c.Args[3] == "pop" {
+			poppedStash = true
+		}
+	}
+	if !poppedStash {
+		t.Errorf("ff-merge defer must restore the autostash via `git -C %s stash pop`; calls:\n%v", foo, f.Calls())
+	}
+	assertLeftBehind(t, f, s, foo, wt, "ff-merge")
+}
+
+// TestUpdateViaWorktree_DirtyMainPopConflicts: first ff fails, stash push OK,
+// retry ff OK (integration landed), but `stash pop` CONFLICTS → HARD DEFER at
+// "autostash-pop". This is the silent-corruption guard: the run must NOT be OK
+// and the worktree must NOT be removed, and the note must point at the retained
+// stash so the user can recover.
+func TestUpdateViaWorktree_DirtyMainPopConflicts(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	scriptDirtyMainProbe(f, foo)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", foo, "stash", "push", "-m", "pn-update autostash " + branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil) // retry OK
+	f.AddResponse("git", []string{"-C", foo, "stash", "pop"}, // pop CONFLICTS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected deferred error when autostash pop conflicts")
+	}
+	s := out.String()
+	// MUST NOT report OK for foo.
+	if strings.Contains(s, "✓ foo") {
+		t.Errorf("pop conflict must not report foo ok; got:\n%s", s)
+	}
+	// MUST surface the retained-stash recovery hint.
+	if !strings.Contains(s, "stash list") {
+		t.Errorf("pop-conflict note must mention the retained stash; got:\n%s", s)
+	}
+	if !strings.Contains(s, "autostash-pop") {
+		t.Errorf("summary should name the autostash-pop step; got:\n%s", s)
+	}
+	// MUST NOT remove the worktree (no silent cleanup on corruption).
+	for _, c := range f.Calls() {
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[1] == foo && c.Args[2] == "worktree" && slices.Contains(c.Args, "remove") {
+			t.Fatalf("must not remove worktree on pop conflict; got %v", c.Args)
+		}
 	}
 }
 
