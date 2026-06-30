@@ -66,6 +66,22 @@ func TestCheckRepos_ExtraIsWarning(t *testing.T) {
 	}
 }
 
+func TestCheckRepos_IdentityMismatchIsError(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "dep")
+	initRealRepo(t, dir)
+	// origin disagrees (different slug) with the configured url -> identity mismatch
+	runGitT(t, dir, "remote", "add", "origin", "git@github.com:o/actual.git")
+	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
+			"dep": {URL: "git@github.com:o/configured.git", Branch: "main"}}}}
+	env := &doctorEnv{ws: ws, mode: "primary"}
+	fs := ws.checkRepos(context.Background(), env)
+	if !hasFindingForRepo(fs, "repo-identity", "dep", SevError) {
+		t.Fatalf("origin/url mismatch should be repo-identity error: %+v", fs)
+	}
+}
+
 func hasFindingForRepo(fs []Finding, id, repo string, sev Severity) bool {
 	for _, f := range fs {
 		if f.CheckID == id && f.Repo == repo && f.Severity == sev {
