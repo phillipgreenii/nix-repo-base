@@ -219,5 +219,6 @@ func (ws *Workspace) registerChecks() []check {
 	return []check{
 		{id: "lock", run: ws.checkLock},
 		{id: "repos", run: ws.checkRepos},
+		{id: "branches", run: ws.checkBranches},
 	}
 }
