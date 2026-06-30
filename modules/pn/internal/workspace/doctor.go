@@ -217,6 +217,6 @@ func sortFindings(fs []Finding) {
 // in the registry.
 func (ws *Workspace) registerChecks() []check {
 	return []check{
-		// appended in later tasks
+		{id: "lock", run: ws.checkLock},
 	}
 }
