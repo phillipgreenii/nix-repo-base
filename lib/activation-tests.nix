@@ -51,4 +51,10 @@ in
     expr = builtins.isString act.activationHelpers;
     expected = true;
   };
+  # activationHelpers is the single source of truth sourced from the standalone
+  # .bash file via readFile, not an inline Nix string.
+  testHelpersSourcedFromFile = {
+    expr = act.activationHelpers == builtins.readFile ./activation/activation-lib.bash;
+    expected = true;
+  };
 }
