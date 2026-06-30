@@ -64,7 +64,7 @@ func currentBranch(t *testing.T, dir string) string {
 func setupLocalBareRemote(t *testing.T, dir string) string {
 	t.Helper()
 	bare := dir + ".git"
-	runGitT(t, ".", "init", "-q", "--bare", bare)
+	runGitT(t, dir, "init", "-q", "--bare", bare)
 	runGitT(t, dir, "remote", "add", "origin", bare)
 	runGitT(t, dir, "push", "-q", "origin", currentBranch(t, dir))
 	return bare
