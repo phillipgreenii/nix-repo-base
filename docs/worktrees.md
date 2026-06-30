@@ -1,6 +1,6 @@
 # Working with worktrees
 
-> **Three models exist.** The **ephemeral-update model** (the `update`/`upgrade` default) creates short-lived per-repo worktrees on throwaway branches for each run of `pn workspace update`, keeping the canonical clones free during the long relock. The **coordinated-set model** (`pn workspace worktree`) creates a full workspace of worktrees — every repo on a shared feature branch — and is the recommended approach for cross-repo feature work. The older **single-override model** (`--override-path` / `PN_WORKSPACE_OVERRIDE_PATHS`) patches one or more repo paths into an existing workspace run; it is still valid for single-repo overrides. All three are documented here.
+> **Three models exist.** The **ephemeral-update model** (the `update`/`upgrade` default) creates short-lived per-repo worktrees on throwaway branches for each run of `pn workspace update`, keeping the canonical clones free during the long relock. The **coordinated-set model** (`pn workspace workforest`) creates a full workspace of worktrees — every repo on a shared feature branch — and is the recommended approach for cross-repo feature work. The older **single-override model** (`--override-path` / `PN_WORKSPACE_OVERRIDE_PATHS`) patches one or more repo paths into an existing workspace run; it is still valid for single-repo overrides. All three are documented here.
 
 ## Per-repo ephemeral update worktrees (the `update` default)
 
@@ -14,7 +14,7 @@ rationale.
 
 For each repo in topological order:
 
-1. Create a worktree at `<root>/.worktrees/.pn-update/<repo>-<run-ts>` on branch
+1. Create a worktree at `<root>/.workforests/.pn-update/<repo>-<run-ts>` on branch
    `pn-update/<run-ts>`, branched off local `main`.
 2. Run `./update-locks.sh` in that worktree (the same script as before — nothing changes about
    what gets locked or how).
@@ -41,17 +41,17 @@ To resume or clean up a left-behind worktree:
 
 ```bash
 # Inspect the worktree — it is a normal git working tree
-ls <root>/.worktrees/.pn-update/<repo>-<run-ts>
-git -C <root>/.worktrees/.pn-update/<repo>-<run-ts> log --oneline -5
+ls <root>/.workforests/.pn-update/<repo>-<run-ts>
+git -C <root>/.workforests/.pn-update/<repo>-<run-ts> log --oneline -5
 
 # If the relock is already done, finish the fast-forward manually:
 git -C <root>/<repo> merge --ff-only pn-update/<run-ts>
 
 # To discard and clean up:
-git worktree remove --force <root>/.worktrees/.pn-update/<repo>-<run-ts>
+git worktree remove --force <root>/.workforests/.pn-update/<repo>-<run-ts>
 git -C <root>/<repo> branch -D pn-update/<run-ts>
 # Or, to prune all stale update worktrees at once:
-pn workspace worktree prune
+pn workspace workforest prune
 git -C <root>/<repo> branch -D pn-update/<run-ts>
 ```
 
@@ -84,10 +84,10 @@ The default worktree flow does **not** skip a dirty repo upfront — the worktre
 primary, so the long run proceeds regardless. Only a dirty `main` _checkout_ defers at
 integration.
 
-### `update` inside a coordinated worktree set requires `--in-place`
+### `update` inside a coordinated workforest set requires `--in-place`
 
 Running bare `pn workspace update` from inside a coordinated set (created by
-`pn workspace worktree add`) is an error. The worktree-isolation flow only runs from the canonical
+`pn workspace workforest add`) is an error. The worktree-isolation flow only runs from the canonical
 workspace root. Inside a set, use:
 
 ```bash
@@ -108,16 +108,16 @@ Run updates serially.
 
 ---
 
-## Coordinated worktree sets (recommended for cross-repo work)
+## Coordinated workforest sets (recommended for cross-repo work)
 
-`pn workspace worktree add <branch>` creates a **coordinated set**: a directory that is itself a complete workspace root, containing a git worktree for each member repo, all on the shared `<branch>`. By default a set contains **every** repo in `pn-workspace.toml`; pass `--repos` to create a **subset** set (see [Subsetting a set](#subsetting-a-set-repos-add-repo-remove-repo)). The normal `pn workspace` verbs (`build`, `update`, `rebase`, `push`, `status`, etc.) run unchanged inside the set because the set directory satisfies the existing path model — `pn` finds the set's own `pn-workspace.toml` via the upward walk and resolves all repo paths as `{set}/{repo}`.
+`pn workspace workforest add <branch>` creates a **coordinated set**: a directory that is itself a complete workspace root, containing a git worktree for each member repo, all on the shared `<branch>`. By default a set contains **every** repo in `pn-workspace.toml`; pass `--repos` to create a **subset** set (see [Subsetting a set](#subsetting-a-set-repos-add-repo-remove-repo)). The normal `pn workspace` verbs (`build`, `update`, `rebase`, `push`, `status`, etc.) run unchanged inside the set because the set directory satisfies the existing path model — `pn` finds the set's own `pn-workspace.toml` via the upward walk and resolves all repo paths as `{set}/{repo}`.
 
 ### Quick start
 
 ```bash
 # From the canonical workspace root:
-pn workspace worktree add my-feature          # create set at .worktrees/my-feature
-cd .worktrees/my-feature
+pn workspace workforest add my-feature        # create set at .workforests/my-feature
+cd .workforests/my-feature
 unset PN_WORKSPACE_ROOT                       # must not point at the canonical root
 pn workspace status                           # operates on the set's worktrees
 pn workspace build
@@ -125,18 +125,18 @@ pn workspace rebase main                      # rebase each worktree onto local 
 pn workspace push --set-upstream              # publish the feature branch (first time)
 ```
 
-### Worktree set commands
+### Workforest set commands
 
-| Command                                                               | What it does                                                                                                                                                              |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pn workspace worktree add <branch> [<commit-ish>] [--repos]`         | Create a set for `<branch>` under `worktrees_dir` (default `.worktrees`). All repos by default, or a subset with `--repos a,b`. Mirrors `git worktree add` semantics.     |
-| `pn workspace worktree add-repo <branch> <repo>`                      | Add one repo to an existing set without recreating it. Mirrors `git worktree add`.                                                                                        |
-| `pn workspace worktree remove-repo <branch> <repo>` (alias `rm-repo`) | Remove one repo from an existing set; mirrors `git worktree remove` (refuses dirty/locked unless `--force`). Does NOT delete the branch; refuses to remove the last repo. |
-| `pn workspace worktree list`                                          | List existing sets.                                                                                                                                                       |
-| `pn workspace worktree remove <branch>` (alias `rm`)                  | Remove a whole set; mirrors `git worktree remove` (refuses dirty/locked unless `--force`). Does NOT delete the branch.                                                    |
-| `pn workspace worktree prune`                                         | Run `git worktree prune` in every canonical repo (clears stale admin entries after a manual `rm -rf` of a set).                                                           |
+| Command                                                                 | What it does                                                                                                                                                              |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pn workspace workforest add <branch> [<commit-ish>] [--repos]`         | Create a set for `<branch>` under `workforests_dir` (default `.workforests`). All repos by default, or a subset with `--repos a,b`. Mirrors `git worktree add` semantics. |
+| `pn workspace workforest add-repo <branch> <repo>`                      | Add one repo to an existing set without recreating it. Mirrors `git worktree add`.                                                                                        |
+| `pn workspace workforest remove-repo <branch> <repo>` (alias `rm-repo`) | Remove one repo from an existing set; mirrors `git worktree remove` (refuses dirty/locked unless `--force`). Does NOT delete the branch; refuses to remove the last repo. |
+| `pn workspace workforest list`                                          | List existing sets.                                                                                                                                                       |
+| `pn workspace workforest remove <branch>` (alias `rm`)                  | Remove a whole set; mirrors `git worktree remove` (refuses dirty/locked unless `--force`). Does NOT delete the branch.                                                    |
+| `pn workspace workforest prune`                                         | Run `git worktree prune` in every canonical repo (clears stale admin entries after a manual `rm -rf` of a set).                                                           |
 
-The `worktrees_dir` field in `pn-workspace.toml`'s `[workspace]` table configures where sets live (default: `.worktrees`, relative to workspace root). When it uses a non-dot-prefixed value, the filesystem scanners skip it automatically.
+The `workforests_dir` field in `pn-workspace.toml`'s `[workspace]` table configures where sets live (default: `.workforests`, relative to workspace root). When it uses a non-dot-prefixed value, the filesystem scanners skip it automatically.
 
 ### Subsetting a set (`--repos`, `add-repo`, `remove-repo`)
 
@@ -144,18 +144,18 @@ A set may contain a **subset** of the workspace repos instead of all of them:
 
 ```bash
 # Create a set with only two repos:
-pn workspace worktree add my-feature --repos phillipg-nix-repo-base,phillipgreenii-nix-support-apps
+pn workspace workforest add my-feature --repos phillipg-nix-repo-base,phillipgreenii-nix-support-apps
 
 # Grow / shrink an existing set without recreating it:
-pn workspace worktree add-repo    my-feature phillipgreenii-nix-overlay
-pn workspace worktree remove-repo my-feature phillipgreenii-nix-overlay   # alias: rm-repo; --force for dirty/locked
+pn workspace workforest add-repo    my-feature phillipgreenii-nix-overlay
+pn workspace workforest remove-repo my-feature phillipgreenii-nix-overlay   # alias: rm-repo; --force for dirty/locked
 ```
 
 How membership is tracked and how dependencies resolve:
 
 - **Per-set membership lives in the set's own `pn-workspace.toml`.** A subset set's copied config/lock/revs are filtered to the member repos; the canonical `pn-workspace.toml` is never modified. `add-repo`/`remove-repo` rewrite the set's filtered config/lock/revs from canonical, so the set always stays a valid, self-contained workspace.
-- **Excluded workspace dependencies resolve against their locked flake input.** If a member repo declares a workspace dependency on a repo that is _not_ in the set, the set's lock drops that override edge — so nix resolves the input from the consumer's own locked flake input (the published/canonical source) rather than a set-internal `git+file://` override. `worktree add`/`add-repo`/`remove-repo` print a notice naming each such `consumer → dependency` edge so the fallback is never silent.
-- **`remove-repo` refuses to remove the last repo** (use `worktree remove <branch>` to delete the whole set) and, like `git worktree remove`, leaves the branch behind in the canonical repo.
+- **Excluded workspace dependencies resolve against their locked flake input.** If a member repo declares a workspace dependency on a repo that is _not_ in the set, the set's lock drops that override edge — so nix resolves the input from the consumer's own locked flake input (the published/canonical source) rather than a set-internal `git+file://` override. `workforest add`/`add-repo`/`remove-repo` print a notice naming each such `consumer → dependency` edge so the fallback is never silent.
+- **`remove-repo` refuses to remove the last repo** (use `workforest remove <branch>` to delete the whole set) and, like `git worktree remove`, leaves the branch behind in the canonical repo.
 - **P1 still holds.** Subset `add`/`add-repo`/`remove-repo` only `git worktree add`/`remove` against canonical repos (shared object store + admin entries) and write inside the set; no canonical working tree, index, HEAD, or branch is modified.
 
 ### Key caveats
@@ -164,7 +164,7 @@ How membership is tracked and how dependencies resolve:
 - **P1 guarantee:** no `pn workspace` verb run from inside a set modifies the canonical checkouts' working state (HEAD, branch, index, working tree). New commits/branches/objects land in the shared object store. `update`/`rebase` may update shared remote-tracking refs and `FETCH_HEAD` but never the primary's working tree or checked-out branch.
 - **Hooks must use workspace-relative paths.** Hooks that hard-code absolute canonical paths escape the set and violate P1. Use `{root}/{repo}` construction (where `root` is resolved from cwd or `PN_WORKSPACE_ROOT`) rather than hard-coded absolute paths.
 
-For the full agent-rules treatment of coordinated worktrees — including the `rebase [branch]` and `push --set-upstream` forms, the `WORKSPACE_ROOT` recompute-from-`SCRIPT_DIR` note, and the detailed P1 explanation — see [`pn-workspace-rules/skills/pn-workspace-rules/SKILL.md`](../pn-workspace-rules/skills/pn-workspace-rules/SKILL.md), section **Coordinated Worktree Sets**.
+For the full agent-rules treatment of coordinated workforests — including the `rebase [branch]` and `push --set-upstream` forms, the `WORKSPACE_ROOT` recompute-from-`SCRIPT_DIR` note, and the detailed P1 explanation — see [`pn-workspace-rules/skills/pn-workspace-rules/SKILL.md`](../pn-workspace-rules/skills/pn-workspace-rules/SKILL.md), section **Coordinated Workforest Sets**.
 
 ---
 

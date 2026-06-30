@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# S27: worktree remove
-# Two bare-remote repos. Bootstrap, create a worktree set for "feature-x",
-# then the test command (workspace worktree remove feature-x) removes it.
-# The branch "feature-x" should remain in each canonical repo.
+# S25: workforest add on already-checked-out branch
+# Two bare-remote repos. Bootstrap with init→clone→lock.
+# Attempting `workspace workforest add main` should fail because
+# main is already checked out in the canonical clones.
 set -euo pipefail
 
 WSROOT="$PWD"
@@ -46,7 +46,7 @@ rm -rf "$CONSUMER_WORK"
 # Write the real pn-workspace.toml with actual file:// URLs.
 cat >"$WSROOT/pn-workspace.toml" <<TOML
 [workspace]
-name = "smoke-s27"
+name = "smoke-s25"
 terminal = "consumer"
 
 [repos.consumer]

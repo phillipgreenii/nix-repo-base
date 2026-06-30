@@ -22,8 +22,8 @@ const (
 	primaryOnDirtyMain                       // on main but dirty → defer
 )
 
-// updateWorktreesSubdir is the dot-prefixed dir under WorktreesDir() holding the
-// ephemeral per-repo update worktrees. Dot-prefixed so WorktreeList and the
+// updateWorktreesSubdir is the dot-prefixed dir under WorkforestsDir() holding the
+// ephemeral per-repo update worktrees. Dot-prefixed so WorkforestList and the
 // filesystem scanners skip it.
 const updateWorktreesSubdir = ".pn-update"
 
@@ -34,15 +34,15 @@ var updateRunStampFn = func() string {
 	return fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102-150405.000"), os.Getpid())
 }
 
-// inCoordinatedSet reports whether ws.root is a coordinated worktree set created
-// by `pn workspace worktree add` — i.e. it lives directly under the configured
-// worktrees dir (<worktrees_dir>/<branch>). The worktree-isolation update flow is
+// inWorkforest reports whether ws.root is a coordinated workforest set created
+// by `pn workspace workforest add` — i.e. it lives directly under the configured
+// workforests dir (<workforests_dir>/<branch>). The worktree-isolation update flow is
 // invalid inside a set: the set's repos are worktrees on a shared feature branch
 // with `main` checked out in the canonical clones, so a nested worktree-add +
 // push-to-main + ff-main would violate the set's P1 invariant. Detection is
-// structural — a set always lives directly under the worktrees dir.
-func (ws *Workspace) inCoordinatedSet() bool {
-	return filepath.Base(filepath.Dir(ws.root)) == filepath.Base(ws.config.WorktreesDirName())
+// structural — a set always lives directly under the workforests dir.
+func (ws *Workspace) inWorkforest() bool {
+	return filepath.Base(filepath.Dir(ws.root)) == filepath.Base(ws.config.WorkforestsDirName())
 }
 
 // primaryMainState probes the primary checkout's branch + cleanliness to decide
@@ -98,8 +98,8 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	if _, err := ws.requireTerminal(ctx, opts.Terminal); err != nil {
 		return err
 	}
-	if ws.inCoordinatedSet() {
-		return fmt.Errorf("update: refusing the worktree-isolation flow inside a coordinated worktree set (%s); run `pn workspace update --in-place` to relock the set in place", ws.root)
+	if ws.inWorkforest() {
+		return fmt.Errorf("update: refusing the worktree-isolation flow inside a coordinated workforest set (%s); run `pn workspace update --in-place` to relock the set in place", ws.root)
 	}
 	// Resolve UL_LIB_DIR once: explicit option → pre-set env (lets CI/smoke inject
 	// without nix) → nix resolver. Each consumer update-locks.sh clobbers
@@ -181,7 +181,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 // integration removes them.
 func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, name, branch, runTS, ulLibDir string, aliases []string) repoOutcome {
 	primary := filepath.Join(ws.root, name)
-	wt := filepath.Join(ws.WorktreesDir(), updateWorktreesSubdir, name+"-"+runTS)
+	wt := filepath.Join(ws.WorkforestsDir(), updateWorktreesSubdir, name+"-"+runTS)
 	oc := repoOutcome{name: name, worktree: wt, branch: branch}
 
 	fmt.Fprintf(out, "  --== update %s (worktree) ==--  \n", name)
@@ -208,7 +208,7 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 	if err := git(primary, "worktree", "add", "-b", branch, wt, "main"); err != nil {
 		oc.status, oc.failedStep, oc.worktree, oc.branch = statusFailed, "worktree-add", "", ""
 		oc.note = err.Error()
-		fmt.Fprintf(out, "  ✗ %s: worktree add failed (stale leftover? run `pn workspace worktree prune`): %v\n", name, err)
+		fmt.Fprintf(out, "  ✗ %s: worktree add failed (stale leftover? run `pn workspace workforest prune`): %v\n", name, err)
 		return oc
 	}
 
@@ -294,7 +294,7 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 
 	// Step 9: success — remove worktree, then branch.
 	if err := git(primary, "worktree", "remove", wt); err != nil {
-		oc.status, oc.note = statusOK, "integrated, but worktree remove failed — run `pn workspace worktree prune`"
+		oc.status, oc.note = statusOK, "integrated, but worktree remove failed — run `pn workspace workforest prune`"
 		fmt.Fprintf(out, "  ⚠ %s: integrated, but worktree remove failed\n", name)
 		return oc
 	}

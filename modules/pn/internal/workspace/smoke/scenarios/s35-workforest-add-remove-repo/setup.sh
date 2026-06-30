@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# S34: worktree subset create
+# S35: workforest add-repo / remove-repo round trip
 # Three local repos: producer, consumer (consumer depends on producer), and
-# extra (independent). `pn workspace worktree add feature-x --repos producer,consumer`
-# must create a set containing ONLY producer + consumer (extra excluded), with
-# the set's own pn-workspace.toml listing only those two.
+# extra (independent). command.txt creates a subset set {producer, consumer};
+# the assertS35WorktreeAddRemoveRepo hook then adds `extra` to the live set and
+# removes it again, asserting set membership + the extra worktree dir track the
+# changes and the canonical clones are unchanged (P1).
 set -euo pipefail
 
 WSROOT="$PWD"
@@ -60,7 +61,7 @@ git commit -m "init" >/dev/null
 cd "$WSROOT"
 cat >pn-workspace.toml <<TOML
 [workspace]
-name = "smoke-s34"
+name = "smoke-s35"
 terminal = "consumer"
 
 [repos.consumer]

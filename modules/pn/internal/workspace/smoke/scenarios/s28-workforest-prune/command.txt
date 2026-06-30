@@ -1,4 +1,4 @@
-# Bootstrap the workspace. The actual worktree-add + manual-rm + prune
+# Bootstrap the workspace. The actual workforest-add + manual-rm + prune
 # sequence is performed in the assertS28WorktreePrune hook.
 workspace init
 workspace clone

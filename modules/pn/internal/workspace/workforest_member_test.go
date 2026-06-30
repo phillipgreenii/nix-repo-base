@@ -16,7 +16,7 @@ import (
 // as `worktree add --repos` would produce. Returns the set dir.
 func seedSubsetSet(t *testing.T, w *Workspace, branch string, members ...string) string {
 	t.Helper()
-	setDir := filepath.Join(w.WorktreesDir(), branch)
+	setDir := filepath.Join(w.WorkforestsDir(), branch)
 	memberSet := map[string]bool{}
 	for _, m := range members {
 		memberSet[m] = true
@@ -55,10 +55,10 @@ func setMembers(t *testing.T, setDir string) map[string]bool {
 }
 
 // ============================================================
-// WorktreeAddRepo
+// WorkforestAddRepo
 // ============================================================
 
-func TestWorktreeAddRepo_HappyPath(t *testing.T) {
+func TestWorkforestAddRepo_HappyPath(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 	w, err := Open(root, f)
@@ -77,8 +77,8 @@ func TestWorktreeAddRepo_HappyPath(t *testing.T) {
 	f.AddResponse("git", []string{"-C", otherCanonical, "worktree", "add", otherSet, "feature"}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeAddRepo(context.Background(), &out, &errOut, WorktreeAddRepoOptions{Branch: "feature", Repo: "other"}); err != nil {
-		t.Fatalf("WorktreeAddRepo: %v", err)
+	if err := w.WorkforestAddRepo(context.Background(), &out, &errOut, WorkforestAddRepoOptions{Branch: "feature", Repo: "other"}); err != nil {
+		t.Fatalf("WorkforestAddRepo: %v", err)
 	}
 
 	// Set membership must now include other (3 members).
@@ -88,7 +88,7 @@ func TestWorktreeAddRepo_HappyPath(t *testing.T) {
 	}
 }
 
-func TestWorktreeAddRepo_AlreadyPresentErrors(t *testing.T) {
+func TestWorkforestAddRepo_AlreadyPresentErrors(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 	w, err := Open(root, f)
@@ -97,7 +97,7 @@ func TestWorktreeAddRepo_AlreadyPresentErrors(t *testing.T) {
 	}
 	_ = seedSubsetSet(t, w, "feature", "app", "lib")
 
-	err = w.WorktreeAddRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorktreeAddRepoOptions{Branch: "feature", Repo: "lib"})
+	err = w.WorkforestAddRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorkforestAddRepoOptions{Branch: "feature", Repo: "lib"})
 	if err == nil {
 		t.Fatal("expected error adding a repo already in the set, got nil")
 	}
@@ -106,7 +106,7 @@ func TestWorktreeAddRepo_AlreadyPresentErrors(t *testing.T) {
 	}
 }
 
-func TestWorktreeAddRepo_UnknownRepoErrors(t *testing.T) {
+func TestWorkforestAddRepo_UnknownRepoErrors(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 	w, err := Open(root, f)
@@ -115,7 +115,7 @@ func TestWorktreeAddRepo_UnknownRepoErrors(t *testing.T) {
 	}
 	_ = seedSubsetSet(t, w, "feature", "app", "lib")
 
-	err = w.WorktreeAddRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorktreeAddRepoOptions{Branch: "feature", Repo: "ghost"})
+	err = w.WorkforestAddRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorkforestAddRepoOptions{Branch: "feature", Repo: "ghost"})
 	if err == nil {
 		t.Fatal("expected error adding unknown repo, got nil")
 	}
@@ -124,24 +124,24 @@ func TestWorktreeAddRepo_UnknownRepoErrors(t *testing.T) {
 	}
 }
 
-func TestWorktreeAddRepo_SetMissingErrors(t *testing.T) {
+func TestWorkforestAddRepo_SetMissingErrors(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.WorktreeAddRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorktreeAddRepoOptions{Branch: "nope", Repo: "lib"})
+	err = w.WorkforestAddRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorkforestAddRepoOptions{Branch: "nope", Repo: "lib"})
 	if err == nil {
 		t.Fatal("expected error when set does not exist, got nil")
 	}
 }
 
 // ============================================================
-// WorktreeRemoveRepo
+// WorkforestRemoveRepo
 // ============================================================
 
-func TestWorktreeRemoveRepo_HappyPath(t *testing.T) {
+func TestWorkforestRemoveRepo_HappyPath(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 	w, err := Open(root, f)
@@ -156,8 +156,8 @@ func TestWorktreeRemoveRepo_HappyPath(t *testing.T) {
 	f.AddResponse("git", []string{"-C", libCanonical, "worktree", "remove", libSet}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeRemoveRepo(context.Background(), &out, &errOut, WorktreeRemoveRepoOptions{Branch: "feature", Repo: "lib"}); err != nil {
-		t.Fatalf("WorktreeRemoveRepo: %v", err)
+	if err := w.WorkforestRemoveRepo(context.Background(), &out, &errOut, WorkforestRemoveRepoOptions{Branch: "feature", Repo: "lib"}); err != nil {
+		t.Fatalf("WorkforestRemoveRepo: %v", err)
 	}
 
 	members := setMembers(t, setDir)
@@ -169,7 +169,7 @@ func TestWorktreeRemoveRepo_HappyPath(t *testing.T) {
 	}
 }
 
-func TestWorktreeRemoveRepo_ForceFlag(t *testing.T) {
+func TestWorkforestRemoveRepo_ForceFlag(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 	w, err := Open(root, f)
@@ -183,8 +183,8 @@ func TestWorktreeRemoveRepo_ForceFlag(t *testing.T) {
 	f.AddResponse("git", []string{"-C", libCanonical, "worktree", "remove", libSet, "--force"}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeRemoveRepo(context.Background(), &out, &errOut, WorktreeRemoveRepoOptions{Branch: "feature", Repo: "lib", Force: true}); err != nil {
-		t.Fatalf("WorktreeRemoveRepo --force: %v", err)
+	if err := w.WorkforestRemoveRepo(context.Background(), &out, &errOut, WorkforestRemoveRepoOptions{Branch: "feature", Repo: "lib", Force: true}); err != nil {
+		t.Fatalf("WorkforestRemoveRepo --force: %v", err)
 	}
 	forceSeen := false
 	for _, c := range f.Calls() {
@@ -199,7 +199,7 @@ func TestWorktreeRemoveRepo_ForceFlag(t *testing.T) {
 	}
 }
 
-func TestWorktreeRemoveRepo_NotInSetErrors(t *testing.T) {
+func TestWorkforestRemoveRepo_NotInSetErrors(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 	w, err := Open(root, f)
@@ -208,7 +208,7 @@ func TestWorktreeRemoveRepo_NotInSetErrors(t *testing.T) {
 	}
 	_ = seedSubsetSet(t, w, "feature", "app", "lib")
 
-	err = w.WorktreeRemoveRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorktreeRemoveRepoOptions{Branch: "feature", Repo: "other"})
+	err = w.WorkforestRemoveRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorkforestRemoveRepoOptions{Branch: "feature", Repo: "other"})
 	if err == nil {
 		t.Fatal("expected error removing a repo not in the set, got nil")
 	}
@@ -217,7 +217,7 @@ func TestWorktreeRemoveRepo_NotInSetErrors(t *testing.T) {
 	}
 }
 
-func TestWorktreeRemoveRepo_RefusesLastRepo(t *testing.T) {
+func TestWorkforestRemoveRepo_RefusesLastRepo(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 	w, err := Open(root, f)
@@ -227,7 +227,7 @@ func TestWorktreeRemoveRepo_RefusesLastRepo(t *testing.T) {
 	// Set has only "app".
 	_ = seedSubsetSet(t, w, "feature", "app")
 
-	err = w.WorktreeRemoveRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorktreeRemoveRepoOptions{Branch: "feature", Repo: "app"})
+	err = w.WorkforestRemoveRepo(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorkforestRemoveRepoOptions{Branch: "feature", Repo: "app"})
 	if err == nil {
 		t.Fatal("expected error removing the last repo from a set, got nil")
 	}

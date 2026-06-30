@@ -1,6 +1,0 @@
-# Bootstrap, create a worktree set, then list.
-workspace init
-workspace clone
-workspace lock
-workspace worktree add feature-x
-workspace worktree list

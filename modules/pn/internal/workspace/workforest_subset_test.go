@@ -196,10 +196,10 @@ func TestMemberRepos_UnknownRepoErrors(t *testing.T) {
 }
 
 // ============================================================
-// WorktreeAdd — subset create
+// WorkforestAdd — subset create
 // ============================================================
 
-func TestWorktreeAdd_Subset_CreatesOnlyChosenRepos(t *testing.T) {
+func TestWorkforestAdd_Subset_CreatesOnlyChosenRepos(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 
@@ -210,7 +210,7 @@ func TestWorktreeAdd_Subset_CreatesOnlyChosenRepos(t *testing.T) {
 
 	appCanonical := filepath.Join(root, "app")
 	libCanonical := filepath.Join(root, "lib")
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	appSet := filepath.Join(setDir, "app")
 	libSet := filepath.Join(setDir, "lib")
 
@@ -223,8 +223,8 @@ func TestWorktreeAdd_Subset_CreatesOnlyChosenRepos(t *testing.T) {
 	f.AddResponse("git", []string{"-C", appCanonical, "worktree", "add", "-b", "feature", appSet}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature", Repos: []string{"app", "lib"}}); err != nil {
-		t.Fatalf("WorktreeAdd subset: %v", err)
+	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature", Repos: []string{"app", "lib"}}); err != nil {
+		t.Fatalf("WorkforestAdd subset: %v", err)
 	}
 
 	// "other" must have NO git calls.
@@ -277,10 +277,10 @@ func TestWorktreeAdd_Subset_CreatesOnlyChosenRepos(t *testing.T) {
 }
 
 // ============================================================
-// WorktreeAdd — subset where a member's dep is excluded → notice
+// WorkforestAdd — subset where a member's dep is excluded → notice
 // ============================================================
 
-func TestWorktreeAdd_Subset_ExcludedDepNotice(t *testing.T) {
+func TestWorkforestAdd_Subset_ExcludedDepNotice(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
 
@@ -291,7 +291,7 @@ func TestWorktreeAdd_Subset_ExcludedDepNotice(t *testing.T) {
 
 	appCanonical := filepath.Join(root, "app")
 	otherCanonical := filepath.Join(root, "other")
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	appSet := filepath.Join(setDir, "app")
 	otherSet := filepath.Join(setDir, "other")
 
@@ -304,8 +304,8 @@ func TestWorktreeAdd_Subset_ExcludedDepNotice(t *testing.T) {
 	f.AddResponse("git", []string{"-C", otherCanonical, "worktree", "add", "-b", "feature", otherSet}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature", Repos: []string{"app", "other"}}); err != nil {
-		t.Fatalf("WorktreeAdd subset w/ excluded dep: %v", err)
+	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature", Repos: []string{"app", "other"}}); err != nil {
+		t.Fatalf("WorkforestAdd subset w/ excluded dep: %v", err)
 	}
 
 	// A notice must name the consumer (app) and the excluded dep (lib).

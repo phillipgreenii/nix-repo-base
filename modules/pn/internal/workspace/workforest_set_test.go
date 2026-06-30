@@ -1,9 +1,9 @@
 package workspace
 
-// Tests that prove "a worktree set is just a workspace whose root is the set
+// Tests that prove "a workforest set is just a workspace whose root is the set
 // dir."  All paths derive from ws.root (filepath.Join(ws.root, repo)), so when
 // ws.root == the set directory, every verb automatically operates on set-internal
-// paths — no worktree-conditional code required.  These tests make that
+// paths — no workforest-conditional code required.  These tests make that
 // structural claim explicit and regression-proof.
 
 import (
@@ -19,23 +19,23 @@ import (
 )
 
 // TestOverrideInputArgsFor_SetRootedWorkspace proves that when ws.root is a
-// worktree-set directory, overrideInputArgsFor emits git+file:// paths that
+// workforest-set directory, overrideInputArgsFor emits git+file:// paths that
 // are strictly INSIDE the set root — never a canonical-checkout path.
 //
-// The setup mirrors what worktree add produces: a set dir containing one
+// The setup mirrors what workforest add produces: a set dir containing one
 // checkout per repo.  The workspace TOML lives inside the set dir and is
 // opened with that dir as root; the lock carries a consumer→dep edge.
 //
 // Key assertion: the emitted git+file:// URL must have setRoot as a prefix
 // and must NOT equal (or be a parent of) any path outside setRoot.
 func TestOverrideInputArgsFor_SetRootedWorkspace(t *testing.T) {
-	setRoot := t.TempDir() // simulates <worktrees_dir>/<branch>
+	setRoot := t.TempDir() // simulates <workforests_dir>/<branch>
 	// Simulate two repos inside the set: "app" (consumer) and "lib" (dep).
 	mkRepoDir(t, setRoot, "app")
 	mkRepoDir(t, setRoot, "lib")
 
 	// Workspace config lives inside the set root (copied from canonical on
-	// worktree add; for this unit test we write it directly).
+	// workforest add; for this unit test we write it directly).
 	lock := &Lock{
 		Repos: map[string]LockRepoEntry{
 			"app": {FlakePath: "flake.nix", RemoteURL: "github:owner/app"},
@@ -91,7 +91,7 @@ url = "github:owner/lib"
 // This mirrors TestUpdate_PullLocksPushPerRepo but roots the workspace in a
 // "set" temp dir to confirm no call escapes the set boundary.
 func TestUpdate_SetRootedWorkspace_RewritesSetRevs(t *testing.T) {
-	setRoot := t.TempDir() // simulates <worktrees_dir>/<branch>
+	setRoot := t.TempDir() // simulates <workforests_dir>/<branch>
 
 	writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
 [workspace]
@@ -168,7 +168,7 @@ url = "github:owner/app"
 // addressed — consistent with TestStatus_WritesPerRepoSections but with
 // setRoot as the workspace root.
 func TestStatus_SetRootedWorkspace_ResolvesSetInternalPaths(t *testing.T) {
-	setRoot := t.TempDir() // simulates <worktrees_dir>/<branch>
+	setRoot := t.TempDir() // simulates <workforests_dir>/<branch>
 
 	writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
 [repos.alpha]

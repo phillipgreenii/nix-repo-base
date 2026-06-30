@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# S24: worktree add
-# Two bare-remote repos (producer, consumer). Bootstrap with init→clone→lock,
-# then the test command creates a worktree set for branch "feature-x".
+# S28: workforest prune
+# Two bare-remote repos. Bootstrap, create a workforest set for "feature-x",
+# then manually rm -rf the set dir to create stale .git/worktrees entries.
+# The test command (workspace workforest prune) should clear those stale entries.
 set -euo pipefail
 
 WSROOT="$PWD"
@@ -45,7 +46,7 @@ rm -rf "$CONSUMER_WORK"
 # Write the real pn-workspace.toml with actual file:// URLs.
 cat >"$WSROOT/pn-workspace.toml" <<TOML
 [workspace]
-name = "smoke-s24"
+name = "smoke-s28"
 terminal = "consumer"
 
 [repos.consumer]

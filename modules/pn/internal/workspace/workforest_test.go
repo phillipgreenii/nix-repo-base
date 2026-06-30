@@ -77,10 +77,10 @@ func addBranchExists(f *exec.FakeRunner, canonical, branch string) {
 }
 
 // ============================================================
-// WorktreeAdd — pre-flight: missing canonical repo
+// WorkforestAdd — pre-flight: missing canonical repo
 // ============================================================
 
-func TestWorktreeAdd_PreflightMissingRepo(t *testing.T) {
+func TestWorkforestAdd_PreflightMissingRepo(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	// Only create canonical dir for "bar"; "foo" is missing.
 	makeFakeCanonicalRepos(t, root, "bar")
@@ -91,7 +91,7 @@ func TestWorktreeAdd_PreflightMissingRepo(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	err = w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"})
+	err = w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"})
 	if err == nil {
 		t.Fatal("expected error for missing canonical repo, got nil")
 	}
@@ -99,17 +99,17 @@ func TestWorktreeAdd_PreflightMissingRepo(t *testing.T) {
 		t.Errorf("error should name missing repo 'foo'; got: %v", err)
 	}
 	// Set dir must NOT have been created.
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	if dirExists(setDir) {
 		t.Errorf("set dir should not be created on preflight failure; found %s", setDir)
 	}
 }
 
 // ============================================================
-// WorktreeAdd — pre-flight: set dir already exists
+// WorkforestAdd — pre-flight: set dir already exists
 // ============================================================
 
-func TestWorktreeAdd_PreflightSetDirExists(t *testing.T) {
+func TestWorkforestAdd_PreflightSetDirExists(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -119,13 +119,13 @@ func TestWorktreeAdd_PreflightSetDirExists(t *testing.T) {
 	}
 
 	// Pre-create the set dir.
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	if err := os.MkdirAll(setDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
 	var out, errOut bytes.Buffer
-	err = w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"})
+	err = w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"})
 	if err == nil {
 		t.Fatal("expected error when set dir already exists, got nil")
 	}
@@ -139,10 +139,10 @@ func TestWorktreeAdd_PreflightSetDirExists(t *testing.T) {
 }
 
 // ============================================================
-// WorktreeAdd — pre-flight: branch already checked out
+// WorkforestAdd — pre-flight: branch already checked out
 // ============================================================
 
-func TestWorktreeAdd_PreflightBranchCheckedOut(t *testing.T) {
+func TestWorkforestAdd_PreflightBranchCheckedOut(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -157,7 +157,7 @@ func TestWorktreeAdd_PreflightBranchCheckedOut(t *testing.T) {
 	addWorktreeListWithBranch(f, filepath.Join(root, "foo"), "feature")
 
 	var out, errOut bytes.Buffer
-	err = w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"})
+	err = w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"})
 	if err == nil {
 		t.Fatal("expected error when branch already checked out, got nil")
 	}
@@ -168,17 +168,17 @@ func TestWorktreeAdd_PreflightBranchCheckedOut(t *testing.T) {
 		t.Errorf("error should name branch 'feature'; got: %v", err)
 	}
 	// Set dir must NOT have been created.
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	if dirExists(setDir) {
 		t.Errorf("set dir should not be created on preflight failure; found %s", setDir)
 	}
 }
 
 // ============================================================
-// WorktreeAdd — happy path: new branch (no prior local branch)
+// WorkforestAdd — happy path: new branch (no prior local branch)
 // ============================================================
 
-func TestWorktreeAdd_HappyPath_NewBranch(t *testing.T) {
+func TestWorkforestAdd_HappyPath_NewBranch(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -198,7 +198,7 @@ url = "github:owner/bar"
 
 	barCanonical := filepath.Join(root, "bar")
 	fooCanonical := filepath.Join(root, "foo")
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
 	fooSet := filepath.Join(setDir, "foo")
 
@@ -213,8 +213,8 @@ url = "github:owner/bar"
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"}); err != nil {
-		t.Fatalf("WorktreeAdd: %v", err)
+	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
+		t.Fatalf("WorkforestAdd: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
@@ -262,10 +262,10 @@ url = "github:owner/bar"
 }
 
 // ============================================================
-// WorktreeAdd — new branch with explicit commit-ish
+// WorkforestAdd — new branch with explicit commit-ish
 // ============================================================
 
-func TestWorktreeAdd_HappyPath_NewBranchWithCommitIsh(t *testing.T) {
+func TestWorkforestAdd_HappyPath_NewBranchWithCommitIsh(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -283,7 +283,7 @@ url = "github:owner/bar"
 
 	barCanonical := filepath.Join(root, "bar")
 	fooCanonical := filepath.Join(root, "foo")
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
 	fooSet := filepath.Join(setDir, "foo")
 
@@ -296,8 +296,8 @@ url = "github:owner/bar"
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet, "abc1234"}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature", CommitIsh: "abc1234"}); err != nil {
-		t.Fatalf("WorktreeAdd with commit-ish: %v", err)
+	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature", CommitIsh: "abc1234"}); err != nil {
+		t.Fatalf("WorkforestAdd with commit-ish: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
@@ -315,10 +315,10 @@ url = "github:owner/bar"
 }
 
 // ============================================================
-// WorktreeAdd — happy path: branch already exists locally
+// WorkforestAdd — happy path: branch already exists locally
 // ============================================================
 
-func TestWorktreeAdd_HappyPath_ExistingBranch(t *testing.T) {
+func TestWorkforestAdd_HappyPath_ExistingBranch(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -336,7 +336,7 @@ url = "github:owner/bar"
 
 	barCanonical := filepath.Join(root, "bar")
 	fooCanonical := filepath.Join(root, "foo")
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
 	fooSet := filepath.Join(setDir, "foo")
 
@@ -350,8 +350,8 @@ url = "github:owner/bar"
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", fooSet, "feature"}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"}); err != nil {
-		t.Fatalf("WorktreeAdd existing branch: %v", err)
+	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
+		t.Fatalf("WorkforestAdd existing branch: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
@@ -370,10 +370,10 @@ url = "github:owner/bar"
 }
 
 // ============================================================
-// WorktreeRemove — happy path
+// WorkforestRemove — happy path
 // ============================================================
 
-func TestWorktreeRemove_HappyPath(t *testing.T) {
+func TestWorkforestRemove_HappyPath(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -383,7 +383,7 @@ func TestWorktreeRemove_HappyPath(t *testing.T) {
 	}
 
 	// Create a fake set dir with repo subdirs.
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
 	fooSet := filepath.Join(setDir, "foo")
 	if err := os.MkdirAll(barSet, 0o755); err != nil {
@@ -400,8 +400,8 @@ func TestWorktreeRemove_HappyPath(t *testing.T) {
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "remove", fooSet}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeRemove(context.Background(), &out, &errOut, WorktreeRemoveOptions{Branch: "feature"}); err != nil {
-		t.Fatalf("WorktreeRemove: %v", err)
+	if err := w.WorkforestRemove(context.Background(), &out, &errOut, WorkforestRemoveOptions{Branch: "feature"}); err != nil {
+		t.Fatalf("WorkforestRemove: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
@@ -415,16 +415,16 @@ func TestWorktreeRemove_HappyPath(t *testing.T) {
 	// Verify no branch-delete calls.
 	for _, c := range f.Calls() {
 		if contains([]byte(strings.Join(c.Args, " ")), "branch") && contains([]byte(strings.Join(c.Args, " ")), "-d") {
-			t.Errorf("WorktreeRemove must NOT delete branches; got call: %v", c.Args)
+			t.Errorf("WorkforestRemove must NOT delete branches; got call: %v", c.Args)
 		}
 	}
 }
 
 // ============================================================
-// WorktreeRemove — --force is passed through
+// WorkforestRemove — --force is passed through
 // ============================================================
 
-func TestWorktreeRemove_ForceFlag(t *testing.T) {
+func TestWorkforestRemove_ForceFlag(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -433,7 +433,7 @@ func TestWorktreeRemove_ForceFlag(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
 	fooSet := filepath.Join(setDir, "foo")
 	if err := os.MkdirAll(barSet, 0o755); err != nil {
@@ -450,8 +450,8 @@ func TestWorktreeRemove_ForceFlag(t *testing.T) {
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "remove", fooSet, "--force"}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeRemove(context.Background(), &out, &errOut, WorktreeRemoveOptions{Branch: "feature", Force: true}); err != nil {
-		t.Fatalf("WorktreeRemove --force: %v", err)
+	if err := w.WorkforestRemove(context.Background(), &out, &errOut, WorkforestRemoveOptions{Branch: "feature", Force: true}); err != nil {
+		t.Fatalf("WorkforestRemove --force: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
@@ -474,10 +474,10 @@ func TestWorktreeRemove_ForceFlag(t *testing.T) {
 }
 
 // ============================================================
-// WorktreeRemove — without --force, flag NOT appended
+// WorkforestRemove — without --force, flag NOT appended
 // ============================================================
 
-func TestWorktreeRemove_NoForceFlag(t *testing.T) {
+func TestWorkforestRemove_NoForceFlag(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -486,7 +486,7 @@ func TestWorktreeRemove_NoForceFlag(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
 	fooSet := filepath.Join(setDir, "foo")
 	if err := os.MkdirAll(barSet, 0o755); err != nil {
@@ -504,8 +504,8 @@ func TestWorktreeRemove_NoForceFlag(t *testing.T) {
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "remove", fooSet}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeRemove(context.Background(), &out, &errOut, WorktreeRemoveOptions{Branch: "feature", Force: false}); err != nil {
-		t.Fatalf("WorktreeRemove (no force): %v", err)
+	if err := w.WorkforestRemove(context.Background(), &out, &errOut, WorkforestRemoveOptions{Branch: "feature", Force: false}); err != nil {
+		t.Fatalf("WorkforestRemove (no force): %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
@@ -522,10 +522,10 @@ func TestWorktreeRemove_NoForceFlag(t *testing.T) {
 }
 
 // ============================================================
-// WorktreeRemove — set dir missing → error
+// WorkforestRemove — set dir missing → error
 // ============================================================
 
-func TestWorktreeRemove_SetDirMissing(t *testing.T) {
+func TestWorkforestRemove_SetDirMissing(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 
 	w, err := Open(root, f)
@@ -533,17 +533,17 @@ func TestWorktreeRemove_SetDirMissing(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	err = w.WorktreeRemove(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorktreeRemoveOptions{Branch: "nonexistent"})
+	err = w.WorkforestRemove(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, WorkforestRemoveOptions{Branch: "nonexistent"})
 	if err == nil {
 		t.Fatal("expected error when set dir doesn't exist, got nil")
 	}
 }
 
 // ============================================================
-// WorktreePrune
+// WorkforestPrune
 // ============================================================
 
-func TestWorktreePrune_RunsInEachRepo(t *testing.T) {
+func TestWorkforestPrune_RunsInEachRepo(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 
 	w, err := Open(root, f)
@@ -558,8 +558,8 @@ func TestWorktreePrune_RunsInEachRepo(t *testing.T) {
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "prune"}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreePrune(context.Background(), &out, &errOut, WorktreePruneOptions{}); err != nil {
-		t.Fatalf("WorktreePrune: %v", err)
+	if err := w.WorkforestPrune(context.Background(), &out, &errOut, WorkforestPruneOptions{}); err != nil {
+		t.Fatalf("WorkforestPrune: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
@@ -584,10 +584,10 @@ func TestWorktreePrune_RunsInEachRepo(t *testing.T) {
 }
 
 // ============================================================
-// WorktreeList
+// WorkforestList
 // ============================================================
 
-func TestWorktreeList_ListsSets(t *testing.T) {
+func TestWorkforestList_ListsSets(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 
 	w, err := Open(root, f)
@@ -595,8 +595,8 @@ func TestWorktreeList_ListsSets(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	// Create two fake set dirs under worktrees_dir.
-	wtDir := w.WorktreesDir()
+	// Create two fake set dirs under workforests_dir.
+	wtDir := w.WorkforestsDir()
 	if err := os.MkdirAll(filepath.Join(wtDir, "feature-a"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -605,8 +605,8 @@ func TestWorktreeList_ListsSets(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeList(context.Background(), &out, &errOut, WorktreeListOptions{}); err != nil {
-		t.Fatalf("WorktreeList: %v", err)
+	if err := w.WorkforestList(context.Background(), &out, &errOut, WorkforestListOptions{}); err != nil {
+		t.Fatalf("WorkforestList: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
@@ -623,12 +623,12 @@ func TestWorktreeList_ListsSets(t *testing.T) {
 	_ = f.Calls()
 }
 
-// TestWorktreeList_SkipsDotEntries: a dot-prefixed dir under worktrees_dir
+// TestWorkforestList_SkipsDotEntries: a dot-prefixed dir under workforests_dir
 // (e.g. the .pn-update update-worktree area) is not listed as a set.
-func TestWorktreeList_SkipsDotEntries(t *testing.T) {
+func TestWorkforestList_SkipsDotEntries(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.foo]\nurl = \"github:o/foo\"\n")
-	wtDir := filepath.Join(root, ".worktrees")
+	wtDir := filepath.Join(root, ".workforests")
 	if err := os.MkdirAll(filepath.Join(wtDir, "my-feature"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -640,8 +640,8 @@ func TestWorktreeList_SkipsDotEntries(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	var buf bytes.Buffer
-	if err := w.WorktreeList(context.Background(), &buf, &bytes.Buffer{}, WorktreeListOptions{}); err != nil {
-		t.Fatalf("WorktreeList: %v", err)
+	if err := w.WorkforestList(context.Background(), &buf, &bytes.Buffer{}, WorkforestListOptions{}); err != nil {
+		t.Fatalf("WorkforestList: %v", err)
 	}
 	got := buf.String()
 	if !strings.Contains(got, "my-feature") {
@@ -652,7 +652,7 @@ func TestWorktreeList_SkipsDotEntries(t *testing.T) {
 	}
 }
 
-func TestWorktreeList_NoWorktreesDir(t *testing.T) {
+func TestWorkforestList_NoWorkforestsDir(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 
 	w, err := Open(root, f)
@@ -660,24 +660,24 @@ func TestWorktreeList_NoWorktreesDir(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	// Do NOT create worktrees_dir — expect no error and empty output.
+	// Do NOT create workforests_dir — expect no error and empty output.
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeList(context.Background(), &out, &errOut, WorktreeListOptions{}); err != nil {
-		t.Fatalf("WorktreeList with no dir: %v", err)
+	if err := w.WorkforestList(context.Background(), &out, &errOut, WorkforestListOptions{}); err != nil {
+		t.Fatalf("WorkforestList with no dir: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 	if out.Len() != 0 {
-		t.Errorf("expected empty output when worktrees_dir missing; got: %q", out.String())
+		t.Errorf("expected empty output when workforests_dir missing; got: %q", out.String())
 	}
 }
 
 // ============================================================
-// WorktreeAdd — revs file absent is OK (not copied, not error)
+// WorkforestAdd — revs file absent is OK (not copied, not error)
 // ============================================================
 
-func TestWorktreeAdd_NoRevsFile(t *testing.T) {
+func TestWorkforestAdd_NoRevsFile(t *testing.T) {
 	root, f := makeTwoRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "bar", "foo")
 
@@ -696,7 +696,7 @@ url = "github:owner/bar"
 
 	barCanonical := filepath.Join(root, "bar")
 	fooCanonical := filepath.Join(root, "foo")
-	setDir := filepath.Join(w.WorktreesDir(), "feature")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
 	fooSet := filepath.Join(setDir, "foo")
 
@@ -708,8 +708,8 @@ url = "github:owner/bar"
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := w.WorktreeAdd(context.Background(), &out, &errOut, WorktreeAddOptions{Branch: "feature"}); err != nil {
-		t.Fatalf("WorktreeAdd without revs file: %v", err)
+	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
+		t.Fatalf("WorkforestAdd without revs file: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())

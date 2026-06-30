@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # S29: verbs-in-a-set
 # Two bare-remote repos (producer, consumer). consumer is the terminal.
-# Bootstrap with init→clone→lock, create a worktree set "feature-y",
-# then the test command (workspace worktree add feature-y) just bootstraps
+# Bootstrap with init→clone→lock, create a workforest set "feature-y",
+# then the test command (workspace workforest add feature-y) just bootstraps
 # the set. The actual verb-chain (status→build→update→rebase main→push --set-upstream)
 # is exercised from inside the set in the assertS29VerbsInASet hook.
 #

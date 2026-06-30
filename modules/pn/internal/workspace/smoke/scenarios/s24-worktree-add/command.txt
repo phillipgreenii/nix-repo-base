@@ -1,5 +1,0 @@
-# Bootstrap the workspace, then add a worktree set.
-workspace init
-workspace clone
-workspace lock
-workspace worktree add feature-x

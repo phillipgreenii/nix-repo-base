@@ -63,7 +63,7 @@ terminal = "foo"
 url = "github:owner/foo"
 `)
 	foo = filepath.Join(root, "foo")
-	wt = filepath.Join(root, ".worktrees", updateWorktreesSubdir, "foo-TEST")
+	wt = filepath.Join(root, ".workforests", updateWorktreesSubdir, "foo-TEST")
 	mkUpdateLocks(t, wt) // existence-gate: the worktree carries the committed script
 	f = exec.NewFakeRunner()
 	return root, foo, wt, f
@@ -508,11 +508,11 @@ func TestUpdateViaWorktree_CaptureRevFails(t *testing.T) {
 }
 
 func TestUpdateViaWorktree_RefusesInsideSet(t *testing.T) {
-	// A coordinated set lives at <base>/.worktrees/<branch>; rooting pn there must
-	// refuse the worktree flow and point at --in-place. (.worktrees is the default
-	// worktrees_dir name, so inCoordinatedSet() detects it structurally.)
+	// A coordinated set lives at <base>/.workforests/<branch>; rooting pn there must
+	// refuse the worktree flow and point at --in-place. (.workforests is the default
+	// workforests_dir name, so inWorkforest() detects it structurally.)
 	base := t.TempDir()
-	setRoot := filepath.Join(base, ".worktrees", "feature-x")
+	setRoot := filepath.Join(base, ".workforests", "feature-x")
 	if err := os.MkdirAll(setRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}

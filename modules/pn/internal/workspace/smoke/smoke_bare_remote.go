@@ -314,15 +314,15 @@ func assertS22AutostashRoundTrip(t *testing.T, wsRoot string) {
 	}
 }
 
-// --- S24 extra: worktree set exists, all repos on feature-x, files copied ---
+// --- S24 extra: workforest set exists, all repos on feature-x, files copied ---
 
-func assertS24WorktreeAdd(t *testing.T, wsRoot string) {
+func assertS24WorkforestAdd(t *testing.T, wsRoot string) {
 	t.Helper()
-	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+	setDir := filepath.Join(wsRoot, ".workforests", "feature-x")
 
 	// 1. Set dir must exist.
 	if _, err := os.Stat(setDir); os.IsNotExist(err) {
-		t.Errorf("S24: worktree set dir %s does not exist", setDir)
+		t.Errorf("S24: workforest set dir %s does not exist", setDir)
 		return
 	}
 
@@ -356,13 +356,13 @@ func assertS24WorktreeAdd(t *testing.T, wsRoot string) {
 
 // --- S27 extra: set dir gone; branches left behind ---
 
-func assertS27WorktreeRemove(t *testing.T, wsRoot string) {
+func assertS27WorkforestRemove(t *testing.T, wsRoot string) {
 	t.Helper()
-	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+	setDir := filepath.Join(wsRoot, ".workforests", "feature-x")
 
 	// 1. Set dir must be gone.
 	if _, err := os.Stat(setDir); err == nil {
-		t.Errorf("S27: set dir %s still exists after worktree remove", setDir)
+		t.Errorf("S27: set dir %s still exists after workforest remove", setDir)
 	}
 
 	// 2. Branch feature-x must still exist in each canonical repo.
@@ -381,28 +381,28 @@ func assertS27WorktreeRemove(t *testing.T, wsRoot string) {
 	}
 }
 
-// --- S28 extra: worktree add, rm -rf set dir, prune, verify no stale entries ---
+// --- S28 extra: workforest add, rm -rf set dir, prune, verify no stale entries ---
 
-func assertS28WorktreePrune(t *testing.T, wsRoot, pnBin string, env []string) {
+func assertS28WorkforestPrune(t *testing.T, wsRoot, pnBin string, env []string) {
 	t.Helper()
 
-	// Step 1: Create a worktree set for "feature-z".
-	r := runCommand(t, pnBin, wsRoot, []string{"workspace", "worktree", "add", "feature-z"}, env)
+	// Step 1: Create a workforest set for "feature-z".
+	r := runCommand(t, pnBin, wsRoot, []string{"workspace", "workforest", "add", "feature-z"}, env)
 	if r.ExitCode != 0 {
-		t.Fatalf("S28: worktree add failed (exit %d)\nstdout: %s\nstderr: %s",
+		t.Fatalf("S28: workforest add failed (exit %d)\nstdout: %s\nstderr: %s",
 			r.ExitCode, r.Stdout, r.Stderr)
 	}
-	setDir := filepath.Join(wsRoot, ".worktrees", "feature-z")
+	setDir := filepath.Join(wsRoot, ".workforests", "feature-z")
 
 	// Step 2: Manually remove the set dir to create stale .git/worktrees entries.
 	if err := os.RemoveAll(setDir); err != nil {
 		t.Fatalf("S28: rm -rf set dir: %v", err)
 	}
 
-	// Step 3: Run worktree prune.
-	r2 := runCommand(t, pnBin, wsRoot, []string{"workspace", "worktree", "prune"}, env)
+	// Step 3: Run workforest prune.
+	r2 := runCommand(t, pnBin, wsRoot, []string{"workspace", "workforest", "prune"}, env)
 	if r2.ExitCode != 0 {
-		t.Fatalf("S28: worktree prune failed (exit %d)\nstdout: %s\nstderr: %s",
+		t.Fatalf("S28: workforest prune failed (exit %d)\nstdout: %s\nstderr: %s",
 			r2.ExitCode, r2.Stdout, r2.Stderr)
 	}
 
@@ -471,11 +471,11 @@ func gitStatusPorcelain(t *testing.T, repoDir string) string {
 
 func assertS29VerbsInASet(t *testing.T, wsRoot, pnBin string, env []string) {
 	t.Helper()
-	setDir := filepath.Join(wsRoot, ".worktrees", "feature-y")
+	setDir := filepath.Join(wsRoot, ".workforests", "feature-y")
 
-	// Verify the set dir was created by command.txt's worktree add.
+	// Verify the set dir was created by command.txt's workforest add.
 	if _, err := os.Stat(setDir); os.IsNotExist(err) {
-		t.Fatalf("S29: set dir %s does not exist (worktree add may have failed)", setDir)
+		t.Fatalf("S29: set dir %s does not exist (workforest add may have failed)", setDir)
 	}
 
 	// Snapshot primary (canonical) repo HEADs and status before running verbs in the set.
@@ -764,20 +764,20 @@ func assertS33WorktreeUpdate(t *testing.T, wsRoot string) {
 		t.Errorf("S33: remote main %s != primary main %s", strings.TrimSpace(string(remoteHead)), strings.TrimSpace(string(primHead)))
 	}
 
-	if entries, err := os.ReadDir(filepath.Join(wsRoot, ".worktrees", ".pn-update")); err == nil && len(entries) > 0 {
+	if entries, err := os.ReadDir(filepath.Join(wsRoot, ".workforests", ".pn-update")); err == nil && len(entries) > 0 {
 		t.Errorf("S33: .pn-update worktree left behind: %v", entries)
 	}
 }
 
 // --- S34 extra: subset set contains only the chosen repos ---
 
-func assertS34WorktreeSubset(t *testing.T, wsRoot string) {
+func assertS34WorkforestSubset(t *testing.T, wsRoot string) {
 	t.Helper()
-	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+	setDir := filepath.Join(wsRoot, ".workforests", "feature-x")
 
 	// 1. Set dir must exist.
 	if _, err := os.Stat(setDir); os.IsNotExist(err) {
-		t.Errorf("S34: worktree set dir %s does not exist", setDir)
+		t.Errorf("S34: workforest set dir %s does not exist", setDir)
 		return
 	}
 
@@ -832,13 +832,13 @@ func assertS34WorktreeSubset(t *testing.T, wsRoot string) {
 
 // --- S35 extra: add-repo then remove-repo round trip + P1 unchanged ---
 
-func assertS35WorktreeAddRemoveRepo(t *testing.T, wsRoot, pnBin string, env []string) {
+func assertS35WorkforestAddRemoveRepo(t *testing.T, wsRoot, pnBin string, env []string) {
 	t.Helper()
-	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+	setDir := filepath.Join(wsRoot, ".workforests", "feature-x")
 
 	// The subset set {producer, consumer} was created by command.txt.
 	if _, err := os.Stat(setDir); os.IsNotExist(err) {
-		t.Fatalf("S35: subset set dir %s does not exist (worktree add may have failed)", setDir)
+		t.Fatalf("S35: subset set dir %s does not exist (workforest add may have failed)", setDir)
 	}
 
 	// Snapshot the canonical extra repo (P1: must be unchanged at the end).
@@ -847,7 +847,7 @@ func assertS35WorktreeAddRemoveRepo(t *testing.T, wsRoot, pnBin string, env []st
 	statusBefore := gitStatusPorcelain(t, extraCanon)
 
 	// Step 1: add-repo extra to the live set.
-	r := runCommand(t, pnBin, wsRoot, []string{"workspace", "worktree", "add-repo", "feature-x", "extra"}, env)
+	r := runCommand(t, pnBin, wsRoot, []string{"workspace", "workforest", "add-repo", "feature-x", "extra"}, env)
 	if r.ExitCode != 0 {
 		t.Fatalf("S35: add-repo failed (exit %d)\nstdout: %s\nstderr: %s", r.ExitCode, r.Stdout, r.Stderr)
 	}
@@ -862,7 +862,7 @@ func assertS35WorktreeAddRemoveRepo(t *testing.T, wsRoot, pnBin string, env []st
 	}
 
 	// Step 2: remove-repo extra from the live set.
-	r2 := runCommand(t, pnBin, wsRoot, []string{"workspace", "worktree", "remove-repo", "feature-x", "extra"}, env)
+	r2 := runCommand(t, pnBin, wsRoot, []string{"workspace", "workforest", "remove-repo", "feature-x", "extra"}, env)
 	if r2.ExitCode != 0 {
 		t.Fatalf("S35: remove-repo failed (exit %d)\nstdout: %s\nstderr: %s", r2.ExitCode, r2.Stdout, r2.Stderr)
 	}

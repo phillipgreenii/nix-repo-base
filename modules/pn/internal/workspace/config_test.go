@@ -355,12 +355,12 @@ remotes = [
 	}
 }
 
-// TestParseConfig_WorktreesDirField verifies that worktrees_dir in [workspace]
-// is parsed into WorkspaceSection.WorktreesDir.
-func TestParseConfig_WorktreesDirField(t *testing.T) {
+// TestParseConfig_WorkforestsDirField verifies that workforests_dir in [workspace]
+// is parsed into WorkspaceSection.WorkforestsDir.
+func TestParseConfig_WorkforestsDirField(t *testing.T) {
 	cfg, err := ParseConfig([]byte(`
 [workspace]
-worktrees_dir = "sets"
+workforests_dir = "sets"
 
 [repos.foo]
 url = "github:o/foo"
@@ -368,14 +368,14 @@ url = "github:o/foo"
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
-	if cfg.Workspace.WorktreesDir != "sets" {
-		t.Errorf("WorktreesDir: got %q, want %q", cfg.Workspace.WorktreesDir, "sets")
+	if cfg.Workspace.WorkforestsDir != "sets" {
+		t.Errorf("WorkforestsDir: got %q, want %q", cfg.Workspace.WorkforestsDir, "sets")
 	}
 }
 
-// TestParseConfig_WorktreesDirAbsent verifies that when worktrees_dir is absent,
-// WorktreesDir is empty and WorktreesDirName returns the default ".worktrees".
-func TestParseConfig_WorktreesDirAbsent(t *testing.T) {
+// TestParseConfig_WorkforestsDirAbsent verifies that when workforests_dir is absent,
+// WorkforestsDir is empty and WorkforestsDirName returns the default ".workforests".
+func TestParseConfig_WorkforestsDirAbsent(t *testing.T) {
 	cfg, err := ParseConfig([]byte(`
 [repos.foo]
 url = "github:o/foo"
@@ -383,41 +383,41 @@ url = "github:o/foo"
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
-	if cfg.Workspace.WorktreesDir != "" {
-		t.Errorf("WorktreesDir: got %q, want empty", cfg.Workspace.WorktreesDir)
+	if cfg.Workspace.WorkforestsDir != "" {
+		t.Errorf("WorkforestsDir: got %q, want empty", cfg.Workspace.WorkforestsDir)
 	}
-	if got := cfg.WorktreesDirName(); got != ".worktrees" {
-		t.Errorf("WorktreesDirName (absent): got %q, want .worktrees", got)
+	if got := cfg.WorkforestsDirName(); got != ".workforests" {
+		t.Errorf("WorkforestsDirName (absent): got %q, want .workforests", got)
 	}
 }
 
-// TestWorkspaceConfig_WorktreesDirName verifies WorktreesDirName returns the
-// configured value when set, and the default ".worktrees" when empty.
-func TestWorkspaceConfig_WorktreesDirName(t *testing.T) {
+// TestWorkspaceConfig_WorkforestsDirName verifies WorkforestsDirName returns the
+// configured value when set, and the default ".workforests" when empty.
+func TestWorkspaceConfig_WorkforestsDirName(t *testing.T) {
 	tests := []struct {
 		name      string
 		configured string
 		want      string
 	}{
-		{"empty returns default", "", ".worktrees"},
+		{"empty returns default", "", ".workforests"},
 		{"custom value returned", "sets", "sets"},
 		{"dot prefix preserved", ".wt", ".wt"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &WorkspaceConfig{
-				Workspace: WorkspaceSection{WorktreesDir: tc.configured},
+				Workspace: WorkspaceSection{WorkforestsDir: tc.configured},
 			}
-			if got := cfg.WorktreesDirName(); got != tc.want {
-				t.Errorf("WorktreesDirName: got %q, want %q", got, tc.want)
+			if got := cfg.WorkforestsDirName(); got != tc.want {
+				t.Errorf("WorkforestsDirName: got %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestWorkspace_WorktreesDir verifies the Workspace.WorktreesDir() accessor
+// TestWorkspace_WorkforestsDir verifies the Workspace.WorkforestsDir() accessor
 // resolves relative paths under root and leaves absolute paths unchanged.
-func TestWorkspace_WorktreesDir(t *testing.T) {
+func TestWorkspace_WorkforestsDir(t *testing.T) {
 	root := "/some/workspace"
 
 	tests := []struct {
@@ -425,7 +425,7 @@ func TestWorkspace_WorktreesDir(t *testing.T) {
 		configured string
 		want       string
 	}{
-		{"default (.worktrees)", "", "/some/workspace/.worktrees"},
+		{"default (.workforests)", "", "/some/workspace/.workforests"},
 		{"relative name", "sets", "/some/workspace/sets"},
 		{"absolute path unchanged", "/abs/wt", "/abs/wt"},
 	}
@@ -434,11 +434,11 @@ func TestWorkspace_WorktreesDir(t *testing.T) {
 			w := &Workspace{
 				root: root,
 				config: &WorkspaceConfig{
-					Workspace: WorkspaceSection{WorktreesDir: tc.configured},
+					Workspace: WorkspaceSection{WorkforestsDir: tc.configured},
 				},
 			}
-			if got := w.WorktreesDir(); got != tc.want {
-				t.Errorf("WorktreesDir: got %q, want %q", got, tc.want)
+			if got := w.WorkforestsDir(); got != tc.want {
+				t.Errorf("WorkforestsDir: got %q, want %q", got, tc.want)
 			}
 		})
 	}

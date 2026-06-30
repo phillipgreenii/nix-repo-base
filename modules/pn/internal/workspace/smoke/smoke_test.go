@@ -284,42 +284,42 @@ func TestSmoke_S23_HappyPathFormat(t *testing.T) {
 	runScenario(t, "s23-happy-path-format")
 }
 
-// TestSmoke_S24_WorktreeAdd: two-repo workspace; pn workspace worktree add feature-x
-// creates .worktrees/feature-x with each repo checked out on branch feature-x,
+// TestSmoke_S24_WorkforestAdd: two-repo workspace; pn workspace workforest add feature-x
+// creates .workforests/feature-x with each repo checked out on branch feature-x,
 // and copies pn-workspace.toml + pn-workspace.lock.json into the set dir.
-func TestSmoke_S24_WorktreeAdd(t *testing.T) {
-	runScenario(t, "s24-worktree-add")
+func TestSmoke_S24_WorkforestAdd(t *testing.T) {
+	runScenario(t, "s24-workforest-add")
 }
 
-// TestSmoke_S25_WorktreeAddAlreadyCheckedOut: two-repo workspace; attempting
-// pn workspace worktree add main fails with non-zero exit (main is already
+// TestSmoke_S25_WorkforestAddAlreadyCheckedOut: two-repo workspace; attempting
+// pn workspace workforest add main fails with non-zero exit (main is already
 // checked out in the canonical clones).
-func TestSmoke_S25_WorktreeAddAlreadyCheckedOut(t *testing.T) {
-	runScenario(t, "s25-worktree-add-already-checked-out")
+func TestSmoke_S25_WorkforestAddAlreadyCheckedOut(t *testing.T) {
+	runScenario(t, "s25-workforest-add-already-checked-out")
 }
 
-// TestSmoke_S26_WorktreeList: two-repo workspace; after creating a worktree set
-// for feature-x, pn workspace worktree list outputs a line containing "feature-x".
-func TestSmoke_S26_WorktreeList(t *testing.T) {
-	runScenario(t, "s26-worktree-list")
+// TestSmoke_S26_WorkforestList: two-repo workspace; after creating a workforest set
+// for feature-x, pn workspace workforest list outputs a line containing "feature-x".
+func TestSmoke_S26_WorkforestList(t *testing.T) {
+	runScenario(t, "s26-workforest-list")
 }
 
-// TestSmoke_S27_WorktreeRemove: two-repo workspace; after creating a worktree set
-// for feature-x, pn workspace worktree remove feature-x removes the set dir but
+// TestSmoke_S27_WorkforestRemove: two-repo workspace; after creating a workforest set
+// for feature-x, pn workspace workforest remove feature-x removes the set dir but
 // leaves the feature-x branch in each canonical repo.
-func TestSmoke_S27_WorktreeRemove(t *testing.T) {
-	runScenario(t, "s27-worktree-remove")
+func TestSmoke_S27_WorkforestRemove(t *testing.T) {
+	runScenario(t, "s27-workforest-remove")
 }
 
-// TestSmoke_S28_WorktreePrune: two-repo workspace; after creating a worktree set
-// and manually rm -rf'ing the set dir, pn workspace worktree prune clears the
+// TestSmoke_S28_WorkforestPrune: two-repo workspace; after creating a workforest set
+// and manually rm -rf'ing the set dir, pn workspace workforest prune clears the
 // stale .git/worktrees entries in each canonical repo.
-func TestSmoke_S28_WorktreePrune(t *testing.T) {
-	runScenario(t, "s28-worktree-prune")
+func TestSmoke_S28_WorkforestPrune(t *testing.T) {
+	runScenario(t, "s28-workforest-prune")
 }
 
 // TestSmoke_S29_VerbsInASet: two-repo workspace; after bootstrapping and creating
-// a worktree set for feature-y, runs status→build→update→rebase main→push --set-upstream
+// a workforest set for feature-y, runs status→build→update→rebase main→push --set-upstream
 // from inside the set (PN_WORKSPACE_ROOT pointing at the set dir). Also asserts
 // the primary canonical checkouts are unchanged afterward (P1 smoke).
 func TestSmoke_S29_VerbsInASet(t *testing.T) {
@@ -363,22 +363,22 @@ func TestSmoke_S33_WorktreeUpdate(t *testing.T) {
 	runScenario(t, "s33-worktree-update")
 }
 
-// TestSmoke_S34_WorktreeSubset: three-repo workspace (producer, consumer, extra;
-// consumer depends on producer). pn workspace worktree add feature-x
+// TestSmoke_S34_WorkforestSubset: three-repo workspace (producer, consumer, extra;
+// consumer depends on producer). pn workspace workforest add feature-x
 // --repos producer,consumer creates a SUBSET set containing only producer +
 // consumer; extra has no worktree, and the set's own pn-workspace.toml lists
 // only the two members (canonical config unchanged).
-func TestSmoke_S34_WorktreeSubset(t *testing.T) {
-	runScenario(t, "s34-worktree-subset")
+func TestSmoke_S34_WorkforestSubset(t *testing.T) {
+	runScenario(t, "s34-workforest-subset")
 }
 
-// TestSmoke_S35_WorktreeAddRemoveRepo: three-repo workspace; after creating a
+// TestSmoke_S35_WorkforestAddRemoveRepo: three-repo workspace; after creating a
 // subset set {producer, consumer}, the assertion hook adds `extra` to the live
 // set (worktree + membership appear) and removes it again (worktree gone, membership
 // shrinks, branch left in canonical extra), asserting the canonical clones stay
 // unchanged throughout (P1).
-func TestSmoke_S35_WorktreeAddRemoveRepo(t *testing.T) {
-	runScenario(t, "s35-worktree-add-remove-repo")
+func TestSmoke_S35_WorkforestAddRemoveRepo(t *testing.T) {
+	runScenario(t, "s35-workforest-add-remove-repo")
 }
 
 // TestSmoke_S36_WorkspaceInfoApplied verifies `pn workspace info --json` reflects
@@ -555,16 +555,16 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS22AutostashRoundTrip(t, wsRoot)
 	case "s23-happy-path-format":
 		assertS23FormatTopoOrder(t, lastResult)
-	case "s24-worktree-add":
-		assertS24WorktreeAdd(t, wsRoot)
-	case "s25-worktree-add-already-checked-out":
+	case "s24-workforest-add":
+		assertS24WorkforestAdd(t, wsRoot)
+	case "s25-workforest-add-already-checked-out":
 		// Asserted via expected_exit.txt + expected_stderr.txt; no extra needed.
-	case "s26-worktree-list":
+	case "s26-workforest-list":
 		// Asserted via expected_stdout.txt; no extra needed.
-	case "s27-worktree-remove":
-		assertS27WorktreeRemove(t, wsRoot)
-	case "s28-worktree-prune":
-		assertS28WorktreePrune(t, wsRoot, pnBin, env)
+	case "s27-workforest-remove":
+		assertS27WorkforestRemove(t, wsRoot)
+	case "s28-workforest-prune":
+		assertS28WorkforestPrune(t, wsRoot, pnBin, env)
 	case "s29-verbs-in-a-set":
 		assertS29VerbsInASet(t, wsRoot, pnBin, env)
 	case "s30-happy-path-push-set-upstream":
@@ -575,10 +575,10 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS32EventsJSONL(t, wsRoot, env)
 	case "s33-worktree-update":
 		assertS33WorktreeUpdate(t, wsRoot)
-	case "s34-worktree-subset":
-		assertS34WorktreeSubset(t, wsRoot)
-	case "s35-worktree-add-remove-repo":
-		assertS35WorktreeAddRemoveRepo(t, wsRoot, pnBin, env)
+	case "s34-workforest-subset":
+		assertS34WorkforestSubset(t, wsRoot)
+	case "s35-workforest-add-remove-repo":
+		assertS35WorkforestAddRemoveRepo(t, wsRoot, pnBin, env)
 	case "s36-workspace-info-applied":
 		assertS36WorkspaceInfoApplied(t, lastResult)
 	}

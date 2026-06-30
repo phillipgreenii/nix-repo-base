@@ -82,11 +82,11 @@ func (w *Workspace) RevLock() *RevLock { return w.revLock }
 // Runner returns the workspace's subprocess runner.
 func (w *Workspace) Runner() exec.Runner { return w.runner }
 
-// WorktreesDir returns the absolute path of the configured worktrees directory.
-// Relative values from worktrees_dir are resolved against the workspace root;
-// absolute values are returned as-is. Defaults to <root>/.worktrees when unset.
-func (w *Workspace) WorktreesDir() string {
-	name := w.config.WorktreesDirName()
+// WorkforestsDir returns the absolute path of the configured workforests directory.
+// Relative values from workforests_dir are resolved against the workspace root;
+// absolute values are returned as-is. Defaults to <root>/.workforests when unset.
+func (w *Workspace) WorkforestsDir() string {
+	name := w.config.WorkforestsDirName()
 	if filepath.IsAbs(name) {
 		return name
 	}

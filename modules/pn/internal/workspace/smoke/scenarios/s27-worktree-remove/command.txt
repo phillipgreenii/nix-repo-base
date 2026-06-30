@@ -1,6 +1,0 @@
-# Bootstrap, create a worktree set, then remove it.
-workspace init
-workspace clone
-workspace lock
-workspace worktree add feature-x
-workspace worktree remove feature-x

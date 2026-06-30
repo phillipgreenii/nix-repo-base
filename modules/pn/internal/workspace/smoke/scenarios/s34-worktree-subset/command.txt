@@ -1,5 +1,0 @@
-# Bootstrap the workspace, then add a SUBSET worktree set (producer + consumer only).
-workspace init
-workspace clone
-workspace lock
-workspace worktree add feature-x --repos producer,consumer

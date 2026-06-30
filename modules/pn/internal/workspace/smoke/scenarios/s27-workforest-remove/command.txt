@@ -1,0 +1,6 @@
+# Bootstrap, create a workforest set, then remove it.
+workspace init
+workspace clone
+workspace lock
+workspace workforest add feature-x
+workspace workforest remove feature-x

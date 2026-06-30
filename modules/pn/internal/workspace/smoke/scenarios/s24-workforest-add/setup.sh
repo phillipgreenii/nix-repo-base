@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# S26: worktree list
-# Two bare-remote repos. Bootstrap, create a worktree set for "feature-x",
-# then the test command (workspace worktree list) should list it.
+# S24: workforest add
+# Two bare-remote repos (producer, consumer). Bootstrap with init→clone→lock,
+# then the test command creates a workforest set for branch "feature-x".
 set -euo pipefail
 
 WSROOT="$PWD"
@@ -45,7 +45,7 @@ rm -rf "$CONSUMER_WORK"
 # Write the real pn-workspace.toml with actual file:// URLs.
 cat >"$WSROOT/pn-workspace.toml" <<TOML
 [workspace]
-name = "smoke-s26"
+name = "smoke-s24"
 terminal = "consumer"
 
 [repos.consumer]

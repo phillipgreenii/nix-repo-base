@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# S25: worktree add on already-checked-out branch
-# Two bare-remote repos. Bootstrap with init→clone→lock.
-# Attempting `workspace worktree add main` should fail because
-# main is already checked out in the canonical clones.
+# S26: workforest list
+# Two bare-remote repos. Bootstrap, create a workforest set for "feature-x",
+# then the test command (workspace workforest list) should list it.
 set -euo pipefail
 
 WSROOT="$PWD"
@@ -46,7 +45,7 @@ rm -rf "$CONSUMER_WORK"
 # Write the real pn-workspace.toml with actual file:// URLs.
 cat >"$WSROOT/pn-workspace.toml" <<TOML
 [workspace]
-name = "smoke-s25"
+name = "smoke-s26"
 terminal = "consumer"
 
 [repos.consumer]

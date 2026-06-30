@@ -174,7 +174,7 @@ pn workspace upgrade     # update + apply in one shot (USER ONLY for apply)
 
 **How the default worktree flow works:** for each repo in topo order, `pn workspace update`
 creates an ephemeral worktree + branch off local `main` at
-`.worktrees/.pn-update/<repo>-<run-ts>` on branch `pn-update/<run-ts>`, runs
+`.workforests/.pn-update/<repo>-<run-ts>` on branch `pn-update/<run-ts>`, runs
 `./update-locks.sh` there, rebases + pushes, then fast-forwards the primary `main`. The
 canonical clones stay free during the long relock; `main` is only touched by a fast fast-forward
 at the end.
@@ -184,7 +184,7 @@ checked out (working on another branch) → ref-only fast-forward leaving in-pro
 untouched; when `main` is checked out and dirty → defer (worktree + branch left, run continues).
 
 **`--in-place` flag:** runs the original direct-on-`main` flow (including the upfront dirty-repo
-skip). Required when calling `update` from inside a coordinated worktree set.
+skip). Required when calling `update` from inside a coordinated workforest set.
 
 ```
 pn workspace update --in-place      # old direct-on-main behavior
@@ -195,7 +195,7 @@ pn workspace upgrade --in-place     # update phase direct-on-main
 
 - Success: every flake.lock advanced; consumer build succeeds; ephemeral worktrees removed.
 - Failure (any step): that repo's worktree + branch are left at
-  `.worktrees/.pn-update/<repo>-<run-ts>` / `pn-update/<run-ts>`. Sweep continues to the next
+  `.workforests/.pn-update/<repo>-<run-ts>` / `pn-update/<run-ts>`. Sweep continues to the next
   repo. End-of-run summary names each repo's outcome, the step that failed, the git error, and a
   recovery hint.
 - Deferred (dirty `main` checkout): worktree + branch left; integration skipped for that repo.
@@ -216,13 +216,13 @@ pn workspace upgrade --in-place     # update phase direct-on-main
 
 ```bash
 # Inspect:
-git -C .worktrees/.pn-update/<repo>-<run-ts> log --oneline -5
+git -C .workforests/.pn-update/<repo>-<run-ts> log --oneline -5
 
 # Clean up (discard):
-git worktree remove --force .worktrees/.pn-update/<repo>-<run-ts>
+git worktree remove --force .workforests/.pn-update/<repo>-<run-ts>
 git -C <repo> branch -D pn-update/<run-ts>
 # or prune all at once then delete branches:
-pn workspace worktree prune
+pn workspace workforest prune
 git -C <repo> branch -D pn-update/<run-ts>
 ```
 
@@ -232,7 +232,7 @@ PID), so they do not collide at `git worktree add`; but both push to remote `mai
 to reach a given repo's push has it rejected (non-fast-forward) and that repo fails. Run updates
 serially.
 
-**Inside a coordinated worktree set:** bare `pn workspace update` errors — use
+**Inside a coordinated workforest set:** bare `pn workspace update` errors — use
 `pn workspace update --in-place`, which relocks the set's worktrees in place.
 
 **Smoke:** ✓ **S20 `happy-path-update`** (now pinned to `--in-place`) — two-repo file:// bare-remote
@@ -300,7 +300,7 @@ pn workspace push -u --remote <name>     # same, but override the push remote fo
 
 - Success (plain `push`): each repo whose current branch has an upstream
   is pushed to its tracked remote in topo order. Repos with no upstream
-  (e.g. a freshly created feature branch inside a coordinated worktree
+  (e.g. a freshly created feature branch inside a coordinated workforest
   set — see **J29**) are silently skipped.
 - Success (`--set-upstream`/`-u`): for any repo whose current branch has
   no upstream, pn resolves the push remote via this convention chain
@@ -315,7 +315,7 @@ pn workspace push -u --remote <name>     # same, but override the push remote fo
   6. `origin` if among the repo's remotes — git's conventional default.
   7. Per-repo error to stderr — skips the repo; the loop continues.
 
-  This is the explicit one-time step to publish a fresh worktree set's
+  This is the explicit one-time step to publish a fresh workforest set's
   branches; subsequent `push`/`rebase`/`update` invocations then track
   normally.
 
@@ -340,7 +340,7 @@ unit/integration tests only).
 ### J11. Rebase across repos
 
 **Trigger:** working through a stack of cross-repo changes, or syncing a
-coordinated worktree set's feature branches onto local `main`.
+coordinated workforest set's feature branches onto local `main`.
 
 **Commands:**
 
@@ -358,7 +358,7 @@ pn workspace rebase <branch>     # rebase each repo's current branch onto a loca
   order. **No `git fetch`** is performed — `<branch>` must already exist
   locally (any ref works: `main`, `origin/main`, another set's branch).
   Repos where the ref does not resolve are skipped with a notice and the
-  chain continues. Typical use from inside a coordinated worktree set
+  chain continues. Typical use from inside a coordinated workforest set
   (see **J29**): `pn workspace rebase main` to forward-port the set onto
   the canonical workspace's local `main`.
 
@@ -662,9 +662,9 @@ lifecycle phrasing).
 
 ---
 
-## Coordinated worktree sets
+## Coordinated workforest sets
 
-### J29. Coordinated worktree set workflow
+### J29. Coordinated workforest set workflow
 
 **Trigger:** user wants to work a cross-repo feature branch in isolation
 from the canonical checkouts — every workspace repo on the same feature
@@ -673,12 +673,12 @@ branch, all changes contained under one set directory.
 **Commands:**
 
 ```
-pn workspace worktree add <branch>          # create the set under worktrees_dir/<branch>
-pn workspace worktree add <branch> <ref>    # same, starting <branch> from <ref> (default: canonical HEAD)
-pn workspace worktree list                  # list existing sets
-pn workspace worktree remove <branch>       # tear down the set (alias: rm)
-pn workspace worktree prune                 # clear stale .git/worktrees admin entries
-cd <worktrees_dir>/<branch>                 # cd-into-set; normal `pn workspace` verbs now operate on the set
+pn workspace workforest add <branch>          # create the set under workforests_dir/<branch>
+pn workspace workforest add <branch> <ref>    # same, starting <branch> from <ref> (default: canonical HEAD)
+pn workspace workforest list                  # list existing sets
+pn workspace workforest remove <branch>       # tear down the set (alias: rm)
+pn workspace workforest prune                 # clear stale .git/worktrees admin entries
+cd <workforests_dir>/<branch>                 # cd-into-set; normal `pn workspace` verbs now operate on the set
 ```
 
 The set directory is itself an ordinary workspace root: it carries copies
@@ -690,8 +690,8 @@ push, format, …) "just work" inside the set. **Exception:** bare
 `pn workspace update --in-place` instead (relocks the set's worktrees in
 place, preserving the set's P1 invariant).
 
-The set directory location is controlled by the `worktrees_dir` field in
-`pn-workspace.toml` (default: `.worktrees`).
+The set directory location is controlled by the `workforests_dir` field in
+`pn-workspace.toml` (default: `.workforests`).
 
 **Outcomes:**
 
@@ -699,7 +699,7 @@ The set directory location is controlled by the `worktrees_dir` field in
   the set dir does not exist, and `<branch>` is not already checked out
   in another worktree. If `<branch>` does not exist it is created from
   `<ref>` (default canonical `HEAD`), mirroring `git worktree add`.
-- `list`: prints existing sets under `worktrees_dir` to stdout.
+- `list`: prints existing sets under `workforests_dir` to stdout.
 - `remove <branch>`: tears down every per-repo worktree and deletes the
   set directory. Refuses dirty/locked worktrees unless `--force`. **Does
   NOT delete the branch** — the branch remains for reuse.
@@ -718,12 +718,12 @@ The set directory location is controlled by the `worktrees_dir` field in
   the primary workspace from inside a set. Unset it (preferred) or set
   it explicitly to the set directory before running verbs in the set.
 
-**Smoke:** ✓ **S24 `worktree-add`**, **S25
-`worktree-add-already-checked-out`** (pre-flight error path), **S26
-`worktree-list`**, **S27 `worktree-remove`**, **S28 `worktree-prune`**,
+**Smoke:** ✓ **S24 `workforest-add`**, **S25
+`workforest-add-already-checked-out`** (pre-flight error path), **S26
+`workforest-list`**, **S27 `workforest-remove`**, **S28 `workforest-prune`**,
 and **S29 `verbs-in-a-set`** — exercise the verb group plus the P1
 invariant (canonical checkouts unchanged by verbs run inside a set).
-Implementation: `internal/workspace/worktree.go`.
+Implementation: `internal/workspace/workforest.go`.
 
 ---
 
@@ -805,11 +805,11 @@ GAP at the smoke layer (unit/integration coverage only). J30
 - J28 format happy-path → **S23** (nix fmt per-repo, topo order verified via stdout)
 - S18/S19 simplified: noop-fmt drv references removed (build/apply no longer run nix fmt)
 
-**Closed by the worktree-set work (S24–S29):**
+**Closed by the workforest-set work (S24–S29):**
 
-- J29 coordinated worktree set workflow → **S24 `worktree-add`**,
-  **S25 `worktree-add-already-checked-out`**, **S26 `worktree-list`**,
-  **S27 `worktree-remove`**, **S28 `worktree-prune`**,
+- J29 coordinated workforest set workflow → **S24 `workforest-add`**,
+  **S25 `workforest-add-already-checked-out`**, **S26 `workforest-list`**,
+  **S27 `workforest-remove`**, **S28 `workforest-prune`**,
   **S29 `verbs-in-a-set`** (P1 invariant: canonical checkouts
   unchanged by verbs run inside a set).
 

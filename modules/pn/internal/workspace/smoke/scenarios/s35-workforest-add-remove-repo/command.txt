@@ -4,4 +4,4 @@
 workspace init
 workspace clone
 workspace lock
-workspace worktree add feature-x --repos producer,consumer
+workspace workforest add feature-x --repos producer,consumer

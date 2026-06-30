@@ -424,10 +424,10 @@ url = "github:owner/foo"
 	}
 }
 
-// TestInit_SkipsConfiguredWorktreesDirNonDot: when worktrees_dir is a non-dot
+// TestInit_SkipsConfiguredWorkforestsDirNonDot: when workforests_dir is a non-dot
 // relative name (e.g. "sets"), Init must not add that directory as a repo even
 // if it looks like a git repo.
-func TestInit_SkipsConfiguredWorktreesDirNonDot(t *testing.T) {
+func TestInit_SkipsConfiguredWorkforestsDirNonDot(t *testing.T) {
 	root := t.TempDir()
 	// "sets" is a non-dot directory that looks like a git repo.
 	mkGitRepo(t, root, "sets")
@@ -435,7 +435,7 @@ func TestInit_SkipsConfiguredWorktreesDirNonDot(t *testing.T) {
 	mkGitRepo(t, root, "real-repo")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
-worktrees_dir = "sets"
+workforests_dir = "sets"
 
 [repos.existing]
 url = "github:o/existing"
@@ -456,18 +456,18 @@ url = "github:o/existing"
 	}
 
 	if _, exists := w.config.Repos["sets"]; exists {
-		t.Error("Init must not add the configured worktrees_dir 'sets' as a repo")
+		t.Error("Init must not add the configured workforests_dir 'sets' as a repo")
 	}
 	if _, exists := w.config.Repos["real-repo"]; !exists {
 		t.Error("Init should have discovered real-repo")
 	}
 }
 
-// TestInit_SkipsDotWorktreesByDefault: the default ".worktrees" is already
+// TestInit_SkipsDotWorkforestsByDefault: the default ".workforests" is already
 // skipped by the dot-prefix rule; confirm it continues to be skipped.
-func TestInit_SkipsDotWorktreesByDefault(t *testing.T) {
+func TestInit_SkipsDotWorkforestsByDefault(t *testing.T) {
 	root := t.TempDir()
-	mkGitRepo(t, root, ".worktrees")
+	mkGitRepo(t, root, ".workforests")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "")
 
 	f := exec.NewFakeRunner()
@@ -478,7 +478,7 @@ func TestInit_SkipsDotWorktreesByDefault(t *testing.T) {
 	if err := w.Init(context.Background(), &bytes.Buffer{}, InitOptions{}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if _, exists := w.config.Repos[".worktrees"]; exists {
-		t.Error("Init must not add .worktrees as a repo")
+	if _, exists := w.config.Repos[".workforests"]; exists {
+		t.Error("Init must not add .workforests as a repo")
 	}
 }

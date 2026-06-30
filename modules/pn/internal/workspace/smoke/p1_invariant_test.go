@@ -14,9 +14,9 @@ import (
 	"testing"
 )
 
-// TestSmoke_P1Invariant is the GATING test for the coordinated-worktrees
+// TestSmoke_P1Invariant is the GATING test for the coordinated-workforests
 // feature. It proves invariant P1: NO `pn workspace` verb run from inside a
-// worktree set modifies the canonical (primary) checkouts.
+// workforest set modifies the canonical (primary) checkouts.
 //
 // Concretely, for every canonical checkout {wsRoot}/{repo}, the following are
 // snapshotted AFTER set creation and asserted unchanged after EVERY verb:
@@ -72,14 +72,14 @@ func TestSmoke_P1Invariant(t *testing.T) {
 		}
 	}
 
-	// --- 2. Create the worktree set ---
+	// --- 2. Create the workforest set ---
 	addRes := runCommand(t, pnBin, wsRoot,
-		[]string{"workspace", "worktree", "add", "feature-x"}, rootEnv)
+		[]string{"workspace", "workforest", "add", "feature-x"}, rootEnv)
 	if addRes.ExitCode != 0 {
-		t.Fatalf("worktree add feature-x exited %d\nstdout: %s\nstderr: %s",
+		t.Fatalf("workforest add feature-x exited %d\nstdout: %s\nstderr: %s",
 			addRes.ExitCode, addRes.Stdout, addRes.Stderr)
 	}
-	setDir := filepath.Join(wsRoot, ".worktrees", "feature-x")
+	setDir := filepath.Join(wsRoot, ".workforests", "feature-x")
 	if _, err := os.Stat(filepath.Join(setDir, "pn-workspace.toml")); err != nil {
 		t.Fatalf("set dir missing pn-workspace.toml at %s: %v", setDir, err)
 	}
@@ -107,7 +107,7 @@ func TestSmoke_P1Invariant(t *testing.T) {
 		needNix bool
 		// skipBranchCheck, when true, suppresses the local-branch NAME SET
 		// assertion for this verb. Set on verbs that are EXPECTED to add or
-		// remove branches in the canonical's shared ref store (e.g. `worktree
+		// remove branches in the canonical's shared ref store (e.g. `workforest
 		// add`, which creates a new branch by design). All other P1 invariants
 		// (HEAD, working-tree digest, checked-out branch, status, reflog) are
 		// still asserted — the branch name set relaxation is narrow.
@@ -152,11 +152,11 @@ func TestSmoke_P1Invariant(t *testing.T) {
 		// discover: lists workspace repos (read-only). Canonical unchanged.
 		{name: "discover", args: []string{"workspace", "discover"}},
 
-		// worktree list: lists existing worktree sets from inside the set.
+		// workforest list: lists existing workforest sets from inside the set.
 		// Read-only; canonical unchanged.
-		{name: "worktree list", args: []string{"workspace", "worktree", "list"}},
+		{name: "workforest list", args: []string{"workspace", "workforest", "list"}},
 
-		// worktree add <branch> from inside a set: the implementation resolves
+		// workforest add <branch> from inside a set: the implementation resolves
 		// PN_WORKSPACE_ROOT to the set dir, then creates a new branch in the
 		// canonical's SHARED ref store (git worktrees share the object store
 		// with the canonical). Creating a branch in the shared ref store is
@@ -165,21 +165,21 @@ func TestSmoke_P1Invariant(t *testing.T) {
 		// set skipBranchCheck so the branch-name-set assertion is suppressed for
 		// this verb; all other P1 invariants (HEAD, workDigest, status, reflog)
 		// are still enforced.
-		{name: "worktree add feature-p1-nested", args: []string{"workspace", "worktree", "add", "feature-p1-nested"}, skipBranchCheck: true},
+		{name: "workforest add feature-p1-nested", args: []string{"workspace", "workforest", "add", "feature-p1-nested"}, skipBranchCheck: true},
 
-		// worktree remove <branch>: removes the set dir and the git worktree
+		// workforest remove <branch>: removes the set dir and the git worktree
 		// admin entries but leaves the branch in the ref store by design
 		// (mirrors `git worktree remove` semantics). The branch name set will
 		// still contain feature-p1-nested after the preceding add, so
 		// skipBranchCheck remains true to avoid a spurious failure.
-		{name: "worktree remove feature-p1-nested", args: []string{"workspace", "worktree", "remove", "feature-p1-nested"}, skipBranchCheck: true},
+		{name: "workforest remove feature-p1-nested", args: []string{"workspace", "workforest", "remove", "feature-p1-nested"}, skipBranchCheck: true},
 
-		// worktree prune: prunes stale git worktree admin entries across all
+		// workforest prune: prunes stale git worktree admin entries across all
 		// canonical repos. Read-like operation (no working-tree or HEAD
 		// modification to the canonical repos). Branch names may still differ
 		// from baseline due to the preceding add (feature-p1-nested remains
 		// in the ref store after prune), so skipBranchCheck is set.
-		{name: "worktree prune", args: []string{"workspace", "worktree", "prune"}, skipBranchCheck: true},
+		{name: "workforest prune", args: []string{"workspace", "workforest", "prune"}, skipBranchCheck: true},
 
 		// nix passthrough: skipped — there is no sensible no-op nix invocation
 		// that does not require the nix daemon and a valid flake evaluation.
@@ -240,7 +240,7 @@ func p1Capture(t *testing.T, repoDir string) p1Snapshot {
 //
 // skipBranchCheck suppresses the branch-name-set assertion for verbs that are
 // EXPECTED to add new branches into the canonical's shared ref store (e.g.
-// `worktree add`). All other invariants — HEAD sha, checked-out branch, status,
+// `workforest add`). All other invariants — HEAD sha, checked-out branch, status,
 // working-tree digest, and HEAD reflog — are always enforced regardless of
 // skipBranchCheck.
 func p1AssertUnchanged(t *testing.T, repo, verb string, want, got p1Snapshot, r scenarioResult, skipBranchCheck bool) {
