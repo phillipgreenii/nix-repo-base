@@ -65,6 +65,8 @@ Pick the tier with this checklist, top to bottom — first match wins:
 
 If a gate fails the task is not complete: fix it (in this or the consuming project) and re-run that tier. If a higher tier later surfaces breakage a lower one missed, your change's blast radius was larger than you classified — validate at the higher tier from then on. `pn workspace build`/`apply` never run `nix fmt` themselves; run `pn workspace format` first if you want it.
 
+After passing a tier, run `pn workspace doctor` as a final consistency gate before declaring the task done — it verifies that the workspace will build consistently locally and on remote.
+
 ## Workspace Lifecycle: Three Commands
 
 A pn workspace is bootstrapped and maintained with three separate commands:
@@ -132,6 +134,7 @@ pn workspace build                       Build the current host's system config
 pn workspace apply                       Activate (USER ONLY)
 pn workspace pre-commit-check            Run pre-commit checks across all repos
 pn workspace flake-check                 Run `nix flake check` across all repos
+pn workspace doctor                      Audit workspace against build-equality invariant; optionally repair safe drifts
 pn workspace update                      Refresh flake locks across all repos, worktree-isolated by default (terminal required)
 pn workspace update --in-place           Same, but directly on primary main (old behavior; required inside a workforest set)
 pn workspace upgrade                     Update + apply (USER ONLY for the apply step)
