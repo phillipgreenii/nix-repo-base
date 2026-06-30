@@ -63,7 +63,7 @@ func TestAudit_EmitsSectionsAndStoreSize(t *testing.T) {
 		"=== System Profiles ===",
 		"=== Home Manager ===",
 		"=== Nix Store ===",
-		"Volume used: 12.0 GB",
+		"Volume used: 12.0 GiB",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -96,8 +96,8 @@ func TestAudit_FullShowsReclaimable(t *testing.T) {
 		t.Fatalf("Audit(Full): %v", err)
 	}
 	out := buf.String()
-	// deadPath size is 524288 bytes = 512.0 KB (< 1 MiB threshold)
-	wantLine := "Reclaimable (dead paths): 512.0 KB"
+	// deadPath size is 524288 bytes = 512.0 KiB (< 1 MiB threshold)
+	wantLine := "Reclaimable (dead paths): 512.0 KiB"
 	if !strings.Contains(out, wantLine) {
 		t.Errorf("--full must include exact line %q; output:\n%s", wantLine, out)
 	}
@@ -169,7 +169,7 @@ func TestAudit_GoldenOutput(t *testing.T) {
 		"    Profile: /nix/var/nix/profiles/system\n" +
 		"    1 2024-01-01 \n" + // trailing space — non-current
 		"    2 2024-06-01 current\n" +
-		"    Closure size: 1.0 GB\n" +
+		"    Closure size: 1.0 GiB\n" +
 		"\n" +
 		"=== Home Manager ===\n" +
 		"  (not installed)\n" +
@@ -182,7 +182,7 @@ func TestAudit_GoldenOutput(t *testing.T) {
 		"  (no search dirs configured)\n" +
 		"\n" +
 		"=== Nix Store ===\n" +
-		"Volume used: 10.0 GB\n"
+		"Volume used: 10.0 GiB\n"
 
 	got := buf.String()
 	if got != want {

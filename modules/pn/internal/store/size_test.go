@@ -13,10 +13,10 @@ func TestFormatSize(t *testing.T) {
 		want string
 	}{
 		{500, "500 B"},
-		{1024, "1.0 KB"},
-		{1048576, "1.0 MB"},
-		{1073741824, "1.0 GB"},
-		{54440673280, "50.7 GB"},
+		{1024, "1.0 KiB"},
+		{1048576, "1.0 MiB"},
+		{1073741824, "1.0 GiB"},
+		{54440673280, "50.7 GiB"},
 	}
 	for _, c := range cases {
 		if got := formatSize(c.in); got != c.want {
@@ -56,10 +56,10 @@ func TestStoreSize_ParsesDiskutilBytes(t *testing.T) {
 	f.AddResponse("df", []string{"/nix/store"}, exec.Result{Stdout: []byte(
 		"Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/disk3s7 1 1 1 1% /nix/store\n")}, nil)
 	f.AddResponse("diskutil", []string{"info", "/dev/disk3s7"}, exec.Result{Stdout: []byte(fullDiskutilInfo)}, nil)
-	// Must report Volume Used Space (63.1 GB), NOT Disk Size / Container Total
-	// (460.4 GB), which is the first "(NNN Bytes)" match in the full output.
-	if got := storeSize(context.Background(), f); got != "63.1 GB" {
-		t.Fatalf("storeSize = %q, want 63.1 GB (Volume Used Space, not container total)", got)
+	// Must report Volume Used Space (63.1 GiB), NOT Disk Size / Container Total
+	// (460.4 GiB), which is the first "(NNN Bytes)" match in the full output.
+	if got := storeSize(context.Background(), f); got != "63.1 GiB" {
+		t.Fatalf("storeSize = %q, want 63.1 GiB (Volume Used Space, not container total)", got)
 	}
 }
 
@@ -86,8 +86,8 @@ func TestRuntimeRootsSummary_LsofOnly(t *testing.T) {
 	f.AddResponse("nix", []string{"path-info", "-S", "/nix/store/aaa-pkg"}, exec.Result{Stdout: []byte(
 		"/nix/store/aaa-pkg 1048576\n")}, nil)
 	got := runtimeRootsSummary(context.Background(), f)
-	// 1048576 bytes = 1.0 MB; one lsof-only path → singular "path"
-	want := "1 store path held only by running processes (up to 1.0 MB reclaimable)\n" +
+	// 1048576 bytes = 1.0 MiB; one lsof-only path → singular "path"
+	want := "1 store path held only by running processes (up to 1.0 MiB reclaimable)\n" +
 		"  Tip: Restarting applications and re-running may free additional space"
 	if got != want {
 		t.Fatalf("runtimeRootsSummary = %q, want %q", got, want)

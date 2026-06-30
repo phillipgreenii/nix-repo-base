@@ -12,14 +12,19 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
+// formatSize renders a byte count with binary (power-of-two) units, matching
+// `nix path-info -Sh` (which also reports GiB/MiB/KiB). The labels are the
+// IEC binary units — divisors are 2^30 / 2^20 / 2^10, so a "GiB" here is ~7%
+// smaller than diskutil's decimal "GB" for the same bytes; that is expected,
+// not a discrepancy to reconcile.
 func formatSize(bytes int64) string {
 	switch {
 	case bytes >= 1<<30:
-		return fmt.Sprintf("%.1f GB", float64(bytes)/(1<<30))
+		return fmt.Sprintf("%.1f GiB", float64(bytes)/(1<<30))
 	case bytes >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(bytes)/(1<<20))
+		return fmt.Sprintf("%.1f MiB", float64(bytes)/(1<<20))
 	case bytes >= 1<<10:
-		return fmt.Sprintf("%.1f KB", float64(bytes)/(1<<10))
+		return fmt.Sprintf("%.1f KiB", float64(bytes)/(1<<10))
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}

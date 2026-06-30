@@ -781,9 +781,9 @@ func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 
 		want := "" +
 			"=== Summary ===\n" +
-			"Store before: 12.0 GB\n" +
+			"Store before: 12.0 GiB\n" +
 			"Optimising store (hard-linking duplicate files)...\n" +
-			"Store after:  8.0 GB\n" +
+			"Store after:  8.0 GiB\n" +
 			"\n" +
 			"Pruned generations:\n" +
 			"  system: 0 generation(s)\n" +
