@@ -42,6 +42,11 @@ let
     act_fail() { printf '%s\n' "  ''${_act_c_fail}''${_act_m_fail}''${_act_c_off}$*"; }
     # shellcheck disable=SC2329
     act_info() { printf '%s\n' "    $*"; }
+    # 2-space indent: text aligns to the glyph column (where ✓/⚠/✗ sit),
+    # one step left of act_info's 4-space text column. For recovery/inspect
+    # hints printed as siblings of an act_fail line.
+    # shellcheck disable=SC2329
+    act_detail() { printf '%s\n' "  $*"; }
   '';
 
   mkActivationSection =

@@ -24,6 +24,15 @@ in
     expr = lib.hasInfix "act_ok()" section && lib.hasInfix "act_fail()" section;
     expected = true;
   };
+  testDetailHelperInlined = {
+    expr = lib.hasInfix "act_detail()" section;
+    expected = true;
+  };
+  testDetailIndentTwoSpace = {
+    # act_detail aligns to the glyph column (2 spaces), not act_info's 4.
+    expr = lib.hasInfix ''act_detail() { printf '%s\n' "  $*"; }'' act.activationHelpers;
+    expected = true;
+  };
   testPrintfSafeForm = {
     expr = lib.hasInfix "printf '%s\\n'" act.activationHelpers;
     expected = true;

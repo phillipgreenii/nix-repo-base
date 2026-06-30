@@ -36,7 +36,7 @@ companion helper functions for all status output.
 
 ### Helper API (`lib/activation.nix` in `phillipg-nix-repo-base`)
 
-**`lib.activationHelpers`** — a standalone bash string that defines four logging
+**`lib.activationHelpers`** — a standalone bash string that defines five logging
 functions and two runtime-detection guards. It is exposed separately so it can be
 injected into child scripts that run in their own process (e.g. the `beads-dolt`
 sudo'd init sub-process).
@@ -53,12 +53,17 @@ builder that:
 **Functions available inside `body` (and in any script that includes
 `activationHelpers`):**
 
-| Function         | Output                                        |
-| ---------------- | --------------------------------------------- |
-| `act_ok "msg"`   | `  ✓ msg` (green when color active)           |
-| `act_warn "msg"` | `  ⚠ msg` (yellow when color active)          |
-| `act_fail "msg"` | `  ✗ msg` (red when color active)             |
-| `act_info "msg"` | `    msg` (plain indented progress, no glyph) |
+| Function           | Output                                                     |
+| ------------------ | ---------------------------------------------------------- |
+| `act_ok "msg"`     | `  ✓ msg` (green when color active)                        |
+| `act_warn "msg"`   | `  ⚠ msg` (yellow when color active)                       |
+| `act_fail "msg"`   | `  ✗ msg` (red when color active)                          |
+| `act_info "msg"`   | `    msg` (plain progress at the message column, no glyph) |
+| `act_detail "msg"` | `  msg` (plain note at the glyph column, no glyph)         |
+
+`act_detail` is the glyph-column (2-space) sibling of the message-column (4-space)
+`act_info`. Use it for recovery/inspect hints printed directly under an `act_fail`
+line, where aligning the hint to the glyph column reads as a note on the failure.
 
 ### Normative rules
 
@@ -80,7 +85,7 @@ builder that:
 - Because nix-darwin shellchecks the assembled activate script, each `act_*`
   function definition in the emitted helper MUST carry
   `# shellcheck disable=SC2329` (function-never-invoked is expected for sections
-  that do not call all four helpers).
+  that do not call all five helpers).
 
 ### `pn` force-color mechanism
 
