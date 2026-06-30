@@ -986,6 +986,33 @@ used consistently across Tasks 1–6.
 
 ---
 
+## Resolved Decisions (settled 2026-06-29; supersedes the Open Design Decisions below)
+
+Implemented in `phillipgreenii-nix-support-apps` (collector) + `phillipg-nix-repo-base`
+(`pkg/jira` id extension) on branch `jira-sp5-sp6`.
+
+- **ODD-1 created filter:** preserve JQL-`creator` only — no per-issue `reporter.email` guard.
+- **ODD-2 author filter:** email-equality only — no `account_id` fallback, no new config field
+  (ZR always has email).
+- **ODD-3 status-only changelog:** confirmed (only `jira_issue_status_changed` is emitted); a
+  defensive `entry.Field == "status"` guard is kept even though the CLI already filters.
+- **ODD-4 keychain:** collector drops all keychain code; old `activity-collector-jira` entry
+  orphaned (unified `zr-jira`, decision #4). Cleanup tracked in `pg2-4jy6`.
+- **ODD-5 ExternalID → EXTEND `pkg/jira` (user decision):** repo-base `pkg/jira.Comment` +
+  `ChangelogEntry` now carry a stable `id` (Jira comment / changelog-history id), populated in
+  `SearchPage`. The collector's local mirror structs read it, so ExternalIDs stay **byte-identical**
+  to the old scheme (`KEY:comment:<cm.ID>`, `KEY:status:<entry.ID>`) — no timestamp-derived ids.
+- **ODD-6 pagination → REWORKED (decision #3):** `runSearch` runs
+  `jira search --jql <jql> --expand changelog,comments --all` (loop to completeness), superseding
+  the draft's `--limit 100`.
+
+**Implementation deltas from the draft:** (a) **Task 5 PATH → ambient PATH (decision #2):** the
+collector relies on the ambient profile PATH for `jira` (like pr-pool/SP4); **no `pkgs.jira` in
+`makeBinPath`**, so `default.nix` is unchanged and there is no SP1 build coupling. (b) timestamps are
+parsed with a robust `parseJiraTime` covering Jira's **no-colon offset** (`…-0700`) — the draft's
+`time.Parse(time.RFC3339, …)` would fail on the live CLI output. Gate: `go test ./...` + `go vet`
+green; guardrail test asserts no keychain/ZR/net-http strings.
+
 ## Open Design Decisions
 
 ### ODD-1: `jira_issue_created` — reporter vs. JQL creator filter

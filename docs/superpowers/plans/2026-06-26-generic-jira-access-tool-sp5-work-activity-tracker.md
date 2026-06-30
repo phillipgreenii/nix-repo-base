@@ -1217,6 +1217,27 @@ The tests MUST cover:
 
 ---
 
+## Resolved Decisions (settled 2026-06-29; supersedes the Open Design Decisions below)
+
+Implemented in `phillipgreenii-nix-support-apps` on branch `jira-sp5-sp6`.
+
+- **ODD-1 binary name:** hard-coded `"jira"` on PATH (cross-cutting decision #2); no config key.
+- **ODD-2 keychain migration:** WAT drops all keychain code; the old `work-activity-tracker-jira`
+  entry is orphaned (unified `zr-jira`, decision #4). Cleanup tracked in `pg2-4jy6`.
+- **ODD-3 identity:** preserve prefer-`email`-then-`account_id` (ZR always has email).
+- **ODD-4 pagination → REWORKED (decision #3):** `_run_jira_search` now runs
+  `jira search --jql <jql> --all` (loop nextPageToken to completeness), **superseding** the draft's
+  `--limit 100` + cap-at-100 model. The `truncated` warning is retained but now only fires if the
+  CLI hits its own page-safety cap.
+- **ODD-5 server_url/user_email:** accepted-but-deprecated (logged warning via `_DEPRECATED_KEYS`).
+
+**Implementation deltas from the draft:** (a) the test suite was adapted to the real
+`GatherSessionAggregate` API — `activities_collected` is `list[str]` (activity ids), so activity
+type/attributes are asserted via a mock-session spy, while graph shape is asserted on the real
+aggregate; (b) `credentials.py` was deleted **and** its re-export removed from `utils/__init__.py`
+(the draft missed the `__init__` export); (c) `aiohttp` removed from `pyproject.toml` + `uv.lock`.
+Gate: `check-all.sh` full (ruff/mypy/import-linter/unit+integration, 74% coverage) green.
+
 ## Open Design Decisions
 
 1. **Binary name and location:** this plan hard-codes `"jira"` as the command name (found on PATH via
