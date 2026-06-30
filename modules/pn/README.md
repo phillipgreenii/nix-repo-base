@@ -6,7 +6,7 @@
 
 `pn workspace doctor` audits a pn workspace against the build-equality invariant and (with `--fix`) repairs the safe drifts.
 
-**The Invariant (one sentence):** If `doctor` reports no errors, a local override build (`--override-input git+file://<clone>` for each workspace dependency) and a pure-remote build (using each repo's committed `flake.lock`) produce the same output.
+**The Invariant (one sentence):** If `doctor` reports no errors, a local override build (`--override-input git+file://<clone>` for each workspace dependency) and a pure-remote build (a plain nix build that uses each repo's committed `flake.lock`, no local overrides) produce the same output.
 
 ### Modes
 
@@ -62,8 +62,9 @@ ERROR flake-lock-fresh [would fix] flake.lock pin for nixpkgs (1.2.3) ≠ worksp
 ERROR branch-synced [fixable] local main behind origin/main (behind 3); will pull
 
 === phillipgreenii-nix-support-apps ===
-WARN repos-present [fixable] nix-support-lib present on disk but not in pn-workspace.toml
+WARN repos-extra [fixable] nix-support-lib present on disk but not in pn-workspace.toml
 WARN lock-present [fixable] pn-workspace.lock.json missing; will derive
+SKIP branch-synced   <repo>   remote comparison skipped (--offline)   [—]
 
 workspace doctor: 5 errors (2 warnings). Fix these to make builds consistent.
 ```
