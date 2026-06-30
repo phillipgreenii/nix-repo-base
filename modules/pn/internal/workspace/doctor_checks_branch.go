@@ -84,12 +84,20 @@ func (ws *Workspace) branchSyncedFinding(ctx context.Context, name, dir, branch,
 		CheckID: "branch-synced", Repo: name, Severity: SevError,
 		Message: fmt.Sprintf("repo %q local HEAD %s != remote %s (%s)", name, short(local), short(ref), ws.aheadBehind(ctx, dir)),
 	}
-	if behind {
+	switch {
+	case behind:
+		// local HEAD is an ancestor of origin/<branch> → fast-forward pull.
 		f.Fixable = true
 		f.fix = func(c context.Context) error { return ws.fastForwardIfBehind(c, dir, branch) }
 		f.Manual = fmt.Sprintf("git -C %s merge --ff-only origin/%s", dir, branch)
-	} else {
-		f.Manual = fmt.Sprintf("local diverged/ahead — resolve by hand:  git -C %s rebase origin/%s", dir, branch)
+	case ws.isStrictlyAhead(ctx, dir, branch):
+		// origin/<branch> is an ancestor of local HEAD → fast-forward push.
+		f.Fixable = true
+		f.fix = func(c context.Context) error { return ws.pushBranch(c, dir, branch) }
+		f.Manual = fmt.Sprintf("git -C %s push origin %s", dir, branch)
+	default:
+		// genuinely diverged (ahead AND behind) → manual rebase; ff is unsafe.
+		f.Manual = fmt.Sprintf("local diverged from origin/%s — resolve by hand:  git -C %s rebase origin/%s", branch, dir, branch)
 	}
 	return f
 }
@@ -99,6 +107,15 @@ func (ws *Workspace) branchSyncedFinding(ctx context.Context, name, dir, branch,
 func (ws *Workspace) isStrictlyBehind(ctx context.Context, dir, branch string) bool {
 	_, err := ws.runner.Run(ctx, "git",
 		[]string{"-C", dir, "merge-base", "--is-ancestor", "HEAD", "origin/" + branch}, exec.RunOptions{})
+	return err == nil
+}
+
+// isStrictlyAhead reports whether origin/<branch> is an ancestor of HEAD
+// (i.e. a fast-forward push is possible — local is ahead, not diverged).
+// Requires a prior fetch (refRev did it).
+func (ws *Workspace) isStrictlyAhead(ctx context.Context, dir, branch string) bool {
+	_, err := ws.runner.Run(ctx, "git",
+		[]string{"-C", dir, "merge-base", "--is-ancestor", "origin/" + branch, "HEAD"}, exec.RunOptions{})
 	return err == nil
 }
 

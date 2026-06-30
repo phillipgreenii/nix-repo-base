@@ -30,3 +30,16 @@ func (ws *Workspace) fastForwardIfBehind(ctx context.Context, repoDir, branch st
 	}
 	return nil
 }
+
+// pushBranch fast-forward-pushes branch to origin (no force). It fixes the
+// strictly-ahead case (local ahead of remote, behind 0): publishing the local
+// commits makes origin/<branch> match local HEAD. git rejects a non-fast-forward
+// push, so a remote that has moved (diverged) surfaces as an error rather than a
+// forced overwrite — destructive resolution stays a manual decision.
+func (ws *Workspace) pushBranch(ctx context.Context, repoDir, branch string) error {
+	if _, err := ws.runner.Run(ctx, "git",
+		[]string{"-C", repoDir, "push", "origin", branch}, exec.RunOptions{}); err != nil {
+		return fmt.Errorf("git push origin %s in %s: %w", branch, repoDir, err)
+	}
+	return nil
+}
