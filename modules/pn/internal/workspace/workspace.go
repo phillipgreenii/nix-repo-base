@@ -23,6 +23,9 @@ type Workspace struct {
 	revLock *RevLock
 	runner  exec.Runner
 	pool    *exec.WorkerPool
+	// registerChecksFn overrides the default check registry. nil in production;
+	// set only in tests to stub the re-run inside applyFixes.
+	registerChecksFn func() []check
 }
 
 // Open loads the workspace rooted at dir. Reads pn-workspace.toml (required),

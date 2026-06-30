@@ -35,6 +35,7 @@ type Finding struct {
 	Manual   string // copy-pasteable command for non-auto-fixable findings
 	Fixable  bool
 	Skipped  bool
+	Applied  bool
 	fix      func(ctx context.Context) error
 }
 
@@ -42,6 +43,7 @@ type DoctorReport struct {
 	Mode     string
 	Findings []Finding
 	Skipped  []string // check IDs skipped (e.g. --offline)
+	Plan     []string // populated on --dry-run: what would be fixed
 }
 
 func (r *DoctorReport) HasErrors() bool {
@@ -217,7 +219,13 @@ func sortFindings(fs []Finding) {
 // are implemented (Tasks 7–11). Phase-1 structural toml checks already ran in
 // Doctor(); lock-level structural checks (which need an opened workspace) live
 // in the registry.
+//
+// If ws.registerChecksFn is non-nil (test override), that is called instead so
+// tests can stub the re-run inside applyFixes.
 func (ws *Workspace) registerChecks() []check {
+	if ws.registerChecksFn != nil {
+		return ws.registerChecksFn()
+	}
 	return []check{
 		{id: "lock", run: ws.checkLock},
 		{id: "repos", run: ws.checkRepos},
