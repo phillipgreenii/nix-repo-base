@@ -25,14 +25,41 @@ func TestFormatSize(t *testing.T) {
 	}
 }
 
+// fullDiskutilInfo is a verbatim `diskutil info <device>` block for an APFS
+// /nix/store volume. The "Disk Size" / "Container Total Space" lines (the whole
+// container, 494384795648 B ≈ 460.4 GiB) precede "Volume Used Space"
+// (67730395136 B ≈ 63.1 GiB). storeSize MUST report the latter — a regex that
+// grabs the first "(NNN Bytes)" match instead returns the container total.
+const fullDiskutilInfo = `   Device Identifier:         disk3s7
+   Device Node:               /dev/disk3s7
+   Whole:                     No
+   Part of Whole:             disk3
+
+   Volume Name:               Nix Store
+   Mounted:                   Yes
+   Mount Point:               /nix
+
+   File System Personality:   APFS
+   Type (Bundle):             apfs
+
+   Disk Size:                 494.4 GB (494384795648 Bytes) (exactly 965595304 512-Byte-Units)
+   Device Block Size:         4096 Bytes
+
+   Volume Used Space:         63.1 GB (67730395136 Bytes) (exactly 132285928 512-Byte-Units)
+   Container Total Space:     494.4 GB (494384795648 Bytes) (exactly 965595304 512-Byte-Units)
+   Container Free Space:      38.3 GB (38289293312 Bytes) (exactly 74783776 512-Byte-Units)
+   Allocation Block Size:     4096 Bytes
+`
+
 func TestStoreSize_ParsesDiskutilBytes(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("df", []string{"/nix/store"}, exec.Result{Stdout: []byte(
 		"Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/disk3s7 1 1 1 1% /nix/store\n")}, nil)
-	f.AddResponse("diskutil", []string{"info", "/dev/disk3s7"}, exec.Result{Stdout: []byte(
-		"   Volume Used Space:         50.7 GB (54440673280 Bytes) (exactly X 512-Byte-Units)\n")}, nil)
-	if got := storeSize(context.Background(), f); got != "50.7 GB" {
-		t.Fatalf("storeSize = %q, want 50.7 GB", got)
+	f.AddResponse("diskutil", []string{"info", "/dev/disk3s7"}, exec.Result{Stdout: []byte(fullDiskutilInfo)}, nil)
+	// Must report Volume Used Space (63.1 GB), NOT Disk Size / Container Total
+	// (460.4 GB), which is the first "(NNN Bytes)" match in the full output.
+	if got := storeSize(context.Background(), f); got != "63.1 GB" {
+		t.Fatalf("storeSize = %q, want 63.1 GB (Volume Used Space, not container total)", got)
 	}
 }
 

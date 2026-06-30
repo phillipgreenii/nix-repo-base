@@ -25,7 +25,14 @@ func formatSize(bytes int64) string {
 	}
 }
 
-var diskutilBytesRE = regexp.MustCompile(`\((\d+) Bytes\)`)
+// diskutilVolumeUsedRE captures the byte count from the "Volume Used Space:"
+// line of `diskutil info`. It MUST be anchored to that label: the output also
+// contains "Disk Size" / "Container Total Space" lines (the whole APFS
+// container) that appear first, so an unanchored `\((\d+) Bytes\)` would return
+// the container total instead of the volume's own usage. `.` does not cross
+// newlines, so `.*?` stays on the matched line. Mirrors the bash awk that
+// anchored on /Volume Used Space:/ (fixed in commit 1a84441).
+var diskutilVolumeUsedRE = regexp.MustCompile(`Volume Used Space:.*?\((\d+) Bytes\)`)
 
 // storeSize reports the /nix/store APFS volume's own used bytes. df resolves the
 // block device; diskutil reports the per-volume used space (df alone reports the
@@ -48,7 +55,7 @@ func storeSize(ctx context.Context, r exec.Runner) string {
 	if err != nil {
 		return formatSize(0)
 	}
-	m := diskutilBytesRE.FindSubmatch(duRes.Stdout)
+	m := diskutilVolumeUsedRE.FindSubmatch(duRes.Stdout)
 	if m == nil {
 		return formatSize(0)
 	}
