@@ -287,6 +287,21 @@ func LoadConfig(env Env) Config {
 
 - `formatSize`: ≥1<<30 → `"%.1f GB"`; ≥1<<20 → `"%.1f MB"`; ≥1<<10 → `"%.1f KB"`; else `"%d B"`.
 - `storeSize`: `df /nix/store` → device = field 1 of line 2; `diskutil info <device>` → parse first `(<digits> Bytes)` → `formatSize`. No match → `"0 B"`.
+
+> **Correction (post-merge, bd pg2-2igz).** Two points above were as-built but wrong; the
+> shipped code (`modules/pn/internal/store/size.go`) diverges intentionally:
+>
+> - **`storeSize` MUST NOT "parse first `(<digits> Bytes)`".** The first `(<digits> Bytes)`
+>   token in `diskutil info` is `Disk Size` / `Container Total Space` (the whole APFS
+>   container), so this spec made `storeSize` report ~460 GiB instead of the volume's own
+>   ~64 GiB usage. The regex MUST anchor on the `Volume Used Space:` label
+>   (`Volume Used Space:.*?\((\d+) Bytes\)`), matching the corrected bash `awk /Volume Used Space:/`
+>   from commit `1a84441`. The single-line test fixture that hid this was replaced with a full
+>   `diskutil info` block.
+> - **`formatSize` labels are `GiB`/`MiB`/`KiB`, not `GB`/`MB`/`KB`.** The divisors were always
+>   binary (2^30 / 2^20 / 2^10), so the IEC labels are the honest ones and they match
+>   `nix path-info -Sh`. Values are unchanged; only the unit suffix was corrected.
+
 - `profileClosureSize`: resolve symlinks (`filepath.EvalSymlinks`, fallback to input); `nix path-info -S <resolved>` → 2nd whitespace field is bytes; empty/`0`/error → `"unknown"`; else `formatSize`.
 - `deadPathsSize`: `sudo nix-store --gc --print-dead` → newline paths; empty → `"0 B"`; else `nix path-info -S <paths...>` summed col 2 → `formatSize`.
 - `runtimeRootsSummary`: `nix-store --gc --print-roots` → lines `<root> -> <storepath>` (storepath = last whitespace field); `{lsof}` lines are lsof roots, others file roots; `lsof_only = lsof \ file`; empty → `""`; else `"<n> store path(s) held only by running processes (up to <size> reclaimable)\n  Tip: Restarting applications and re-running may free additional space"` (singular `path` when n==1; size from `nix path-info -S` sum).
