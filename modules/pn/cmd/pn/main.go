@@ -6,6 +6,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -15,8 +16,16 @@ import (
 var Version = "dev"
 
 func main() {
-	if err := cli.Execute(Version); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	err := cli.Execute(Version)
+	if code := cli.ExitCode(err); code != 0 {
+		// Print the message only for plain errors; ExitCodeError-carrying
+		// commands have already rendered their own report to stdout.
+		var ec cli.ExitCodeError
+		if !errors.As(err, &ec) {
+			fmt.Fprintln(os.Stderr, err)
+		} else if ec.Msg != "" {
+			fmt.Fprintln(os.Stderr, ec.Msg)
+		}
+		os.Exit(code)
 	}
 }
