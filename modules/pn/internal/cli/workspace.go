@@ -55,6 +55,7 @@ Environment variables:
 	ws.AddCommand(workspaceUpgradeCmd(&terminalFlag))
 	ws.AddCommand(workspaceDiscoverCmd(&terminalFlag))
 	ws.AddCommand(workspaceInfoCmd(&terminalFlag))
+	ws.AddCommand(workspaceDoctorCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
 	ws.AddCommand(workspaceWorkforestCmd())
 	parent.AddCommand(ws)
@@ -453,6 +454,50 @@ func workspaceInfoCmd(_ *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&infoJSON, "json", false, "JSON output")
+	return cmd
+}
+
+func workspaceDoctorCmd(terminal *string) *cobra.Command {
+	var (
+		fix, dryRun, offline, jsonOut, strict bool
+	)
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Audit (and optionally repair) workspace drift",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRun && !fix {
+				return fmt.Errorf("--dry-run requires --fix")
+			}
+			root, err := resolveWorkspaceRoot("")
+			if err != nil {
+				return err
+			}
+			_ = os.Setenv("PN_WORKSPACE_ROOT", root)
+			_ = os.Setenv("WORKSPACE_ROOT", root)
+
+			opts := workspace.DoctorOptions{
+				Fix: fix, DryRun: dryRun, Offline: offline, JSON: jsonOut,
+				Strict: strict, Terminal: *terminal,
+			}
+			report, derr := workspace.Doctor(cmd.Context(), root, exec.NewRealRunner(), opts)
+			if derr != nil {
+				// doctor itself failed -> exit 2
+				return ExitCodeError{Code: 2, Msg: derr.Error()}
+			}
+			if rerr := workspace.RenderDoctor(cmd.OutOrStdout(), report, opts); rerr != nil {
+				return rerr
+			}
+			if code := report.ExitCode(strict); code != 0 {
+				return ExitCodeError{Code: code}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&fix, "fix", false, "apply safe fixes")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "with --fix: print the fix plan, change nothing")
+	cmd.Flags().BoolVar(&offline, "offline", false, "skip remote-dependent checks")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit findings as JSON")
+	cmd.Flags().BoolVar(&strict, "strict", false, "treat warnings as errors for the exit code")
 	return cmd
 }
 
