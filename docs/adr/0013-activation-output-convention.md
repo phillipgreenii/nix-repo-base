@@ -1,6 +1,6 @@
 # Activation-Script Output Convention
 
-**Status**: Accepted
+**Status**: Accepted (extended by 0014; color mechanism superseded by [0015](0015-activation-color-default-on.md))
 **Date**: 2026-06-29
 **Deciders**: Phillip Green II
 
@@ -67,6 +67,13 @@ line, where aligning the hint to the glyph column reads as a note on the failure
 
 ### Normative rules
 
+> **The two color bullets immediately below are superseded by
+> [ADR 0015](0015-activation-color-default-on.md).** Color now defaults ON with
+> `NO_COLOR` as the only off-switch; `CLICOLOR_FORCE`/`[ -t 1 ]` are not
+> consulted because neither is observable under nix-darwin's `env -i` system
+> activation. The remaining rules below (glyphs, `printf '%s\n'` safety,
+> `act_fail` MUST NOT `exit`, per-function `# shellcheck disable`) still stand.
+
 - Color MUST be emitted when `CLICOLOR_FORCE` is non-empty OR stdout is a TTY
   (`[ -t 1 ]`).
 - Color MUST NOT be emitted when `NO_COLOR` is non-empty. `NO_COLOR` MUST take
@@ -89,6 +96,13 @@ line, where aligning the hint to the glyph column reads as a note on the failure
 
 ### `pn` force-color mechanism
 
+> **Superseded by [ADR 0015](0015-activation-color-default-on.md).** This
+> mechanism does not work for system activation: nix-darwin runs the assembled
+> activate script under `#!/usr/bin/env -i`, which strips `CLICOLOR_FORCE`
+> before the script runs (even `sudo --preserve-env` cannot cross `env -i`).
+> Color now defaults ON in the helper instead. The description below is retained
+> for history.
+
 `pn workspace apply` wires `cmd.Stdout = io.MultiWriter(&buf, os.Stdout)` — a
 pipe, not a PTY. So `[ -t 1 ]` is false inside the activate script and color
 would otherwise self-suppress.
@@ -102,8 +116,14 @@ when the operator redirects `pn workspace apply > file`.
 
 Sub-processes that run in their own shell (e.g. `pkgs.writeShellScript` bodies
 run via `sudo`) do not inherit bash functions from the parent activation shell.
-Such scripts MUST have `${lib.activationHelpers}` injected at the top. The
-`sudo` invocation MUST forward `CLICOLOR_FORCE` and `LC_CTYPE` explicitly
+Such scripts MUST have `${lib.activationHelpers}` injected at the top.
+
+> **The `CLICOLOR_FORCE` forwarding below is superseded by
+> [ADR 0015](0015-activation-color-default-on.md)** — color defaults ON, so the
+> child no longer needs `CLICOLOR_FORCE`. Injecting `${lib.activationHelpers}`
+> is still required. (`LC_CTYPE` forwarding for glyphs still applies.)
+
+The `sudo` invocation MUST forward `CLICOLOR_FORCE` and `LC_CTYPE` explicitly
 (e.g. `sudo -H CLICOLOR_FORCE="${CLICOLOR_FORCE:-}" LC_CTYPE="${LC_CTYPE:-}" -u …`).
 
 ### Re-emission is deliberate
