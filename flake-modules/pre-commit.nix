@@ -99,10 +99,35 @@ in
         }
         // topLevelCfg.extraHooks;
       };
+
+      # ADR 0016: the git-hooks.nix-generated `.pre-commit-config.yaml` is a
+      # symlink into `/nix/store` and MUST NOT be committed — a committed
+      # store path is GC-eligible and rots into a dangling symlink, breaking
+      # the hook. Enforce that every consumer gitignores it. Pure eval-time
+      # read of the flake source's `.gitignore` (no IFD: `src` is an
+      # already-realised store path); an exact full-line match avoids matching
+      # the explanatory comment line.
+      gitignorePath = topLevelCfg.src + "/.gitignore";
+      gitignoreLines =
+        if builtins.pathExists gitignorePath then
+          lib.splitString "\n" (builtins.readFile gitignorePath)
+        else
+          null;
+      ignoresPreCommitConfig =
+        gitignoreLines != null
+        && lib.any (l: lib.removeSuffix "\r" l == ".pre-commit-config.yaml") gitignoreLines;
+      preCommitConfigGitignoredCheck =
+        if gitignoreLines == null then
+          throw "phillipgreenii.pre-commit: ${toString topLevelCfg.src}/.gitignore is missing; it MUST exist and ignore the generated .pre-commit-config.yaml store-symlink (ADR 0016 in phillipg-nix-repo-base)."
+        else if !ignoresPreCommitConfig then
+          throw "phillipgreenii.pre-commit: .gitignore MUST contain a line '.pre-commit-config.yaml'. The git-hooks.nix config is a generated /nix/store symlink and must not be committed (ADR 0016 in phillipg-nix-repo-base)."
+        else
+          pkgs.runCommand "pre-commit-config-gitignored" { } "touch $out";
     in
     {
       _module.args.preCommitShellHook = preCommit.shellHook;
       checks.pre-commit = preCommit;
+      checks.pre-commit-config-gitignored = preCommitConfigGitignoredCheck;
       packages.install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
         ${preCommit.shellHook}
         echo "Pre-commit hooks installed successfully!"

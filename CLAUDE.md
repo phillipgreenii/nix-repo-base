@@ -35,6 +35,16 @@ Note: raw `buildGoModule` packages that do **not** go through these helpers (e.g
 repackages) keep their own `vendorHash` — this guidance is scoped to the `mkGoApp`/`mkGoBinary`
 family.
 
+## Pre-commit hooks (`.pre-commit-config.yaml`)
+
+`.pre-commit-config.yaml` is a git-hooks.nix-generated **symlink into `/nix/store`** and MUST NOT
+be committed — a committed store path is GC-eligible and rots into a dangling symlink (ADR
+[0016](docs/adr/0016-gitignore-generated-pre-commit-config.md)). Every repo consuming
+`flake-modules/pre-commit.nix` MUST gitignore it (exact line `.pre-commit-config.yaml`); the
+`checks.pre-commit-config-gitignored` flake check enforces this. Regenerate the working-tree
+symlink with `nix run .#install-pre-commit-hooks` or by entering the devShell. Do **not** re-add
+it to git and do **not** auto-write the `.gitignore` entry from the shellHook.
+
 ## Versioning
 
 Custom artifacts version from a per-source content digest, never the repo git rev (ADR

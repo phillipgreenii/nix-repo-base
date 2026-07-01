@@ -20,3 +20,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0013](0013-activation-output-convention.md)            | Activation-script output convention (`mkActivationSection` + helpers)   | Accepted (extended by 0014; color superseded by 0015) |
 | [0014](0014-activation-output-home-manager.md)          | Extend the activation-output convention to home-manager activation      | Accepted                                              |
 | [0015](0015-activation-color-default-on.md)             | Activation color defaults ON; `NO_COLOR` is the only off-switch         | Accepted                                              |
+| [0016](0016-gitignore-generated-pre-commit-config.md)   | Gitignore the git-hooks.nix-generated `.pre-commit-config.yaml`         | Accepted                                              |
