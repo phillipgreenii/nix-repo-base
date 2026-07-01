@@ -84,6 +84,20 @@ The default worktree flow does **not** skip a dirty repo upfront — the worktre
 primary, so the long run proceeds regardless. Only a dirty `main` _checkout_ defers at
 integration.
 
+### `--siblings-only` surgical relock
+
+`pn workspace update --siblings-only` relocks ONLY the `phillipgreenii-*` workspace-sibling flake
+inputs — the `propagateWorkspaceEdges` pass (`nix flake update --refresh <sibling-alias>`) — and
+**skips each repo's `update-locks.sh`**. The result: `nixpkgs` and other third-party inputs are
+left untouched (each repo's `flake.lock` diff shows only sibling inputs moved), while topological
+order and the push-between-repos handoff are unchanged, so a consumer still picks up a sibling's
+freshly-pushed tip. It is the surgical way to clear `pn workspace doctor`'s `flake-lock-fresh`
+findings without a full `nix flake update`, and is exactly what `doctor --fix` runs for those
+findings. It composes with `--in-place`, and — because `update-locks.sh` never runs — it does
+**not** resolve or require `UL_LIB_DIR`, so it succeeds headless (no nix resolver). It converges
+only branch-tracking inputs; a sibling pinned to an explicit `?rev=`/non-default branch will not
+move, and a repo with no upstream cannot publish its tip for downstream consumers.
+
 ### `update` inside a coordinated workforest set requires `--in-place`
 
 Running bare `pn workspace update` from inside a coordinated set (created by

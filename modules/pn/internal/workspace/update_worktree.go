@@ -105,15 +105,21 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	// without nix) → nix resolver. Each consumer update-locks.sh clobbers
 	// WORKSPACE_ROOT to SCRIPT_DIR/.., so a non-empty UL_LIB_DIR is the only safe
 	// relock path in a worktree (ADR 0009 B1); empty is fatal.
+	//
+	// SiblingsOnly skips update-locks.sh entirely, so UL_LIB_DIR is never
+	// consumed — resolving (and hard-failing on) it would needlessly require the
+	// nix resolver, breaking the headless doctor-fix path. Skip the block.
 	ulLibDir := opts.ULLibDir
-	if ulLibDir == "" {
-		ulLibDir = os.Getenv("UL_LIB_DIR")
-	}
-	if ulLibDir == "" {
-		ulLibDir = ws.ResolveULLibDir(ctx)
-	}
-	if ulLibDir == "" {
-		return fmt.Errorf("update: could not resolve UL_LIB_DIR (set UL_LIB_DIR or fix determine-ul-lib-dir); refusing to relock in a worktree without it (use --in-place to update on main)")
+	if !opts.SiblingsOnly {
+		if ulLibDir == "" {
+			ulLibDir = os.Getenv("UL_LIB_DIR")
+		}
+		if ulLibDir == "" {
+			ulLibDir = ws.ResolveULLibDir(ctx)
+		}
+		if ulLibDir == "" {
+			return fmt.Errorf("update: could not resolve UL_LIB_DIR (set UL_LIB_DIR or fix determine-ul-lib-dir); refusing to relock in a worktree without it (use --in-place to update on main)")
+		}
 	}
 
 	runTS := updateRunStampFn()
@@ -139,7 +145,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
 		}
-		oc := ws.updateRepoViaWorktree(ctx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name))
+		oc := ws.updateRepoViaWorktree(ctx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name), opts.SiblingsOnly)
 		if oc.rev != "" {
 			revs[name] = LockedRepo{URL: displayURL(ws.config.Repos[name]), Rev: oc.rev}
 		}
@@ -179,7 +185,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 // error: every failure is captured in the returned repoOutcome and the worktree
 // + branch are left in place (leave-on-failure). Only a fully successful
 // integration removes them.
-func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, name, branch, runTS, ulLibDir string, aliases []string) repoOutcome {
+func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, name, branch, runTS, ulLibDir string, aliases []string, siblingsOnly bool) repoOutcome {
 	primary := filepath.Join(ws.root, name)
 	wt := filepath.Join(ws.WorkforestsDir(), updateWorktreesSubdir, name+"-"+runTS)
 	oc := repoOutcome{name: name, worktree: wt, branch: branch}
@@ -229,14 +235,18 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 
 	// Step 4: run the existing update-locks in the worktree, when present. A repo
 	// without ./update-locks.sh is skipped (not failed): the propagation pass
-	// above already maintains its workspace locks.
-	if fileExists(filepath.Join(wt, "update-locks.sh")) {
+	// above already maintains its workspace locks. --siblings-only skips it
+	// unconditionally so nixpkgs/third-party inputs are left untouched.
+	switch {
+	case siblingsOnly:
+		fmt.Fprintf(out, "  ⊘ %s: --siblings-only — skipping update-locks.sh (workspace inputs relocked, nixpkgs/third-party untouched)\n", name)
+	case fileExists(filepath.Join(wt, "update-locks.sh")):
 		if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
 			Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out,
 		}); err != nil {
 			return fail("update-locks", err, "")
 		}
-	} else {
+	default:
 		fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (workspace inputs already propagated)\n", name)
 	}
 

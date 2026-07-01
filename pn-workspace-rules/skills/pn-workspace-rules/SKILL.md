@@ -112,6 +112,7 @@ Commands that need a topological order (rebase, push, status, flake-check, pre-c
 | Build a single package                     | `nix build .#<pkg>` inside the project | (no workspace-level wrapper)                                                         |
 | Pre-commit checks across all repos         | `pn workspace pre-commit-check`        | per-repo `pre-commit run --all-files`                                                |
 | Update flake locks across all repos        | `pn workspace update`                  | per-repo `nix flake update`                                                          |
+| Relock only workspace-sibling inputs       | `pn workspace update --siblings-only`  | full `pn workspace update` (bumps nixpkgs/third-party too)                           |
 
 ## When to Push
 
@@ -137,6 +138,7 @@ pn workspace flake-check                 Run `nix flake check` across all repos
 pn workspace doctor                      Audit workspace against build-equality invariant; optionally repair safe drifts
 pn workspace update                      Refresh flake locks across all repos, worktree-isolated by default (terminal required)
 pn workspace update --in-place           Same, but directly on primary main (old behavior; required inside a workforest set)
+pn workspace update --siblings-only      Relock ONLY the workspace-sibling flake inputs (skip update-locks.sh; nixpkgs/third-party untouched)
 pn workspace upgrade                     Update + apply (USER ONLY for the apply step)
 pn workspace upgrade --in-place          Update phase runs directly on primary main instead of in an isolated worktree
 pn workspace rebase                      Rebase each repo onto its remote tracking branch
@@ -184,6 +186,19 @@ Key points for agents:
   `pn workspace upgrade --in-place`) runs the original direct-on-`main` flow. Use it when the
   worktree machinery itself is broken, when relocking inside a coordinated workforest set, or when
   you explicitly want the in-place behavior.
+
+- **`--siblings-only` surgical relock.** `pn workspace update --siblings-only` relocks ONLY the
+  `phillipgreenii-*` workspace-sibling flake inputs (the `nix flake update --refresh <sibling-alias>`
+  propagation pass) and **skips each repo's `update-locks.sh`**, so `nixpkgs` and other third-party
+  inputs are left untouched — a diff of each repo's `flake.lock` shows only sibling inputs moved.
+  Everything else (topological order, worktree isolation, rebase/push/integrate, `revs.json`
+  rewrite) is unchanged; push between repos is what lets a consumer pick up a sibling's freshly-pushed
+  tip. This is the command to clear `pn workspace doctor`'s `flake-lock-fresh` findings without a full
+  `nix flake update` (it is also exactly what `doctor --fix` now runs for those findings). Composes
+  with `--in-place`. Because it never runs `update-locks.sh`, it does **not** require `UL_LIB_DIR` (no
+  nix resolver), so it works headless. Caveat: it can only converge inputs that **track a branch**;
+  a sibling input pinned to an explicit `?rev=` (or a non-default branch) will not move, and a
+  repo with no upstream cannot publish its tip for downstream consumers.
 
 - **Inside a coordinated workforest set, `update` requires `--in-place`.** Running bare
   `pn workspace update` from inside a set is an error. Use `pn workspace update --in-place`,

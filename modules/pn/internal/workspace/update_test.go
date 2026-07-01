@@ -153,6 +153,47 @@ url = "github:owner/foo"
 	}
 }
 
+// TestUpdate_SiblingsOnly_InPlace_SkipsUpdateLocks: with SiblingsOnly the
+// in-place flow relocks workspace-sibling inputs (propagateWorkspaceEdges) but
+// MUST NOT invoke ./update-locks.sh, so nixpkgs/third-party inputs are left
+// untouched. update-locks.sh exists on disk (mkUpdateLocks), so its absence from
+// the call log proves the skip is due to SiblingsOnly, not a missing script.
+func TestUpdate_SiblingsOnly_InPlace_SkipsUpdateLocks(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+	f := exec.NewFakeRunner()
+	foo := filepath.Join(root, "foo")
+	mkUpdateLocks(t, foo)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	// no upstream → no pull/push; propagation has no edges → no-op.
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc0000000000000000000000000000000000000\n")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true, SiblingsOnly: true}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	for _, c := range f.Calls() {
+		if c.Name == "./update-locks.sh" {
+			t.Fatalf("--siblings-only must NOT run update-locks.sh; calls=%v", f.Calls())
+		}
+	}
+	if !strings.Contains(out.String(), "--siblings-only") {
+		t.Errorf("expected a --siblings-only skip line; got:\n%s", out.String())
+	}
+}
+
 // TestUpdate_ContinuesPastFailureAndAggregates: when one repo's update-locks
 // fails, Update must still process the remaining repos and report the failure
 // at the end (naming the failing repo), instead of aborting on first error.

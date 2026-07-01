@@ -107,6 +107,55 @@ func TestUpdateViaWorktree_HappyPath_CleanMain(t *testing.T) {
 	}
 }
 
+// TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir: with
+// SiblingsOnly the worktree flow MUST skip step-4 update-locks.sh (even though
+// the script exists on disk) AND MUST NOT resolve/require UL_LIB_DIR (the
+// resolver is never called and an empty env is not fatal), since update-locks
+// never runs. Everything else — worktree isolate → propagate → rebase → push →
+// ff-integrate → cleanup — runs unchanged.
+func TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir(t *testing.T) {
+	t.Setenv("UL_LIB_DIR", "") // empty would be fatal in normal mode; SiblingsOnly must not care
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	// Steps 1–6 WITHOUT scripting ./update-locks.sh (it must be skipped).
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("dead00000000000000000000000000000000beef\n")}, nil)
+	f.AddResponse("git", []string{"-C", wt, "push", "origin", "HEAD:main"}, exec.Result{}, nil)
+	// Step 7: clean-main integration.
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// No ULLibDir supplied: SiblingsOnly must not require it.
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{SiblingsOnly: true}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	for _, c := range f.Calls() {
+		if c.Name == "./update-locks.sh" {
+			t.Fatalf("--siblings-only must NOT run update-locks.sh")
+		}
+	}
+	if calledWith(f, "nix", []string{"run", ulLibResolverRef}) {
+		t.Fatalf("--siblings-only must NOT resolve UL_LIB_DIR (update-locks never runs)")
+	}
+	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
+	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
+		t.Errorf("revs.json rev = %q, want pushed tip", rl.Repos["foo"].Rev)
+	}
+}
+
 func TestUpdateViaWorktree_PushSucceedsFfDefers(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"

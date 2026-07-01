@@ -191,6 +191,22 @@ pn workspace update --in-place      # old direct-on-main behavior
 pn workspace upgrade --in-place     # update phase direct-on-main
 ```
 
+**`--siblings-only` flag:** relocks ONLY the `phillipgreenii-*` workspace-sibling flake inputs
+(the `nix flake update --refresh <sibling-alias>` propagation pass) and **skips each repo's
+`update-locks.sh`**, so `nixpkgs`/third-party inputs are untouched — each repo's `flake.lock` diff
+shows only sibling inputs moved. Topo order + push between repos still hold (a consumer picks up a
+sibling's freshly-pushed tip). Use it to clear `pn workspace doctor`'s `flake-lock-fresh` findings
+without a full `nix flake update`; `doctor --fix` runs exactly this for those findings. Composes
+with `--in-place`; requires no `UL_LIB_DIR` (never runs `update-locks.sh`), so it works headless.
+
+```
+pn workspace update --siblings-only              # surgical relock, worktree-isolated
+pn workspace update --siblings-only --in-place   # surgical relock, direct-on-main
+```
+
+Caveat: converges only branch-tracking inputs — a sibling pinned to an explicit `?rev=`/non-default
+branch will not move, and a repo with no upstream cannot publish its tip for downstream consumers.
+
 **Outcomes:**
 
 - Success: every flake.lock advanced; consumer build succeeds; ephemeral worktrees removed.

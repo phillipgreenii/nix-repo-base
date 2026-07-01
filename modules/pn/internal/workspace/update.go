@@ -28,6 +28,15 @@ type UpdateOptions struct {
 	// push in each primary checkout). When false (the default), Update isolates
 	// each repo in an ephemeral worktree and fast-forwards back to main.
 	InPlace bool
+	// SiblingsOnly relocks ONLY the phillipgreenii-* workspace-sibling flake
+	// inputs (the propagateWorkspaceEdges pass) and SKIPS each repo's
+	// update-locks.sh, so nixpkgs and other third-party inputs are left
+	// untouched. Everything else — topological order, worktree isolation vs
+	// InPlace, pull/rebase, push (so a consumer picks up a sibling's
+	// freshly-pushed tip), and the revs.json rewrite — is unchanged. It is
+	// orthogonal to InPlace (composes with either flow). Upgrade never sets it;
+	// Recreate (an Upgrade-only marker) and SiblingsOnly are not combined.
+	SiblingsOnly bool
 	// ULLibDir, when set, is exported as UL_LIB_DIR to each update-locks.sh so
 	// it skips its own determine-ul-lib-dir resolution. Resolve it once per run
 	// via ResolveULLibDir. Empty leaves each script to resolve for itself.
@@ -163,12 +172,15 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("update interrupted: %w", err)
 			}
-			if fileExists(filepath.Join(repoDir, "update-locks.sh")) {
+			switch {
+			case opts.SiblingsOnly:
+				fmt.Fprintf(out, "  ⊘ %s: --siblings-only — skipping update-locks.sh (workspace inputs relocked, nixpkgs/third-party untouched)\n", name)
+			case fileExists(filepath.Join(repoDir, "update-locks.sh")):
 				if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out}); err != nil {
 					projectFailed = true
 					// Keep going to push whatever update-locks committed.
 				}
-			} else {
+			default:
 				fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (workspace inputs already propagated)\n", name)
 			}
 		}

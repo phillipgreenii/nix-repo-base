@@ -344,9 +344,10 @@ func workspaceTreeCmd(terminal *string) *cobra.Command {
 
 func workspaceUpdateCmd(terminal *string) *cobra.Command {
 	var inPlace bool
+	var siblingsOnly bool
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update each workspace repo (worktree-isolated; --in-place for direct-on-main)",
+		Short: "Update each workspace repo (worktree-isolated; --in-place for direct-on-main, --siblings-only to relock just sibling inputs)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -363,11 +364,12 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 			}
 
 			return runWithHooks(ctx, w, "update", func() error {
-				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal, Log: lw, InPlace: inPlace})
+				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal, Log: lw, InPlace: inPlace, SiblingsOnly: siblingsOnly})
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "update each repo directly on its primary main instead of in an isolated worktree")
+	cmd.Flags().BoolVar(&siblingsOnly, "siblings-only", false, "relock only the workspace-sibling flake inputs (skip update-locks.sh; leaves nixpkgs and other third-party inputs untouched)")
 	return cmd
 }
 
