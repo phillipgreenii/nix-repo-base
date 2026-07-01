@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -26,8 +27,12 @@ var denyListedNixSubcommands = [][]string{
 // --override-input flag for each workspace dep of the terminal flake as
 // recorded in the workspace lock. Uses per-consumer lock edges for aliasing.
 //
+// nix's stdout and stderr are streamed live to out (matching Build/FlakeCheck)
+// rather than being buffered and truncated into the returned error — callers
+// such as the pre-commit test hooks rely on seeing the full build/test output.
+//
 // Subcommands in denyListedNixSubcommands are refused with a clear error.
-func (ws *Workspace) NixCommand(ctx context.Context, args []string) error {
+func (ws *Workspace) NixCommand(ctx context.Context, out io.Writer, args []string) error {
 	// The CLI passes through any "--" separator (cobra DisableFlagParsing
 	// mode); strip a leading "--" so the deny-list and the eventual nix
 	// invocation see the bare subcommand.
@@ -44,7 +49,7 @@ func (ws *Workspace) NixCommand(ctx context.Context, args []string) error {
 	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{})
 	full := append([]string{}, args...)
 	full = append(full, overrides...)
-	_, err = ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root})
+	_, err = ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root, Stdout: out, Stderr: out})
 	return err
 }
 
