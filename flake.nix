@@ -177,10 +177,15 @@
               in
               pkgs.runCommand "check-activation-behavior" { } ''
                 set -euo pipefail
-                # runCommand stdout is a pipe (no TTY) and CLICOLOR_FORCE unset => no ANSI.
+                # Policy: color defaults ON; NO_COLOR is the only off-switch.
+                # Even though runCommand stdout is a pipe (no TTY) and
+                # CLICOLOR_FORCE is unset, color MUST be emitted because NO_COLOR
+                # is unset. This is precisely what makes nix-darwin's `env -i`
+                # system activation (where CLICOLOR_FORCE/TTY can never be seen)
+                # come out colored.
                 plain=$(LC_CTYPE=UTF-8 ${pkgs.bash}/bin/bash ${sectionFile})
                 printf '%s\n' "$plain"
-                if printf '%s' "$plain" | grep -q $'\033'; then echo "FAIL: ANSI without force"; exit 1; fi
+                if ! printf '%s' "$plain" | grep -q $'\033\[32m'; then echo "FAIL: no green by default (color must be on unless NO_COLOR)"; exit 1; fi
                 if ! printf '%s' "$plain" | grep -q '✓'; then echo "FAIL: missing UTF-8 glyph"; exit 1; fi
                 # Also exercise the home-manager activation envelope: home.activation
                 # runs each block under `bash -eu -o pipefail`. The section must
@@ -188,9 +193,10 @@
                 # color/glyph guards). Assert byte-identical output to the plain run.
                 envelope=$(LC_CTYPE=UTF-8 ${pkgs.bash}/bin/bash -eu -o pipefail ${sectionFile})
                 if [ "$envelope" != "$plain" ]; then echo "FAIL: hm activation envelope output differs"; exit 1; fi
-                # Forced color (the pn apply path).
+                # CLICOLOR_FORCE is no longer consulted (color is on regardless);
+                # kept as a regression guard that setting it does not break output.
                 forced=$(CLICOLOR_FORCE=1 LC_CTYPE=UTF-8 ${pkgs.bash}/bin/bash ${sectionFile})
-                if ! printf '%s' "$forced" | grep -q $'\033\[32m'; then echo "FAIL: no green when forced"; exit 1; fi
+                if ! printf '%s' "$forced" | grep -q $'\033\[32m'; then echo "FAIL: no green with CLICOLOR_FORCE"; exit 1; fi
                 # NO_COLOR must win over CLICOLOR_FORCE.
                 nocolor=$(NO_COLOR=1 CLICOLOR_FORCE=1 LC_CTYPE=UTF-8 ${pkgs.bash}/bin/bash ${sectionFile})
                 if printf '%s' "$nocolor" | grep -q $'\033'; then echo "FAIL: NO_COLOR did not win over CLICOLOR_FORCE"; exit 1; fi

@@ -1,12 +1,17 @@
 # shellcheck shell=bash
+# Color defaults ON; NO_COLOR (https://no-color.org) is the only off-switch.
+# Runtime terminal/CLICOLOR_FORCE detection is deliberately NOT used: under
+# nix-darwin's `env -i` system activation the script sees an empty environment
+# and its stdout is a pipe (pn captures it), so `[ -t 1 ]` is always false and
+# CLICOLOR_FORCE never survives -- runtime detection can only ever answer "off".
+# Defaulting ON is the only way system activation sections come out colored.
+# NO_COLOR suppression for those sections is enforced one layer up, in pn, which
+# still sees the real environment. In non-`env -i` contexts (home-manager
+# activation, direct runs) a visible NO_COLOR is honored here directly.
 if [ -n "${NO_COLOR:-}" ]; then
   _act_color=0
-elif [ -n "${CLICOLOR_FORCE:-}" ]; then
-  _act_color=1
-elif [ -t 1 ]; then
-  _act_color=1
 else
-  _act_color=0
+  _act_color=1
 fi
 case "${LC_ALL:-${LC_CTYPE:-}}" in
 *UTF-8* | *utf-8* | *UTF8* | *utf8*) _act_utf8=1 ;;

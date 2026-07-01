@@ -42,9 +42,15 @@ in
     expected = true;
   };
   testColorGuards = {
+    # Policy: color defaults ON; NO_COLOR is the only off-switch. The color
+    # decision must NOT dereference CLICOLOR_FORCE — it cannot survive
+    # nix-darwin's `env -i` system activation, so consulting it there is
+    # pointless. We assert the code form "CLICOLOR_FORCE:-" is absent (that
+    # substring only occurs in the `${CLICOLOR_FORCE:-}` read, never in prose,
+    # so an explanatory comment mentioning the var by name stays allowed).
     expr =
-      lib.hasInfix "CLICOLOR_FORCE" act.activationHelpers
-      && lib.hasInfix "NO_COLOR" act.activationHelpers;
+      lib.hasInfix "NO_COLOR" act.activationHelpers
+      && !(lib.hasInfix "CLICOLOR_FORCE:-" act.activationHelpers);
     expected = true;
   };
   testHelpersIsString = {
