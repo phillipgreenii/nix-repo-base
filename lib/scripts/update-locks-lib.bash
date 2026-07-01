@@ -78,15 +78,22 @@
 #   re-exec). Caller continues in the same process.
 #
 # ANCHOR: ul_reexec-enter-dev-shell
-#   Otherwise: enters nix develop "$script_dir" --command bash -c '...' ONCE
-#   with the original $0 + $@. A sentinel file distinguishes "shell never
-#   started" (file still present after nix exits, e.g. broken flake) from
+#   Otherwise: enters nix develop "${UL_FLAKE_DIR:-<script dir>}" --command
+#   bash -c '...' ONCE with the original $0 + $@. The dev shell entered defaults
+#   to the calling script's directory (correct for a flake at the repo root); a
+#   consumer whose flake lives in a subdirectory exports UL_FLAKE_DIR pointing at
+#   it (e.g. homelab sets UL_FLAKE_DIR="${SCRIPT_DIR}/nix") so `nix develop`
+#   resolves the flake instead of erroring "not part of a flake". A sentinel file
+#   distinguishes "shell never started" (file still present after nix exits —
+#   e.g. broken/absent flake, or a devShell that cannot build on this host) from
 #   "shell ran the script" (file removed by inner shell).
 #
 # ANCHOR: ul_reexec-fallback-on-broken-flake
 #   If the shell never started, prints a warning and returns 0 so the script
-#   can still run with host tooling. nix's own stderr is left visible so the
-#   user can fix the flake.
+#   can still run with host tooling. The nix develop invocation is errexit-guarded
+#   (|| rc=$?) so this fallback fires even though consumer scripts run under
+#   set -e — otherwise a failing `nix develop` would abort the script before the
+#   sentinel check. nix's own stderr is left visible so the user can fix the flake.
 #
 # ANCHOR: ul_reexec-self-repair-nrb-rev-fallback
 #   Propagates UL_LIB_DIR (when set) into the in-shell re-run so the inner
@@ -242,6 +249,12 @@ ul_reexec_in_dev_shell() {
   local script_dir
   script_dir="$(cd "$(dirname "$script")" && pwd)"
 
+  # The dev shell to enter. Defaults to the script's directory, which is correct
+  # when the flake sits at the repo root. Consumers whose flake lives in a
+  # subdirectory export UL_FLAKE_DIR pointing at it (e.g. homelab's nix/), so
+  # `nix develop` resolves the flake rather than erroring "not part of a flake".
+  local flake_dir="${UL_FLAKE_DIR:-$script_dir}"
+
   if [[ -n ${IN_NIX_SHELL:-} ]]; then
     echo "==> already in nix shell (IN_NIX_SHELL=$IN_NIX_SHELL); using current shell" >&2
     return 0
@@ -251,21 +264,25 @@ ul_reexec_in_dev_shell() {
     export UL_LIB_DIR
   fi
 
-  echo "==> entering dev shell at $script_dir..." >&2
+  echo "==> entering dev shell at $flake_dir..." >&2
 
   local sentinel
   sentinel="$(mktemp)"
   # The in-shell command removes the sentinel as its first act, so its presence
-  # afterward means we never entered the shell. nix's own stderr is left visible
-  # (not suppressed) so a broken flake's real error is reported.
+  # afterward means we never entered the shell. The `|| rc=$?` guard is essential:
+  # consumer scripts run under `set -e`, and a bare `nix develop` that fails
+  # (absent/broken flake, or a devShell that cannot build on this host — e.g. a
+  # devShell pulling in hooks pinned to another system) would otherwise abort the
+  # script HERE, before the sentinel check, defeating the host-tools fallback.
+  # nix's own stderr is left visible (not suppressed) so the real error is shown.
+  local rc=0
   # shellcheck disable=SC2016  # $UL_DEVSHELL_SENTINEL and $@ are expanded by the inner shell, intentionally
   UL_DEVSHELL_SENTINEL="$sentinel" \
-    nix develop "$script_dir" --command bash -c 'rm -f "$UL_DEVSHELL_SENTINEL"; exec bash "$@"' ul-reexec "$script" "$@"
-  local rc=$?
+    nix develop "$flake_dir" --command bash -c 'rm -f "$UL_DEVSHELL_SENTINEL"; exec bash "$@"' ul-reexec "$script" "$@" || rc=$?
 
   if [[ -e $sentinel ]]; then
     rm -f "$sentinel"
-    echo "WARNING: nix develop failed at $script_dir — falling back to system tools" >&2
+    echo "WARNING: nix develop failed at $flake_dir — falling back to system tools" >&2
     return 0
   fi
   rm -f "$sentinel"

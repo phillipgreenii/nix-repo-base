@@ -673,3 +673,68 @@ SCRIPT
   [[ ! "$output" =~ "WARNING" ]]
   [[ ! "$output" =~ "FALLTHROUGH" ]]
 }
+
+@test "ul_reexec_in_dev_shell fallback survives the caller's set -e" {
+  # Regression: consumer update-locks.sh scripts run under `set -euo pipefail`.
+  # A failing `nix develop` (absent/broken flake, or a devShell that cannot build
+  # on this host) must NOT abort the script before the sentinel/fallback check —
+  # the `|| rc=$?` guard keeps errexit from firing so host tooling still runs.
+  # The pre-existing fallback test above runs in a bare `bash -c` with no set -e,
+  # so it does not exercise this path.
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "develop" ]]; then
+  echo "nix: devShell cannot build on this host" >&2
+  exit 1
+fi
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  cat > "$TEST_DIR/setE-test.sh" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+source "$UL_LOCKS_LIB"
+ul_reexec_in_dev_shell "\$@"
+echo REACHED_HOST_TOOLS
+SCRIPT
+  _fix_mock_shebang "$TEST_DIR/setE-test.sh"
+  chmod +x "$TEST_DIR/setE-test.sh"
+
+  run env -u IN_NIX_SHELL "$TEST_DIR/setE-test.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "falling back" ]]
+  [[ "$output" =~ "REACHED_HOST_TOOLS" ]]
+}
+
+@test "ul_reexec_in_dev_shell enters the flake dir named by UL_FLAKE_DIR" {
+  # A subdir-flake consumer (e.g. homelab's nix/) points `nix develop` at
+  # UL_FLAKE_DIR instead of the script's directory. The mock records its target.
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "develop" ]]; then
+  echo "DEVELOP_TARGET=$2" >&2
+  rm -f "$UL_DEVSHELL_SENTINEL"
+  exit 0
+fi
+exit 99
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  cat > "$TEST_DIR/flakedir-test.sh" <<SCRIPT
+#!/usr/bin/env bash
+source "$UL_LOCKS_LIB"
+ul_reexec_in_dev_shell "\$@"
+echo FALLTHROUGH
+SCRIPT
+  _fix_mock_shebang "$TEST_DIR/flakedir-test.sh"
+  chmod +x "$TEST_DIR/flakedir-test.sh"
+
+  run env -u IN_NIX_SHELL UL_FLAKE_DIR=/some/repo/nix "$TEST_DIR/flakedir-test.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "entering dev shell at /some/repo/nix" ]]
+  [[ "$output" =~ "DEVELOP_TARGET=/some/repo/nix" ]]
+  [[ ! "$output" =~ "FALLTHROUGH" ]]
+}
