@@ -76,15 +76,21 @@ The following are normative (RFC 2119):
 
 ### Color / UTF-8 caveat
 
-`act_*`'s runtime detection (NO_COLOR / CLICOLOR_FORCE / TTY, UTF-8 vs ASCII
-markers) applies in home-manager activation as in system activation. UTF-8 glyphs
-and the 2-space structure are confirmed to render in `home.activation` under
-`pn workspace apply` (e.g. `configureGithubAuth` prints `  ✓ …`). **Color**
-propagation — whether `CLICOLOR_FORCE` / `LC_CTYPE` reach the home-manager
-activation subprocess on the `pn apply` path — is **best-effort and not yet
-verified**; output degrades gracefully to plain/ASCII if it does not propagate.
-Visual consistency is achieved at the glyph + structure level regardless; color is
-a bonus to confirm at apply time.
+`act_*`'s UTF-8-vs-ASCII marker detection applies in home-manager activation as in
+system activation: UTF-8 glyphs and the 2-space structure render in
+`home.activation` under `pn workspace apply` (e.g. `configureGithubAuth` prints
+`  ✓ …`), degrading gracefully to ASCII (`[OK]`) outside a UTF-8 locale.
+
+**Color** was originally an open question here — whether `CLICOLOR_FORCE` /
+`LC_CTYPE` would reach the home-manager activation subprocess on the `pn apply`
+path. It is now **resolved**: ADR [0015](0015-activation-color-default-on.md) made
+activation color **default ON** (`NO_COLOR` the only off-switch), precisely because
+runtime `CLICOLOR_FORCE` / TTY detection cannot survive nix-darwin's `env -i`
+activation (the dead `CLICOLOR_FORCE` apply-env plumbing was subsequently removed).
+With color defaulting on, the `act_*` sections emit ANSI color in `home.activation`
+regardless of propagation — **confirmed at apply time (2026-07-01)**: colored `✓`
+markers are visible in the converted `home.activation` sections under
+`pn workspace apply`.
 
 ## Consequences
 
@@ -101,7 +107,9 @@ a bonus to confirm at apply time.
   `Activating <name>`. Accepted: home-manager owns its header.
 - **Per-consumer boilerplate** — each repo that wants the library builds it
   locally (a few lines mirroring `zr-lib`).
-- **Color unverified** in home-manager activation (see caveat).
+- **Color** in home-manager activation is now confirmed (see caveat); the
+  mechanism is color-defaults-ON per ADR
+  [0015](0015-activation-color-default-on.md).
 
 ### Neutral
 
@@ -137,5 +145,7 @@ activation-invoked scripts; pure-CLI tools keep `zr-lib`'s raw glyphs.
 
 - Extends ADR [0013](0013-activation-output-convention.md) (activation-output
   convention for `system.activationScripts`).
+- Color mechanism codified — and this ADR's color caveat resolved — by ADR
+  [0015](0015-activation-color-default-on.md) (activation color defaults ON).
 - See also: `phillipg-nix-ziprecruiter` — the `setupZmWorktrees` activation section
   was converted to `act_*` as the first consumer of `activation-lib`.
