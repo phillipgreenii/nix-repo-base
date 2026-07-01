@@ -88,7 +88,6 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		Dir:    terminalDir,
 		Stdout: out,
 		Stderr: out,
-		Env:    applyColorEnv(colorEnabled(os.Stdout)),
 	}); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
@@ -165,17 +164,6 @@ func readSystemProfile() string {
 		return target
 	}
 	return filepath.Join(filepath.Dir(systemProfileLink), target)
-}
-
-// applyColorEnv forces ANSI color through the apply pipe when the user's
-// terminal supports it. pn pipes darwin-rebuild's stdout, so the activation
-// script's [ -t 1 ] is always false; CLICOLOR_FORCE is how the activation
-// helpers know to emit color anyway.
-func applyColorEnv(colorOK bool) map[string]string {
-	if colorOK {
-		return map[string]string{"CLICOLOR_FORCE": "1"}
-	}
-	return nil
 }
 
 func commandExists(name string) bool {

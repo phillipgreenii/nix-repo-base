@@ -284,19 +284,6 @@ func TestApply_ShowNixCommandsOnly(t *testing.T) {
 	}
 }
 
-func TestApplyColorEnv(t *testing.T) {
-	if got := applyColorEnv(false); got != nil {
-		t.Fatalf("colorOK=false: want nil env, got %v", got)
-	}
-	got := applyColorEnv(true)
-	if len(got) != 1 {
-		t.Fatalf("colorOK=true: want exactly 1 env key, got %d: %v", len(got), got)
-	}
-	if got["CLICOLOR_FORCE"] != "1" {
-		t.Fatalf("colorOK=true: want CLICOLOR_FORCE=1, got %v", got)
-	}
-}
-
 func TestAllRepoDirs_SkipsMissingClones(t *testing.T) {
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf") // cloned
