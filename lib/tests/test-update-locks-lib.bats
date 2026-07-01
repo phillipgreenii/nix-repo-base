@@ -78,54 +78,57 @@ teardown() {
   [[ "$output" =~ "not clean" ]]
 }
 
-@test "ul_setup reconciles a regenerated .pre-commit-config.yaml instead of failing the gate" {
-  # Commit a steady-state config, then simulate the git-hooks.nix shellHook
-  # having regenerated it on dev-shell entry (dirty tree) — exactly what a prior
-  # `nix flake update` leaves behind. ul_setup must commit the reconcile and
-  # pass the gate, not abort with "not clean".
-  echo "old-config" > .pre-commit-config.yaml
-  git add .pre-commit-config.yaml
-  git commit -m "add pre-commit config"
-  echo "new-config" > .pre-commit-config.yaml # shellHook regenerated it (dirty)
+@test "ul_setup regenerates the gitignored .pre-commit-config.yaml without committing it and passes the gate" {
+  # Post ADR 0016 the generated config is gitignored, never tracked. Simulate the
+  # git-hooks.nix shellHook regenerating it on dev-shell entry: because it is
+  # ignored, that must NOT dirty the tracked tree, must NOT be committed, and
+  # ul_setup must pass the clean-tree gate.
+  echo ".pre-commit-config.yaml" > .gitignore
+  git add .gitignore
+  git commit -m "gitignore generated pre-commit config"
 
   # nix mock: tier-1 `build … --print-out-paths` prints a drv path; `run
-  # .#install-pre-commit-hooks` writes the canonical (new) config; all else
+  # .#install-pre-commit-hooks` (re)generates the ignored config; all else
   # (eval/fmt) is a silent no-op.
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
 case "$*" in
   *build*install-pre-commit-hooks*) echo "/nix/store/deadbeef-install-pre-commit-hooks" ;;
-  *run*install-pre-commit-hooks*) echo "new-config" > .pre-commit-config.yaml ;;
+  *run*install-pre-commit-hooks*) echo "generated-config" > .pre-commit-config.yaml ;;
 esac
 exit 0
 MOCK
   _fix_mock_shebang "$MOCK_BIN/nix"
   chmod +x "$MOCK_BIN/nix"
 
+  local before_hash
+  before_hash=$(git rev-parse HEAD)
+
   source "$UL_LOCKS_LIB"
   ul_setup "test-project" "$TEST_DIR" # must NOT exit 1
 
-  [ "$(cat .pre-commit-config.yaml)" = "new-config" ]
-  git diff --quiet        # working tree clean
+  # The config was (re)generated but stays untracked + ignored.
+  [ "$(cat .pre-commit-config.yaml)" = "generated-config" ]
+  git diff --quiet          # tracked working tree clean
   git diff --cached --quiet # nothing staged
-  run git log -1 --format=%s
-  [[ "$output" =~ pre-commit ]]
+  # No pre-commit commit was made — HEAD is unchanged.
+  [ "$(git rev-parse HEAD)" = "$before_hash" ]
 }
 
 @test "ul_setup still exits 1 when a non-managed file is dirty alongside the pre-commit config" {
-  # The reconcile must commit ONLY .pre-commit-config.yaml; a genuine uncommitted
-  # edit must still trip the gate (and must not be destroyed).
-  echo "old-config" > .pre-commit-config.yaml
-  git add .pre-commit-config.yaml
-  git commit -m "add pre-commit config"
-  echo "new-config" > .pre-commit-config.yaml
+  # Regenerating the gitignored .pre-commit-config.yaml must not mask a genuine
+  # uncommitted edit to a tracked file: the gate must still fire, and the edit
+  # must not be destroyed on the gate-fail path.
+  echo ".pre-commit-config.yaml" > .gitignore
+  git add .gitignore
+  git commit -m "gitignore generated pre-commit config"
   echo "user edit" > file.txt # genuine uncommitted work
 
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
 case "$*" in
   *build*install-pre-commit-hooks*) echo "/nix/store/deadbeef-install-pre-commit-hooks" ;;
-  *run*install-pre-commit-hooks*) echo "new-config" > .pre-commit-config.yaml ;;
+  *run*install-pre-commit-hooks*) echo "generated-config" > .pre-commit-config.yaml ;;
 esac
 exit 0
 MOCK
