@@ -298,7 +298,12 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		fmt.Fprintf(out, "  ⚠ %s: integrated, but worktree remove failed\n", name)
 		return oc
 	}
-	_ = git(primary, "branch", "-d", branch)
+	// Force-delete (-D, not -d): integration already pushed HEAD to remote main and
+	// advanced local main, so the ephemeral branch is disposable. A repo whose
+	// worktree branch is not a strict ancestor of main (e.g. a no-op skip where the
+	// branch tip never merged) makes `-d` refuse with "not fully merged", leaking a
+	// pn-update/<ts> branch every run (tc-1zbpk W2). -D is always safe here.
+	_ = git(primary, "branch", "-D", branch)
 	oc.status, oc.worktree, oc.branch = statusOK, "", ""
 	fmt.Fprintf(out, "  ✓ %s: updated and integrated\n", name)
 	return oc

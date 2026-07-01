@@ -306,6 +306,44 @@ func TestPropagate_NixFailureErrorsCleanly(t *testing.T) {
 	}
 }
 
+// TestPropagate_CommitsUnderMissingConfigPreCommitHook is the tc-1zbpk regression:
+// in an ephemeral update worktree the prek pre-commit hook (installed in the
+// canonical gitdir, shared into the worktree) fires on the bump commit, but the
+// worktree has no .pre-commit-config.yaml (a gitignored dev-shell symlink that
+// only exists in the canonical checkout), so prek aborts with "config file not
+// found". propagateWorkspaceEdges must pass PREK_ALLOW_NO_CONFIG on its commit so
+// the bump still lands. We install a hook that mimics prek — fail unless
+// PREK_ALLOW_NO_CONFIG is set — and assert the commit is created; without the fix
+// the hook exits 1 and no bump commit lands.
+func TestPropagate_CommitsUnderMissingConfigPreCommitHook(t *testing.T) {
+	dir, writeLock := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
+	// Installed AFTER propEnv's init commit so init is not blocked.
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte(
+		"#!/bin/sh\n"+
+			"if [ -z \"$PREK_ALLOW_NO_CONFIG\" ]; then\n"+
+			"  echo 'config file not found: .pre-commit-config.yaml' >&2\n"+
+			"  exit 1\n"+
+			"fi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
+		writeLock(lockWith("2222222222222222222222222222222222222222", 2))
+	}}
+	ws := &Workspace{runner: r}
+
+	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err != nil {
+		t.Fatalf("propagate: %v", err)
+	}
+	if n := commitCount(t, dir); n != 2 {
+		t.Errorf("commit count = %d, want 2 (bump commit must land despite the prek hook)", n)
+	}
+	if subj := headSubject(t, dir); subj != "chore(deps): bump sib 1111111 -> 2222222" {
+		t.Errorf("subject = %q", subj)
+	}
+	assertCleanTree(t, dir)
+}
+
 func TestWorkspaceAliasesFromLock(t *testing.T) {
 	lock := &Lock{Edges: []LockEdge{
 		{Consumer: "app", Alias: "zlib", Target: "lib"},

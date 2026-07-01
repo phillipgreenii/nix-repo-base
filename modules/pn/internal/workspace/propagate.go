@@ -175,7 +175,20 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 		return fmt.Errorf("git add %s: %w", lockRel, err)
 	}
 	msg := bumpCommitMessage(changed, before, after)
-	if _, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "commit", "-m", msg}, exec.RunOptions{}); err != nil {
+	// PREK_ALLOW_NO_CONFIG lets the commit succeed when the repo's prek pre-commit
+	// hook (installed in the CANONICAL gitdir and SHARED into this ephemeral
+	// worktree) fires but the worktree has no .pre-commit-config.yaml. That config
+	// is a gitignored dev-shell symlink present only in the canonical checkout, so a
+	// fresh `git worktree add` lacks it and prek aborts every commit with
+	// "config file not found" (tc-1zbpk). The env var no-ops prek only in the
+	// no-config case — hooks still run normally when a config IS present, so this
+	// does not disable enforcement (unlike --no-verify). Stdout/Stderr are wired so
+	// a real commit failure surfaces in the run log instead of being swallowed.
+	if _, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "commit", "-m", msg}, exec.RunOptions{
+		Env:    map[string]string{"PREK_ALLOW_NO_CONFIG": "1"},
+		Stdout: out,
+		Stderr: out,
+	}); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}
 	fmt.Fprintf(out, "  → %s: bumped workspace input(s): %v\n", name, changed)
