@@ -46,67 +46,75 @@ rec {
       # mkGoApp; pn passes it.
       gomod2nixToml,
       modRoot ? null,
+      # Optional list of Go package import paths to build (buildGoApplication's
+      # `subPackages`). Defaults to null → build every `main` in the module (the
+      # historical behavior). Set it to pin the derivation's bin/ to specific
+      # entrypoints when the module carries more than one `cmd/*` main.
+      subPackages ? null,
     }:
     # Delegate to mkGoApp for the per-source version + gomod2nix build; this
     # opinionated wrapper only layers on the man-page / completion postInstall.
-    mkGoApp {
-      pname = name;
-      inherit
-        src
-        versionPath
-        gomod2nixToml
-        modRoot
-        ;
-      nativeBuildInputs = (lib.optional manPage pkgs.help2man) ++ [ pkgs.makeWrapper ];
-      nativeCheckInputs = testDeps;
-      postInstall = ''
-        _try() {
-          local label="$1"; shift
-          local errfile
-          errfile=$(mktemp)
-          if ! "$@" 2> "$errfile"; then
-            echo "WARN: $label failed:" >&2
-            cat "$errfile" >&2
+    mkGoApp (
+      {
+        pname = name;
+        inherit
+          src
+          versionPath
+          gomod2nixToml
+          modRoot
+          ;
+        nativeBuildInputs = (lib.optional manPage pkgs.help2man) ++ [ pkgs.makeWrapper ];
+        nativeCheckInputs = testDeps;
+        postInstall = ''
+          _try() {
+            local label="$1"; shift
+            local errfile
+            errfile=$(mktemp)
+            if ! "$@" 2> "$errfile"; then
+              echo "WARN: $label failed:" >&2
+              cat "$errfile" >&2
+              rm -f "$errfile"
+              return 1
+            fi
             rm -f "$errfile"
-            return 1
-          fi
-          rm -f "$errfile"
-          return 0
-        }
-        ${lib.optionalString manPage ''
-          mkdir -p $out/share/man/man1
-          _try "${name} help2man" \
-            help2man --no-info --no-discard-stderr \
-              --name="${description}" \
-              --output=$out/share/man/man1/${name}.1 \
-              $out/bin/${name} \
-            || rm -f $out/share/man/man1/${name}.1
-        ''}
-        ${lib.optionalString completions.bash ''
-          mkdir -p $out/share/bash-completion/completions
-          _try "${name} completion bash" \
-            sh -c "$out/bin/${name} completion bash > $out/share/bash-completion/completions/${name}" \
-            || rm -f $out/share/bash-completion/completions/${name}
-        ''}
-        ${lib.optionalString completions.zsh ''
-          mkdir -p $out/share/zsh/site-functions
-          _try "${name} completion zsh" \
-            sh -c "$out/bin/${name} completion zsh > $out/share/zsh/site-functions/_${name}" \
-            || rm -f $out/share/zsh/site-functions/_${name}
-        ''}
-        ${lib.optionalString completions.fish ''
-          mkdir -p $out/share/fish/vendor_completions.d
-          _try "${name} completion fish" \
-            sh -c "$out/bin/${name} completion fish > $out/share/fish/vendor_completions.d/${name}.fish" \
-            || rm -f $out/share/fish/vendor_completions.d/${name}.fish
-        ''}
-        ${lib.optionalString (runtimeDeps != [ ]) ''
-          wrapProgram $out/bin/${name} --suffix PATH : ${lib.makeBinPath runtimeDeps}
-        ''}
-        ${extraPostInstall}
-      '';
-      meta = { inherit description; };
-    };
+            return 0
+          }
+          ${lib.optionalString manPage ''
+            mkdir -p $out/share/man/man1
+            _try "${name} help2man" \
+              help2man --no-info --no-discard-stderr \
+                --name="${description}" \
+                --output=$out/share/man/man1/${name}.1 \
+                $out/bin/${name} \
+              || rm -f $out/share/man/man1/${name}.1
+          ''}
+          ${lib.optionalString completions.bash ''
+            mkdir -p $out/share/bash-completion/completions
+            _try "${name} completion bash" \
+              sh -c "$out/bin/${name} completion bash > $out/share/bash-completion/completions/${name}" \
+              || rm -f $out/share/bash-completion/completions/${name}
+          ''}
+          ${lib.optionalString completions.zsh ''
+            mkdir -p $out/share/zsh/site-functions
+            _try "${name} completion zsh" \
+              sh -c "$out/bin/${name} completion zsh > $out/share/zsh/site-functions/_${name}" \
+              || rm -f $out/share/zsh/site-functions/_${name}
+          ''}
+          ${lib.optionalString completions.fish ''
+            mkdir -p $out/share/fish/vendor_completions.d
+            _try "${name} completion fish" \
+              sh -c "$out/bin/${name} completion fish > $out/share/fish/vendor_completions.d/${name}.fish" \
+              || rm -f $out/share/fish/vendor_completions.d/${name}.fish
+          ''}
+          ${lib.optionalString (runtimeDeps != [ ]) ''
+            wrapProgram $out/bin/${name} --suffix PATH : ${lib.makeBinPath runtimeDeps}
+          ''}
+          ${extraPostInstall}
+        '';
+        meta = { inherit description; };
+      }
+      // lib.optionalAttrs (subPackages != null) { inherit subPackages; }
+    );
 
   # mkGoApp — build a Go application via gomod2nix (buildGoApplication), keyed to
   # its OWN source rather than the whole flake. Unlike mkGoBinary (opinionated:

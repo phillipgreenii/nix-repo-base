@@ -12,6 +12,12 @@ goBuilders.mkGoBinary {
   src = ./.;
   description = "pn-workspace multi-repo Nix workflow tool";
   gomod2nixToml = ./gomod2nix.toml;
+  # Build ONLY the pn entrypoint. The module now also carries
+  # cmd/pn-workspace-toml-enforce (a separate tiny binary built by
+  # ./enforce-toml.nix); without this, buildGoApplication would build every
+  # cmd/* main and this package would ship the enforcer too. Pinning keeps the
+  # pn derivation's bin/ to just `pn` (and its man page / completions).
+  subPackages = [ "cmd/pn" ];
   runtimeDeps = [
     pkgs.nix
     pkgs.git

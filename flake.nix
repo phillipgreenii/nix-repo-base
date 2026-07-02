@@ -93,6 +93,13 @@
             # pn Go binary (single tool replacing the former pn-* bash scripts).
             pn = pkgs.callPackage ./modules/pn { inherit self; };
 
+            # pn-workspace-toml-enforce: a separate, internal entrypoint in the
+            # same Go module as pn. It reuses internal/workspace serialization to
+            # enforce the two nix-owned pn-workspace.toml keys ([workspace].id +
+            # [hooks.apply].post). Consumed by phillipg-nix-ziprecruiter's
+            # pn-workspace-toml home-manager activation. See docs/adr/0017.
+            pn-workspace-toml-enforce = pkgs.callPackage ./modules/pn/enforce-toml.nix { inherit self; };
+
             # jira Go binary (generic Atlassian Jira access tool).
             jira = pkgs.callPackage ./modules/jira { inherit self; };
 
@@ -308,7 +315,11 @@
         # through _module.args. Mirrors overlays.default in the overlay /
         # support-apps flakes. Add future base packages here.
         overlays.default = final: _prev: {
-          inherit (self.packages.${final.stdenv.hostPlatform.system}) pn jira;
+          inherit (self.packages.${final.stdenv.hostPlatform.system})
+            pn
+            pn-workspace-toml-enforce
+            jira
+            ;
         };
 
         lib =
