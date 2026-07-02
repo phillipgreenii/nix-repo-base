@@ -698,9 +698,8 @@ cd <workforests_dir>/<branch>                 # cd-into-set; normal `pn workspac
 ```
 
 The set directory is itself an ordinary workspace root: it carries copies
-of `pn-workspace.toml`, `pn-workspace.lock.json`, and
-`pn-workspace.revs.json`, plus one git worktree per repo named after the
-`[repos.<key>]` map keys. Most `pn workspace` verbs (build, status, rebase,
+of `pn-workspace.toml` and `pn-workspace.lock.json`, plus one git worktree
+per repo named after the `[repos.<key>]` map keys. Most `pn workspace` verbs (build, status, rebase,
 push, format, …) "just work" inside the set. **Exception:** bare
 `pn workspace update` errors inside a set — use
 `pn workspace update --in-place` instead (relocks the set's worktrees in

@@ -10,6 +10,11 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-24-pn-workspace-update-worktree-isolation-design.md` · **ADR:** `docs/adr/0009-pn-workspace-update-worktree-isolation.md`
 
+> **Historical note (pg2-f1k1):** the `pn-workspace.revs.json` / `RevLock` rewrite in
+> the code snippets and tasks below was removed as write-only dead code in bead
+> `pg2-f1k1`. The implemented worktree-isolation flow is otherwise as described;
+> `revs.json`/`RevLock` references here are retained for historical accuracy.
+
 **Working dir for all paths below:** `phillipg-nix-repo-base/` (the repo root). Run `go` commands from `modules/pn`.
 
 ---

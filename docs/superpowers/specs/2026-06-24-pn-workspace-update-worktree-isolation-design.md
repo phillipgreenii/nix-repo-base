@@ -5,6 +5,12 @@
 **Repos affected:** `phillipg-nix-repo-base` (`modules/pn`, docs, agent-rules); audit of each consumer repo's `update-locks.sh`
 **Related:** 2026-06-16 coordinated-worktrees design (the _set_ model — explicitly NOT reused here; see "Why not the coordinated set"), ADR 0002 (pn-workspace.toml schema)
 
+> **Historical note (pg2-f1k1):** the `pn-workspace.revs.json` / `RevLock` rewrite
+> described below was removed as write-only dead code in bead `pg2-f1k1`. The
+> worktree-isolation flow is otherwise unchanged; `flake.lock` remains the source of
+> truth for the pinned remote revs. `revs.json` references here are retained for
+> historical accuracy.
+
 ## Problem
 
 `pn workspace update` runs, per repo in topological order, directly on the

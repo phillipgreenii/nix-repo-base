@@ -4,6 +4,12 @@
 **Date**: 2026-06-24
 **Deciders**: Phillip Green II
 
+> **Historical note (pg2-f1k1):** `pn-workspace.revs.json` / `RevLock`, referenced
+> descriptively below, was removed as write-only dead code in bead `pg2-f1k1`.
+> `update`/`update_worktree` no longer write it; the flake `flake.lock` remains the
+> source of truth for the pinned remote revs this ADR describes. References to
+> `revs.json` in this document are retained for historical accuracy.
+
 ## Context
 
 `pn workspace update` runs, per repo in topological order, directly on the

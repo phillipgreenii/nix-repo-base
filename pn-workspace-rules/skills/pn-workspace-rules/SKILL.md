@@ -191,8 +191,8 @@ Key points for agents:
   `phillipgreenii-*` workspace-sibling flake inputs (the `nix flake update --refresh <sibling-alias>`
   propagation pass) and **skips each repo's `update-locks.sh`**, so `nixpkgs` and other third-party
   inputs are left untouched — a diff of each repo's `flake.lock` shows only sibling inputs moved.
-  Everything else (topological order, worktree isolation, rebase/push/integrate, `revs.json`
-  rewrite) is unchanged; push between repos is what lets a consumer pick up a sibling's freshly-pushed
+  Everything else (topological order, worktree isolation, rebase/push/integrate) is unchanged; push
+  between repos is what lets a consumer pick up a sibling's freshly-pushed
   tip. This is the command to clear `pn workspace doctor`'s `flake-lock-fresh` findings without a full
   `nix flake update` (it is also exactly what `doctor --fix` now runs for those findings). Composes
   with `--in-place`. Because it never runs `update-locks.sh`, it does **not** require `UL_LIB_DIR` (no
@@ -250,7 +250,7 @@ Every config-path read in pn goes through an environment variable (with a sensib
 
 | Variable                      | Default                                             | What it controls                                                                                                                                                                 |
 | ----------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PN_WORKSPACE_ROOT`           | nearest ancestor dir containing `pn-workspace.toml` | Workspace root. All workspace files (`pn-workspace.toml`, `pn-workspace.lock.json`, `pn-workspace.revs.json`) and per-repo subdirectories are resolved relative to this root.    |
+| `PN_WORKSPACE_ROOT`           | nearest ancestor dir containing `pn-workspace.toml` | Workspace root. All workspace files (`pn-workspace.toml`, `pn-workspace.lock.json`) and per-repo subdirectories are resolved relative to this root.                              |
 | `PN_WORKSPACE_OVERRIDE_PATHS` | (empty)                                             | Comma-separated `name=path` pairs that override where pn looks for a workspace repo on disk. Used by tests and CI to inject fixture repos without modifying `pn-workspace.toml`. |
 | `XDG_STATE_HOME`              | `~/.local/state`                                    | Parent directory for the apply-cache state (`zn-self-upgrade/apply/applied-hash/`). Override in tests to isolate state from the real user state dir.                             |
 | `NO_COLOR`                    | (unset)                                             | When set to any non-empty value, disables ANSI color codes in `pn workspace tree` output.                                                                                        |
@@ -277,7 +277,6 @@ A **coordinated workforest set** is a directory that acts as a complete, self-co
 <canonical_root>/.workforests/<branch>/    # location set by workforests_dir (default .workforests)
 ├── pn-workspace.toml                    # copied from canonical
 ├── pn-workspace.lock.json               # copied from canonical
-├── pn-workspace.revs.json               # copied; rewritten here by `update`
 ├── phillipg-nix-repo-base/              # git worktree @ <branch>
 ├── phillipgreenii-nix-support-apps/     # git worktree @ <branch>
 └── …                                    # one worktree per repo in the config

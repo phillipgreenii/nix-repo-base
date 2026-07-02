@@ -5,6 +5,12 @@
 **Repos affected:** `phillipg-nix-repo-base` (`modules/pn`)
 **Related:** pg2-xx4g (override build-speed — **landed**, referenced as done), pg2-sc4h (status branch/worktree reporting — sibling), pg2-dirg (add/remove individual repos to/from a set — **deferred follow-up**)
 
+> **Historical note (pg2-f1k1):** `pn-workspace.revs.json` / `RevLock`, referenced
+> below (set layout, `WriteRevLock`, and the update flow that "rewrites the set's
+> `revs.json`"), was removed as write-only dead code in bead `pg2-f1k1`. A set now
+> carries only `pn-workspace.toml` and `pn-workspace.lock.json`; `revs.json`
+> references here are retained for historical accuracy.
+
 ## Problem
 
 `pn`'s `workspace` verbs assume one working copy per repo at the fixed path

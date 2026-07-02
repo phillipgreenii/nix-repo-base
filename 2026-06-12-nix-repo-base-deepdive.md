@@ -129,11 +129,12 @@ Note: the stack hint mentions `mkPythonPackage`; no such builder exists in this 
 **Problem:** The script's bytes embed the build timestamp. Same drv built twice produces different outputs: `nix build --check` / `nix store verify` will fail, and a substituted binary's timestamp reflects whenever the cache built it, not anything about your tree. ADR 0006 explicitly accepts the timestamp byte being non-reproducible, but doesn't note the `--check`/verification breakage or that the timestamp can be actively misleading under substitution.
 **Recommendation:** Either drop the timestamp from `--version` (the digest is the identity of record anyway, per the ADR), or amend the ADR to document the `--check` consequence so it isn't rediscovered as a bug.
 
-### A7 — MEDIUM: `RevLock` is write-only — its documented purpose is unimplemented
+### A7 — RESOLVED (pg2-f1k1): `RevLock` was write-only — its documented purpose was unimplemented
 
-**Location:** `modules/pn/internal/workspace/rev_lock.go:18-20`
-**Problem:** The doc says it "drives --override-input pinning"; no override path ever reads a recorded rev. The reproducibility story the file promises doesn't exist.
-**Recommendation:** Implement rev-pinned overrides or fix the comment before something trusts it.
+**Status:** RESOLVED — `RevLock` / `pn-workspace.revs.json` was removed as write-only dead code in bead `pg2-f1k1`. If the remote-inputs / reproducible-pin `--override-input` feature is ever built, `RevLock` can be reintroduced alongside its actual consumer.
+**Location (historical):** `modules/pn/internal/workspace/rev_lock.go:18-20` (file deleted).
+**Problem (historical):** The doc said it "drives --override-input pinning"; no override path ever read a recorded rev. The reproducibility story the file promised did not exist.
+**Resolution:** Rather than implement rev-pinned overrides, the dead code was removed (write path in `update`/`update_worktree`/`worktree`, read in `Open()`, and the `revs.json` artifact).
 
 ### A8 — LOW: Legacy `self` coupling in builder factories
 

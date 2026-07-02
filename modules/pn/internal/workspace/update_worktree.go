@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,14 +85,13 @@ type repoOutcome struct {
 	failedStep string
 	worktree   string // left-behind worktree path when status != ok
 	branch     string // left-behind branch when status != ok
-	rev        string // rev to record in revs.json (ok or pushed-but-deferred)
 	note       string // recovery hint / human note
 }
 
 // updateViaWorktree runs the worktree-isolated update over all repos in
 // topological order. See ADR 0009 and the design spec for the per-repo
 // algorithm; this is the outer loop (terminal guard, UL_LIB_DIR resolve,
-// rev-lock rewrite, eventlog, summary) and updateRepoViaWorktree is the body.
+// eventlog, summary) and updateRepoViaWorktree is the body.
 func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts UpdateOptions) error {
 	if _, err := ws.requireTerminal(ctx, opts.Terminal); err != nil {
 		return err
@@ -134,21 +132,12 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		"terminal": opts.Terminal, "projects": len(names), "branch": branch,
 	})
 
-	// Seed from the existing rev-lock so untouched repos keep their entries.
-	revs := make(map[string]LockedRepo, len(names))
-	if ws.revLock != nil {
-		maps.Copy(revs, ws.revLock.Repos)
-	}
-
 	outcomes := make([]repoOutcome, 0, len(names))
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
 		}
 		oc := ws.updateRepoViaWorktree(ctx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name), opts.SiblingsOnly)
-		if oc.rev != "" {
-			revs[name] = LockedRepo{URL: displayURL(ws.config.Repos[name]), Rev: oc.rev}
-		}
 		level, outcome := "info", statusOK
 		if oc.status != statusOK {
 			level, outcome = "error", oc.status
@@ -157,10 +146,6 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 			"name": oc.name, "outcome": outcome, "failed_step": oc.failedStep, "note": oc.note,
 		})
 		outcomes = append(outcomes, oc)
-	}
-
-	if err := WriteRevLock(filepath.Join(ws.root, RevLockFileName), &RevLock{Repos: revs}); err != nil {
-		return fmt.Errorf("write rev lock: %w", err)
 	}
 
 	printUpdateSummary(out, outcomes)
@@ -266,19 +251,10 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		return fail("rebase-origin-main-2", err, "rebase conflict aborted")
 	}
 
-	// Capture the integrated tip (the rev downstream consumers relock against).
-	rev, err := captureHead(ctx, ws.runner, wt)
-	if err != nil {
-		return fail("capture-rev", err, "")
-	}
-
 	// Step 7: publish — push branch to remote main from the worktree.
 	if err := git(wt, "push", "origin", "HEAD:main"); err != nil {
 		return fail("push", err, "remote main may have advanced; resolve manually and re-run")
 	}
-	// Remote main is now at rev. Record it even if step 8 defers, so revs.json
-	// matches what downstream repos will relock against (ADR 0009 N1).
-	oc.rev = rev
 
 	// Step 8: advance local primary main (smart).
 	switch ws.primaryMainState(ctx, primary) {

@@ -92,9 +92,6 @@ url = "github:owner/dep"
 		f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", dir, "push"}, exec.Result{}, nil)
 	}
-	// captureHead for rev-lock: Update calls rev-parse HEAD for dep and leaf.
-	f.AddResponse("git", []string{"-C", dep, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
-	f.AddResponse("git", []string{"-C", leaf, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("def\n")}, nil)
 
 	// Apply sequence: daemon check only (nix fmt is now a separate pn workspace format command).
 	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)

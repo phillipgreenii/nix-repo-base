@@ -78,7 +78,6 @@ func scriptThroughPush(f *exec.FakeRunner, foo, wt, branch string) {
 	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("dead00000000000000000000000000000000beef\n")}, nil)
 	f.AddResponse("git", []string{"-C", wt, "push", "origin", "HEAD:main"}, exec.Result{}, nil)
 }
 
@@ -101,10 +100,6 @@ func TestUpdateViaWorktree_HappyPath_CleanMain(t *testing.T) {
 	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/x/lib/scripts"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
-	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
-		t.Errorf("revs.json rev = %q, want pushed tip", rl.Repos["foo"].Rev)
-	}
 }
 
 // TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir: with
@@ -125,7 +120,6 @@ func TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir(t *testing.T
 	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("dead00000000000000000000000000000000beef\n")}, nil)
 	f.AddResponse("git", []string{"-C", wt, "push", "origin", "HEAD:main"}, exec.Result{}, nil)
 	// Step 7: clean-main integration.
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
@@ -150,10 +144,6 @@ func TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir(t *testing.T
 	if calledWith(f, "nix", []string{"run", ulLibResolverRef}) {
 		t.Fatalf("--siblings-only must NOT resolve UL_LIB_DIR (update-locks never runs)")
 	}
-	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
-	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
-		t.Errorf("revs.json rev = %q, want pushed tip", rl.Repos["foo"].Rev)
-	}
 }
 
 func TestUpdateViaWorktree_PushSucceedsFfDefers(t *testing.T) {
@@ -171,10 +161,6 @@ func TestUpdateViaWorktree_PushSucceedsFfDefers(t *testing.T) {
 	err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"})
 	if err == nil {
 		t.Fatalf("expected non-nil error (deferred), got nil")
-	}
-	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
-	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
-		t.Errorf("revs.json must record pushed rev even on defer; got %q", rl.Repos["foo"].Rev)
 	}
 	for _, c := range f.Calls() {
 		if c.Name == "git" && len(c.Args) >= 3 && c.Args[2] == "worktree" && c.Args[1] == foo && slices.Contains(c.Args, "remove") {
@@ -241,10 +227,6 @@ func TestUpdateViaWorktree_DirtyMainFfFirstSucceeds(t *testing.T) {
 			t.Errorf("must not stash when the first ff succeeds; got %v", c.Args)
 		}
 	}
-	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
-	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
-		t.Errorf("revs.json rev = %q, want pushed tip", rl.Repos["foo"].Rev)
-	}
 }
 
 // TestUpdateViaWorktree_DirtyMainCollidesAutostashes: dirty primary main; the
@@ -268,10 +250,6 @@ func TestUpdateViaWorktree_DirtyMainCollidesAutostashes(t *testing.T) {
 	w, _ := Open(root, f)
 	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"}); err != nil {
 		t.Fatalf("dirty main collision should autostash and succeed; got %v", err)
-	}
-	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
-	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
-		t.Errorf("revs.json rev = %q, want pushed tip", rl.Repos["foo"].Rev)
 	}
 	// A successful autostash round-trip MUST still clean up: assert the ephemeral
 	// worktree was removed (guards a regression that reports OK but skips cleanup).
@@ -462,14 +440,13 @@ func TestUpdateViaWorktree_WorktreeAddFails(t *testing.T) {
 	}
 }
 
-// TestUpdateViaWorktree_PushFails: a failed step-6 push errors the run, records
-// NO rev for foo (rev is only set after push succeeds), and never reaches the
-// integration steps (merge --ff-only / worktree remove).
+// TestUpdateViaWorktree_PushFails: a failed step-7 push errors the run and never
+// reaches the integration steps (merge --ff-only / worktree remove).
 func TestUpdateViaWorktree_PushFails(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	// Steps 1–5 + capture-rev succeed; push fails.
+	// Steps 1–6 succeed; push fails.
 	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
@@ -477,17 +454,12 @@ func TestUpdateViaWorktree_PushFails(t *testing.T) {
 	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("dead00000000000000000000000000000000beef\n")}, nil)
 	f.AddResponse("git", []string{"-C", wt, "push", "origin", "HEAD:main"},
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
 
 	w, _ := Open(root, f)
 	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"}); err == nil {
 		t.Fatalf("expected error when push fails")
-	}
-	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
-	if _, ok := rl.Repos["foo"]; ok {
-		t.Errorf("revs.json must not record foo when push fails; got %+v", rl.Repos["foo"])
 	}
 	for _, c := range f.Calls() {
 		if c.Name == "git" && slices.Contains(c.Args, "merge") {
@@ -665,12 +637,11 @@ func TestUpdateViaWorktree_RebaseOriginMain2ConflictAborts(t *testing.T) {
 	assertLeftBehind(t, f, out.String(), foo, wt, "rebase-origin-main-2")
 }
 
-// TestUpdateViaWorktree_OtherBranchRefFfDefers: the step-7 ref-only ff
+// TestUpdateViaWorktree_OtherBranchRefFfDefers: the step-8 ref-only ff
 // (`git -C <primary> fetch . <branch>:main`, taken when main is not checked out)
-// fails → the run defers (errors). Because push (step 6) already advanced remote
-// main, the pushed rev is still recorded in revs.json, and the worktree + branch
-// are left for manual recovery. (The SUCCESS of this path is covered by
-// TestUpdateViaWorktree_OtherBranchRefFf.)
+// fails → the run defers (errors). Because push (step 7) already advanced remote
+// main, the worktree + branch are left for manual recovery. (The SUCCESS of this
+// path is covered by TestUpdateViaWorktree_OtherBranchRefFf.)
 func TestUpdateViaWorktree_OtherBranchRefFfDefers(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
@@ -683,46 +654,9 @@ func TestUpdateViaWorktree_OtherBranchRefFfDefers(t *testing.T) {
 	w, _ := Open(root, f)
 	var out bytes.Buffer
 	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
-		t.Fatalf("expected deferred error when step-7 ref-ff fails on a feature branch")
-	}
-	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
-	if rl.Repos["foo"].Rev != "dead00000000000000000000000000000000beef" {
-		t.Errorf("revs.json must record pushed rev even on ff-ref defer; got %q", rl.Repos["foo"].Rev)
+		t.Fatalf("expected deferred error when step-8 ref-ff fails on a feature branch")
 	}
 	assertLeftBehind(t, f, out.String(), foo, wt, "ff-ref")
-}
-
-// TestUpdateViaWorktree_CaptureRevFails: after the rebases succeed, capturing
-// the integrated tip (`git -C <wt> rev-parse HEAD`) fails → the run errors at
-// "capture-rev" before any push, records no rev, and leaves the worktree behind.
-func TestUpdateViaWorktree_CaptureRevFails(t *testing.T) {
-	updateRunStampFn = func() string { return "TEST" }
-	branch := "pn-update/TEST"
-	root, foo, wt, f := wtUpdateFixture(t)
-	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rev-parse", "HEAD"},
-		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
-
-	w, _ := Open(root, f)
-	var out bytes.Buffer
-	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
-		t.Fatalf("expected error when capturing the integrated rev fails")
-	}
-	rl, _ := ReadRevLock(filepath.Join(root, RevLockFileName))
-	if _, ok := rl.Repos["foo"]; ok {
-		t.Errorf("revs.json must not record foo when capture-rev fails (pre-push); got %+v", rl.Repos["foo"])
-	}
-	// push must never run if we couldn't capture the rev.
-	if calledWith(f, "git", []string{"-C", wt, "push", "origin", "HEAD:main"}) {
-		t.Errorf("push must not run after capture-rev failure")
-	}
-	assertLeftBehind(t, f, out.String(), foo, wt, "capture-rev")
 }
 
 func TestUpdateViaWorktree_RefusesInsideSet(t *testing.T) {

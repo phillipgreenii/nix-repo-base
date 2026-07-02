@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"path/filepath"
 	"strings"
 
@@ -50,9 +49,9 @@ type UpdateOptions struct {
 	// update-locks.sh, so nixpkgs and other third-party inputs are left
 	// untouched. Everything else — topological order, worktree isolation vs
 	// InPlace, pull/rebase, push (so a consumer picks up a sibling's
-	// freshly-pushed tip), and the revs.json rewrite — is unchanged. It is
-	// orthogonal to InPlace (composes with either flow). Upgrade never sets it;
-	// Recreate (an Upgrade-only marker) and SiblingsOnly are not combined.
+	// freshly-pushed tip) — is unchanged. It is orthogonal to InPlace (composes
+	// with either flow). Upgrade never sets it; Recreate (an Upgrade-only
+	// marker) and SiblingsOnly are not combined.
 	SiblingsOnly bool
 	// ULLibDir, when set, is exported as UL_LIB_DIR to each update-locks.sh so
 	// it skips its own determine-ul-lib-dir resolution. Resolve it once per run
@@ -110,11 +109,6 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 // pull marks it failed and skips update-locks and push (the working tree is
 // suspect); a failed update-locks still lets push run, since pull succeeded.
 //
-// After processing, pn-workspace.revs.json is rewritten with each
-// successfully-processed repo's current HEAD revision and canonical URL.
-// Repos that were skipped (dirty) or failed mid-step retain their previous
-// rev-lock entry if any.
-//
 // The provided context is checked between repos and between sub-steps; a
 // cancelled context aborts cleanly with the next ctx.Err() observed.
 //
@@ -133,11 +127,6 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		"terminal": opts.Terminal,
 		"projects": len(names),
 	})
-	// Start from the existing rev-lock so untouched repos keep their entries.
-	revs := make(map[string]LockedRepo, len(names))
-	if ws.revLock != nil {
-		maps.Copy(revs, ws.revLock.Repos)
-	}
 
 	var failed []string
 	for _, name := range names {
@@ -230,19 +219,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			_ = opts.Log.Emit("info", "project_result", "project updated", map[string]any{
 				"name": name, "outcome": "ok",
 			})
-			// Capture the new HEAD rev for the rev-lock.
-			rev, err := captureHead(ctx, ws.runner, repoDir)
-			if err == nil && rev != "" {
-				revs[name] = LockedRepo{
-					URL: displayURL(ws.config.Repos[name]),
-					Rev: rev,
-				}
-			}
 		}
-	}
-
-	if err := WriteRevLock(filepath.Join(ws.root, RevLockFileName), &RevLock{Repos: revs}); err != nil {
-		return fmt.Errorf("write rev lock: %w", err)
 	}
 
 	if len(failed) > 0 {

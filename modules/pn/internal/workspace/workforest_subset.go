@@ -62,20 +62,6 @@ func filterLock(lock *Lock, memberSet map[string]bool) *Lock {
 	return out
 }
 
-// filterRevLock returns a copy of rl restricted to the repos in memberSet.
-func filterRevLock(rl *RevLock, memberSet map[string]bool) *RevLock {
-	out := &RevLock{Repos: make(map[string]LockedRepo)}
-	if rl == nil {
-		return out
-	}
-	for k, v := range rl.Repos {
-		if memberSet[k] {
-			out.Repos[k] = v
-		}
-	}
-	return out
-}
-
 // excludedDepEdges returns the edges whose Consumer is a member but whose Target
 // is excluded from memberSet — i.e. workspace dependencies that the subset drops.
 func excludedDepEdges(lock *Lock, memberSet map[string]bool) []LockEdge {

@@ -9,8 +9,6 @@ package workspace
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -80,17 +78,16 @@ url = "github:owner/lib"
 	}
 }
 
-// TestUpdate_SetRootedWorkspace_RewritesSetRevs proves that when Update runs
-// against a set-rooted workspace:
-//
-//  1. All git and update-locks subprocess calls use paths INSIDE the set root
-//     (Dir == setRoot/<repo>, -C args == setRoot/<repo>).
-//  2. pn-workspace.revs.json is written INSIDE the set root (not a canonical path).
-//  3. The rev-lock contains the expected SHA captured from the set-internal repo dir.
+// TestUpdate_SetRootedWorkspace_StaysInsideSet proves that when Update runs
+// against a set-rooted workspace, all git and update-locks subprocess calls use
+// paths INSIDE the set root (Dir == setRoot/<repo>, -C args == setRoot/<repo>) —
+// no call escapes the set boundary onto a canonical checkout path.
 //
 // This mirrors TestUpdate_PullLocksPushPerRepo but roots the workspace in a
-// "set" temp dir to confirm no call escapes the set boundary.
-func TestUpdate_SetRootedWorkspace_RewritesSetRevs(t *testing.T) {
+// "set" temp dir. (Before pg2-f1k1 this test also asserted the set's
+// pn-workspace.revs.json was rewritten; RevLock was write-only dead code and has
+// been removed, so only the set-boundary claim remains.)
+func TestUpdate_SetRootedWorkspace_StaysInsideSet(t *testing.T) {
 	setRoot := t.TempDir() // simulates <workforests_dir>/<branch>
 
 	writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
@@ -110,9 +107,6 @@ url = "github:owner/app"
 	f.AddResponse("git", []string{"-C", appDir, "rev-parse", "--abbrev-ref", "@{u}"},
 		exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
-	sha := "setabc00000000000000000000000000000000000"
-	f.AddResponse("git", []string{"-C", appDir, "rev-parse", "HEAD"},
-		exec.Result{Stdout: []byte(sha + "\n")}, nil)
 
 	w, err := Open(setRoot, f)
 	if err != nil {
@@ -124,7 +118,7 @@ url = "github:owner/app"
 		t.Fatalf("Update: %v", err)
 	}
 
-	// 1. Confirm all -C args reference setRoot, not any other path.
+	// Confirm all -C args reference setRoot, not any other path.
 	for _, c := range f.Calls() {
 		for i, a := range c.Args {
 			if a == "-C" && i+1 < len(c.Args) {
@@ -140,22 +134,6 @@ url = "github:owner/app"
 				t.Errorf("update-locks.sh Dir %q is outside set root %q", c.Opts.Dir, setRoot)
 			}
 		}
-	}
-
-	// 2. pn-workspace.revs.json written INSIDE the set root.
-	revsPath := filepath.Join(setRoot, RevLockFileName)
-	lockBytes, err := os.ReadFile(revsPath)
-	if err != nil {
-		t.Fatalf("expected %s inside set root, but read failed: %v", RevLockFileName, err)
-	}
-
-	// 3. Rev-lock must carry the set-internal SHA.
-	var revLock RevLock
-	if err := json.Unmarshal(lockBytes, &revLock); err != nil {
-		t.Fatalf("parse %s: %v", RevLockFileName, err)
-	}
-	if revLock.Repos["app"].Rev != sha {
-		t.Errorf("revs.json rev = %q, want %q", revLock.Repos["app"].Rev, sha)
 	}
 }
 

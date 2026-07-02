@@ -16,20 +16,18 @@ const (
 
 // Workspace is the in-memory representation of a workspace rooted at Root.
 type Workspace struct {
-	root    string
-	config  *WorkspaceConfig
-	lock    *Lock
-	revLock *RevLock
-	runner  exec.Runner
-	pool    *exec.WorkerPool
+	root   string
+	config *WorkspaceConfig
+	lock   *Lock
+	runner exec.Runner
+	pool   *exec.WorkerPool
 	// registerChecksFn overrides the default check registry. nil in production;
 	// set only in tests to stub the re-run inside applyFixes.
 	registerChecksFn func() []check
 }
 
-// Open loads the workspace rooted at dir. Reads pn-workspace.toml (required),
-// pn-workspace.lock.json (optional, DAG ordering), and pn-workspace.revs.json
-// (optional, per-repo URL+Rev for reproducibility). Constructs a shared
+// Open loads the workspace rooted at dir. Reads pn-workspace.toml (required)
+// and pn-workspace.lock.json (optional, DAG ordering). Constructs a shared
 // WorkerPool sized to runtime.NumCPU() for per-repo subprocess fan-out;
 // callers should call Close() when finished to drain the pool.
 func Open(dir string, runner exec.Runner) (*Workspace, error) {
@@ -46,18 +44,13 @@ func Open(dir string, runner exec.Runner) (*Workspace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w (run `pn workspace lock` to regenerate)", err)
 	}
-	revLock, err := ReadRevLock(filepath.Join(dir, RevLockFileName))
-	if err != nil {
-		return nil, err
-	}
 	pool := exec.NewWorkerPool(runner, runtime.NumCPU())
 	return &Workspace{
-		root:    dir,
-		config:  cfg,
-		lock:    lock,
-		revLock: revLock,
-		runner:  runner,
-		pool:    pool,
+		root:   dir,
+		config: cfg,
+		lock:   lock,
+		runner: runner,
+		pool:   pool,
 	}, nil
 }
 
@@ -77,9 +70,6 @@ func (w *Workspace) Config() *WorkspaceConfig { return w.config }
 
 // Lock returns the parsed DAG lock state.
 func (w *Workspace) Lock() *Lock { return w.lock }
-
-// RevLock returns the parsed per-repo URL+Rev lock state.
-func (w *Workspace) RevLock() *RevLock { return w.revLock }
 
 // Runner returns the workspace's subprocess runner.
 func (w *Workspace) Runner() exec.Runner { return w.runner }

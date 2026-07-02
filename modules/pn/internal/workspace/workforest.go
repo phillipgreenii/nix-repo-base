@@ -60,8 +60,8 @@ type WorkforestPruneOptions struct{}
 
 // WorkforestAdd creates a coordinated workforest set for Branch under w.WorkforestsDir().
 // It pre-flights all checks before creating anything, then runs git worktree add
-// in each canonical repo (in deterministic order), and copies pn-workspace.toml,
-// pn-workspace.lock.json, and pn-workspace.revs.json into the set directory.
+// in each canonical repo (in deterministic order), and copies pn-workspace.toml
+// and pn-workspace.lock.json into the set directory.
 func (w *Workspace) WorkforestAdd(ctx context.Context, out io.Writer, errOut io.Writer, opts WorkforestAddOptions) error {
 	branch := opts.Branch
 	setDir := filepath.Join(w.WorkforestsDir(), branch)
@@ -107,7 +107,7 @@ func (w *Workspace) WorkforestAdd(ctx context.Context, out io.Writer, errOut io.
 		}
 	}
 
-	// --- Write the set's config/lock/revs (filtered to the member set) ---
+	// --- Write the set's config/lock (filtered to the member set) ---
 	if err := w.writeSetMembership(out, errOut, setDir, names); err != nil {
 		return err
 	}
@@ -141,12 +141,12 @@ func (w *Workspace) gitWorktreeAddOne(ctx context.Context, out io.Writer, setDir
 	return nil
 }
 
-// writeSetMembership writes the set's pn-workspace.toml, .lock.json, and (if
-// present) .revs.json, restricted to the given member repos. When members
-// covers every config repo the files are byte-identical to the canonical ones;
-// for a strict subset the config/lock/revs are filtered and a notice is written
-// to errOut naming any consumer→dep edges that fall back to canonical because
-// the dependency is excluded from the set.
+// writeSetMembership writes the set's pn-workspace.toml and .lock.json,
+// restricted to the given member repos. When members covers every config repo
+// the files are byte-identical to the canonical ones; for a strict subset the
+// config/lock are filtered and a notice is written to errOut naming any
+// consumer→dep edges that fall back to canonical because the dependency is
+// excluded from the set.
 func (w *Workspace) writeSetMembership(out io.Writer, errOut io.Writer, setDir string, names []string) error {
 	memberSet := make(map[string]bool, len(names))
 	for _, n := range names {
@@ -179,20 +179,6 @@ func (w *Workspace) writeSetMembership(out io.Writer, errOut io.Writer, setDir s
 		w.noticeExcludedDeps(errOut, memberSet)
 	}
 
-	// RevLock is optional; copy verbatim for a full set, else filter.
-	revsSrc := filepath.Join(w.Root(), RevLockFileName)
-	if fileExists(revsSrc) {
-		if isFullSet {
-			if err := copyFile(revsSrc, filepath.Join(setDir, RevLockFileName)); err != nil {
-				return fmt.Errorf("workforest add: copy %s: %w", RevLockFileName, err)
-			}
-		} else {
-			subRevs := filterRevLock(w.revLock, memberSet)
-			if err := WriteRevLock(filepath.Join(setDir, RevLockFileName), subRevs); err != nil {
-				return fmt.Errorf("workforest add: write filtered %s: %w", RevLockFileName, err)
-			}
-		}
-	}
 	return nil
 }
 
@@ -246,7 +232,7 @@ func (w *Workspace) memberRepos(ctx context.Context, requested []string) ([]stri
 // `git worktree add`: pre-flights (set exists, repo is a known workspace repo
 // in the canonical root, repo is not already a member, branch not checked out
 // elsewhere), runs `git worktree add` for the one repo on the set's branch, then
-// rewrites the set's filtered config/lock/revs to include the new member.
+// rewrites the set's filtered config/lock to include the new member.
 func (w *Workspace) WorkforestAddRepo(ctx context.Context, out io.Writer, errOut io.Writer, opts WorkforestAddRepoOptions) error {
 	branch := opts.Branch
 	repo := opts.Repo
@@ -284,7 +270,7 @@ func (w *Workspace) WorkforestAddRepo(ctx context.Context, out io.Writer, errOut
 		return err
 	}
 
-	// Recompute membership and rewrite the set's filtered config/lock/revs.
+	// Recompute membership and rewrite the set's filtered config/lock.
 	members[repo] = true
 	if err := w.rewriteSetMembership(errOut, setDir, members); err != nil {
 		return err
@@ -295,7 +281,7 @@ func (w *Workspace) WorkforestAddRepo(ctx context.Context, out io.Writer, errOut
 // WorkforestRemoveRepo removes a single workspace repo from an existing set. It
 // mirrors `git worktree remove`: pre-flights (set exists, repo is a member,
 // it is not the last member), runs `git worktree remove` (refusing dirty/locked
-// unless Force), then rewrites the set's filtered config/lock/revs to drop the
+// unless Force), then rewrites the set's filtered config/lock to drop the
 // member. Does NOT delete the branch.
 func (w *Workspace) WorkforestRemoveRepo(ctx context.Context, out io.Writer, errOut io.Writer, opts WorkforestRemoveRepoOptions) error {
 	branch := opts.Branch
@@ -334,7 +320,7 @@ func (w *Workspace) WorkforestRemoveRepo(ctx context.Context, out io.Writer, err
 		}
 	}
 
-	// Recompute membership and rewrite the set's filtered config/lock/revs.
+	// Recompute membership and rewrite the set's filtered config/lock.
 	delete(members, repo)
 	if err := w.rewriteSetMembership(errOut, setDir, members); err != nil {
 		return err
@@ -359,21 +345,16 @@ func (w *Workspace) readSetMembers(setDir string) (map[string]bool, error) {
 	return members, nil
 }
 
-// rewriteSetMembership rewrites the set's pn-workspace.toml / .lock.json /
-// .revs.json filtered to memberSet, derived from the CANONICAL config/lock/revs
-// (w is rooted at canonical). Emits the excluded-dep notice to errOut. Used by
-// add-repo / remove-repo, which always produce a subset of the canonical config.
+// rewriteSetMembership rewrites the set's pn-workspace.toml / .lock.json
+// filtered to memberSet, derived from the CANONICAL config/lock (w is rooted at
+// canonical). Emits the excluded-dep notice to errOut. Used by add-repo /
+// remove-repo, which always produce a subset of the canonical config.
 func (w *Workspace) rewriteSetMembership(errOut io.Writer, setDir string, memberSet map[string]bool) error {
 	if err := writeConfigTOMLTo(filepath.Join(setDir, ConfigFileName), filterConfig(w.config, memberSet)); err != nil {
 		return fmt.Errorf("write set %s: %w", ConfigFileName, err)
 	}
 	if err := WriteLock(filepath.Join(setDir, LockFileName), filterLock(w.lock, memberSet)); err != nil {
 		return fmt.Errorf("write set %s: %w", LockFileName, err)
-	}
-	if fileExists(filepath.Join(setDir, RevLockFileName)) || fileExists(filepath.Join(w.Root(), RevLockFileName)) {
-		if err := WriteRevLock(filepath.Join(setDir, RevLockFileName), filterRevLock(w.revLock, memberSet)); err != nil {
-			return fmt.Errorf("write set %s: %w", RevLockFileName, err)
-		}
 	}
 	w.noticeExcludedDeps(errOut, memberSet)
 	return nil
@@ -440,7 +421,7 @@ func (w *Workspace) WorkforestRemove(ctx context.Context, out io.Writer, errOut 
 		}
 	}
 
-	// Remove the now-empty set directory (still holds copied toml/lock/revs).
+	// Remove the now-empty set directory (still holds copied toml/lock).
 	if err := os.RemoveAll(setDir); err != nil {
 		return fmt.Errorf("workforest remove: delete set dir %s: %w", setDir, err)
 	}

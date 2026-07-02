@@ -645,46 +645,6 @@ url = "github:o/newrepo"
 	}
 }
 
-// TestIntegration_CanonicalURL_ParityWithRevLock (Scenario 7):
-// canonicalURL applied to a TOML config URL and to the URL stored in revs.json
-// (displayURL form) should produce identical results — they share the same
-// canonicalization logic and the same source of truth (displayURL → canonicalURL).
-// This is a pure-function assertion; no runner is needed.
-func TestIntegration_CanonicalURL_ParityWithRevLock(t *testing.T) {
-	// The config URL (toml form) and the stored display URL (from displayURL helper)
-	// should canonicalize identically.
-	pairs := []struct {
-		tomlURL    string // value in pn-workspace.toml's url field
-		displayURL string // value stored in displayURL(rc) → revs.json/lock.json remote_url
-	}{
-		{"github:phillipgreenii/nix-personal", "github:phillipgreenii/nix-personal"},
-		{"github:owner/repo", "github:owner/repo"},
-		// displayURL preserves the raw URL; both forms should normalize to same canonical.
-	}
-	for _, p := range pairs {
-		a := canonicalURL(p.tomlURL)
-		b := canonicalURL(p.displayURL)
-		if a == "" {
-			t.Errorf("canonicalURL(%q) is empty", p.tomlURL)
-		}
-		if a != b {
-			t.Errorf("canonical parity: toml %q → %q, display %q → %q",
-				p.tomlURL, a, p.displayURL, b)
-		}
-	}
-
-	// Verify that the form update.go would record in revs.json (displayURL of RepoConfig)
-	// matches the canonical form of the flake input URL a consumer would use.
-	rc := RepoConfig{URL: "github:phillipgreenii/nix-personal"}
-	storedURL := displayURL(rc)
-	flakeInputURL := "git+ssh://git@github.com/phillipgreenii/nix-personal.git"
-
-	if canonicalURL(storedURL) != canonicalURL(flakeInputURL) {
-		t.Errorf("parity failure: stored URL canonical=%q, flake input URL canonical=%q",
-			canonicalURL(storedURL), canonicalURL(flakeInputURL))
-	}
-}
-
 // TestIntegration_SingleConsumerTwoAliasesSameProducer covers the case where
 // a single consumer repo declares TWO flake inputs that both resolve to the
 // same producer repo (e.g. "foo" and "bar" both point at producer's URL).

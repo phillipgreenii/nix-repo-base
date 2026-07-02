@@ -190,7 +190,6 @@ url = "github:owner/foo"
 url = "github:owner/bar"
 `)
 	writeFile(t, filepath.Join(root, LockFileName), `{"order":[],"repos":{},"edges":[]}`)
-	writeFile(t, filepath.Join(root, RevLockFileName), `{}`)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -256,9 +255,6 @@ url = "github:owner/bar"
 	}
 	if !fileExists(filepath.Join(setDir, LockFileName)) {
 		t.Errorf("LockFileName not copied to set dir")
-	}
-	if !fileExists(filepath.Join(setDir, RevLockFileName)) {
-		t.Errorf("RevLockFileName not copied to set dir (was present in canonical)")
 	}
 }
 
@@ -671,53 +667,5 @@ func TestWorkforestList_NoWorkforestsDir(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Errorf("expected empty output when workforests_dir missing; got: %q", out.String())
-	}
-}
-
-// ============================================================
-// WorkforestAdd — revs file absent is OK (not copied, not error)
-// ============================================================
-
-func TestWorkforestAdd_NoRevsFile(t *testing.T) {
-	root, f := makeTwoRepoWorkspace(t)
-	makeFakeCanonicalRepos(t, root, "bar", "foo")
-
-	writeFile(t, filepath.Join(root, ConfigFileName), `[repos.foo]
-url = "github:owner/foo"
-[repos.bar]
-url = "github:owner/bar"
-`)
-	writeFile(t, filepath.Join(root, LockFileName), `{"order":[],"repos":{},"edges":[]}`)
-	// Deliberately do NOT write RevLockFileName.
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	barCanonical := filepath.Join(root, "bar")
-	fooCanonical := filepath.Join(root, "foo")
-	setDir := filepath.Join(w.WorkforestsDir(), "feature")
-	barSet := filepath.Join(setDir, "bar")
-	fooSet := filepath.Join(setDir, "foo")
-
-	addWorktreeListClean(f, barCanonical, "bar")
-	addWorktreeListClean(f, fooCanonical, "foo")
-	addBranchNotExists(f, barCanonical, "feature")
-	addBranchNotExists(f, fooCanonical, "feature")
-	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
-
-	var out, errOut bytes.Buffer
-	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
-		t.Fatalf("WorkforestAdd without revs file: %v", err)
-	}
-	if errOut.Len() != 0 {
-		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
-	}
-
-	// RevLock should NOT be in the set dir (was absent in canonical).
-	if fileExists(filepath.Join(setDir, RevLockFileName)) {
-		t.Errorf("RevLockFileName should not be copied when absent in canonical")
 	}
 }
