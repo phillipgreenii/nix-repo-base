@@ -16,6 +16,9 @@ type BuildOptions struct {
 	BuildCmd            string            // overrides build_command template
 	OverridePaths       map[string]string // repo key -> abs path
 	ShowNixCommandsOnly bool
+	// Builder overrides the OS-detected {builder} value (activation tool).
+	// Empty falls through to defaultBuilder().
+	Builder string
 }
 
 // Build builds the terminal flake, injecting --override-input for
@@ -26,14 +29,16 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 	if err != nil {
 		return err
 	}
-	terminalDir := filepath.Join(ws.root, terminal)
+	terminalRepoDir := filepath.Join(ws.root, terminal)
 	if td, ok := opts.OverridePaths[terminal]; ok {
-		terminalDir = td
+		terminalRepoDir = td
 	}
+	nixRel := filepath.Dir(ws.resolveFlakePath(terminal))
+	terminalNixDir := filepath.Join(terminalRepoDir, nixRel)
 
 	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{OverridePaths: opts.OverridePaths})
 
-	if err := checkFollows(terminalDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
+	if err := checkFollows(terminalNixDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
 		return err
 	}
 
@@ -41,9 +46,19 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 	if opts.BuildCmd != "" {
 		tmpl = opts.BuildCmd
 	}
-	cmdArgs := substituteCommand(tmpl, terminalDir, shortHostname())
-	if len(cmdArgs) == 0 {
-		return fmt.Errorf("build_command is empty")
+	builder := opts.Builder
+	if builder == "" {
+		builder = defaultBuilder()
+	}
+	cmdArgs, err := substituteCommand(tmpl, templateVars{
+		TerminalRepoDir:    terminalRepoDir,
+		TerminalNixDir:     terminalNixDir,
+		TerminalNixRelPath: nixRel,
+		Hostname:           shortHostname(),
+		Builder:            builder,
+	})
+	if err != nil {
+		return err
 	}
 
 	if opts.ShowNixCommandsOnly {
@@ -53,7 +68,7 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 
 	fmt.Fprintf(out, "  --== %s: building flake ==--  \n", terminal)
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
-	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out}); err != nil {
+	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalRepoDir, Stdout: out, Stderr: out}); err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
 	fmt.Fprintln(out, "Build successful. To apply, run: pn workspace apply")

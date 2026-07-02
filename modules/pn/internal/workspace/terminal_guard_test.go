@@ -69,7 +69,7 @@ url = "github:o/leaf"
 		t.Fatalf("Open: %v", err)
 	}
 	var out bytes.Buffer
-	if err := w.Build(context.Background(), &out, BuildOptions{Terminal: "leaf"}); err != nil {
+	if err := w.Build(context.Background(), &out, BuildOptions{Terminal: "leaf", Builder: "darwin-rebuild"}); err != nil {
 		t.Fatalf("Build with --terminal should succeed; got: %v", err)
 	}
 }
@@ -81,7 +81,7 @@ func TestTerminalRequired_Apply(t *testing.T) {
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
-apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}"
 
 [repos.leaf]
 url = "github:o/leaf"

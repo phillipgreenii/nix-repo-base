@@ -25,9 +25,11 @@ type WorkspaceSection struct {
 	// Terminal is the repo key of the terminal flake — the one build/apply
 	// build and activate; all others are injected as local overrides.
 	Terminal string `toml:"terminal,omitempty"`
-	// BuildCommand / ApplyCommand are command templates expanded with
-	// {terminal_flake} and {hostname}. BuildCommand defaults when empty;
-	// ApplyCommand is required by `apply`.
+	// BuildCommand / ApplyCommand are command templates expanded with the
+	// placeholders {terminal_repo_dir}, {terminal_nix_dir},
+	// {terminal_nix_relative_path}, {hostname}, and {builder} (the OS-detected
+	// activation tool). BuildCommand defaults when empty; ApplyCommand is
+	// required by `apply`. See ADR 0017.
 	BuildCommand string `toml:"build_command,omitempty"`
 	ApplyCommand string `toml:"apply_command,omitempty"`
 	// WorkforestsDir is where `pn workspace workforest` creates sets. Relative paths are
@@ -87,7 +89,7 @@ func IsKnownHookCommand(name string) bool {
 	return ok
 }
 
-const defaultBuildCommand = "darwin-rebuild build --flake {terminal_flake}"
+const defaultBuildCommand = "{builder} build --flake {terminal_nix_dir}"
 
 // TerminalRepo returns the configured terminal repo key, or an error if unset.
 func (c *WorkspaceConfig) TerminalRepo() (string, error) {
@@ -201,6 +203,20 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 	if cfg.Workspace.Terminal != "" {
 		if _, ok := cfg.Repos[cfg.Workspace.Terminal]; !ok {
 			return nil, fmt.Errorf("workspace.terminal %q is not a declared repo", cfg.Workspace.Terminal)
+		}
+	}
+	// Validate build_command / apply_command placeholders at parse time so a
+	// stale {terminal_flake} (or any typo) fails at config-load instead of only
+	// at build/apply. Static NAME check only — {builder} emptiness is
+	// host-dependent and stays a run-time guard (see substituteCommand).
+	if bc := cfg.Workspace.BuildCommand; bc != "" {
+		if err := validateCommandPlaceholders("workspace.build_command", bc); err != nil {
+			return nil, err
+		}
+	}
+	if ac := cfg.Workspace.ApplyCommand; ac != "" {
+		if err := validateCommandPlaceholders("workspace.apply_command", ac); err != nil {
+			return nil, err
 		}
 	}
 	// Validate hook command names.

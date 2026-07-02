@@ -96,6 +96,38 @@ pre = ["foo"]
 	}
 }
 
+func TestParseConfig_RejectsUnknownPlaceholder(t *testing.T) {
+	// A stale {terminal_flake} (or any typo) in build_command/apply_command must
+	// fail at config-load, not silently at build/apply time.
+	badBuild := `[workspace]
+build_command = "nixos-rebuild build --flake {terminal_flake}"
+`
+	if _, err := ParseConfig([]byte(badBuild)); err == nil {
+		t.Fatal("expected error for unknown build_command placeholder; got nil")
+	} else if !strings.Contains(err.Error(), "terminal_flake") {
+		t.Errorf("error should name the bad placeholder; got %q", err.Error())
+	}
+
+	badApply := `[workspace]
+apply_command = "sudo {builder} switch --flake {bogus}"
+`
+	if _, err := ParseConfig([]byte(badApply)); err == nil {
+		t.Fatal("expected error for unknown apply_command placeholder; got nil")
+	} else if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("error should name the bad placeholder; got %q", err.Error())
+	}
+
+	// Known placeholders — plus a legitimate lowercase ${shellvar} the $-aware
+	// scan must not mistake for a placeholder — parse cleanly.
+	good := `[workspace]
+apply_command = "sudo {builder} switch --flake {terminal_nix_dir}#{hostname}"
+build_command = "sh -c 'echo ${home}; {builder} build --flake {terminal_repo_dir}/{terminal_nix_relative_path}'"
+`
+	if _, err := ParseConfig([]byte(good)); err != nil {
+		t.Fatalf("valid placeholders should parse cleanly, got %v", err)
+	}
+}
+
 func TestParseConfig_RejectsMissingURLAndRemotes(t *testing.T) {
 	bad := `[repos.foo]
 branch = "main"
@@ -155,8 +187,8 @@ func TestParseConfig_WorkspaceCommands(t *testing.T) {
 	cfg, err := ParseConfig([]byte(`
 [workspace]
 terminal = "leaf"
-build_command = "darwin-rebuild build --flake {terminal_flake}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+build_command = "darwin-rebuild build --flake {terminal_nix_dir}"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 
 [repos.leaf]
 url = "github:owner/leaf"
@@ -171,11 +203,11 @@ url = "github:owner/dep"
 	if err != nil || term != "leaf" {
 		t.Fatalf("TerminalRepo: got %q, %v", term, err)
 	}
-	if got := cfg.BuildCommandTemplate(); got != "darwin-rebuild build --flake {terminal_flake}" {
+	if got := cfg.BuildCommandTemplate(); got != "darwin-rebuild build --flake {terminal_nix_dir}" {
 		t.Errorf("BuildCommandTemplate: got %q", got)
 	}
 	ac, err := cfg.ApplyCommandTemplate()
-	if err != nil || ac != "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}" {
+	if err != nil || ac != "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}" {
 		t.Errorf("ApplyCommandTemplate: got %q, %v", ac, err)
 	}
 }
@@ -200,7 +232,7 @@ url = "github:owner/leaf"
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := cfg.BuildCommandTemplate(); got != "darwin-rebuild build --flake {terminal_flake}" {
+	if got := cfg.BuildCommandTemplate(); got != "{builder} build --flake {terminal_nix_dir}" {
 		t.Errorf("default build command: got %q", got)
 	}
 	if _, err := cfg.TerminalRepo(); err == nil {

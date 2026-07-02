@@ -61,7 +61,7 @@ func TestUpgrade_RunsUpdateThenApply(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
 terminal = "leaf"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 
 [repos.leaf]
 url = "github:owner/leaf"

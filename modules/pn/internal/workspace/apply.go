@@ -19,6 +19,9 @@ type ApplyOptions struct {
 	OverridePaths       map[string]string // repo key -> abs path
 	ShowNixCommandsOnly bool
 	Force               bool // always rebuild (bypass the skip gate)
+	// Builder overrides the OS-detected {builder} value (activation tool).
+	// Empty falls through to defaultBuilder().
+	Builder string
 }
 
 // Apply activates the terminal flake, injecting --override-input for
@@ -31,14 +34,16 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	if err != nil {
 		return err
 	}
-	terminalDir := filepath.Join(ws.root, terminal)
+	terminalRepoDir := filepath.Join(ws.root, terminal)
 	if td, ok := opts.OverridePaths[terminal]; ok {
-		terminalDir = td
+		terminalRepoDir = td
 	}
+	nixRel := filepath.Dir(ws.resolveFlakePath(terminal))
+	terminalNixDir := filepath.Join(terminalRepoDir, nixRel)
 
 	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{OverridePaths: opts.OverridePaths})
 
-	if err := checkFollows(terminalDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
+	if err := checkFollows(terminalNixDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
 		return err
 	}
 
@@ -49,9 +54,19 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 			return err
 		}
 	}
-	cmdArgs := substituteCommand(tmpl, terminalDir, shortHostname())
-	if len(cmdArgs) == 0 {
-		return fmt.Errorf("apply_command is empty")
+	builder := opts.Builder
+	if builder == "" {
+		builder = defaultBuilder()
+	}
+	cmdArgs, err := substituteCommand(tmpl, templateVars{
+		TerminalRepoDir:    terminalRepoDir,
+		TerminalNixDir:     terminalNixDir,
+		TerminalNixRelPath: nixRel,
+		Hostname:           shortHostname(),
+		Builder:            builder,
+	})
+	if err != nil {
+		return err
 	}
 
 	if opts.ShowNixCommandsOnly {
@@ -85,7 +100,7 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	oldGitID := ws.gitBinaryID(ctx)
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
 	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{
-		Dir:    terminalDir,
+		Dir:    terminalRepoDir,
 		Stdout: out,
 		Stderr: out,
 	}); err != nil {
@@ -94,7 +109,7 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	newProfile := readSystemProfile()
 	if oldProfile != newProfile && newProfile != "" && commandExists("nvd") {
 		fmt.Fprintln(out, "  --== Package changes ==--  ")
-		_, _ = ws.runner.Run(ctx, "nvd", []string{"diff", oldProfile, newProfile}, exec.RunOptions{Dir: terminalDir, Stdout: out, Stderr: out})
+		_, _ = ws.runner.Run(ctx, "nvd", []string{"diff", oldProfile, newProfile}, exec.RunOptions{Dir: terminalRepoDir, Stdout: out, Stderr: out})
 	}
 
 	// If this apply installed a new git, the running `git fsmonitor--daemon`

@@ -14,7 +14,7 @@ import (
 const applyTOML = `
 [workspace]
 terminal = "leaf"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 
 [repos.leaf]
 url = "github:owner/leaf"
@@ -112,7 +112,7 @@ func applyTestRunner(t *testing.T, root string) (*exec.FakeRunner, string) {
 const applySingleRepoTOML = `
 [workspace]
 terminal = "leaf"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 
 [repos.leaf]
 url = "github:owner/leaf"
