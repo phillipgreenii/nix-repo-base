@@ -26,9 +26,20 @@ in
       '';
     };
     extraHooks = lib.mkOption {
-      type = lib.types.attrsOf lib.types.anything;
+      type = lib.types.either (lib.types.attrsOf lib.types.anything) (
+        lib.types.functionTo (lib.types.attrsOf lib.types.anything)
+      );
       default = { };
-      description = "Additional hooks merged into the standard set.";
+      description = ''
+        Additional hooks merged into the standard set. Accepts either an
+        attrset of hooks, or a function `pkgs -> attrset` that is applied with
+        the per-system `pkgs` inside this module's `perSystem`. The function
+        form lets hook `entry` store paths (e.g. host-native `go` /
+        `golangci-lint`) follow the building/committing system instead of a
+        single statically pinned system — so the committing machine can build
+        the hook tooling for its own platform. See phillipgreenii-nix-agent-support
+        for a function-form example.
+      '';
     };
     excludes = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -103,6 +114,14 @@ in
         exit $rc
       '';
 
+      # Resolve the function-or-attrset extraHooks against the per-system pkgs so
+      # a function-form definition (pkgs -> hooks) picks up the building system's
+      # tooling. An attrset-form definition passes through unchanged.
+      resolvedExtraHooks =
+        if lib.isFunction topLevelCfg.extraHooks then
+          topLevelCfg.extraHooks pkgs
+        else
+          topLevelCfg.extraHooks;
       preCommit = producerInputs.git-hooks.lib.${system}.run {
         # `excludes` becomes a top-level pre-commit `exclude` regex applied to
         # every hook (git-hooks modules/pre-commit.nix). Single source of truth
@@ -157,7 +176,7 @@ in
             require_serial = true;
           };
         }
-        // topLevelCfg.extraHooks;
+        // resolvedExtraHooks;
       };
 
       # ADR 0016: the git-hooks.nix-generated `.pre-commit-config.yaml` is a
