@@ -12,8 +12,10 @@ import (
 
 func TestCheckLock_MissingIsWarning(t *testing.T) {
 	root := t.TempDir()
-	ws := &Workspace{root: root, runner: exec.NewFakeRunner(),
-		config: &WorkspaceConfig{Repos: map[string]RepoConfig{}}, lock: emptyLock()}
+	ws := &Workspace{
+		root: root, runner: exec.NewFakeRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{}}, lock: emptyLock(),
+	}
 	env := &doctorEnv{ws: ws, mode: "primary", lock: emptyLock()}
 	fs := ws.checkLock(context.Background(), env)
 	if !hasFinding(fs, "lock-present", SevWarning) {
@@ -30,8 +32,10 @@ func TestCheckLock_LegacyIsWarning(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, LockFileName), []byte(`{"order":[],"repos":{},"edges":[]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ws := &Workspace{root: root, runner: exec.NewFakeRunner(),
-		config: &WorkspaceConfig{Repos: map[string]RepoConfig{}}, lock: emptyLock()}
+	ws := &Workspace{
+		root: root, runner: exec.NewFakeRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{}}, lock: emptyLock(),
+	}
 	env := &doctorEnv{ws: ws, mode: "primary", lock: emptyLock()}
 	fs := ws.checkLock(context.Background(), env)
 	if !hasFinding(fs, "lock-legacy", SevWarning) {

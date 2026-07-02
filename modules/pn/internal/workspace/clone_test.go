@@ -37,11 +37,15 @@ url = "github:owner/missing-b"
 `)
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"clone", "--branch", "main",
-		"https://github.com/owner/missing-a.git", filepath.Join(root, "missing-a")},
+	f.AddResponse("git", []string{
+		"clone", "--branch", "main",
+		"https://github.com/owner/missing-a.git", filepath.Join(root, "missing-a"),
+	},
 		exec.Result{}, nil)
-	f.AddResponse("git", []string{"clone", "--branch", "main",
-		"https://github.com/owner/missing-b.git", filepath.Join(root, "missing-b")},
+	f.AddResponse("git", []string{
+		"clone", "--branch", "main",
+		"https://github.com/owner/missing-b.git", filepath.Join(root, "missing-b"),
+	},
 		exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -120,8 +124,10 @@ url = "github:owner/foo"
 
 	f := exec.NewFakeRunner()
 	cloneErr := &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}}
-	f.AddResponse("git", []string{"clone", "--branch", "main",
-		"https://github.com/owner/foo.git", filepath.Join(root, "foo")},
+	f.AddResponse("git", []string{
+		"clone", "--branch", "main",
+		"https://github.com/owner/foo.git", filepath.Join(root, "foo"),
+	},
 		exec.Result{ExitCode: 128}, cloneErr)
 
 	w, err := Open(root, f)
@@ -163,16 +169,22 @@ url = "https://upstream.host/upstream/myrepo.git"
 
 	f := exec.NewFakeRunner()
 	// Clone from origin.
-	f.AddResponse("git", []string{"clone", "--branch", "main",
-		"https://origin.host/owner/myrepo.git", repoDir},
+	f.AddResponse("git", []string{
+		"clone", "--branch", "main",
+		"https://origin.host/owner/myrepo.git", repoDir,
+	},
 		exec.Result{}, nil)
 	// Add fork remote.
-	f.AddResponse("git", []string{"-C", repoDir, "remote", "add", "fork",
-		"https://fork.host/me/myrepo.git"},
+	f.AddResponse("git", []string{
+		"-C", repoDir, "remote", "add", "fork",
+		"https://fork.host/me/myrepo.git",
+	},
 		exec.Result{}, nil)
 	// Add upstream remote.
-	f.AddResponse("git", []string{"-C", repoDir, "remote", "add", "upstream",
-		"https://upstream.host/upstream/myrepo.git"},
+	f.AddResponse("git", []string{
+		"-C", repoDir, "remote", "add", "upstream",
+		"https://upstream.host/upstream/myrepo.git",
+	},
 		exec.Result{}, nil)
 
 	w, err := Open(root, f)

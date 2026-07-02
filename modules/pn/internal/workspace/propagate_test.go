@@ -324,7 +324,8 @@ func TestPropagate_CommitsUnderMissingConfigPreCommitHook(t *testing.T) {
 			"if [ -z \"$PREK_ALLOW_NO_CONFIG\" ]; then\n"+
 			"  echo 'config file not found: .pre-commit-config.yaml' >&2\n"+
 			"  exit 1\n"+
-			"fi\n"), 0o755); err != nil {
+			"fi\n",
+	), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {

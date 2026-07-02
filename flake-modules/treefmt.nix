@@ -16,6 +16,16 @@ producerInputs:
       # behaviour with zero per-repo config. Definitions concatenate (extendable).
       settings.global.excludes = [ "_sources/*" ];
       programs = {
+        # gofumpt is a strict superset of gofmt (stricter formatting rules).
+        # treefmt-nix's programs.gofumpt module runs `gofumpt -w` on `*.go`
+        # (excluding `vendor/*`), matching the batteries-included idiom used by
+        # the other formatters here. Enabling it makes `nix flake check`
+        # (checks.treefmt, treefmt-nix's --fail-on-change gate) fail on
+        # unformatted Go across every module.
+        gofumpt = {
+          enable = true;
+          package = pkgs.gofumpt;
+        };
         nixfmt = {
           enable = true;
           package = pkgs.nixfmt;

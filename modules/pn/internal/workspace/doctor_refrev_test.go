@@ -11,8 +11,10 @@ import (
 
 func newWS(t *testing.T, root string, repos map[string]RepoConfig) *Workspace {
 	t.Helper()
-	return &Workspace{root: root, runner: exec.NewRealRunner(),
-		config: &WorkspaceConfig{Repos: repos}}
+	return &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: repos},
+	}
 }
 
 func TestResolveRefRevs_PrimaryUsesRemote(t *testing.T) {

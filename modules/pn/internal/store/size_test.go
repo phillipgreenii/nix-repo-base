@@ -54,7 +54,8 @@ const fullDiskutilInfo = `   Device Identifier:         disk3s7
 func TestStoreSize_ParsesDiskutilBytes(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("df", []string{"/nix/store"}, exec.Result{Stdout: []byte(
-		"Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/disk3s7 1 1 1 1% /nix/store\n")}, nil)
+		"Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/disk3s7 1 1 1 1% /nix/store\n",
+	)}, nil)
 	f.AddResponse("diskutil", []string{"info", "/dev/disk3s7"}, exec.Result{Stdout: []byte(fullDiskutilInfo)}, nil)
 	// Must report Volume Used Space (63.1 GiB), NOT Disk Size / Container Total
 	// (460.4 GiB), which is the first "(NNN Bytes)" match in the full output.
@@ -82,9 +83,11 @@ func TestProfileClosureSize_UnknownOnError(t *testing.T) {
 func TestRuntimeRootsSummary_LsofOnly(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("nix-store", []string{"--gc", "--print-roots"}, exec.Result{Stdout: []byte(
-		"{lsof} -> /nix/store/aaa-pkg\n/some/file -> /nix/store/bbb-pkg\n")}, nil)
+		"{lsof} -> /nix/store/aaa-pkg\n/some/file -> /nix/store/bbb-pkg\n",
+	)}, nil)
 	f.AddResponse("nix", []string{"path-info", "-S", "/nix/store/aaa-pkg"}, exec.Result{Stdout: []byte(
-		"/nix/store/aaa-pkg 1048576\n")}, nil)
+		"/nix/store/aaa-pkg 1048576\n",
+	)}, nil)
 	got := runtimeRootsSummary(context.Background(), f)
 	// 1048576 bytes = 1.0 MiB; one lsof-only path → singular "path"
 	want := "1 store path held only by running processes (up to 1.0 MiB reclaimable)\n" +

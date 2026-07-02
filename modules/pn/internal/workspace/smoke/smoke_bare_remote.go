@@ -87,7 +87,8 @@ func gitCmd(t *testing.T, dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	// Use a minimal but functional env for git setup commands (no GIT_CONFIG_GLOBAL
 	// override since we need the user config to set name/email via git config).
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"GIT_AUTHOR_NAME=smoke",
 		"GIT_AUTHOR_EMAIL=smoke@test.invalid",
 		"GIT_COMMITTER_NAME=smoke",

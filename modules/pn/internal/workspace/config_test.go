@@ -395,9 +395,9 @@ url = "github:o/foo"
 // configured value when set, and the default ".workforests" when empty.
 func TestWorkspaceConfig_WorkforestsDirName(t *testing.T) {
 	tests := []struct {
-		name      string
+		name       string
 		configured string
-		want      string
+		want       string
 	}{
 		{"empty returns default", "", ".workforests"},
 		{"custom value returned", "sets", "sets"},

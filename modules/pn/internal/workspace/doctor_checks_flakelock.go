@@ -42,8 +42,10 @@ func (ws *Workspace) checkFlakeLockFresh(ctx context.Context, env *doctorEnv) []
 				continue
 			}
 			if env.skipped[target] {
-				fs = append(fs, Finding{CheckID: "flake-lock-fresh", Repo: consumer, Severity: SevError,
-					Skipped: true, Message: fmt.Sprintf("freshness of input %q skipped (remote of %q unresolved)", alias, target)})
+				fs = append(fs, Finding{
+					CheckID: "flake-lock-fresh", Repo: consumer, Severity: SevError,
+					Skipped: true, Message: fmt.Sprintf("freshness of input %q skipped (remote of %q unresolved)", alias, target),
+				})
 				continue
 			}
 			want := env.refRev[target]

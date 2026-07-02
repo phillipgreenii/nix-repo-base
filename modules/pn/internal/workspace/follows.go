@@ -73,7 +73,8 @@ func checkFollows(terminalDir string, inputNames []string) error {
 			if _, isString := asString(ref); isString {
 				problems = append(problems, fmt.Sprintf(
 					"workspace input %q does not follow %q\n  Fix: add to flake.nix: inputs.%s.inputs.%s.follows = %q",
-					name, other, name, other, other))
+					name, other, name, other, other,
+				))
 			}
 		}
 	}

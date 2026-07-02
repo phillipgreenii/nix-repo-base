@@ -9,7 +9,6 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-
 const (
 	// ConfigFileName is the workspace TOML filename at the workspace root.
 	ConfigFileName = "pn-workspace.toml"

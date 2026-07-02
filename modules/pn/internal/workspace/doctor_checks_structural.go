@@ -21,17 +21,17 @@ func (ws *Workspace) checkLock(ctx context.Context, env *doctorEnv) []Finding {
 	if !fileExists(lockPath) {
 		fs = append(fs, Finding{
 			CheckID: "lock-present", Severity: SevWarning,
-			Message:  "pn-workspace.lock.json is absent (the DAG is derived dynamically)",
-			Fixable:  true,
-			fix:      func(c context.Context) error { return ws.WriteDerivedLock(c, ws.root) },
+			Message: "pn-workspace.lock.json is absent (the DAG is derived dynamically)",
+			Fixable: true,
+			fix:     func(c context.Context) error { return ws.WriteDerivedLock(c, ws.root) },
 		})
 	}
 	if fileExists(filepath.Join(ws.root, LockFileNameLegacy)) {
 		fs = append(fs, Finding{
 			CheckID: "lock-legacy", Severity: SevWarning,
-			Message:  "legacy pn-workspace.lock present; superseded by pn-workspace.lock.json",
-			Fixable:  true,
-			fix:      func(c context.Context) error { return ws.WriteDerivedLock(c, ws.root) },
+			Message: "legacy pn-workspace.lock present; superseded by pn-workspace.lock.json",
+			Fixable: true,
+			fix:     func(c context.Context) error { return ws.WriteDerivedLock(c, ws.root) },
 		})
 	}
 
@@ -42,9 +42,9 @@ func (ws *Workspace) checkLock(ctx context.Context, env *doctorEnv) []Finding {
 			if !reflect.DeepEqual(ws.lock.Edges, fresh.Edges) || !reflect.DeepEqual(ws.lock.Order, fresh.Order) {
 				fs = append(fs, Finding{
 					CheckID: "lock-current", Severity: SevError,
-					Message:  "pn-workspace.lock.json is stale (edges/order differ from a fresh derive) and is consumed as-is",
-					Fixable:  true,
-					fix:      func(c context.Context) error { return ws.WriteDerivedLock(c, ws.root) },
+					Message: "pn-workspace.lock.json is stale (edges/order differ from a fresh derive) and is consumed as-is",
+					Fixable: true,
+					fix:     func(c context.Context) error { return ws.WriteDerivedLock(c, ws.root) },
 				})
 			}
 		}

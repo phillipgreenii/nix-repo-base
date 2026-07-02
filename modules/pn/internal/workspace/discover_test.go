@@ -14,7 +14,8 @@ func newTestWorkspace(t *testing.T, configToml string, perRepo map[string]struct
 	flakeInputs string // raw JSON; empty -> nix eval not scripted (FakeRunner returns err)
 	gitRemotes  string // raw `git remote -v` output; empty -> no remotes
 	createFlake bool   // whether to create flake.nix on disk (gates the inputs lookup)
-}) *Workspace {
+},
+) *Workspace {
 	t.Helper()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), configToml)

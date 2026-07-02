@@ -460,9 +460,7 @@ func workspaceInfoCmd(_ *string) *cobra.Command {
 }
 
 func workspaceDoctorCmd(terminal *string) *cobra.Command {
-	var (
-		fix, dryRun, offline, jsonOut, strict bool
-	)
+	var fix, dryRun, offline, jsonOut, strict bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Audit (and optionally repair) workspace drift",

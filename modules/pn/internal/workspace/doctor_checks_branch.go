@@ -59,14 +59,18 @@ func (ws *Workspace) checkBranches(ctx context.Context, env *doctorEnv) []Findin
 		// branch-synced (primary only)
 		if env.mode == "primary" {
 			if env.skipped[name] {
-				fs = append(fs, Finding{CheckID: "branch-synced", Repo: name, Severity: SevError,
-					Skipped: true, Message: "remote comparison skipped"})
+				fs = append(fs, Finding{
+					CheckID: "branch-synced", Repo: name, Severity: SevError,
+					Skipped: true, Message: "remote comparison skipped",
+				})
 				continue
 			}
 			ref := env.refRev[name]
 			if ref == "" {
-				fs = append(fs, Finding{CheckID: "branch-synced", Repo: name, Severity: SevError,
-					Skipped: true, Message: "remote rev unresolved (no upstream?)"})
+				fs = append(fs, Finding{
+					CheckID: "branch-synced", Repo: name, Severity: SevError,
+					Skipped: true, Message: "remote rev unresolved (no upstream?)",
+				})
 				continue
 			}
 			local, err := captureHead(ctx, ws.runner, dir)
@@ -138,8 +142,10 @@ func (ws *Workspace) checkBranchUniform(ctx context.Context, present map[string]
 		setName := filepath.Base(ws.root)
 		for _, b := range branches {
 			if b != setName && b != "(detached)" {
-				return []Finding{{CheckID: "branch-uniform", Severity: SevWarning,
-					Message: fmt.Sprintf("worktree members are on %q but the set dir is %q", b, setName)}}
+				return []Finding{{
+					CheckID: "branch-uniform", Severity: SevWarning,
+					Message: fmt.Sprintf("worktree members are on %q but the set dir is %q", b, setName),
+				}}
 			}
 			break
 		}
@@ -147,9 +153,11 @@ func (ws *Workspace) checkBranchUniform(ctx context.Context, present map[string]
 	}
 	var fs []Finding
 	for name, b := range branches {
-		fs = append(fs, Finding{CheckID: "branch-uniform", Repo: name, Severity: SevError,
+		fs = append(fs, Finding{
+			CheckID: "branch-uniform", Repo: name, Severity: SevError,
 			Message: fmt.Sprintf("worktree member %q is on %q; members must share one branch", name, b),
-			Manual:  fmt.Sprintf("git -C %s switch <set-branch>", filepath.Join(ws.root, name))})
+			Manual:  fmt.Sprintf("git -C %s switch <set-branch>", filepath.Join(ws.root, name)),
+		})
 	}
 	return fs
 }

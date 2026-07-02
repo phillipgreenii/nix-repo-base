@@ -128,7 +128,8 @@ func resolvePushRemote(
 	return "", fmt.Errorf(
 		"cannot determine push remote for %s (available remotes: %s); "+
 			"set one with `git config remote.pushDefault <name>` or pass `--remote <name>`",
-		repoDir, strings.Join(remotes, ", "))
+		repoDir, strings.Join(remotes, ", "),
+	)
 }
 
 // Push runs `git push` in each workspace repo that has a configured upstream,

@@ -88,7 +88,8 @@ func TestGenerationsToPrune_UnparseableDate(t *testing.T) {
 func TestListGenerations_ParsesCurrent(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("nix-env", []string{"--profile", "/p", "--list-generations"}, exec.Result{Stdout: []byte(
-		"   1   2024-01-01 12:00:00\n   2   2099-01-01 12:00:00   (current)\n")}, nil)
+		"   1   2024-01-01 12:00:00\n   2   2099-01-01 12:00:00   (current)\n",
+	)}, nil)
 	g, err := listGenerations(context.Background(), f, "/p", false)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +102,8 @@ func TestListGenerations_ParsesCurrent(t *testing.T) {
 func TestListGenerations_Sudo(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("sudo", []string{"nix-env", "--profile", "/p", "--list-generations"}, exec.Result{Stdout: []byte(
-		"   1   2024-01-01 12:00:00   (current)\n")}, nil)
+		"   1   2024-01-01 12:00:00   (current)\n",
+	)}, nil)
 	g, err := listGenerations(context.Background(), f, "/p", true)
 	if err != nil {
 		t.Fatal(err)

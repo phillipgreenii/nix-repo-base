@@ -12,13 +12,16 @@ import (
 
 func TestCheckRepos_MissingNonTerminalIsWarning(t *testing.T) {
 	root := t.TempDir()
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
 		config: &WorkspaceConfig{
 			Workspace: WorkspaceSection{Terminal: "term"},
 			Repos: map[string]RepoConfig{
 				"term": {URL: "u", Branch: "main"},
 				"dep":  {URL: "u2", Branch: "main"},
-			}}}
+			},
+		},
+	}
 	initRealRepo(t, filepath.Join(root, "term")) // term present, dep missing
 	env := &doctorEnv{ws: ws, mode: "primary", terminal: "term"}
 	fs := ws.checkRepos(context.Background(), env)
@@ -29,10 +32,13 @@ func TestCheckRepos_MissingNonTerminalIsWarning(t *testing.T) {
 
 func TestCheckRepos_MissingTerminalIsError(t *testing.T) {
 	root := t.TempDir()
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
 		config: &WorkspaceConfig{
 			Workspace: WorkspaceSection{Terminal: "term"},
-			Repos:     map[string]RepoConfig{"term": {URL: "u", Branch: "main"}}}}
+			Repos:     map[string]RepoConfig{"term": {URL: "u", Branch: "main"}},
+		},
+	}
 	env := &doctorEnv{ws: ws, mode: "primary", terminal: "term"}
 	fs := ws.checkRepos(context.Background(), env)
 	if !hasFindingForRepo(fs, "repos-present", "term", SevError) {
@@ -42,8 +48,10 @@ func TestCheckRepos_MissingTerminalIsError(t *testing.T) {
 
 func TestCheckRepos_PresentNotGitIsError(t *testing.T) {
 	root := t.TempDir()
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
-		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"dep": {URL: "u", Branch: "main"}}}}
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"dep": {URL: "u", Branch: "main"}}},
+	}
 	if err := os.MkdirAll(filepath.Join(root, "dep"), 0o755); err != nil { // dir, no .git
 		t.Fatal(err)
 	}
@@ -56,8 +64,10 @@ func TestCheckRepos_PresentNotGitIsError(t *testing.T) {
 
 func TestCheckRepos_ExtraIsWarning(t *testing.T) {
 	root := t.TempDir()
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
-		config: &WorkspaceConfig{Repos: map[string]RepoConfig{}}}
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{}},
+	}
 	initRealRepo(t, filepath.Join(root, "stray"))
 	env := &doctorEnv{ws: ws, mode: "primary"}
 	fs := ws.checkRepos(context.Background(), env)
@@ -72,9 +82,12 @@ func TestCheckRepos_IdentityMismatchIsError(t *testing.T) {
 	initRealRepo(t, dir)
 	// origin disagrees (different slug) with the configured url -> identity mismatch
 	runGitT(t, dir, "remote", "add", "origin", "git@github.com:o/actual.git")
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
 		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
-			"dep": {URL: "git@github.com:o/configured.git", Branch: "main"}}}}
+			"dep": {URL: "git@github.com:o/configured.git", Branch: "main"},
+		}},
+	}
 	env := &doctorEnv{ws: ws, mode: "primary"}
 	fs := ws.checkRepos(context.Background(), env)
 	if !hasFindingForRepo(fs, "repo-identity", "dep", SevError) {

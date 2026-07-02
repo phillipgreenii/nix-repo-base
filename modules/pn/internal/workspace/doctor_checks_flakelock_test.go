@@ -21,14 +21,20 @@ func TestCheckFlakeLockFresh_StaleIsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "2222222222222222222222222222222222222222"
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
 		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
-			"consumer": {URL: "u1", Branch: "main"}, "dep": {URL: "u2", Branch: "main"}}},
+			"consumer": {URL: "u1", Branch: "main"}, "dep": {URL: "u2", Branch: "main"},
+		}},
 		lock: &Lock{
 			Repos: map[string]LockRepoEntry{"consumer": {FlakePath: "flake.nix"}, "dep": {FlakePath: "flake.nix"}},
-			Edges: []LockEdge{{Consumer: "consumer", Alias: "dep", Target: "dep"}}}}
-	env := &doctorEnv{ws: ws, mode: "primary", lock: ws.lock,
-		refRev: map[string]string{"dep": want, "consumer": "x"}, skipped: map[string]bool{}}
+			Edges: []LockEdge{{Consumer: "consumer", Alias: "dep", Target: "dep"}},
+		},
+	}
+	env := &doctorEnv{
+		ws: ws, mode: "primary", lock: ws.lock,
+		refRev: map[string]string{"dep": want, "consumer": "x"}, skipped: map[string]bool{},
+	}
 	fs := ws.checkFlakeLockFresh(context.Background(), env)
 	if !hasFindingForRepo(fs, "flake-lock-fresh", "consumer", SevError) {
 		t.Fatalf("stale flake.lock should be error: %+v", fs)

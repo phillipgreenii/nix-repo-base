@@ -111,9 +111,11 @@ url = "github:o/overlay"
 	wantArgs := [][]string{
 		{"flake", "check", "--override-input", "overlay", "git+file://" + overlay},
 		{"flake", "check", "--override-input", "base", "git+file://" + base},
-		{"flake", "check",
+		{
+			"flake", "check",
 			"--override-input", "base", "git+file://" + base,
-			"--override-input", "overlay", "git+file://" + overlay},
+			"--override-input", "overlay", "git+file://" + overlay,
+		},
 	}
 
 	f := exec.NewFakeRunner()

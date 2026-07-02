@@ -363,7 +363,7 @@ func TestUpdateViaWorktree_DirtyMainPopConflicts(t *testing.T) {
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
 	f.AddResponse("git", []string{"-C", foo, "stash", "push", "-m", "pn-update autostash " + branch}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil) // retry OK
-	f.AddResponse("git", []string{"-C", foo, "stash", "pop"}, // pop CONFLICTS
+	f.AddResponse("git", []string{"-C", foo, "stash", "pop"},                                   // pop CONFLICTS
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
 
 	w, _ := Open(root, f)

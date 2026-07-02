@@ -15,8 +15,10 @@ func TestCheckBranches_WrongBranchIsError(t *testing.T) {
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
 	runGitT(t, dir, "switch", "-q", "-c", "feature")
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
-		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"dep": {URL: "u", Branch: "main"}}}}
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"dep": {URL: "u", Branch: "main"}}},
+	}
 	env := &doctorEnv{ws: ws, mode: "primary", refRev: map[string]string{}, skipped: map[string]bool{}}
 	fs := ws.checkBranches(context.Background(), env)
 	if !hasFindingForRepo(fs, "branch-current", "dep", SevError) {
@@ -46,12 +48,16 @@ func TestCheckBranches_AheadOfRemoteIsError(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
-		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"dep": {URL: "u", Branch: "main"}}}}
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"dep": {URL: "u", Branch: "main"}}},
+	}
 	// refRev (remote) differs from local HEAD => not synced.
-	env := &doctorEnv{ws: ws, mode: "primary",
+	env := &doctorEnv{
+		ws: ws, mode: "primary",
 		refRev:  map[string]string{"dep": "0000000000000000000000000000000000000000"},
-		skipped: map[string]bool{}}
+		skipped: map[string]bool{},
+	}
 	if !hasFindingForRepo(ws.checkBranches(context.Background(), env), "branch-synced", "dep", SevError) {
 		t.Fatal("local != remote should be branch-synced error")
 	}
@@ -61,15 +67,19 @@ func TestCheckBranches_AheadOnlyIsFixableByPush(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
-	bare := setupLocalBareRemote(t, dir) // origin = bare; main pushed; origin/main tracks it
-	h0 := headRev(t, dir)                // the remote HEAD (what was pushed)
+	bare := setupLocalBareRemote(t, dir)                       // origin = bare; main pushed; origin/main tracks it
+	h0 := headRev(t, dir)                                      // the remote HEAD (what was pushed)
 	want := addCommit(t, dir, "ahead.txt", "x", "local ahead") // local now ahead, behind 0
 
-	ws := &Workspace{root: root, runner: exec.NewRealRunner(),
-		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"dep": {URL: bare, Branch: "main"}}}}
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"dep": {URL: bare, Branch: "main"}}},
+	}
 	// refRev = remote HEAD (h0); local HEAD (want) is strictly ahead of it.
-	env := &doctorEnv{ws: ws, mode: "primary",
-		refRev: map[string]string{"dep": h0}, skipped: map[string]bool{}}
+	env := &doctorEnv{
+		ws: ws, mode: "primary",
+		refRev: map[string]string{"dep": h0}, skipped: map[string]bool{},
+	}
 
 	fs := ws.checkBranches(context.Background(), env)
 	var bs *Finding

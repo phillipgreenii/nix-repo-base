@@ -62,7 +62,8 @@ func addWorktreeListWithBranch(f *exec.FakeRunner, canonical, branch string) {
 
 // addBranchNotExists scripts rev-parse --verify to fail (branch doesn't exist).
 func addBranchNotExists(f *exec.FakeRunner, canonical, branch string) {
-	f.AddResponse("git",
+	f.AddResponse(
+		"git",
 		[]string{"-C", canonical, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch},
 		exec.Result{ExitCode: 128},
 		&exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}},
