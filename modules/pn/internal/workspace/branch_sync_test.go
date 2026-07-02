@@ -43,7 +43,7 @@ func TestFastForwardIfBehind(t *testing.T) {
 	runGitT(t, dir, "reset", "-q", "--hard", "HEAD~1")
 	runGitT(t, dir, "fetch", "-q", "origin")
 	ws := &Workspace{runner: exec.NewRealRunner()}
-	if err := ws.fastForwardIfBehind(context.Background(), dir, "main"); err != nil {
+	if err := ws.fastForwardIfBehind(context.Background(), dir, "origin", "main"); err != nil {
 		t.Fatalf("ff: %v", err)
 	}
 	if got := headRev(t, dir); got != want {

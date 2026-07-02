@@ -20,26 +20,30 @@ func (ws *Workspace) switchToDefaultBranch(ctx context.Context, repoDir, branch 
 	return nil
 }
 
-// fastForwardIfBehind fast-forwards branch to origin/<branch>. It uses
+// fastForwardIfBehind fast-forwards branch to <remote>/<branch>. It uses
 // --ff-only so a non-fast-forward (diverged/ahead) is an error, never a merge.
-// Callers must have fetched first (doctor's refRev resolution does).
-func (ws *Workspace) fastForwardIfBehind(ctx context.Context, repoDir, branch string) error {
+// Callers must have fetched <remote>/<branch> first (doctor's refRev resolution
+// does, using the same resolved remote). remote is the resolved canonical push
+// remote (see resolvePushRemote), not a hardcoded "origin".
+func (ws *Workspace) fastForwardIfBehind(ctx context.Context, repoDir, remote, branch string) error {
 	if _, err := ws.runner.Run(ctx, "git",
-		[]string{"-C", repoDir, "merge", "--ff-only", "origin/" + branch}, exec.RunOptions{}); err != nil {
-		return fmt.Errorf("git merge --ff-only origin/%s in %s: %w", branch, repoDir, err)
+		[]string{"-C", repoDir, "merge", "--ff-only", remote + "/" + branch}, exec.RunOptions{}); err != nil {
+		return fmt.Errorf("git merge --ff-only %s/%s in %s: %w", remote, branch, repoDir, err)
 	}
 	return nil
 }
 
-// pushBranch fast-forward-pushes branch to origin (no force). It fixes the
+// pushBranch fast-forward-pushes branch to remote (no force). It fixes the
 // strictly-ahead case (local ahead of remote, behind 0): publishing the local
-// commits makes origin/<branch> match local HEAD. git rejects a non-fast-forward
+// commits makes <remote>/<branch> match local HEAD. git rejects a non-fast-forward
 // push, so a remote that has moved (diverged) surfaces as an error rather than a
-// forced overwrite — destructive resolution stays a manual decision.
-func (ws *Workspace) pushBranch(ctx context.Context, repoDir, branch string) error {
+// forced overwrite — destructive resolution stays a manual decision. remote is
+// the resolved canonical push remote (see resolvePushRemote), not a hardcoded
+// "origin".
+func (ws *Workspace) pushBranch(ctx context.Context, repoDir, remote, branch string) error {
 	if _, err := ws.runner.Run(ctx, "git",
-		[]string{"-C", repoDir, "push", "origin", branch}, exec.RunOptions{}); err != nil {
-		return fmt.Errorf("git push origin %s in %s: %w", branch, repoDir, err)
+		[]string{"-C", repoDir, "push", remote, branch}, exec.RunOptions{}); err != nil {
+		return fmt.Errorf("git push %s %s in %s: %w", remote, branch, repoDir, err)
 	}
 	return nil
 }

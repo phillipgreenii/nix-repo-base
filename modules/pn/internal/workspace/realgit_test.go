@@ -70,6 +70,21 @@ func setupLocalBareRemote(t *testing.T, dir string) string {
 	return bare
 }
 
+// setupLocalBareRemoteNamed creates a bare repo beside dir, adds it as a remote
+// under the given name (not "origin"), and pushes the current branch. Returns
+// the bare repo path. Used to prove the doctor honors the resolved push remote
+// rather than a hardcoded "origin".
+func setupLocalBareRemoteNamed(t *testing.T, dir, remote string) string {
+	t.Helper()
+	bare := dir + "." + remote + ".git"
+	runGitT(t, dir, "init", "-q", "--bare", bare)
+	runGitT(t, dir, "remote", "add", remote, bare)
+	runGitT(t, dir, "push", "-q", remote, currentBranch(t, dir))
+	// Track the remote branch so `git rev-parse @{u}` / aheadBehind work.
+	runGitT(t, dir, "branch", "--set-upstream-to", remote+"/"+currentBranch(t, dir))
+	return bare
+}
+
 // dirtyTrackedFile modifies an already-tracked file without committing.
 func dirtyTrackedFile(t *testing.T, dir, file, content string) {
 	t.Helper()

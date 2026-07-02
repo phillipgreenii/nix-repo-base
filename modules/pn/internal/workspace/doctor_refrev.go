@@ -12,7 +12,8 @@ import (
 // resolveRefRevs computes the reference rev for each configured repo.
 //
 //	primary  : remote default-branch HEAD via `git ls-remote <url> refs/heads/<branch>`,
-//	           plus a best-effort `git fetch origin` so fastForwardIfBehind can run.
+//	           plus a best-effort `git fetch <remote>` (remote resolved via the
+//	           push-convention chain) so fastForwardIfBehind can run.
 //	           offline or unresolvable remote -> skipped[repo]=true.
 //	worktree : the member checkout's committed HEAD (captureHead); never skipped.
 func (ws *Workspace) resolveRefRevs(ctx context.Context, mode string, offline bool) (map[string]string, map[string]bool) {
@@ -46,9 +47,20 @@ func (ws *Workspace) resolveRefRevs(ctx context.Context, mode string, offline bo
 			continue
 		}
 		refRev[name] = sha
-		// Best-effort fetch so origin/<branch> exists for ff checks/fixes.
+		// Best-effort fetch so <remote>/<branch> exists locally for the
+		// fast-forward-pull fix (the behind case needs the remote ref object).
+		//
+		// Two-source note: refRev[name] above is a LIVE `git ls-remote` head; this
+		// fetch is a SEPARATE, best-effort operation whose error is intentionally
+		// discarded (offline/transient). Because the source of truth for
+		// branch-synced CLASSIFICATION is refRev[name] (not the fetched tracking
+		// ref — see branchSyncedFinding), a stale/failed fetch here cannot cause a
+		// misclassification; at worst the fast-forward-pull fix has no local ref to
+		// merge and fails safely (surfacing as fix-failed). The fetch uses the same
+		// resolved canonical remote the fix/push will use, not a hardcoded "origin".
 		if dirExists(dir) {
-			_, _ = ws.runner.Run(ctx, "git", []string{"-C", dir, "fetch", "-q", "origin", branch}, exec.RunOptions{})
+			remote := ws.resolveBranchRemote(ctx, dir, branch)
+			_, _ = ws.runner.Run(ctx, "git", []string{"-C", dir, "fetch", "-q", remote, branch}, exec.RunOptions{})
 		}
 	}
 	return refRev, skipped

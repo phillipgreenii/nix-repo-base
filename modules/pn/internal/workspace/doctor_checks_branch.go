@@ -75,51 +75,92 @@ func (ws *Workspace) checkBranches(ctx context.Context, env *doctorEnv) []Findin
 			}
 			local, err := captureHead(ctx, ws.runner, dir)
 			if err == nil && local != ref {
-				fs = append(fs, ws.branchSyncedFinding(ctx, name, dir, branch, local, ref))
+				fs = append(fs, ws.branchSyncedFinding(ctx, name, dir, branch, ref))
 			}
 		}
 	}
 	return fs
 }
 
-func (ws *Workspace) branchSyncedFinding(ctx context.Context, name, dir, branch, local, ref string) Finding {
-	behind := ws.isStrictlyBehind(ctx, dir, branch)
+// branchSyncedFinding classifies the local-vs-remote divergence and builds the
+// finding. ref is the SHA that TRIGGERED the finding (env.refRev[name], the live
+// `git ls-remote` head resolved in resolveRefRevs) — the same value the trigger
+// compared against local HEAD.
+//
+// Two-source consistency (see the review of commit d04f29a): classification MUST
+// use that same ref SHA, NOT the local remote-tracking ref (<remote>/<branch>).
+// The tracking ref comes from a best-effort fetch whose error resolveRefRevs
+// discards; a stale/failed fetch would let a repo that ls-remote proves diverged
+// be mis-classified ahead-only against a stale tracking ref, so --fix would
+// attempt a push. Classifying against ref removes that asymmetry: the object may
+// be missing locally (a failed fetch leaves it absent for the behind case), in
+// which case merge-base --is-ancestor errors and we conservatively fall through
+// to the diverged/manual arm — strictly safer than a mis-fired fast-forward.
+//
+// remote is the repo's resolved canonical push remote (resolvePushRemote), not a
+// hardcoded "origin": the fix commands and manual hints must name the remote the
+// repo actually pushes to.
+func (ws *Workspace) branchSyncedFinding(ctx context.Context, name, dir, branch, ref string) Finding {
+	remote := ws.resolveBranchRemote(ctx, dir, branch)
+	local, _ := captureHead(ctx, ws.runner, dir)
+	behind := ws.isStrictlyBehind(ctx, dir, ref)
 	f := Finding{
 		CheckID: "branch-synced", Repo: name, Severity: SevError,
 		Message: fmt.Sprintf("repo %q local HEAD %s != remote %s (%s)", name, short(local), short(ref), ws.aheadBehind(ctx, dir)),
 	}
 	switch {
 	case behind:
-		// local HEAD is an ancestor of origin/<branch> → fast-forward pull.
+		// local HEAD is an ancestor of the remote ref → fast-forward pull.
 		f.Fixable = true
-		f.fix = func(c context.Context) error { return ws.fastForwardIfBehind(c, dir, branch) }
-		f.Manual = fmt.Sprintf("git -C %s merge --ff-only origin/%s", dir, branch)
-	case ws.isStrictlyAhead(ctx, dir, branch):
-		// origin/<branch> is an ancestor of local HEAD → fast-forward push.
+		f.fix = func(c context.Context) error { return ws.fastForwardIfBehind(c, dir, remote, branch) }
+		f.Manual = fmt.Sprintf("git -C %s merge --ff-only %s/%s", dir, remote, branch)
+	case ws.isStrictlyAhead(ctx, dir, ref):
+		// the remote ref is an ancestor of local HEAD → fast-forward push.
 		f.Fixable = true
-		f.fix = func(c context.Context) error { return ws.pushBranch(c, dir, branch) }
-		f.Manual = fmt.Sprintf("git -C %s push origin %s", dir, branch)
+		f.fix = func(c context.Context) error { return ws.pushBranch(c, dir, remote, branch) }
+		f.Manual = fmt.Sprintf("git -C %s push %s %s", dir, remote, branch)
 	default:
 		// genuinely diverged (ahead AND behind) → manual rebase; ff is unsafe.
-		f.Manual = fmt.Sprintf("local diverged from origin/%s — resolve by hand:  git -C %s rebase origin/%s", branch, dir, branch)
+		f.Manual = fmt.Sprintf("local diverged from %s/%s — resolve by hand:  git -C %s rebase %s/%s", remote, branch, dir, remote, branch)
 	}
 	return f
 }
 
-// isStrictlyBehind reports whether HEAD is an ancestor of origin/<branch>
-// (i.e. a fast-forward is possible). Requires a prior fetch (refRev did it).
-func (ws *Workspace) isStrictlyBehind(ctx context.Context, dir, branch string) bool {
+// resolveBranchRemote returns the canonical push remote for dir's branch,
+// reusing the same convention chain `pn workspace push` honors
+// (resolvePushRemote: flag → single-remote → branch.<b>.pushRemote →
+// remote.pushDefault → origin → error). On resolution failure it falls back to
+// "origin" so the finding still renders a hint (the resolved remote is best-effort
+// here — a genuinely missing remote surfaces later as a fix-failed error).
+func (ws *Workspace) resolveBranchRemote(ctx context.Context, dir, branch string) string {
+	remote, err := resolvePushRemote(ctx, ws.runner, dir, branch, "")
+	if err != nil || remote == "" {
+		return "origin"
+	}
+	return remote
+}
+
+// isStrictlyBehind reports whether HEAD is an ancestor of ref (i.e. a
+// fast-forward pull is possible). ref is the trigger SHA (see branchSyncedFinding);
+// classifying against it — rather than the local <remote>/<branch> tracking ref —
+// keeps the trigger and the classification on one source. If ref's object is not
+// present locally (a failed/absent best-effort fetch leaves it so for the behind
+// case) merge-base errors and this returns false: the finding then falls through
+// to the diverged/manual arm rather than mis-firing a fast-forward.
+func (ws *Workspace) isStrictlyBehind(ctx context.Context, dir, ref string) bool {
 	_, err := ws.runner.Run(ctx, "git",
-		[]string{"-C", dir, "merge-base", "--is-ancestor", "HEAD", "origin/" + branch}, exec.RunOptions{})
+		[]string{"-C", dir, "merge-base", "--is-ancestor", "HEAD", ref}, exec.RunOptions{})
 	return err == nil
 }
 
-// isStrictlyAhead reports whether origin/<branch> is an ancestor of HEAD
-// (i.e. a fast-forward push is possible — local is ahead, not diverged).
-// Requires a prior fetch (refRev did it).
-func (ws *Workspace) isStrictlyAhead(ctx context.Context, dir, branch string) bool {
+// isStrictlyAhead reports whether ref is an ancestor of HEAD (i.e. a fast-forward
+// push is possible — local is ahead, not diverged). ref is the trigger SHA. For a
+// genuinely-ahead repo ref is reachable from HEAD, so its object is present
+// locally and this holds even with no prior fetch — which is exactly why the
+// ahead case is robust against a stale/failed fetch.
+func (ws *Workspace) isStrictlyAhead(ctx context.Context, dir, ref string) bool {
 	_, err := ws.runner.Run(ctx, "git",
-		[]string{"-C", dir, "merge-base", "--is-ancestor", "origin/" + branch, "HEAD"}, exec.RunOptions{})
+		[]string{"-C", dir, "merge-base", "--is-ancestor", ref, "HEAD"}, exec.RunOptions{})
 	return err == nil
 }
 
