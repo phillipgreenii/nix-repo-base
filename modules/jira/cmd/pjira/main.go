@@ -1,4 +1,4 @@
-// Command jira is a generic, tenant-agnostic Atlassian Jira access tool.
+// Command pjira is a generic, tenant-agnostic Atlassian Jira access tool.
 // It hard-codes no tenant, credential location, or OS-specific behavior;
 // all of those are supplied as configuration (see modules/jira/README.md).
 package main
@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/phillipgreenii/nix-repo-base/modules/jira/pkg/jira"
+	"github.com/phillipgreenii/nix-repo-base/modules/jira/pkg/pjira"
 	"github.com/spf13/cobra"
 )
 
@@ -25,44 +25,44 @@ func (osRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 
 func defaultConfigPath() string {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "jira", "config.toml")
+		return filepath.Join(x, "pjira", "config.toml")
 	}
 	if h, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(h, ".config", "jira", "config.toml")
+		return filepath.Join(h, ".config", "pjira", "config.toml")
 	}
 	return ""
 }
 
 // resolveConfig composes precedence defaults -> file -> env.
-func resolveConfig(cmd *cobra.Command) (jira.Config, error) {
+func resolveConfig(cmd *cobra.Command) (pjira.Config, error) {
 	path, _ := cmd.Flags().GetString("config")
 	if path == "" {
 		path = defaultConfigPath()
 	}
-	fileCfg, err := jira.LoadFile(path)
+	fileCfg, err := pjira.LoadFile(path)
 	if err != nil {
-		return jira.Config{}, err
+		return pjira.Config{}, err
 	}
-	envCfg := jira.Config{
+	envCfg := pjira.Config{
 		BaseURL: os.Getenv("JIRA_BASE_URL"),
 		Email:   os.Getenv("JIRA_EMAIL"),
 	}
-	cfg := jira.DefaultConfig().Merge(fileCfg).Merge(envCfg)
+	cfg := pjira.DefaultConfig().Merge(fileCfg).Merge(envCfg)
 	if cfg.BaseURL == "" {
-		return jira.Config{}, fmt.Errorf("jira: base_url not configured (set JIRA_BASE_URL, --config, or config file)")
+		return pjira.Config{}, fmt.Errorf("pjira: base_url not configured (set JIRA_BASE_URL, --config, or config file)")
 	}
 	if cfg.Email == "" {
-		return jira.Config{}, fmt.Errorf("jira: email not configured (set JIRA_EMAIL, --config, or config file)")
+		return pjira.Config{}, fmt.Errorf("pjira: email not configured (set JIRA_EMAIL, --config, or config file)")
 	}
 	return cfg, nil
 }
 
-func newClient(cmd *cobra.Command) (*jira.Client, jira.Config, error) {
+func newClient(cmd *cobra.Command) (*pjira.Client, pjira.Config, error) {
 	cfg, err := resolveConfig(cmd)
 	if err != nil {
 		return nil, cfg, err
 	}
-	src, err := jira.NewSecretSource(cfg.Secret, osRunner{})
+	src, err := pjira.NewSecretSource(cfg.Secret, osRunner{})
 	if err != nil {
 		return nil, cfg, err
 	}
@@ -70,7 +70,7 @@ func newClient(cmd *cobra.Command) (*jira.Client, jira.Config, error) {
 	if err != nil {
 		return nil, cfg, err
 	}
-	return jira.NewClient(cfg.BaseURL, cfg.Email, token), cfg, nil
+	return pjira.NewClient(cfg.BaseURL, cfg.Email, token), cfg, nil
 }
 
 func writeJSON(cmd *cobra.Command, v any) error {
@@ -107,10 +107,10 @@ func newSearchCmd() *cobra.Command {
 		Short: "JQL search; writes {items,truncated,next_page_token?} JSON",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(jql) == "" {
-				return fmt.Errorf("jira search: --jql is required")
+				return fmt.Errorf("pjira search: --jql is required")
 			}
 			if all && strings.TrimSpace(cursor) != "" {
-				return fmt.Errorf("jira search: --all and --cursor are mutually exclusive")
+				return fmt.Errorf("pjira search: --all and --cursor are mutually exclusive")
 			}
 			cl, cfg, err := newClient(cmd)
 			if err != nil {
@@ -119,7 +119,7 @@ func newSearchCmd() *cobra.Command {
 			if limit == 0 {
 				limit = cfg.DefaultLimit
 			}
-			var exp jira.ExpandOpts
+			var exp pjira.ExpandOpts
 			for _, e := range strings.Split(expand, ",") {
 				switch strings.TrimSpace(e) {
 				case "changelog":
@@ -134,7 +134,7 @@ func newSearchCmd() *cobra.Command {
 					return err
 				}
 				if res.Truncated {
-					fmt.Fprintf(cmd.ErrOrStderr(), "jira search: result truncated at max-pages=%d (%d items returned; more remain)\n", maxPages, len(res.Items))
+					fmt.Fprintf(cmd.ErrOrStderr(), "pjira search: result truncated at max-pages=%d (%d items returned; more remain)\n", maxPages, len(res.Items))
 				}
 				return writeJSON(cmd, res)
 			}
@@ -150,7 +150,7 @@ func newSearchCmd() *cobra.Command {
 	c.Flags().StringVar(&expand, "expand", "", "comma-separated: changelog,comments")
 	c.Flags().StringVar(&cursor, "cursor", "", "fetch the single page at this nextPageToken")
 	c.Flags().BoolVar(&all, "all", false, "fetch all pages (loops nextPageToken to completeness)")
-	c.Flags().IntVar(&maxPages, "max-pages", jira.DefaultMaxSearchPages, "safety cap on pages fetched by --all")
+	c.Flags().IntVar(&maxPages, "max-pages", pjira.DefaultMaxSearchPages, "safety cap on pages fetched by --all")
 	_ = c.Flags().MarkHidden("max-pages")
 	return c
 }
@@ -164,23 +164,23 @@ func newAuthStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			src, err := jira.NewSecretSource(cfg.Secret, osRunner{})
+			src, err := pjira.NewSecretSource(cfg.Secret, osRunner{})
 			if err != nil {
 				return err
 			}
 			token, terr := src.Token(cmd.Context())
 			if terr != nil || token == "" {
-				fmt.Fprintln(cmd.OutOrStdout(), jira.AuthMissing)
+				fmt.Fprintln(cmd.OutOrStdout(), pjira.AuthMissing)
 				os.Exit(3)
 			}
-			state, _ := jira.NewClient(cfg.BaseURL, cfg.Email, token).AuthStatus(cmd.Context())
+			state, _ := pjira.NewClient(cfg.BaseURL, cfg.Email, token).AuthStatus(cmd.Context())
 			fmt.Fprintln(cmd.OutOrStdout(), state)
 			switch state {
-			case jira.AuthOK:
+			case pjira.AuthOK:
 				return nil
-			case jira.AuthForbidden:
+			case pjira.AuthForbidden:
 				os.Exit(4)
-			case jira.AuthUnauthenticated:
+			case pjira.AuthUnauthenticated:
 				os.Exit(5)
 			default:
 				os.Exit(1)
@@ -190,15 +190,15 @@ func newAuthStatusCmd() *cobra.Command {
 	}
 }
 
-// NewRootCmd builds the jira CLI root with all subcommands attached.
+// NewRootCmd builds the pjira CLI root with all subcommands attached.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "jira",
+		Use:           "pjira",
 		Short:         "Generic Atlassian Jira access tool (issue / search / auth-status)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().String("config", "", "path to config TOML (default: $XDG_CONFIG_HOME/jira/config.toml)")
+	root.PersistentFlags().String("config", "", "path to config TOML (default: $XDG_CONFIG_HOME/pjira/config.toml)")
 	root.AddCommand(newIssueCmd(), newSearchCmd(), newAuthStatusCmd())
 	return root
 }

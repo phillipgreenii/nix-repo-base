@@ -1,6 +1,6 @@
-# jira — generic Atlassian Jira access tool
+# pjira — generic Atlassian Jira access tool
 
-A tenant-agnostic Jira library (`pkg/jira`) + CLI (`cmd/jira`). It hard-codes no
+A tenant-agnostic Jira library (`pkg/pjira`) + CLI (`cmd/pjira`). It hard-codes no
 tenant, credential location, or OS-specific behavior; ZR (and any other tenant)
 specifics are injected as configuration at the edge.
 
@@ -12,13 +12,20 @@ specifics are injected as configuration at the edge.
 
 ## Operations
 
-- `jira issue <KEY>` — one issue as JSON.
-- `jira search --jql "<JQL>" [--limit N] [--expand changelog[,comments]]` — `{items,truncated,next_page_token?}`.
-- `jira auth-status` — credential check.
+- `pjira issue <KEY>` — one issue as JSON.
+- `pjira search --jql "<JQL>" [--limit N] [--expand changelog[,comments]]` — `{items,truncated,next_page_token?}`.
+- `pjira auth-status` — credential check.
+
+### Configuration
+
+The default config path is `$XDG_CONFIG_HOME/pjira/config.toml` (or
+`~/.config/pjira/config.toml`). **BREAKING:** this moved from the old
+`~/.config/jira/` directory when the tool was renamed `jira` → `pjira`; migrate
+any existing config with `mv ~/.config/jira ~/.config/pjira`.
 
 ### Pagination
 
-`jira search` returns one page by default (`{items, truncated, next_page_token?}`).
+`pjira search` returns one page by default (`{items, truncated, next_page_token?}`).
 `next_page_token` is present when more pages remain.
 
 - `--cursor <token>` — fetch the single page at `<token>` (the `next_page_token`

@@ -1,4 +1,4 @@
-package jira
+package pjira
 
 import (
 	"bytes"
@@ -150,7 +150,7 @@ func (c *Client) Search(ctx context.Context, jql string, limit int, exp ExpandOp
 
 func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp ExpandOpts, pageToken string) (*SearchResult, error) {
 	if strings.TrimSpace(jql) == "" {
-		return nil, fmt.Errorf("jira: empty jql")
+		return nil, fmt.Errorf("pjira: empty jql")
 	}
 	fields := []string{"summary", "status", "issuetype", "labels", "priority", "project", "created", "updated", "reporter", "assignee"}
 	if exp.Comments {
@@ -174,11 +174,11 @@ func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp Expa
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("jira: search: %w", err)
+		return nil, fmt.Errorf("pjira: search: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("jira: search: status %s", resp.Status)
+		return nil, fmt.Errorf("pjira: search: status %s", resp.Status)
 	}
 	var raw struct {
 		Issues []struct {
@@ -192,12 +192,12 @@ func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp Expa
 		IsLast        *bool  `json:"isLast"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("jira: search: decode: %w", err)
+		return nil, fmt.Errorf("pjira: search: decode: %w", err)
 	}
 	items := make([]Issue, 0, len(raw.Issues))
 	for _, is := range raw.Issues {
 		if is.Key == "" {
-			return nil, fmt.Errorf("jira: search: issue missing key")
+			return nil, fmt.Errorf("pjira: search: issue missing key")
 		}
 		iss := c.mapIssue(is.Key, is.Fields.rawFields)
 		if exp.Changelog {
@@ -261,7 +261,7 @@ func (c *Client) SearchAll(ctx context.Context, jql string, limit int, exp Expan
 func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return nil, fmt.Errorf("jira: empty issue key")
+		return nil, fmt.Errorf("pjira: empty issue key")
 	}
 	endpoint := c.BaseURL + "/rest/api/3/issue/" + url.PathEscape(key) +
 		"?fields=summary,status,issuetype,labels,priority,project,created,updated,reporter,assignee"
@@ -271,21 +271,21 @@ func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
 	}
 	resp, err := c.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("jira: get issue %s: %w", key, err)
+		return nil, fmt.Errorf("pjira: get issue %s: %w", key, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("jira: issue %s not found", key)
+		return nil, fmt.Errorf("pjira: issue %s not found", key)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("jira: get issue %s: status %s", key, resp.Status)
+		return nil, fmt.Errorf("pjira: get issue %s: status %s", key, resp.Status)
 	}
 	var raw struct {
 		Key    string    `json:"key"`
 		Fields rawFields `json:"fields"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("jira: decode issue %s: %w", key, err)
+		return nil, fmt.Errorf("pjira: decode issue %s: %w", key, err)
 	}
 	iss := c.mapIssue(raw.Key, raw.Fields)
 	return &iss, nil

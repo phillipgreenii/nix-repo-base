@@ -1,7 +1,7 @@
-// Package jira is a generic, tenant-agnostic Atlassian Jira client + model.
+// Package pjira is a generic, tenant-agnostic Atlassian Jira client + model.
 // It MUST NOT import any pg-pr package, hard-code any tenant string, or run
 // any OS-specific command (see the package guardrails test).
-package jira
+package pjira
 
 // AuthState is the result of an auth-status check.
 type AuthState string

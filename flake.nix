@@ -100,8 +100,8 @@
             # pn-workspace-toml home-manager activation. See docs/adr/0017.
             pn-workspace-toml-enforce = pkgs.callPackage ./modules/pn/enforce-toml.nix { inherit self; };
 
-            # jira Go binary (generic Atlassian Jira access tool).
-            jira = pkgs.callPackage ./modules/jira { inherit self; };
+            # pjira Go binary (generic Atlassian Jira access tool).
+            pjira = pkgs.callPackage ./modules/jira { inherit self; };
 
             # This repo's own Claude Code marketplace, bundled into the store with
             # content-derived per-plugin version stamping. Identity:
@@ -230,8 +230,8 @@
             # exercises the Go tests.
             pn-go-tests = pkgs.callPackage ./modules/pn { inherit self; };
 
-            # Go test suite for jira (mirrors pn-go-tests pattern).
-            jira-go-tests = pkgs.callPackage ./modules/jira { inherit self; };
+            # Go test suite for pjira (mirrors pn-go-tests pattern).
+            pjira-go-tests = pkgs.callPackage ./modules/jira { inherit self; };
 
             # Hermetically verify the exported darwinModules.default (the aggregate
             # the machine actually imports) registers logSources.pn.
@@ -299,7 +299,7 @@
 
         homeModules = {
           pn = import ./home/pn/default.nix;
-          jira = import ./home/jira/default.nix;
+          pjira = import ./home/pjira/default.nix;
           install-metadata = ./home-modules/install-metadata.nix;
         };
         # repo-base's first darwin module set, exported as the aggregate
@@ -318,7 +318,7 @@
           inherit (self.packages.${final.stdenv.hostPlatform.system})
             pn
             pn-workspace-toml-enforce
-            jira
+            pjira
             ;
         };
 

@@ -1,4 +1,4 @@
-package jira
+package pjira
 
 import (
 	"os"
@@ -8,10 +8,10 @@ import (
 )
 
 // TestNoForbiddenStrings asserts the generic core stays generic: no ZR strings,
-// no OS-specific command names, no pg-pr import. Scans pkg/jira and cmd/jira.
+// no OS-specific command names, no pg-pr import. Scans pkg/pjira and cmd/pjira.
 func TestNoForbiddenStrings(t *testing.T) {
 	forbidden := []string{"ziprecruiter", "zr-jira", "security find-generic-password", "secret-tool", "/pg-pr/", "provider/issues"}
-	roots := []string{".", "../../cmd/jira"}
+	roots := []string{".", "../../cmd/pjira"}
 	for _, root := range roots {
 		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {

@@ -5,9 +5,32 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestRootCommandIsPjira pins the renamed tool identity: the cobra root's Use
+// is "pjira" (not the upstream go-jira "jira"), so `pjira --help` shows pjira.
+func TestRootCommandIsPjira(t *testing.T) {
+	if use := NewRootCmd().Use; use != "pjira" {
+		t.Errorf("root Use = %q, want %q", use, "pjira")
+	}
+}
+
+// TestDefaultConfigPathUnderPjira pins the config-dir rename: the default config
+// resolves under a "pjira" directory (BREAKING move from the old "jira" dir).
+func TestDefaultConfigPathUnderPjira(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/xdg")
+	if got, want := defaultConfigPath(), filepath.Join("/xdg", "pjira", "config.toml"); got != want {
+		t.Errorf("defaultConfigPath() = %q, want %q", got, want)
+	}
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "/home/u")
+	if got, want := defaultConfigPath(), filepath.Join("/home/u", ".config", "pjira", "config.toml"); got != want {
+		t.Errorf("defaultConfigPath() home fallback = %q, want %q", got, want)
+	}
+}
 
 func runCLI(t *testing.T, baseURL string, args ...string) (string, error) {
 	t.Helper()
