@@ -229,7 +229,8 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 
 	// Step 3: propagate workspace-edge inputs (ungated) — relock this repo's
 	// workspace-sibling flake inputs to their upstreams' just-integrated revs.
-	if err := ws.propagateWorkspaceEdges(ctx, out, name, wt, ws.resolveFlakePath(name), aliases); err != nil {
+	relocked, err := ws.propagateWorkspaceEdges(ctx, out, name, wt, ws.resolveFlakePath(name), aliases)
+	if err != nil {
 		return fail("propagate-edges", err, "")
 	}
 
@@ -239,7 +240,7 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 	// unconditionally so nixpkgs/third-party inputs are left untouched.
 	switch {
 	case siblingsOnly:
-		fmt.Fprintf(out, "  ⊘ %s: --siblings-only — skipping update-locks.sh (workspace inputs relocked, nixpkgs/third-party untouched)\n", name)
+		fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 	case fileExists(filepath.Join(wt, "update-locks.sh")):
 		if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
 			Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out,

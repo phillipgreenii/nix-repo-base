@@ -17,6 +17,23 @@ import (
 // and injects the result so the per-repo scripts skip the (remote) evaluation.
 const ulLibResolverRef = "github:phillipgreenii/nix-repo-base#determine-ul-lib-dir"
 
+// siblingsOnlySkipBanner returns the --siblings-only "skipping update-locks.sh"
+// line for repo name, worded accurately for whether propagateWorkspaceEdges
+// actually relocked anything (pg2-vgw3). Both call sites (updateInPlace and
+// updateRepoViaWorktree) use this so the wording stays consistent. In either
+// case nixpkgs/third-party inputs are left untouched (update-locks.sh is
+// skipped); only the workspace-input clause differs:
+//   - relocked: propagation moved a sibling rev and committed the bump.
+//   - !relocked: no workspace edges, or no rev change — a no-op, so nothing was
+//     relocked (the old banner claimed a relock here unconditionally).
+func siblingsOnlySkipBanner(name string, relocked bool) string {
+	inputs := "no workspace inputs to relock"
+	if relocked {
+		inputs = "workspace inputs relocked"
+	}
+	return fmt.Sprintf("  ⊘ %s: --siblings-only — skipping update-locks.sh (%s, nixpkgs/third-party untouched)\n", name, inputs)
+}
+
 // UpdateOptions configures Update.
 type UpdateOptions struct {
 	// Terminal overrides workspace.terminal for this invocation.
@@ -141,6 +158,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		hasUp := ws.hasUpstream(ctx, repoDir)
 		pullFailed := false
 		propagateFailed := false
+		relocked := false
 		projectFailed := false
 
 		if hasUp {
@@ -158,11 +176,13 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("update interrupted: %w", err)
 			}
-			if err := ws.propagateWorkspaceEdges(ctx, out, name, repoDir, ws.resolveFlakePath(name), workspaceAliasesFromLock(edgeLock, name)); err != nil {
+			did, err := ws.propagateWorkspaceEdges(ctx, out, name, repoDir, ws.resolveFlakePath(name), workspaceAliasesFromLock(edgeLock, name))
+			if err != nil {
 				fmt.Fprintf(out, "  ✗ %s: propagate-edges failed: %v\n", name, err)
 				propagateFailed = true
 				projectFailed = true
 			}
+			relocked = did
 		}
 		// Run update-locks (when present) only if pull and propagation succeeded:
 		// a propagation error may have left a dirty tree. A repo without
@@ -174,7 +194,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			}
 			switch {
 			case opts.SiblingsOnly:
-				fmt.Fprintf(out, "  ⊘ %s: --siblings-only — skipping update-locks.sh (workspace inputs relocked, nixpkgs/third-party untouched)\n", name)
+				fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 			case fileExists(filepath.Join(repoDir, "update-locks.sh")):
 				if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out}); err != nil {
 					projectFailed = true

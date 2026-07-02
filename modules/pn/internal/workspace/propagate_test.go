@@ -160,8 +160,12 @@ func TestPropagate_BumpsAndCommitsOnRevChange(t *testing.T) {
 	}}
 	ws := &Workspace{runner: r}
 
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err != nil {
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"})
+	if err != nil {
 		t.Fatalf("propagate: %v", err)
+	}
+	if !relocked {
+		t.Errorf("relocked = false, want true (a rev moved and was committed)")
 	}
 	// C1: --refresh must be present.
 	if len(r.nixArgs) != 1 || !containsStr(r.nixArgs[0], "--refresh") {
@@ -192,8 +196,12 @@ func TestPropagate_NoCommitOnLastModifiedChurn(t *testing.T) {
 	}}
 	ws := &Workspace{runner: r}
 
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err != nil {
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"})
+	if err != nil {
 		t.Fatalf("propagate: %v", err)
+	}
+	if relocked {
+		t.Errorf("relocked = true, want false (only lastModified churn, no bump)")
 	}
 	if n := commitCount(t, dir); n != 1 {
 		t.Errorf("commit count = %d, want 1 (no bump commit)", n)
@@ -205,8 +213,12 @@ func TestPropagate_NoOpWhenUnchanged(t *testing.T) {
 	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {}} // nix writes nothing
 	ws := &Workspace{runner: r}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err != nil {
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"})
+	if err != nil {
 		t.Fatalf("propagate: %v", err)
+	}
+	if relocked {
+		t.Errorf("relocked = true, want false (nix wrote nothing)")
 	}
 	if n := commitCount(t, dir); n != 1 {
 		t.Errorf("commit count = %d, want 1", n)
@@ -223,8 +235,12 @@ func TestPropagate_FlakeInSubdir(t *testing.T) {
 		writeLock(lockWith("3333333333333333333333333333333333333333", 2))
 	}}
 	ws := &Workspace{runner: r}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "homelab", dir, "nix/flake.nix", []string{"sib"}); err != nil {
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "homelab", dir, "nix/flake.nix", []string{"sib"})
+	if err != nil {
 		t.Fatalf("propagate: %v", err)
+	}
+	if !relocked {
+		t.Errorf("relocked = false, want true (subdir flake rev moved and committed)")
 	}
 	if subj := headSubject(t, dir); !strings.HasPrefix(subj, "chore(deps): bump sib 1111111 -> 3333333") {
 		t.Errorf("subject = %q", subj)
@@ -272,8 +288,12 @@ func TestPropagate_FlakeRelViaResolveFlakePath(t *testing.T) {
 	if flakeRel != "flake.nix" {
 		t.Fatalf("resolveFlakePath = %q, want %q (file path, not dir)", flakeRel, "flake.nix")
 	}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, repoKey, dir, flakeRel, []string{"sib"}); err != nil {
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, repoKey, dir, flakeRel, []string{"sib"})
+	if err != nil {
 		t.Fatalf("propagate: %v", err)
+	}
+	if !relocked {
+		t.Errorf("relocked = false, want true (rev moved and committed)")
 	}
 	if subj := headSubject(t, dir); subj != "chore(deps): bump sib 1111111 -> 2222222" {
 		t.Errorf("subject = %q", subj)
@@ -285,8 +305,12 @@ func TestPropagate_EmptyAliasesIsNoOp(t *testing.T) {
 	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner()}
 	ws := &Workspace{runner: r}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", nil); err != nil {
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", nil)
+	if err != nil {
 		t.Fatalf("propagate: %v", err)
+	}
+	if relocked {
+		t.Errorf("relocked = true, want false (no aliases → no-op)")
 	}
 	if len(r.nixArgs) != 0 {
 		t.Errorf("nix called %d times, want 0 (no aliases)", len(r.nixArgs))
@@ -298,8 +322,12 @@ func TestPropagate_NixFailureErrorsCleanly(t *testing.T) {
 	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), nixErr: fmt.Errorf("boom")}
 	ws := &Workspace{runner: r}
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err == nil {
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"})
+	if err == nil {
 		t.Fatal("expected error when nix flake update fails")
+	}
+	if relocked {
+		t.Errorf("relocked = true, want false on error path")
 	}
 	if n := commitCount(t, dir); n != 1 {
 		t.Errorf("commit count = %d, want 1 (no partial commit)", n)
@@ -333,8 +361,12 @@ func TestPropagate_CommitsUnderMissingConfigPreCommitHook(t *testing.T) {
 	}}
 	ws := &Workspace{runner: r}
 
-	if err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err != nil {
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"})
+	if err != nil {
 		t.Fatalf("propagate: %v", err)
+	}
+	if !relocked {
+		t.Errorf("relocked = false, want true (bump committed despite the prek hook)")
 	}
 	if n := commitCount(t, dir); n != 2 {
 		t.Errorf("commit count = %d, want 2 (bump commit must land despite the prek hook)", n)

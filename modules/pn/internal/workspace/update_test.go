@@ -192,6 +192,51 @@ url = "github:owner/foo"
 	if !strings.Contains(out.String(), "--siblings-only") {
 		t.Errorf("expected a --siblings-only skip line; got:\n%s", out.String())
 	}
+	// foo has no workspace edges, so propagateWorkspaceEdges is a no-op — the
+	// banner must NOT claim inputs were relocked (pg2-vgw3). It must state the
+	// accurate no-op wording instead.
+	if strings.Contains(out.String(), "workspace inputs relocked") {
+		t.Errorf("no-op propagation must not claim 'workspace inputs relocked'; got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "no workspace inputs to relock") {
+		t.Errorf("no-op propagation banner should state nothing was relocked; got:\n%s", out.String())
+	}
+}
+
+// TestSiblingsOnlySkipBanner asserts the --siblings-only skip banner text is
+// accurate for BOTH propagation outcomes (pg2-vgw3): when propagation actually
+// relocked workspace inputs it says so; when propagation was a no-op (no edges
+// or no rev change) it must NOT claim a relock happened, and instead states
+// nothing was relocked. Both messages share the invariant nixpkgs/third-party
+// suffix. This is the single source of truth used by both call sites
+// (updateInPlace and updateRepoViaWorktree).
+func TestSiblingsOnlySkipBanner(t *testing.T) {
+	relocked := siblingsOnlySkipBanner("foo", true)
+	noop := siblingsOnlySkipBanner("foo", false)
+
+	if relocked == noop {
+		t.Fatalf("banner must differ between relocked and no-op cases; both = %q", relocked)
+	}
+	// Relocked case: states inputs were relocked.
+	if !strings.Contains(relocked, "workspace inputs relocked") {
+		t.Errorf("relocked banner should say 'workspace inputs relocked'; got %q", relocked)
+	}
+	// No-op case: must NOT falsely claim a relock; must state nothing relocked.
+	if strings.Contains(noop, "workspace inputs relocked") {
+		t.Errorf("no-op banner must not claim 'workspace inputs relocked'; got %q", noop)
+	}
+	if !strings.Contains(noop, "no workspace inputs to relock") {
+		t.Errorf("no-op banner should state nothing was relocked; got %q", noop)
+	}
+	// Both cases share the invariant suffix and the repo name.
+	for _, b := range []string{relocked, noop} {
+		if !strings.Contains(b, "--siblings-only") ||
+			!strings.Contains(b, "skipping update-locks.sh") ||
+			!strings.Contains(b, "nixpkgs/third-party untouched") ||
+			!strings.Contains(b, "foo") {
+			t.Errorf("banner missing shared components; got %q", b)
+		}
+	}
 }
 
 // TestUpdate_ContinuesPastFailureAndAggregates: when one repo's update-locks

@@ -116,11 +116,14 @@ func shortRev(rev string) string {
 //     reverted via `git checkout --`, so the subsequent rebase steps and
 //     update-locks.sh's clean-tree gate are not tripped (C2).
 //
-// Returns nil on success including the no-op case; a non-nil error means the
-// caller should mark the repo failed (no partial/dirty state is left behind).
-func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer, name, dir, flakeRel string, aliases []string) error {
+// Returns (relocked, err). relocked is true only when a workspace-sibling rev
+// actually moved and was committed; it is false for every no-op path (no
+// aliases, no flake.lock, nix wrote nothing, or only lastModified churn). A
+// non-nil error means the caller should mark the repo failed (no partial/dirty
+// state is left behind); relocked is false alongside any error.
+func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer, name, dir, flakeRel string, aliases []string) (bool, error) {
 	if len(aliases) == 0 {
-		return nil
+		return false, nil
 	}
 	// flakeRel is the flake.nix FILE path ("flake.nix", "nix/flake.nix"); the
 	// dir we cd into and locate flake.lock in is its parent. filepath.Dir maps
@@ -133,29 +136,29 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 
 	// No flake.lock yet (repo never locked) → nothing to propagate.
 	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
-		return nil
+		return false, nil
 	}
 
 	before, err := readAliasRevs(lockPath, aliases)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// Relock just the workspace-sibling inputs. --refresh is mandatory (C1).
 	args := append([]string{"flake", "update", "--refresh"}, aliases...)
 	if _, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: flakeDir, Stdout: out, Stderr: out}); err != nil {
-		return fmt.Errorf("nix flake update %v: %w", aliases, err)
+		return false, fmt.Errorf("nix flake update %v: %w", aliases, err)
 	}
 
 	// nix wrote nothing to flake.lock → already clean, nothing to do.
 	if ws.pathClean(ctx, dir, lockRel) {
-		return nil
+		return false, nil
 	}
 
 	// flake.lock differs; determine whether any *rev* actually changed.
 	after, err := readAliasRevs(lockPath, aliases)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var changed []string
 	for _, alias := range aliases {
@@ -166,13 +169,13 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 	if len(changed) == 0 {
 		// Only lastModified/formatting churn — restore to keep the tree clean (C2).
 		if _, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "checkout", "--", lockRel}, exec.RunOptions{}); err != nil {
-			return fmt.Errorf("restore unchanged %s: %w", lockRel, err)
+			return false, fmt.Errorf("restore unchanged %s: %w", lockRel, err)
 		}
-		return nil
+		return false, nil
 	}
 
 	if _, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "add", lockRel}, exec.RunOptions{}); err != nil {
-		return fmt.Errorf("git add %s: %w", lockRel, err)
+		return false, fmt.Errorf("git add %s: %w", lockRel, err)
 	}
 	msg := bumpCommitMessage(changed, before, after)
 	// PREK_ALLOW_NO_CONFIG lets the commit succeed when the repo's prek pre-commit
@@ -189,10 +192,10 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 		Stdout: out,
 		Stderr: out,
 	}); err != nil {
-		return fmt.Errorf("git commit: %w", err)
+		return false, fmt.Errorf("git commit: %w", err)
 	}
 	fmt.Fprintf(out, "  → %s: bumped workspace input(s): %v\n", name, changed)
-	return nil
+	return true, nil
 }
 
 // pathClean reports whether path has no unstaged changes in repoDir (git diff
