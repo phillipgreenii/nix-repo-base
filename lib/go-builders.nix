@@ -111,7 +111,13 @@ rec {
           ''}
           ${extraPostInstall}
         '';
-        meta = { inherit description; };
+        # mkGoBinary installs a single exe at `$out/bin/${name}` by construction,
+        # so mainProgram = name is unconditionally correct (fixes the getExe
+        # mainProgram-warning class at the builder layer — see bead pg2-148y).
+        meta = {
+          inherit description;
+          mainProgram = name;
+        };
       }
       // lib.optionalAttrs (subPackages != null) { inherit subPackages; }
     );
@@ -192,6 +198,18 @@ rec {
       # buildGoApplication uses it as the build working dir — it is intentionally
       # NOT stripped.
       pwd = if modRoot != null then src + "/" + modRoot else src;
+      # Derive meta.mainProgram = baseNameOf (head subPackages) ONLY when exactly
+      # one subPackage is built — then the installed exe name is known. For a null
+      # or multi-entry subPackages we do not guess (bead pg2-148y). A caller's
+      # explicit meta.mainProgram always wins via the merge below.
+      derivedMainProgram =
+        let
+          sp = args.subPackages or null;
+        in
+        if sp != null && builtins.length sp == 1 then baseNameOf (builtins.head sp) else null;
+      # `meta` is reassembled explicitly (default merged BENEATH args.meta so a
+      # caller-supplied mainProgram wins), so strip it from `forwarded` to avoid
+      # passing it twice into buildGoApplication.
       forwarded = builtins.removeAttrs args [
         "pname"
         "versionPath"
@@ -199,6 +217,7 @@ rec {
         "ldflags"
         "version"
         "gomod2nixToml"
+        "meta"
       ];
     in
     # `gomod2nixToml` is required (the committed lockfile must exist beside
@@ -212,6 +231,12 @@ rec {
         inherit (pkgs) go; # pin to our nixpkgs Go, not gomod2nix's
         modules = pwd + "/gomod2nix.toml";
         ldflags = ldflags ++ [ "-X ${versionPath}=${version}" ];
+        # Default mainProgram merged BENEATH the caller's meta so an explicit
+        # meta.mainProgram always wins (last-wins). No key added when nothing was
+        # derived (multi-main / no subPackages) and the caller set no meta.
+        meta =
+          (lib.optionalAttrs (derivedMainProgram != null) { mainProgram = derivedMainProgram; })
+          // (args.meta or { });
       }
     );
 }
