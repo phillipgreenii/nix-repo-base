@@ -1,20 +1,23 @@
-# A separate `pn-workspace-toml-enforce` entrypoint for the two nix-owned keys
+# A separate `pn-workspace-toml-enforce` entrypoint for the nix-owned keys
 
 **Status**: Accepted
 **Date**: 2026-07-02
-**Deciders**: Phillip Green II (implemented by Claude, bead pg2-k43p.6)
+**Deciders**: Phillip Green II (implemented by Claude, beads pg2-k43p.6 and pg2-k43p.8)
 
 ## Context
 
 `pn-workspace.toml` is a real, writable file at the workspace root. `pn` owns most
-of it — `[repos.*]`, `workspace.terminal`, the command templates — and rewrites it
-via `pn workspace init` / `pn workspace doctor --fix`. Two keys, however, express a
-machine's committed intent rather than pn's repo discovery:
+of it — `[repos.*]`, `workspace.terminal`, `workspace.name`/`description` — and
+rewrites it via `pn workspace init` / `pn workspace doctor --fix`. Several keys,
+however, express a machine's committed intent rather than pn's repo discovery:
 
 - `[workspace].id` — the stable, machine-invariant `wsid` consumed by pn:applied
   gates (`pn workspace info` surfaces it). It is deliberately NOT
   `networking.hostName`.
 - `[hooks.apply].post` — the apply post-hook (e.g. `pb gate check`).
+- `[workspace].build_command` / `[workspace].apply_command` — static command
+  templates expanded by pn with `{terminal_flake}` / `{hostname}` placeholders
+  (added to the nix-owned set by bead pg2-k43p.8).
 
 The pn:applied-gates spec (bead pg2-k43p) wanted these produced from committed nix
 source, not a hand-edit. A downstream consumer (`phillipg-nix-ziprecruiter`) needs
@@ -25,6 +28,17 @@ The critique of the design established that no packaged CLI (`yq-go`, `tq`, `tap
 byte-compatible with pn's own writer. Reimplementing a TOML writer would risk
 fighting pn's `pn workspace init` / `doctor --fix` output.
 
+### Why `workspace.terminal` is NOT in the nix-owned set
+
+`workspace.terminal` was deliberately left pn-owned rather than added to the
+enforced set in pg2-k43p.8. Unlike `build_command`/`apply_command` (static
+template strings), `terminal` is coupled to repo topology: `ParseConfig` validates
+it against `[repos.*]` (`workspace.terminal %q is not a declared repo`) and
+`pn workspace init`/`doctor` manage it as part of repo discovery. Enforcing it from
+nix would duplicate — and could contradict — pn's own repo-topology validation, so
+the ownership boundary is drawn between static templates (nix-owned) and
+topology-coupled keys (pn-owned).
+
 ## Decision
 
 Add a small, SEPARATE Go entrypoint `cmd/pn-workspace-toml-enforce` to the existing
@@ -34,11 +48,22 @@ alongside `pn`.
 
 It REUSES pn's own serialization — `internal/workspace.ParseConfig`, the
 `orderedConfig` struct, and an atomic tempfile+rename writer — via a new exported
-function `workspace.EnforceKeys(path, id, applyPost)`. `EnforceKeys`:
+function `workspace.EnforceKeys(path, id, applyPost, buildCommand, applyCommand)`
+(the `buildCommand`/`applyCommand` parameters were added in pg2-k43p.8). The
+`cmd/pn-workspace-toml-enforce` entrypoint exposes matching CLI flags: required
+`--root` / `--id` / `--apply-post`, and optional `--build-command` /
+`--apply-command`. `EnforceKeys`:
 
 - Is a no-op when the file is absent (pn owns creation via `pn workspace init`).
-- Sets ONLY `Workspace.Id` and `Hooks["apply"].Post = [applyPost]` (create-if-missing
-  for the hooks table), preserving `[repos.*]` and everything else verbatim.
+- Always sets `Workspace.Id` and `Hooks["apply"].Post = [applyPost]`
+  (create-if-missing for the hooks table).
+- Is KEY-SCOPED for the command templates: it sets `Workspace.BuildCommand` /
+  `Workspace.ApplyCommand` ONLY when a non-empty value is supplied; an empty value
+  leaves that key untouched. This is what keeps `terminal` and any future
+  unmanaged key from ever being disturbed, and lets a caller enforce a subset.
+- Preserves `[repos.*]`, `workspace.terminal`, and everything else verbatim,
+  including the `{terminal_flake}`/`{hostname}` template placeholders in the
+  command strings (pn expansion tokens, written literally).
 - Writes only when a value differs (idempotent), atomically, preserving file mode.
 - Rejects a non-slug id (`^[a-z0-9][a-z0-9-]*$`).
 

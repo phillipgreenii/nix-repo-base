@@ -9,19 +9,30 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// EnforceKeys reconciles the two nix-owned keys in a pn-workspace.toml against
-// committed source values: [workspace].id and [hooks.apply].post. It has
-// create-if-missing / enforce-when-present semantics and is deliberately narrow:
-// it NEVER renders or owns [repos.*] or any other key — pn owns those.
+// EnforceKeys reconciles the nix-owned keys in a pn-workspace.toml against
+// committed source values: [workspace].id, [hooks.apply].post, and — added by
+// bead pg2-k43p.8 — the static command templates [workspace].build_command and
+// [workspace].apply_command. It has create-if-missing / enforce-when-present
+// semantics and is deliberately narrow: it NEVER renders or owns [repos.*],
+// workspace.terminal, workspace.name/description, or any other key — pn owns
+// those. In particular workspace.terminal is left pn-owned because pn validates
+// it against [repos.*] (it is coupled to repo topology, which pn manages via
+// init/doctor); see phillipg-nix-repo-base ADR 0017.
 //
-// Semantics (all mandated by the pg2-k43p.6 design guardrails):
+// Key-scoped enforcement: buildCommand and applyCommand are enforced ONLY when a
+// non-empty value is supplied. An empty string leaves that key untouched, so the
+// caller can enforce a subset (and any key not passed a value — including
+// terminal and any future key — is never touched). id and applyPost are always
+// required and always enforced.
+//
+// Semantics (all mandated by the pg2-k43p.6/.8 design guardrails):
 //   - Absent file → no-op, returns (false, nil). (pn workspace init creates the
 //     file; the next apply enforces.)
-//   - Loads the file via ParseConfig, sets ONLY Workspace.Id and
-//     Hooks["apply"].Post = [applyPost] (creating the hooks map / apply entry
-//     when missing), and preserves everything else verbatim by re-marshalling
-//     through the SAME orderedConfig struct pn's own writer uses — so output is
-//     byte-identical to `pn init` / `doctor --fix`.
+//   - Loads the file via ParseConfig, sets ONLY the enforced keys, and preserves
+//     everything else verbatim by re-marshalling through the SAME orderedConfig
+//     struct pn's own writer uses — so output is byte-identical to `pn init` /
+//     `doctor --fix`. Template placeholders like {terminal_flake} / {hostname}
+//     in the command strings are pn expansion tokens and are written verbatim.
 //   - Writes only when a value actually differs (idempotent no-op otherwise);
 //     returns (true, nil) iff it wrote.
 //   - The write is atomic (tempfile + rename in the same dir) and preserves the
@@ -31,7 +42,7 @@ import (
 //
 // It reuses pn's go-toml/v2 serialization rather than reimplementing TOML
 // writing, so nix-driven activation and pn's own commands cannot fight.
-func EnforceKeys(path, id, applyPost string) (bool, error) {
+func EnforceKeys(path, id, applyPost, buildCommand, applyCommand string) (bool, error) {
 	if !workspaceIDRe.MatchString(id) {
 		return false, fmt.Errorf("workspace.id %q must be a slug: lowercase letters, digits, dashes", id)
 	}
@@ -70,6 +81,19 @@ func EnforceKeys(path, id, applyPost string) (bool, error) {
 	if !reflect.DeepEqual(apply.Post, want) {
 		apply.Post = want
 		cfg.Hooks["apply"] = apply
+		changed = true
+	}
+
+	// Key-scoped: enforce build_command / apply_command ONLY when a non-empty
+	// value is supplied. An empty value leaves the existing key untouched (so a
+	// caller enforcing only id+applyPost never disturbs these, and terminal /
+	// any future key is likewise never touched).
+	if buildCommand != "" && cfg.Workspace.BuildCommand != buildCommand {
+		cfg.Workspace.BuildCommand = buildCommand
+		changed = true
+	}
+	if applyCommand != "" && cfg.Workspace.ApplyCommand != applyCommand {
+		cfg.Workspace.ApplyCommand = applyCommand
 		changed = true
 	}
 
