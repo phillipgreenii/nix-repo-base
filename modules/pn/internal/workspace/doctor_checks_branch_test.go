@@ -107,6 +107,82 @@ func TestCheckBranches_AheadOnlyIsFixableByPush(t *testing.T) {
 	}
 }
 
+// Item 2: worktree-mode branch-uniform. When all present members share one
+// branch AND that branch equals the set-dir name, there are no findings.
+func TestCheckBranchUniform_UniformMatchingSetDirIsClean(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "my-feature") // set-dir name is "my-feature"
+	a := filepath.Join(root, "a")
+	b := filepath.Join(root, "b")
+	initRealRepo(t, a)
+	initRealRepo(t, b)
+	// Both members on branch "my-feature" (matches the set dir).
+	runGitT(t, a, "switch", "-q", "-c", "my-feature")
+	runGitT(t, b, "switch", "-q", "-c", "my-feature")
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
+			"a": {URL: "ua", Branch: "main"}, "b": {URL: "ub", Branch: "main"},
+		}},
+	}
+	fs := ws.checkBranchUniform(context.Background(), map[string]string{"a": a, "b": b})
+	if len(fs) != 0 {
+		t.Fatalf("uniform members matching the set-dir name should yield no findings: %+v", fs)
+	}
+}
+
+// A uniform branch that DIFFERS from the set-dir name is a naming-hygiene warning
+// (not an error): the members agree, but the set dir was named differently.
+func TestCheckBranchUniform_UniformDifferingFromSetDirIsWarning(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "set-dir-name")
+	a := filepath.Join(root, "a")
+	b := filepath.Join(root, "b")
+	initRealRepo(t, a)
+	initRealRepo(t, b)
+	runGitT(t, a, "switch", "-q", "-c", "shared-branch")
+	runGitT(t, b, "switch", "-q", "-c", "shared-branch")
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
+			"a": {URL: "ua", Branch: "main"}, "b": {URL: "ub", Branch: "main"},
+		}},
+	}
+	fs := ws.checkBranchUniform(context.Background(), map[string]string{"a": a, "b": b})
+	if !hasFinding(fs, "branch-uniform", SevWarning) {
+		t.Fatalf("uniform-but-mismatched-set-dir should be a naming warning: %+v", fs)
+	}
+	for _, f := range fs {
+		if f.Severity == SevError {
+			t.Fatalf("uniform members must not produce an error: %+v", f)
+		}
+	}
+}
+
+// Non-uniform members (each on a different branch) are branch-uniform ERRORS,
+// one per member, since worktree-set members must share one branch.
+func TestCheckBranchUniform_NonUniformIsPerMemberError(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "feature")
+	a := filepath.Join(root, "a")
+	b := filepath.Join(root, "b")
+	initRealRepo(t, a)
+	initRealRepo(t, b)
+	runGitT(t, a, "switch", "-q", "-c", "feature")      // a on "feature"
+	runGitT(t, b, "switch", "-q", "-c", "other-branch") // b on a different branch
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
+			"a": {URL: "ua", Branch: "main"}, "b": {URL: "ub", Branch: "main"},
+		}},
+	}
+	fs := ws.checkBranchUniform(context.Background(), map[string]string{"a": a, "b": b})
+	if !hasFindingForRepo(fs, "branch-uniform", "a", SevError) ||
+		!hasFindingForRepo(fs, "branch-uniform", "b", SevError) {
+		t.Fatalf("divergent members must each be a branch-uniform error: %+v", fs)
+	}
+}
+
 // findBranchSynced returns the branch-synced finding for repo, or nil.
 func findBranchSynced(fs []Finding, repo string) *Finding {
 	for i := range fs {

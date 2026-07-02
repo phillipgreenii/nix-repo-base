@@ -53,6 +53,51 @@ func TestApplyFixes_RunsInOrderAndReRuns(t *testing.T) {
 	}
 }
 
+// Item 1: applyFixes records report.Fixed = number of fixable findings resolved
+// by the fix pass (fixable-before minus those still present in the residual
+// re-run). Here two fixable findings are fixed and the stubbed re-run returns
+// none, so Fixed == 2.
+func TestApplyFixes_RecordsFixedCount(t *testing.T) {
+	mk := func(id string) Finding {
+		return Finding{
+			CheckID: id, Severity: SevError, Fixable: true,
+			fix: func(context.Context) error { return nil },
+		}
+	}
+	report := &DoctorReport{Findings: []Finding{mk("repos-present"), mk("branch-current")}}
+	ws := &Workspace{
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{}}, root: t.TempDir(),
+		registerChecksFn: func() []check { return nil }, // residual re-run: clean
+	}
+	applyFixes(context.Background(), &doctorEnv{ws: ws}, report, DoctorOptions{Fix: true})
+	if report.Fixed != 2 {
+		t.Fatalf("Fixed = %d, want 2 (both fixable findings resolved)", report.Fixed)
+	}
+}
+
+// A finding that persists in the residual re-run must NOT be counted as fixed.
+func TestApplyFixes_UnresolvedNotCounted(t *testing.T) {
+	report := &DoctorReport{Findings: []Finding{
+		{
+			CheckID: "branch-current", Repo: "dep", Severity: SevError, Fixable: true,
+			fix: func(context.Context) error { return nil },
+		},
+	}}
+	ws := &Workspace{
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{}}, root: t.TempDir(),
+		// residual re-run still reports the same finding → not resolved.
+		registerChecksFn: func() []check {
+			return []check{{id: "branch-current", run: func(context.Context, *doctorEnv) []Finding {
+				return []Finding{{CheckID: "branch-current", Repo: "dep", Severity: SevError}}
+			}}}
+		},
+	}
+	applyFixes(context.Background(), &doctorEnv{ws: ws}, report, DoctorOptions{Fix: true})
+	if report.Fixed != 0 {
+		t.Fatalf("Fixed = %d, want 0 (finding still present after fix)", report.Fixed)
+	}
+}
+
 func TestApplyFixes_FixErrorIsReported(t *testing.T) {
 	report := &DoctorReport{Findings: []Finding{
 		{

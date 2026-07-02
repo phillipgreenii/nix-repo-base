@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -53,6 +54,58 @@ func TestCheckFlakeLockFresh_StaleIsError(t *testing.T) {
 	}
 	if fixable.Manual != "pn workspace update --siblings-only" {
 		t.Errorf("Manual hint = %q, want the siblings-only relock command", fixable.Manual)
+	}
+}
+
+// Item 4: the skipped-target path. When the target repo's remote rev was skipped
+// (e.g. --offline), flake-lock-fresh cannot be evaluated: it must emit a
+// Skipped=true finding (not a real error and NOT auto-fixable), so the summary
+// reports it as SKIP rather than a spurious stale/fresh verdict.
+func TestCheckFlakeLockFresh_SkippedTargetIsSkippedFinding(t *testing.T) {
+	root := t.TempDir()
+	consumer := filepath.Join(root, "consumer")
+	initRealRepo(t, consumer)
+	// A well-formed lock pinning "dep" at some rev; freshness cannot be judged
+	// because the target's remote rev is skipped.
+	lock := `{"nodes":{"root":{"inputs":{"dep":"dep"}},"dep":{"locked":{"rev":"1111111111111111111111111111111111111111"}}}}`
+	if err := os.WriteFile(filepath.Join(consumer, "flake.lock"), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
+			"consumer": {URL: "u1", Branch: "main"}, "dep": {URL: "u2", Branch: "main"},
+		}},
+		lock: &Lock{
+			Repos: map[string]LockRepoEntry{"consumer": {FlakePath: "flake.nix"}, "dep": {FlakePath: "flake.nix"}},
+			Edges: []LockEdge{{Consumer: "consumer", Alias: "dep", Target: "dep"}},
+		},
+	}
+	env := &doctorEnv{
+		ws: ws, mode: "primary", lock: ws.lock,
+		// target "dep" is skipped → freshness unknowable.
+		refRev:  map[string]string{"consumer": "x"},
+		skipped: map[string]bool{"dep": true},
+	}
+	fs := ws.checkFlakeLockFresh(context.Background(), env)
+
+	var skipped *Finding
+	for i := range fs {
+		if fs[i].CheckID == "flake-lock-fresh" && fs[i].Repo == "consumer" {
+			skipped = &fs[i]
+		}
+	}
+	if skipped == nil {
+		t.Fatalf("expected a flake-lock-fresh finding for consumer: %+v", fs)
+	}
+	if !skipped.Skipped {
+		t.Fatalf("skipped-target finding must be Skipped=true: %+v", *skipped)
+	}
+	if skipped.Fixable || skipped.fix != nil {
+		t.Fatalf("a skipped freshness finding must NOT be auto-fixable: %+v", *skipped)
+	}
+	if !strings.Contains(skipped.Message, "skipped") {
+		t.Errorf("message should explain the skip: %q", skipped.Message)
 	}
 }
 

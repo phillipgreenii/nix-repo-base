@@ -24,9 +24,10 @@ func (ws *Workspace) checkRepos(ctx context.Context, env *doctorEnv) []Finding {
 				sev = SevError
 				msg = fmt.Sprintf("terminal repo %q is not cloned; apply/build cannot target it", name)
 			}
+			// Fix attached once, after the loop: Clone clones ALL missing repos in
+			// a single call, so one fix suffices for every repos-present finding.
 			fs = append(fs, Finding{
 				CheckID: "repos-present", Repo: name, Severity: sev, Message: msg, Fixable: true,
-				fix:    func(c context.Context) error { return ws.Clone(c, os.Stderr, CloneOptions{}) },
 				Manual: "pn workspace clone",
 			})
 		case !isGitRepo(dir):
@@ -39,6 +40,17 @@ func (ws *Workspace) checkRepos(ctx context.Context, env *doctorEnv) []Finding {
 			if f := ws.checkRepoIdentity(ctx, name, rc, dir); f != nil {
 				fs = append(fs, *f)
 			}
+		}
+	}
+
+	// Attach the single Clone fix to the FIRST repos-present finding. Clone clones
+	// every missing repo in one call, so one fix closure repairs them all; the
+	// remaining findings stay Fixable (rendered/planned as such) and clear via the
+	// residual re-run after the clone.
+	for i := range fs {
+		if fs[i].CheckID == "repos-present" {
+			fs[i].fix = func(c context.Context) error { return ws.Clone(c, os.Stderr, CloneOptions{}) }
+			break
 		}
 	}
 

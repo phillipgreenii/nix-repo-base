@@ -72,10 +72,35 @@ func applyFixes(ctx context.Context, env *doctorEnv, report *DoctorReport, opts 
 
 	// Re-run all checks against a freshly recomputed view of the workspace.
 	residual := runChecks(ctx, env, env.ws.registerChecks())
+
+	// report.Fixed = fixable findings resolved = those attempted whose
+	// (CheckID, Repo) no longer appears as a non-skipped finding in the residual
+	// re-run. A finding still present after its fix ran was not actually resolved
+	// (e.g. a rejected push) and must not be counted.
+	report.Fixed = countResolved(fixable, residual)
+
 	residual = append(residual, fixErrs...)
 	sortFindings(residual)
 	report.Findings = residual
 	report.Skipped = collectSkipped(residual)
+}
+
+// countResolved returns how many of the attempted fixable findings no longer
+// appear (by CheckID+Repo, non-skipped) in the residual re-run.
+func countResolved(attempted, residual []Finding) int {
+	stillPresent := map[string]bool{}
+	for _, f := range residual {
+		if !f.Skipped {
+			stillPresent[f.CheckID+"\x00"+f.Repo] = true
+		}
+	}
+	n := 0
+	for _, f := range attempted {
+		if !stillPresent[f.CheckID+"\x00"+f.Repo] {
+			n++
+		}
+	}
+	return n
 }
 
 // planAction returns the existing command a fix delegates to (for --dry-run).

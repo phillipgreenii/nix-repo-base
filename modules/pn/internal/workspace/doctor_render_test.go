@@ -69,3 +69,56 @@ func TestRenderDoctor_HumanGroupsAndMarks(t *testing.T) {
 		}
 	}
 }
+
+// Item 1: --fix surfaces a "fixed N items" summary line. report.Fixed carries
+// the number of findings resolved by the fix pass (fixable-before minus residual
+// after); renderHuman must report it so the user gets real feedback.
+func TestRenderDoctor_FixSummaryReportsFixedCount(t *testing.T) {
+	r := &DoctorReport{Mode: "primary", Fixed: 2}
+	var buf bytes.Buffer
+	if err := RenderDoctor(&buf, r, DoctorOptions{Fix: true}); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if !strings.Contains(s, "fixed 2 items") {
+		t.Fatalf("--fix summary should report fixed count: %q", s)
+	}
+}
+
+// A clean --fix run (nothing to fix) must NOT print a spurious "fixed 0 items".
+func TestRenderDoctor_FixSummaryOmittedWhenNothingFixed(t *testing.T) {
+	r := &DoctorReport{Mode: "primary", Fixed: 0}
+	var buf bytes.Buffer
+	if err := RenderDoctor(&buf, r, DoctorOptions{Fix: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "fixed 0 items") {
+		t.Fatalf("must not print 'fixed 0 items': %q", buf.String())
+	}
+}
+
+// Offline nit: when checks were SKIPPED (--offline) AND errors remain, the
+// summary must STILL carry the "K checks SKIPPED — remote equivalence NOT
+// verified" caveat. Previously that caveat only fired in the nErr==0 branch, so
+// with errors present it was hidden from the rollup.
+func TestRenderDoctor_SkippedCaveatShownWithErrors(t *testing.T) {
+	r := &DoctorReport{
+		Mode:    "primary",
+		Skipped: []string{"branch-synced"},
+		Findings: []Finding{
+			{CheckID: "tree-clean", Repo: "dep", Severity: SevError, Message: "dirty"},
+			{CheckID: "branch-synced", Repo: "dep", Severity: SevError, Skipped: true, Message: "remote comparison skipped"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := RenderDoctor(&buf, r, DoctorOptions{Offline: true}); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if !strings.Contains(s, "1 errors") {
+		t.Fatalf("summary should report the error count: %q", s)
+	}
+	if !strings.Contains(s, "SKIPPED") || !strings.Contains(s, "remote equivalence NOT verified") {
+		t.Fatalf("summary must retain the SKIPPED caveat even with errors present: %q", s)
+	}
+}

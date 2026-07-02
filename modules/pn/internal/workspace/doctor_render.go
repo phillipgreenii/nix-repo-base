@@ -26,7 +26,8 @@ func RenderDoctor(w io.Writer, report *DoctorReport, opts DoctorOptions) error {
 			Findings []jsonFinding `json:"findings"`
 			Skipped  []string      `json:"skipped"`
 			Plan     []string      `json:"plan,omitempty"`
-		}{Mode: report.Mode, Skipped: report.Skipped, Plan: report.Plan}
+			Fixed    int           `json:"fixed,omitempty"`
+		}{Mode: report.Mode, Skipped: report.Skipped, Plan: report.Plan, Fixed: report.Fixed}
 		for _, f := range report.Findings {
 			out.Findings = append(out.Findings, jsonFinding{
 				Check: f.CheckID, Repo: f.Repo, Severity: f.Severity.String(),
@@ -79,8 +80,6 @@ func renderHuman(w io.Writer, report *DoctorReport, opts DoctorOptions) error {
 			switch {
 			case f.Skipped:
 				tag = "[—]"
-			case f.Applied:
-				tag = "[fixed]"
 			case opts.DryRun && f.Fixable:
 				tag = "[would fix]"
 			case f.Fixable:
@@ -103,11 +102,19 @@ func renderHuman(w io.Writer, report *DoctorReport, opts DoctorOptions) error {
 
 	// Summary.
 	fmt.Fprintln(w)
+	if opts.Fix && report.Fixed > 0 {
+		fmt.Fprintf(w, "workspace doctor: fixed %d items.\n", report.Fixed)
+	}
 	switch {
 	case nErr == 0 && len(report.Skipped) > 0:
 		fmt.Fprintf(w, "workspace doctor: no errors (%d warnings), %d checks SKIPPED. remote equivalence NOT verified.\n", nWarn, len(report.Skipped))
 	case nErr == 0:
 		fmt.Fprintf(w, "workspace doctor: no errors (%d warnings). local and remote builds will match.\n", nWarn)
+	case len(report.Skipped) > 0:
+		// Errors remain AND checks were skipped: keep the SKIPPED caveat in the
+		// rollup so remote-equivalence is not silently assumed just because the
+		// gate is already red for another reason.
+		fmt.Fprintf(w, "workspace doctor: %d errors, %d warnings, %d checks SKIPPED. remote equivalence NOT verified.\n", nErr, nWarn, len(report.Skipped))
 	default:
 		fmt.Fprintf(w, "workspace doctor: %d errors, %d warnings.\n", nErr, nWarn)
 	}

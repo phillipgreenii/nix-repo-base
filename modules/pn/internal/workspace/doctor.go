@@ -35,7 +35,6 @@ type Finding struct {
 	Manual   string // copy-pasteable command for non-auto-fixable findings
 	Fixable  bool
 	Skipped  bool
-	Applied  bool
 	fix      func(ctx context.Context) error
 }
 
@@ -44,6 +43,7 @@ type DoctorReport struct {
 	Findings []Finding
 	Skipped  []string // check IDs skipped (e.g. --offline)
 	Plan     []string // populated on --dry-run: what would be fixed
+	Fixed    int      // populated on --fix: number of findings the fix pass resolved
 }
 
 func (r *DoctorReport) HasErrors() bool {

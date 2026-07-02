@@ -30,6 +30,49 @@ func TestCheckRepos_MissingNonTerminalIsWarning(t *testing.T) {
 	}
 }
 
+// Item 5: Clone clones ALL missing repos in one call, so attaching a Clone fix
+// to every missing-repo finding runs Clone once per finding (redundant, though
+// idempotent). checkRepos must attach the actual Clone fix to only ONE
+// repos-present finding; the others stay Fixable (so they still render/plan as
+// fixable and clear via the residual re-run) but carry no fix closure.
+func TestCheckRepos_MissingReposShareOneCloneFix(t *testing.T) {
+	root := t.TempDir()
+	ws := &Workspace{
+		root: root, runner: exec.NewRealRunner(),
+		config: &WorkspaceConfig{
+			Workspace: WorkspaceSection{Terminal: "term"},
+			Repos: map[string]RepoConfig{
+				"term": {URL: "u", Branch: "main"}, // present
+				"a":    {URL: "ua", Branch: "main"},
+				"b":    {URL: "ub", Branch: "main"},
+			},
+		},
+	}
+	initRealRepo(t, filepath.Join(root, "term")) // a and b are missing
+	env := &doctorEnv{ws: ws, mode: "primary", terminal: "term"}
+	fs := ws.checkRepos(context.Background(), env)
+
+	var withFix, present int
+	for i := range fs {
+		if fs[i].CheckID != "repos-present" {
+			continue
+		}
+		present++
+		if !fs[i].Fixable {
+			t.Fatalf("every repos-present finding should stay Fixable: %+v", fs[i])
+		}
+		if fs[i].fix != nil {
+			withFix++
+		}
+	}
+	if present != 2 {
+		t.Fatalf("expected 2 missing-repo findings, got %d: %+v", present, fs)
+	}
+	if withFix != 1 {
+		t.Fatalf("expected exactly ONE repos-present finding to carry the Clone fix, got %d", withFix)
+	}
+}
+
 func TestCheckRepos_MissingTerminalIsError(t *testing.T) {
 	root := t.TempDir()
 	ws := &Workspace{
