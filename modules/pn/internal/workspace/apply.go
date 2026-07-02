@@ -131,22 +131,44 @@ func (ws *Workspace) restartFsmonitorDaemon(ctx context.Context, out io.Writer) 
 	_, _ = ws.runner.Run(ctx, "pkill", []string{"-f", "git fsmonitor--daemon"}, exec.RunOptions{})
 }
 
-// allRepoDirs returns the clone dir for every declared repo that exists on
-// disk, honoring overrides. Missing clones are skipped so the rebuild gate and
-// mark-applied don't fail on a repo that hasn't been cloned yet.
-func (ws *Workspace) allRepoDirs(overrides map[string]string) []string {
-	var dirs []string
+// repoDir pairs a repo's canonical applied-state store key (keyPath) with the
+// checkout git actually operates on (gitDir). They differ only under an
+// override-path apply (coordinated-worktree flow): git reads HEAD/dirtiness
+// from gitDir (the applied checkout), but the store is keyed by keyPath (the
+// canonical <root>/<name>) so `pn workspace info`, which knows only the
+// canonical path, finds the record. Absent overrides the two are identical.
+type repoDir struct {
+	keyPath string // canonical <root>/<name>; the applied-state store key
+	gitDir  string // resolved checkout (override path or canonical); git runs here
+}
+
+// appliedStateKeyPath is the single, shared rule for deriving a repo's
+// applied-state store key: the canonical <root>/<name> path. Both the apply
+// path (allRepoDirs → markApplied/needsRebuild) and Info key the store through
+// this rule, so an override-path apply and a later `pn workspace info` resolve
+// to the same store entry.
+func (ws *Workspace) appliedStateKeyPath(name string) string {
+	return filepath.Join(ws.root, name)
+}
+
+// allRepoDirs returns, for every declared repo that exists on disk, the
+// canonical store-key path paired with the checkout git operates on (honoring
+// overrides). Missing clones are skipped so the rebuild gate and mark-applied
+// don't fail on a repo that hasn't been cloned yet.
+func (ws *Workspace) allRepoDirs(overrides map[string]string) []repoDir {
+	var dirs []repoDir
 	// Alpha (not topoAlpha): callers use the result as a set of paths for
 	// existence checks (rebuild gate, mark-applied) — order is not semantic.
 	for _, key := range orderedRepoNames(ws.config.Repos) {
-		dir := filepath.Join(ws.root, key)
+		keyPath := ws.appliedStateKeyPath(key)
+		gitDir := keyPath
 		if ov, ok := overrides[key]; ok {
-			dir = ov
+			gitDir = ov
 		}
-		if !dirExists(dir) {
+		if !dirExists(gitDir) {
 			continue
 		}
-		dirs = append(dirs, dir)
+		dirs = append(dirs, repoDir{keyPath: keyPath, gitDir: gitDir})
 	}
 	return dirs
 }

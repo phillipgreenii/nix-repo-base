@@ -299,8 +299,30 @@ url = "github:owner/leaf"
 url = "github:owner/dep"
 `)
 	got := w.allRepoDirs(nil)
-	want := []string{filepath.Join(root, "leaf")}
+	leafDir := filepath.Join(root, "leaf")
+	want := []repoDir{{keyPath: leafDir, gitDir: leafDir}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("allRepoDirs should skip missing clones: got %#v want %#v", got, want)
+	}
+}
+
+// TestAllRepoDirs_OverrideKeepsCanonicalStoreKey pins the pg2-k43p.3 fix: under
+// an override, gitDir follows the override checkout but keyPath stays canonical
+// so the applied-state store is keyed the same way Info reads it.
+func TestAllRepoDirs_OverrideKeepsCanonicalStoreKey(t *testing.T) {
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	override := t.TempDir() // stand-in coordinated-worktree checkout of "leaf"
+	w := openWS(t, root, `
+[workspace]
+terminal = "leaf"
+
+[repos.leaf]
+url = "github:owner/leaf"
+`)
+	got := w.allRepoDirs(map[string]string{"leaf": override})
+	want := []repoDir{{keyPath: filepath.Join(root, "leaf"), gitDir: override}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("override must keep the canonical store key while pointing git at the override: got %#v want %#v", got, want)
 	}
 }

@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"context"
-	"path/filepath"
 )
 
 // WorkspaceInfo is the stable JSON contract emitted by `pn workspace info`.
@@ -30,7 +29,10 @@ func (ws *Workspace) Info(ctx context.Context) (WorkspaceInfo, error) {
 		Terminal: ws.config.Workspace.Terminal,
 	}
 	for _, name := range ws.topoAlpha(ctx) {
-		path := filepath.Join(ws.root, name)
+		// Key the applied-state lookup by the canonical path via the shared
+		// helper — the same rule markApplied/needsRebuild use — so an
+		// override-path apply's record is found here (pg2-k43p.3).
+		path := ws.appliedStateKeyPath(name)
 		ri := RepoInfo{Name: name, Path: path}
 		if st, ok, err := readAppliedState(path); err != nil {
 			return WorkspaceInfo{}, err

@@ -21,26 +21,28 @@ var hexFilenameRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // A corrupt or unreadable store returns an error (fail-closed) rather than
 // triggering a rebuild. Returns false (with a notice) only when every repo is
 // clean and unchanged.
-func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []string, force bool, out io.Writer) (bool, error) {
+func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []repoDir, force bool, out io.Writer) (bool, error) {
 	if force {
 		return true, nil
 	}
-	for _, dir := range repoDirs {
-		res, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "status", "--porcelain"}, exec.RunOptions{})
+	for _, rd := range repoDirs {
+		res, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "status", "--porcelain"}, exec.RunOptions{})
 		if err != nil {
-			return false, fmt.Errorf("git status in %s: %w", dir, err)
+			return false, fmt.Errorf("git status in %s: %w", rd.gitDir, err)
 		}
 		if strings.TrimSpace(string(res.Stdout)) != "" {
 			return true, nil
 		}
-		res, err = ws.runner.Run(ctx, "git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.RunOptions{})
+		res, err = ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "rev-parse", "HEAD"}, exec.RunOptions{})
 		if err != nil {
-			return false, fmt.Errorf("git rev-parse in %s: %w", dir, err)
+			return false, fmt.Errorf("git rev-parse in %s: %w", rd.gitDir, err)
 		}
 		head := strings.TrimSpace(string(res.Stdout))
-		st, ok, err := readAppliedState(dir)
+		// Key the store by the canonical path so the rebuild-skip check reads
+		// the same entry markApplied wrote and Info reads (shared key rule).
+		st, ok, err := readAppliedState(rd.keyPath)
 		if err != nil {
-			return false, fmt.Errorf("read applied-state for %s: %w", dir, err)
+			return false, fmt.Errorf("read applied-state for %s: %w", rd.keyPath, err)
 		}
 		if !ok || head != st.AppliedRef {
 			return true, nil
@@ -52,20 +54,23 @@ func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []string, force 
 
 // markApplied records each repo's current HEAD (and dirty flag) into the
 // authoritative applied-state store. Written only after a successful apply.
-func (ws *Workspace) markApplied(ctx context.Context, repoDirs []string) error {
+// git reads HEAD/dirtiness from the applied checkout (gitDir), but the store is
+// keyed by the canonical path (keyPath) — the same key Info reads — so an
+// override-path apply is discoverable by `pn workspace info`.
+func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	for _, dir := range repoDirs {
-		res, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.RunOptions{})
+	for _, rd := range repoDirs {
+		res, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "rev-parse", "HEAD"}, exec.RunOptions{})
 		if err != nil {
-			return fmt.Errorf("git rev-parse in %s: %w", dir, err)
+			return fmt.Errorf("git rev-parse in %s: %w", rd.gitDir, err)
 		}
 		head := strings.TrimSpace(string(res.Stdout))
-		st, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "status", "--porcelain"}, exec.RunOptions{})
+		st, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "status", "--porcelain"}, exec.RunOptions{})
 		if err != nil {
-			return fmt.Errorf("git status in %s: %w", dir, err)
+			return fmt.Errorf("git status in %s: %w", rd.gitDir, err)
 		}
 		dirty := strings.TrimSpace(string(st.Stdout)) != ""
-		if err := writeAppliedState(dir, AppliedState{AppliedRef: head, Dirty: dirty, AppliedAt: now}); err != nil {
+		if err := writeAppliedState(rd.keyPath, AppliedState{AppliedRef: head, Dirty: dirty, AppliedAt: now}); err != nil {
 			return err
 		}
 	}

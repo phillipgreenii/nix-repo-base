@@ -12,7 +12,7 @@ import (
 
 func TestNeedsRebuild_Force(t *testing.T) {
 	w := &Workspace{runner: exec.NewFakeRunner()}
-	got, err := w.needsRebuild(context.Background(), []string{"/x"}, true, &bytes.Buffer{})
+	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/x", gitDir: "/x"}}, true, &bytes.Buffer{})
 	if err != nil || !got {
 		t.Fatalf("force should rebuild: %v %v", got, err)
 	}
@@ -23,7 +23,7 @@ func TestNeedsRebuild_DirtyTree(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", "/repo", "status", "--porcelain"}, exec.Result{Stdout: []byte(" M file\n")}, nil)
 	w := &Workspace{runner: f}
-	got, err := w.needsRebuild(context.Background(), []string{"/repo"}, false, &bytes.Buffer{})
+	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/repo", gitDir: "/repo"}}, false, &bytes.Buffer{})
 	if err != nil || !got {
 		t.Fatalf("dirty tree should rebuild: %v %v", got, err)
 	}
@@ -41,7 +41,7 @@ func TestNeedsRebuild_ReadsNewStore(t *testing.T) {
 	if err := writeAppliedState(dir, AppliedState{AppliedRef: "abc123"}); err != nil {
 		t.Fatal(err)
 	}
-	rebuild, err := w.needsRebuild(context.Background(), []string{dir}, false, &bytes.Buffer{})
+	rebuild, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: dir, gitDir: dir}}, false, &bytes.Buffer{})
 	if err != nil || rebuild {
 		t.Fatalf("clean + matching applied_ref should skip rebuild; rebuild=%v err=%v", rebuild, err)
 	}
@@ -69,7 +69,7 @@ func TestMarkApplied_WriteFailIsReturned(t *testing.T) {
 	f.AddResponse("git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
 	f.AddResponse("git", []string{"-C", dir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	w := &Workspace{runner: f}
-	if err := w.markApplied(context.Background(), []string{dir}); err == nil {
+	if err := w.markApplied(context.Background(), []repoDir{{keyPath: dir, gitDir: dir}}); err == nil {
 		t.Fatal("markApplied must return the store-write error (fail-closed)")
 	}
 }

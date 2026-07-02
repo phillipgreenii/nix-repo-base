@@ -38,11 +38,19 @@ A new store is written by `markApplied` on every successful `pn workspace apply`
 `needsRebuild` and `pn workspace info`. The store path is:
 
 ```
-$XDG_DATA_HOME/pn-workspace/applied/<sha256(checkout-path)>
+$XDG_DATA_HOME/pn-workspace/applied/<sha256(canonical-workspace-path)>
 ```
 
-where `<sha256(checkout-path)>` is the hex SHA-256 of the absolute checkout path. This key is
-stable across process restarts and machine reboots for a given checkout location.
+where `<sha256(canonical-workspace-path)>` is the hex SHA-256 of the absolute **canonical** repo
+path `<root>/<name>` — derived by a single shared helper (`Workspace.appliedStateKeyPath`) used by
+`markApplied`, `needsRebuild`, and `pn workspace info` alike. The key is stable across process
+restarts and machine reboots for a given workspace location.
+
+Under an override-path apply (a coordinated-worktree / `OverridePaths` apply) the applied ref and
+dirty flag are still read from the **override checkout** (git runs there), but the store is keyed by
+the **canonical** `<root>/<name>` path — never the override path. Because `pn workspace info` knows
+only the canonical path, keying the write canonically is what lets a later `info` (and its
+consumers, e.g. `pb gate check`) find the record. See `pg2-k43p.3`.
 
 Each file is a JSON object:
 
@@ -121,8 +129,11 @@ machine. A `wsid` MUST be unique per machine at apply time.
   without parsing `pn` internals.
 - The `wsids/` registry makes same-machine wsid collisions a hard error rather than silent
   misbehavior.
-- The store path encodes the checkout path via SHA-256, so multiple checkouts of the same repo on
-  one machine each get independent records.
+- The store path encodes the canonical workspace path (`<root>/<name>`) via SHA-256, derived by one
+  shared helper. Two different workspaces (distinct roots) get independent records, while an
+  override-path apply of a repo and a later `pn workspace info` for that same workspace repo resolve
+  to the **same** record — so the applied state is discoverable by `info` and its consumers
+  regardless of which checkout performed the apply.
 
 ### Negative
 
@@ -134,13 +145,6 @@ machine. A `wsid` MUST be unique per machine at apply time.
   the legacy store is not migrated, the first `pn workspace apply` after this ships finds no
   record and therefore forces a one-time full rebuild of every repo (benign; subsequent applies
   skip correctly).
-- The applied-state store is keyed by the repo checkout path that was applied. `pn workspace apply`
-  with `OverridePaths` (e.g. a coordinated-worktree / override apply) records state under the
-  override path, whereas `pn workspace info` always reads the canonical `<root>/<name>` path. So
-  after an override-path apply, `pn workspace info` (and any consumer of it, e.g. Phase 2's
-  `pb gate check`) reports an empty `applied_ref` for that repo. The common case — a normal apply
-  from the workspace root with no overrides — is unaffected (both paths resolve identically).
-  Resolving this for the override flow is deferred to Phase 2 (tracked as a follow-up bead).
 - A workspace moved to a new path on disk loses its applied-state record (the SHA-256 key changes).
   Users MUST re-run `pn workspace apply` after moving a checkout.
 
