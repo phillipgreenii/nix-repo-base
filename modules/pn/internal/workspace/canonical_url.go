@@ -31,9 +31,7 @@ func canonicalURL(rawURL string) string {
 	}
 
 	// Strip git+ prefix from git+ssh:// and git+https://.
-	if strings.HasPrefix(s, "git+") {
-		s = s[len("git+"):]
-	}
+	s = strings.TrimPrefix(s, "git+")
 
 	// Handle github: shorthand: "github:owner/repo[/extra]" → "github.com/owner/repo".
 	if strings.HasPrefix(s, "github:") {
@@ -120,11 +118,9 @@ func stripPort(s string) string {
 	}
 	if isPort {
 		host := s[:colonIdx]
-		rest := afterColon
+		rest := ""
 		if slashIdx != -1 {
 			rest = afterColon[slashIdx:]
-		} else {
-			rest = ""
 		}
 		return host + rest
 	}

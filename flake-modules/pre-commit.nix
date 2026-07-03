@@ -55,6 +55,45 @@ in
       ...
     }:
     let
+      # Module-aware golangci-lint entry. The stock git-hooks.nix
+      # `hooks.golangci-lint` runs `golangci-lint run ./<dir>` from the repo
+      # root, which fails here: this repo is MULTI-MODULE (go.mod lives in
+      # modules/pn and modules/jira, not at the repo root), and golangci-lint
+      # must be invoked from within the Go module. This entry instead walks each
+      # changed .go file up to its nearest go.mod and lints that whole module
+      # once. The repo-root .golangci.yml (discovered by walking up) pins the
+      # linter set so this hook and a manual `golangci-lint run` agree.
+      golangciLintEntry = pkgs.writeShellScript "precommit-golangci-lint" ''
+        set -euo pipefail
+        golangci="${pkgs.golangci-lint}/bin/golangci-lint"
+        # golangci-lint loads the full package graph via `go/packages`, so it
+        # needs the `go` toolchain on PATH (matched to golangci-lint's build) and
+        # writable module/build caches. Provide them here rather than relying on
+        # the ambient shell so the hook works from `nix flake check` too.
+        export PATH="${pkgs.go}/bin:$PATH"
+        export GOFLAGS="-mod=mod"
+        export GOCACHE="''${GOCACHE:-$(mktemp -d)/go-build}"
+        export GOPATH="''${GOPATH:-$(mktemp -d)/go}"
+        # Resolve each changed file to its owning go.mod directory, dedupe.
+        mods=""
+        for f in "$@"; do
+          dir=$(dirname "$f")
+          while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
+            if [ -f "$dir/go.mod" ]; then
+              mods="$mods$dir"$'\n'
+              break
+            fi
+            dir=$(dirname "$dir")
+          done
+        done
+        [ -n "$mods" ] || exit 0
+        rc=0
+        for mod in $(printf '%s' "$mods" | sort -u); do
+          ( cd "$mod" && "$golangci" run ./... ) || rc=1
+        done
+        exit $rc
+      '';
+
       preCommit = producerInputs.git-hooks.lib.${system}.run {
         # `excludes` becomes a top-level pre-commit `exclude` regex applied to
         # every hook (git-hooks modules/pre-commit.nix). Single source of truth
@@ -96,6 +135,18 @@ in
             entry = "${pkgs.python3Packages.pre-commit-hooks}/bin/end-of-file-fixer";
           };
           check-case-conflicts.enable = true;
+          # Go linting. The stock git-hooks.nix golangci-lint hook is not
+          # multi-module-aware (see golangciLintEntry above), so this uses a
+          # custom module-aware entry while keeping the standard hook shape
+          # (files, require_serial). package is wired to pkgs.golangci-lint.
+          golangci-lint = {
+            enable = true;
+            name = "golangci-lint";
+            package = pkgs.golangci-lint;
+            entry = builtins.toString golangciLintEntry;
+            files = "\\.go$";
+            require_serial = true;
+          };
         }
         // topLevelCfg.extraHooks;
       };

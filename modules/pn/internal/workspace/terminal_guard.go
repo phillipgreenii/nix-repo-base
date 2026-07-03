@@ -20,7 +20,9 @@ func terminalRequiredError(candidates []string) error {
 		candidateStr = strings.Join(candidates, ", ")
 	}
 	return fmt.Errorf(
-		"no terminal repo configured for this workspace.\n  set workspace.terminal in pn-workspace.toml to one of: %s,\n  or pass --terminal <name> to this command.",
+		"no terminal repo configured for this workspace; "+
+			"set workspace.terminal in pn-workspace.toml to one of: %s, "+
+			"or pass --terminal <name> to this command",
 		candidateStr,
 	)
 }

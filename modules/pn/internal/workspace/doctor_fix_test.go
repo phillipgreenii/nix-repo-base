@@ -8,8 +8,8 @@ import (
 )
 
 func TestFixOrderRanks(t *testing.T) {
-	if !(fixOrder("repos-present") < fixOrder("lock-present") &&
-		fixOrder("lock-present") < fixOrder("flake-lock-fresh")) {
+	if fixOrder("repos-present") >= fixOrder("lock-present") ||
+		fixOrder("lock-present") >= fixOrder("flake-lock-fresh") {
 		t.Fatal("fix order ranks wrong")
 	}
 }

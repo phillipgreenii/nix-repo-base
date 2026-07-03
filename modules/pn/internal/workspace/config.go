@@ -146,7 +146,7 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 		for name, lr := range legacy.Repos {
 			if lr.InputName != "" {
 				return nil, fmt.Errorf(
-					"repo %q: input-name is no longer supported; aliases are derived per-edge from flake input URLs at lock time. Remove this field from pn-workspace.toml.",
+					"repo %q: input-name is no longer supported; aliases are derived per-edge from flake input URLs at lock time; remove this field from pn-workspace.toml",
 					name,
 				)
 			}

@@ -193,19 +193,19 @@ func writeLockAtomic(destPath string, lock *Lock) error {
 	tmpPath := tmp.Name()
 	// Close before WriteLock re-opens it.
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write lock (tempfile close): %w", err)
 	}
 
 	// Write to tmpPath via WriteLock.
 	if err := WriteLock(tmpPath, lock); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return err
 	}
 
 	// Atomic rename: replace destPath with tmpPath.
 	if err := os.Rename(tmpPath, destPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write lock (rename %s -> %s): %w", tmpPath, destPath, err)
 	}
 	return nil

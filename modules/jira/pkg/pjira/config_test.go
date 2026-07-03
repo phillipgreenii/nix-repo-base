@@ -8,7 +8,9 @@ import (
 
 func TestLoadFile_parsesTOML(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.toml")
-	os.WriteFile(p, []byte("base_url=\"https://x.atlassian.net\"\nemail=\"e@x\"\ndefault_limit=50\n[secret]\nsource=\"command\"\ncommand=[\"sec\",\"-w\"]\n"), 0o600)
+	if err := os.WriteFile(p, []byte("base_url=\"https://x.atlassian.net\"\nemail=\"e@x\"\ndefault_limit=50\n[secret]\nsource=\"command\"\ncommand=[\"sec\",\"-w\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	c, err := LoadFile(p)
 	if err != nil {
 		t.Fatal(err)

@@ -118,7 +118,7 @@ func TestColorEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if colorEnabled(f) {
 		t.Error("colorEnabled should be false for a regular file (not a char device)")
 	}

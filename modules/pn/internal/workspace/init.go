@@ -159,16 +159,16 @@ func (w *Workspace) writeConfigTOMLAtomic() error {
 	}
 	tmpPath := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write config (write): %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write config (close): %w", err)
 	}
 	if err := os.Rename(tmpPath, dest); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write config (rename): %w", err)
 	}
 	return nil
@@ -223,39 +223,6 @@ func httpsToFlakeURL(https string) string {
 	spec := strings.TrimPrefix(https, prefix)
 	spec = strings.TrimSuffix(spec, ".git")
 	return "github:" + spec
-}
-
-// persistNonDefaultFlakePaths resolves each repo's flake path and writes it
-// to pn-workspace.toml if (and only if) it is non-default.
-// Default paths (flake.nix, nix/flake.nix) are NOT written — they remain implicit.
-func (w *Workspace) persistNonDefaultFlakePaths() error {
-	var changed bool
-	names := make([]string, 0, len(w.config.Repos))
-	for n := range w.config.Repos {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		r := w.config.Repos[name]
-		if r.FlakePath != "" {
-			// Already explicitly set; don't override.
-			continue
-		}
-		resolved := w.resolveFlakePath(name)
-		if resolved == "" || isDefaultFlakePath(resolved) {
-			// No flake found, or it's a default path — don't write to config.
-			continue
-		}
-		// Non-default path: persist to config.
-		r.FlakePath = resolved
-		w.config.Repos[name] = r
-		changed = true
-	}
-	if changed {
-		return w.writeConfigTOML()
-	}
-	return nil
 }
 
 // RefreshLock re-derives the workspace lock from each repo's declared flake

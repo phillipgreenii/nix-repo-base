@@ -209,7 +209,9 @@ func TestIntegration_FromDiscovery_InitLockRebase(t *testing.T) {
 	// Verify lock order has aaa before ccc; bbb can be anywhere.
 	data, _ := os.ReadFile(filepath.Join(root, LockFileName))
 	var lock Lock
-	json.Unmarshal(data, &lock)
+	if err := json.Unmarshal(data, &lock); err != nil {
+		t.Fatalf("unmarshal lock: %v", err)
+	}
 
 	aaaIdx, cccIdx := -1, -1
 	for i, k := range lock.Order {
@@ -466,7 +468,9 @@ url = "github:o/consumer-b"
 
 	data, _ := os.ReadFile(filepath.Join(root, LockFileName))
 	var lock Lock
-	json.Unmarshal(data, &lock)
+	if err := json.Unmarshal(data, &lock); err != nil {
+		t.Fatalf("unmarshal lock: %v", err)
+	}
 
 	// Expect 3 edges:
 	// consumer-a → lib-x (alias: shared-dep)
@@ -821,7 +825,9 @@ url = "github:phillipgreenii/homelab"
 
 	data, _ := os.ReadFile(filepath.Join(root, LockFileName))
 	var lock Lock
-	json.Unmarshal(data, &lock)
+	if err := json.Unmarshal(data, &lock); err != nil {
+		t.Fatalf("unmarshal lock: %v", err)
+	}
 
 	// Expect one edge: homelab → nix-personal.
 	if len(lock.Edges) != 1 {

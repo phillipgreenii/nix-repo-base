@@ -123,15 +123,23 @@ func TestIsOrphanedStandaloneHM(t *testing.T) {
 	home := t.TempDir()
 	pdir := filepath.Join(home, ".local/state/nix/profiles")
 	gcroots := filepath.Join(home, ".local/state/home-manager/gcroots")
-	os.MkdirAll(pdir, 0o755)
-	os.MkdirAll(gcroots, 0o755)
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(gcroots, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	hm := filepath.Join(pdir, "home-manager")
-	os.Symlink("/nix/store/standalone", hm)
+	if err := os.Symlink("/nix/store/standalone", hm); err != nil {
+		t.Fatal(err)
+	}
 	s := NewWithEnv(nil, Env{Home: home})
 	if s.isOrphanedStandaloneHMProfile(hm) {
 		t.Fatal("not orphaned without current-home")
 	}
-	os.Symlink("/nix/store/darwin", filepath.Join(gcroots, "current-home"))
+	if err := os.Symlink("/nix/store/darwin", filepath.Join(gcroots, "current-home")); err != nil {
+		t.Fatal(err)
+	}
 	if !s.isOrphanedStandaloneHMProfile(hm) {
 		t.Fatal("orphaned when both exist")
 	}

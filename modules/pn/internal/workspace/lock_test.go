@@ -123,7 +123,7 @@ func TestReadLock_LegacyFileEmitsNotice(t *testing.T) {
 
 	lock, readErr := ReadLock(newPath)
 
-	w.Close()
+	_ = w.Close()
 	os.Stderr = oldStderr
 	buf := make([]byte, 4096)
 	n, _ := r.Read(buf)

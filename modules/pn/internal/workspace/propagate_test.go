@@ -492,7 +492,7 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 
 func commitCount(t *testing.T, dir string) int {
 	var n int
-	fmt.Sscanf(gitOut(t, dir, "rev-list", "--count", "HEAD"), "%d", &n)
+	_, _ = fmt.Sscanf(gitOut(t, dir, "rev-list", "--count", "HEAD"), "%d", &n)
 	return n
 }
 

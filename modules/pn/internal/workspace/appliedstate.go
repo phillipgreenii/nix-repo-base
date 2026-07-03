@@ -42,9 +42,9 @@ func writeAppliedState(repoDir string, st AppliedState) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op if rename succeeded
+	defer func() { _ = os.Remove(tmpName) }() // no-op if rename succeeded
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

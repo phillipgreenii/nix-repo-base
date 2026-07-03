@@ -39,9 +39,9 @@ func checkWsidUnique(wsid, root string) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op if rename succeeded
+	defer func() { _ = os.Remove(tmpName) }() // no-op if rename succeeded
 	if _, err := tmp.WriteString(root); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

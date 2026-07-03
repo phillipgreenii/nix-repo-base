@@ -16,7 +16,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	pnBinary = filepath.Join(tmp, "pn")
 	cmd := exec.Command("go", "build", "-ldflags", "-X main.Version=20260531-test", "-o", pnBinary, ".")
 	cmd.Stdout = os.Stdout

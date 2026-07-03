@@ -263,7 +263,7 @@ url = "github:owner/myrepo"
 	}
 	result, err := ws.gatherInputURLs(context.Background())
 
-	w.Close()
+	_ = w.Close()
 	os.Stderr = oldStderr
 	buf := make([]byte, 4096)
 	n, _ := r.Read(buf)
