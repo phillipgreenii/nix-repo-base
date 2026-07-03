@@ -65,6 +65,15 @@ in
       # linter set so this hook and a manual `golangci-lint run` agree.
       golangciLintEntry = pkgs.writeShellScript "precommit-golangci-lint" ''
         set -euo pipefail
+        # Opt-in guard: this hook lints Go ONLY in a repo that ships a root
+        # golangci config. git-hooks/pre-commit runs hooks from the repo root, so
+        # $PWD here is the repo root. repo-base has one (it lints modules/pn +
+        # modules/jira); consumers of flakeModules.pre-commit do NOT, so the hook
+        # no-ops for them instead of linting their differently-maintained,
+        # sometimes sandbox-unbuildable Go. (bd: pg2-q6i5)
+        if [ ! -f .golangci.yml ] && [ ! -f .golangci.yaml ] && [ ! -f .golangci.toml ]; then
+          exit 0
+        fi
         golangci="${pkgs.golangci-lint}/bin/golangci-lint"
         # golangci-lint loads the full package graph via `go/packages`, so it
         # needs the `go` toolchain on PATH (matched to golangci-lint's build) and
