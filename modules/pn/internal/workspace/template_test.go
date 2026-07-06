@@ -29,7 +29,8 @@ func TestSubstituteCommand_AllVars(t *testing.T) {
 		Builder:            "nixos-rebuild",
 	}
 	got, err := substituteCommand(
-		"{builder} switch --flake {terminal_nix_dir}#{hostname} {terminal_repo_dir} {terminal_nix_relative_path}", v)
+		"{builder} switch --flake {terminal_nix_dir}#{hostname} {terminal_repo_dir} {terminal_nix_relative_path}", v,
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

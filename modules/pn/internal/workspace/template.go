@@ -85,7 +85,8 @@ func validateCommandPlaceholders(field, tmpl string) error {
 	if unknown := unknownPlaceholders(tmpl); len(unknown) > 0 {
 		return fmt.Errorf(
 			"%s references unknown placeholder(s) %q; known placeholders: %q",
-			field, unknown, knownPlaceholders)
+			field, unknown, knownPlaceholders,
+		)
 	}
 	return nil
 }
@@ -102,7 +103,8 @@ func substituteCommand(tmpl string, v templateVars) ([]string, error) {
 		if n == "builder" && v.Builder == "" {
 			return nil, fmt.Errorf(
 				"no built-in builder for this OS (GOOS=%s); set build_command/apply_command explicitly in pn-workspace.toml",
-				runtime.GOOS)
+				runtime.GOOS,
+			)
 		}
 	}
 
@@ -110,7 +112,8 @@ func substituteCommand(tmpl string, v templateVars) ([]string, error) {
 	if unknown := unknownPlaceholders(tmpl); len(unknown) > 0 {
 		return nil, fmt.Errorf(
 			"unknown placeholder(s) %q in command template; known placeholders: %q",
-			unknown, knownPlaceholders)
+			unknown, knownPlaceholders,
+		)
 	}
 
 	r := strings.NewReplacer(
