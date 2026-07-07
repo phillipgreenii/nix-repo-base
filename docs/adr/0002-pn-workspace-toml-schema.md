@@ -1,7 +1,7 @@
 # ADR-0002: pn-workspace.toml schema for multi-repo workspace management
 
 **Date:** 2026-06-01
-**Status:** Accepted (amended by [ADR-0012](0012-pn-applied-state-store-and-info-api.md))
+**Status:** Accepted (amended by [ADR-0012](0012-pn-applied-state-store-and-info-api.md); hooks superseded by [ADR-0019](0019-per-repo-event-hooks.md))
 **Deciders:** phillipgreenii
 
 ## Context
