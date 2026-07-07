@@ -105,6 +105,29 @@ func (w *Workspace) WorkforestAdd(ctx context.Context, out io.Writer, errOut io.
 		if err := w.gitWorktreeAddOne(ctx, out, setDir, repo, branch, opts.CommitIsh); err != nil {
 			return err
 		}
+		// (Re)install the repo's opt-in git pre-commit hooks IN its freshly-created
+		// worktree so the set gets working, branch-correct hooks. Best-effort: a
+		// failure here is warned and skipped, never fatal — the worktree is already
+		// created and rolling it back would surprise the user (mirrors the
+		// post-hook warn-only philosophy in cli/hooks.go). We read the opt-in
+		// output list from the canonical config (w.config); the set's own
+		// pn-workspace.toml is not written until writeSetMembership below.
+		//
+		// Shared-hooks caveat: git worktrees share the canonical repo's
+		// .git/hooks (hooks resolve via --git-common-dir), but the installed hook
+		// runs prek against a RELATIVE .pre-commit-config.yaml, which each worktree
+		// resolves to its OWN symlink — so the pre-commit CONFIG is
+		// per-worktree-isolated (a config/formatter change tested in a set does not
+		// touch canonical). The one shared element is the prek BINARY version baked
+		// into the shared hook script: if the set's branch bumps prek itself,
+		// re-installing from the set rewrites the shared hook's prek path (affects
+		// canonical). Config/formatter changes do NOT cross-contaminate.
+		setRepo := filepath.Join(setDir, repo)
+		if outputs := w.config.Repos[repo].InstallHooks; len(outputs) > 0 {
+			if err := w.InstallHooksInDir(ctx, out, errOut, repo, setRepo, outputs); err != nil {
+				fmt.Fprintf(errOut, "warning: install-hooks in workforest worktree %s: %v\n", repo, err)
+			}
+		}
 	}
 
 	// --- Write the set's config/lock (filtered to the member set) ---
@@ -268,6 +291,22 @@ func (w *Workspace) WorkforestAddRepo(ctx context.Context, out io.Writer, errOut
 	// Add the worktree for the one repo on the set's branch.
 	if err := w.gitWorktreeAddOne(ctx, out, setDir, repo, branch, ""); err != nil {
 		return err
+	}
+
+	// (Re)install the repo's opt-in git pre-commit hooks IN the new worktree.
+	// Best-effort: a failure is warned and skipped, never fatal — the worktree
+	// is already created (mirrors the post-hook warn-only philosophy in
+	// cli/hooks.go). Opt-in output list comes from the canonical config
+	// (w.config). See WorkforestAdd for the shared-hooks caveat: worktrees share
+	// .git/hooks, but each resolves its own relative .pre-commit-config.yaml
+	// symlink, so pre-commit config/formatter changes stay per-worktree-isolated;
+	// only a prek-binary version bump baked into the shared hook script crosses
+	// back to canonical.
+	setRepo := filepath.Join(setDir, repo)
+	if outputs := w.config.Repos[repo].InstallHooks; len(outputs) > 0 {
+		if err := w.InstallHooksInDir(ctx, out, errOut, repo, setRepo, outputs); err != nil {
+			fmt.Fprintf(errOut, "warning: install-hooks in workforest worktree %s: %v\n", repo, err)
+		}
 	}
 
 	// Recompute membership and rewrite the set's filtered config/lock.
