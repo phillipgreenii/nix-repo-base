@@ -196,3 +196,41 @@ func containsAll(s string, subs ...string) bool {
 	}
 	return true
 }
+
+func TestExpandNixRunTokens_ExpandsWithOverridesAndQuoting(t *testing.T) {
+	v := nixHookVars{NixExe: "nix", OverrideArgs: []string{"--override-input", "base", "git+file:///w/repo-base"}, FlakeDir: "/w/consumer"}
+	got, attrs, err := expandNixRunTokens("{nix_run install-pre-commit-hooks}", v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "nix run --override-input base 'git+file:///w/repo-base' '/w/consumer#install-pre-commit-hooks'"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	if len(attrs) != 1 || attrs[0] != "install-pre-commit-hooks" {
+		t.Fatalf("attrs %v", attrs)
+	}
+}
+
+func TestExpandNixRunTokens_PreservesSurroundingText(t *testing.T) {
+	got, _, err := expandNixRunTokens("echo x && {nix_run y} && echo ${HOME}", nixHookVars{NixExe: "nix", FlakeDir: "/w/c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "echo x && nix run '/w/c#y' && echo ${HOME}" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestExpandNixRunTokens_NoTokenVerbatim(t *testing.T) {
+	got, attrs, err := expandNixRunTokens("ls -la", nixHookVars{})
+	if err != nil || attrs != nil || got != "ls -la" {
+		t.Fatalf("got %q attrs %v err %v", got, attrs, err)
+	}
+}
+
+func TestExpandNixRunTokens_MultipleTokensError(t *testing.T) {
+	if _, _, err := expandNixRunTokens("{nix_run a} {nix_run b}", nixHookVars{NixExe: "nix", FlakeDir: "/w/c"}); err == nil {
+		t.Fatal("want error for >1 token")
+	}
+}

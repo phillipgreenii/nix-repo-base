@@ -193,3 +193,52 @@ func shortHostname() string {
 	}
 	return shortenHostname(h)
 }
+
+// nixRunTokenRe matches a single "{nix_run <attr>}" helper token. The internal
+// space means it never collides with placeholderTokenRe (\{([a-z_]+)\}), so the
+// build/apply command substitution in substituteCommand is unaffected.
+var nixRunTokenRe = regexp.MustCompile(`\{nix_run\s+([A-Za-z0-9._-]+)\}`)
+
+// nixHookVars carries the per-repo values a {nix_run} token expands with:
+// the nix executable, that consumer repo's --override-input flags, and its
+// absolute flake directory.
+type nixHookVars struct {
+	NixExe       string
+	OverrideArgs []string
+	FlakeDir     string
+}
+
+// expandNixRunTokens replaces a single "{nix_run <attr>}" token in raw with the
+// per-repo invocation `nix run <overrides> '<flakedir>#<attr>'`, single-quoting
+// paths so `sh -c` tolerates spaces and '#'. Text outside the token is preserved
+// verbatim (shell operators, ${vars}). It returns the matched attr names; more
+// than one token is an error in v1. When no token is present it returns raw
+// unchanged with a nil attr slice.
+func expandNixRunTokens(raw string, v nixHookVars) (string, []string, error) {
+	locs := nixRunTokenRe.FindAllStringSubmatchIndex(raw, -1)
+	if len(locs) == 0 {
+		return raw, nil, nil
+	}
+	if len(locs) > 1 {
+		return "", nil, fmt.Errorf("hook %q references more than one {nix_run …} token; v1 supports one", raw)
+	}
+	attr := raw[locs[0][2]:locs[0][3]]
+	var b strings.Builder
+	b.WriteString(v.NixExe)
+	b.WriteString(" run")
+	for i := 0; i < len(v.OverrideArgs); i++ {
+		if v.OverrideArgs[i] == "--override-input" && i+2 < len(v.OverrideArgs) {
+			b.WriteString(" --override-input ")
+			b.WriteString(v.OverrideArgs[i+1]) // alias — unquoted
+			b.WriteString(" '")
+			b.WriteString(v.OverrideArgs[i+2]) // git+file://… — quoted
+			b.WriteString("'")
+			i += 2
+			continue
+		}
+		b.WriteString(" ")
+		b.WriteString(v.OverrideArgs[i])
+	}
+	fmt.Fprintf(&b, " '%s#%s'", v.FlakeDir, attr)
+	return raw[:locs[0][0]] + b.String() + raw[locs[0][1]:], []string{attr}, nil
+}
