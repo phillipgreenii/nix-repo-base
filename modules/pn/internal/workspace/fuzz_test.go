@@ -9,7 +9,7 @@ func FuzzParseConfig(f *testing.F) {
 	f.Add([]byte(""))
 	f.Add([]byte("[workspace]\nname = \"x\""))
 	f.Add([]byte("[repos.foo]\nurl = \"github:o/foo\""))
-	f.Add([]byte("[hooks.update]\npre = [\"foo\"]"))
+	f.Add([]byte("[[hooks]]\nwhen = [\"pre-update\"]\nrun = [\"foo\"]"))
 	f.Add([]byte("\x00\x01malformed"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {

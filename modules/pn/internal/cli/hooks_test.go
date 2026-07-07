@@ -26,7 +26,6 @@ func newTestWorkspace(t *testing.T, runner exec.Runner, tomlBody string) *worksp
 }
 
 func TestRunWithHooks_NoHooksPassthrough(t *testing.T) {
-	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	w := newTestWorkspace(t, f, `
 [workspace]
@@ -49,7 +48,6 @@ name = "test"
 }
 
 func TestRunWithHooks_PreFailureAbortsVerbAndPost(t *testing.T) {
-	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	f.AddResponse("sh", []string{"-c", "boom"}, exec.Result{ExitCode: 1},
 		&exec.CommandError{Name: "sh", Result: exec.Result{ExitCode: 1}})
@@ -57,9 +55,13 @@ func TestRunWithHooks_PreFailureAbortsVerbAndPost(t *testing.T) {
 [workspace]
 name = "test"
 
-[hooks.update]
-pre = ["boom"]
-post = ["should-not-run"]
+[[hooks]]
+when = ["pre-update"]
+run = ["boom"]
+
+[[hooks]]
+when = ["post-update"]
+run = ["should-not-run"]
 `)
 	called := false
 	err := runWithHooks(context.Background(), w, "update", func() error {
@@ -78,7 +80,6 @@ post = ["should-not-run"]
 }
 
 func TestRunWithHooks_PostFailureSwallowed(t *testing.T) {
-	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	f.AddResponse("sh", []string{"-c", "boom"}, exec.Result{ExitCode: 1},
 		&exec.CommandError{Name: "sh", Result: exec.Result{ExitCode: 1}})
@@ -86,8 +87,9 @@ func TestRunWithHooks_PostFailureSwallowed(t *testing.T) {
 [workspace]
 name = "test"
 
-[hooks.update]
-post = ["boom"]
+[[hooks]]
+when = ["post-update"]
+run = ["boom"]
 `)
 	err := runWithHooks(context.Background(), w, "update", func() error { return nil })
 	if err != nil {
@@ -99,15 +101,15 @@ post = ["boom"]
 }
 
 func TestRunWithHooks_VerbErrorPropagatesAndPostStillRuns(t *testing.T) {
-	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	f.AddResponse("sh", []string{"-c", "after"}, exec.Result{}, nil)
 	w := newTestWorkspace(t, f, `
 [workspace]
 name = "test"
 
-[hooks.update]
-post = ["after"]
+[[hooks]]
+when = ["post-update"]
+run = ["after"]
 `)
 	verbErr := errors.New("verb failed")
 	err := runWithHooks(context.Background(), w, "update", func() error { return verbErr })
@@ -120,7 +122,6 @@ post = ["after"]
 }
 
 func TestRunWithHooks_PreThenVerbThenPostOrdering(t *testing.T) {
-	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	f.AddResponse("sh", []string{"-c", "pre-1"}, exec.Result{}, nil)
 	f.AddResponse("sh", []string{"-c", "pre-2"}, exec.Result{}, nil)
@@ -129,9 +130,13 @@ func TestRunWithHooks_PreThenVerbThenPostOrdering(t *testing.T) {
 [workspace]
 name = "test"
 
-[hooks.update]
-pre = ["pre-1", "pre-2"]
-post = ["post-1"]
+[[hooks]]
+when = ["pre-update"]
+run = ["pre-1", "pre-2"]
+
+[[hooks]]
+when = ["post-update"]
+run = ["post-1"]
 `)
 	var verbAt int
 	err := runWithHooks(context.Background(), w, "update", func() error {
