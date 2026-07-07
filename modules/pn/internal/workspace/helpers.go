@@ -53,7 +53,14 @@ func fileExists(p string) bool {
 // When the lock has no edges for the consumer (no lock yet, or consumer has no
 // workspace deps), returns an empty slice.
 func (ws *Workspace) overrideInputArgsFor(consumer string, opts overrideOpts) []string {
-	if ws == nil || ws.lock == nil {
+	return ws.overrideInputArgsForLock(ws.lock, consumer, opts)
+}
+
+// overrideInputArgsForLock is overrideInputArgsFor keyed on an explicit lock
+// rather than ws.lock, so callers that need a freshly derived lock (e.g. hook
+// fan-out via effectiveLock) get overrides even when ws.lock is empty/stale.
+func (ws *Workspace) overrideInputArgsForLock(lk *Lock, consumer string, opts overrideOpts) []string {
+	if ws == nil || lk == nil {
 		return []string{}
 	}
 
@@ -63,7 +70,7 @@ func (ws *Workspace) overrideInputArgsFor(consumer string, opts overrideOpts) []
 		target string
 	}
 	var relevant []edgeEntry
-	for _, e := range ws.lock.Edges {
+	for _, e := range lk.Edges {
 		if e.Consumer != consumer {
 			continue
 		}
