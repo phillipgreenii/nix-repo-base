@@ -122,8 +122,6 @@ func (w *Workspace) WorkforestAdd(ctx context.Context, out io.Writer, errOut io.
 		// into the shared hook script: if the set's branch bumps prek itself,
 		// re-installing from the set rewrites the shared hook's prek path (affects
 		// canonical). Config/formatter changes do NOT cross-contaminate.
-		// TODO(pg2-5yq5): fire post-clone hooks on the new worktree via a
-		// set-rooted Workspace (Task 8). Stubbed to keep the reshape batch green.
 	}
 
 	// --- Write the set's config/lock (filtered to the member set) ---
@@ -131,7 +129,27 @@ func (w *Workspace) WorkforestAdd(ctx context.Context, out io.Writer, errOut io.
 		return err
 	}
 
+	// Fire post-clone hooks in each new worktree (set-rooted, so {nix_run}
+	// overrides resolve to the set's worktrees — P1-safe). Warn-only.
+	installSetHooks(ctx, w, setDir, names, out, errOut)
+
 	return nil
+}
+
+// installSetHooks fires the post-clone event for the given repos against a
+// Workspace rooted at setDir, so each new worktree's per-repo {nix_run} hooks
+// (re)install its gate with overrides pinned to the set's worktrees. Failures
+// are warn-only and never abort the workforest operation.
+func installSetHooks(ctx context.Context, w *Workspace, setDir string, repos []string, out, errOut io.Writer) {
+	setWs, err := Open(setDir, w.runner)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: workforest hooks: open set %s: %v\n", setDir, err)
+		return
+	}
+	defer setWs.Close()
+	if err := setWs.RunEventHooks(ctx, HookPhasePost, "clone", repos, out); err != nil {
+		fmt.Fprintf(errOut, "warning: workforest hooks: %v\n", err)
+	}
 }
 
 // gitWorktreeAddOne runs `git worktree add` for one repo into the set dir,
@@ -298,14 +316,15 @@ func (w *Workspace) WorkforestAddRepo(ctx context.Context, out io.Writer, errOut
 	// symlink, so pre-commit config/formatter changes stay per-worktree-isolated;
 	// only a prek-binary version bump baked into the shared hook script crosses
 	// back to canonical.
-	// TODO(pg2-5yq5): fire post-clone hooks on the new worktree via a set-rooted
-	// Workspace (Task 8). Stubbed to keep the reshape batch green.
-
 	// Recompute membership and rewrite the set's filtered config/lock.
 	members[repo] = true
 	if err := w.rewriteSetMembership(errOut, setDir, members); err != nil {
 		return err
 	}
+
+	// Fire post-clone hooks in the newly-added worktree (set-rooted). Warn-only.
+	installSetHooks(ctx, w, setDir, []string{repo}, out, errOut)
+
 	return nil
 }
 

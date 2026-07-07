@@ -4,35 +4,34 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-// installArgs is a compile-only shim for the skipped legacy install-hooks
-// tests below (the original lived in the deleted install_hooks_test.go). These
-// tests are rewired to post-clone event hooks in Task 8 (pg2-5yq5); the shim
-// only keeps the file compiling until then.
-func installArgs(output string) []string { return []string{"run", ".#" + output} }
-
-// nixCalls filters a FakeRunner's recorded calls to the `nix` invocations.
-func nixCalls(f *exec.FakeRunner) []exec.Call {
+// shCalls filters a FakeRunner's recorded calls to the `sh` invocations (how
+// per-repo event hooks execute).
+func shCalls(f *exec.FakeRunner) []exec.Call {
 	var out []exec.Call
 	for _, c := range f.Calls() {
-		if c.Name == "nix" {
+		if c.Name == "sh" {
 			out = append(out, c)
 		}
 	}
 	return out
 }
 
-// TestWorkforestAdd_InstallsOptInHooksInWorktree verifies that, after the
-// worktree adds, only the opted-in repo (bar) triggers exactly one
-// `nix run .#install-pre-commit-hooks`, and it runs IN bar's set worktree dir.
-// The non-opted-in repo (foo) produces no install call.
-func TestWorkforestAdd_InstallsOptInHooksInWorktree(t *testing.T) {
-	t.Skip("rewired to post-clone event hooks in Task 8 (pg2-5yq5)")
+// nixRunHookCmd is the sh command an override-free {nix_run install-pre-commit-hooks}
+// hook expands to for a repo whose set-worktree flake dir is setRepo.
+func nixRunHookCmd(setRepo string) string {
+	return "nix run '" + setRepo + "#install-pre-commit-hooks'"
+}
+
+// TestWorkforestAdd_FiresPostCloneHookInWorktree verifies that, after the
+// worktree adds, only the repo (bar) declaring a post-clone hook triggers
+// exactly one `sh -c "nix run …#install-pre-commit-hooks"`, running IN bar's
+// set worktree dir. The repo without the hook (foo) produces no call.
+func TestWorkforestAdd_FiresPostCloneHookInWorktree(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, ConfigFileName), `
 [repos.foo]
@@ -40,7 +39,9 @@ url = "github:owner/foo"
 
 [repos.bar]
 url = "github:owner/bar"
-install-hooks = ["install-pre-commit-hooks"]
+[[repos.bar.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `)
 	writeFile(t, filepath.Join(root, LockFileName), `{
   "order": ["bar","foo"],
@@ -67,40 +68,34 @@ install-hooks = ["install-pre-commit-hooks"]
 	addBranchNotExists(f, fooCanonical, "feature")
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
-	// Only bar opts in → exactly one nix install call is expected.
-	f.AddResponse("nix", installArgs("install-pre-commit-hooks"), exec.Result{}, nil)
+	// Only bar declares a post-clone hook → exactly one sh install call expected.
+	f.AddResponse("sh", []string{"-c", nixRunHookCmd(barSet)}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
 		t.Fatalf("WorkforestAdd: %v", err)
 	}
-	if errOut.Len() != 0 {
-		t.Errorf("expected empty errOut on happy path; got %q", errOut.String())
-	}
 
-	nc := nixCalls(f)
-	if len(nc) != 1 {
-		t.Fatalf("expected exactly 1 nix install call (only opted-in bar), got %d: %+v", len(nc), nc)
+	sc := shCalls(f)
+	if len(sc) != 1 {
+		t.Fatalf("expected exactly 1 sh hook call (only bar has post-clone), got %d: %+v", len(sc), sc)
 	}
-	if nc[0].Opts.Dir != barSet {
-		t.Errorf("install-hooks must run in bar's set worktree; Dir=%q want %q", nc[0].Opts.Dir, barSet)
-	}
-	if got, want := strings.Join(nc[0].Args, " "), strings.Join(installArgs("install-pre-commit-hooks"), " "); got != want {
-		t.Errorf("nix args: got %q want %q", got, want)
+	if sc[0].Opts.Dir != barSet {
+		t.Errorf("post-clone hook must run in bar's set worktree; Dir=%q want %q", sc[0].Opts.Dir, barSet)
 	}
 }
 
-// TestWorkforestAdd_InstallHookFailureIsWarnOnlyNonFatal verifies that a failed
-// install-hooks run in a worktree does NOT abort/rollback `workforest add`: the
-// call returns nil, a warning naming the repo is written to errOut, and the
-// set's config is still written (the worktrees are already created).
-func TestWorkforestAdd_InstallHookFailureIsWarnOnlyNonFatal(t *testing.T) {
-	t.Skip("rewired to post-clone event hooks in Task 8 (pg2-5yq5)")
+// TestWorkforestAdd_PostCloneHookFailureIsWarnOnlyNonFatal verifies that a
+// failed post-clone hook does NOT abort/rollback `workforest add`: the call
+// returns nil (warn-only) and the set's config is still written.
+func TestWorkforestAdd_PostCloneHookFailureIsWarnOnlyNonFatal(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, ConfigFileName), `
 [repos.bar]
 url = "github:owner/bar"
-install-hooks = ["install-pre-commit-hooks"]
+[[repos.bar.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `)
 	writeFile(t, filepath.Join(root, LockFileName), `{
   "order": ["bar"],
@@ -122,29 +117,28 @@ install-hooks = ["install-pre-commit-hooks"]
 	addWorktreeListClean(f, barCanonical, "bar")
 	addBranchNotExists(f, barCanonical, "feature")
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
-	// install-hooks FAILS — must be warn-only, never fatal.
-	f.AddResponse("nix", installArgs("install-pre-commit-hooks"),
+	// The post-clone hook FAILS — must be warn-only (to os.Stderr), never fatal.
+	f.AddResponse("sh", []string{"-c", nixRunHookCmd(barSet)},
 		exec.Result{ExitCode: 1},
-		&exec.CommandError{Name: "nix", Result: exec.Result{ExitCode: 1}})
+		&exec.CommandError{Name: "sh", Result: exec.Result{ExitCode: 1}})
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
-		t.Fatalf("WorkforestAdd must succeed despite install-hooks failure; got %v", err)
+		t.Fatalf("WorkforestAdd must succeed despite post-clone hook failure; got %v", err)
 	}
-	if !strings.Contains(errOut.String(), "warning: install-hooks in workforest worktree bar") {
-		t.Errorf("expected a warn-only message naming repo bar; got errOut=%q", errOut.String())
+	// The failing hook still ran, and the add did not roll back (set config written).
+	if len(shCalls(f)) != 1 {
+		t.Errorf("expected the failing hook to have run once; got %d", len(shCalls(f)))
 	}
-	// The add did not roll back: the set config was still written.
 	if !fileExists(filepath.Join(setDir, ConfigFileName)) {
-		t.Errorf("set config should be written even when install-hooks failed (add is not rolled back)")
+		t.Errorf("set config should be written even when a post-clone hook failed (add is not rolled back)")
 	}
 }
 
-// TestWorkforestAddRepo_InstallsOptInHooksInWorktree verifies that adding a
-// participating repo (lib, opted-in) to an existing set runs its install-hooks
-// in the new worktree dir.
-func TestWorkforestAddRepo_InstallsOptInHooksInWorktree(t *testing.T) {
-	t.Skip("rewired to post-clone event hooks in Task 8 (pg2-5yq5)")
+// TestWorkforestAddRepo_FiresPostCloneHookInWorktree verifies that adding a repo
+// (lib, with a post-clone hook) to an existing set runs its hook in the new
+// worktree dir.
+func TestWorkforestAddRepo_FiresPostCloneHookInWorktree(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, ConfigFileName), `
 [workspace]
@@ -155,7 +149,9 @@ url = "github:owner/app"
 
 [repos.lib]
 url = "github:owner/lib"
-install-hooks = ["install-pre-commit-hooks"]
+[[repos.lib.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `)
 	writeFile(t, filepath.Join(root, LockFileName), `{
   "terminal": "app",
@@ -174,7 +170,7 @@ install-hooks = ["install-pre-commit-hooks"]
 		t.Fatalf("Open: %v", err)
 	}
 
-	// Existing set has only app; add opted-in "lib".
+	// Existing set has only app; add "lib" (which declares a post-clone hook).
 	setDir := seedSubsetSet(t, w, "feature", "app")
 	libCanonical := filepath.Join(root, "lib")
 	libSet := filepath.Join(setDir, "lib")
@@ -182,19 +178,19 @@ install-hooks = ["install-pre-commit-hooks"]
 	addWorktreeListClean(f, libCanonical, "lib")
 	addBranchExists(f, libCanonical, "feature")
 	f.AddResponse("git", []string{"-C", libCanonical, "worktree", "add", libSet, "feature"}, exec.Result{}, nil)
-	f.AddResponse("nix", installArgs("install-pre-commit-hooks"), exec.Result{}, nil)
+	f.AddResponse("sh", []string{"-c", nixRunHookCmd(libSet)}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAddRepo(context.Background(), &out, &errOut, WorkforestAddRepoOptions{Branch: "feature", Repo: "lib"}); err != nil {
 		t.Fatalf("WorkforestAddRepo: %v", err)
 	}
 
-	nc := nixCalls(f)
-	if len(nc) != 1 {
-		t.Fatalf("expected exactly 1 nix install call for the added repo lib, got %d: %+v", len(nc), nc)
+	sc := shCalls(f)
+	if len(sc) != 1 {
+		t.Fatalf("expected exactly 1 sh hook call for the added repo lib, got %d: %+v", len(sc), sc)
 	}
-	if nc[0].Opts.Dir != libSet {
-		t.Errorf("install-hooks must run in lib's set worktree; Dir=%q want %q", nc[0].Opts.Dir, libSet)
+	if sc[0].Opts.Dir != libSet {
+		t.Errorf("post-clone hook must run in lib's set worktree; Dir=%q want %q", sc[0].Opts.Dir, libSet)
 	}
 
 	members := setMembers(t, setDir)
