@@ -239,4 +239,64 @@ rec {
           // (args.meta or { });
       }
     );
+
+  # mkGoLint — run golangci-lint over a Go module OFFLINE, reusing gomod2nix's
+  # vendored dependency env (ADR 0008). buildGoApplication's goConfigHook sets up
+  # the read-only vendor tree and exports `GOFLAGS=-mod=vendor` BEFORE the build
+  # phase, so golangci-lint resolves the full package graph with NO network — the
+  # property a sandboxed `nix flake check` requires (bead pg2-6wly). A plain
+  # git-hooks hook with an empty module cache + `-mod=mod` instead tries to fetch
+  # deps from proxy.golang.org and fails in the no-network sandbox.
+  #
+  # We REPLACE the build phase with the lint pass: neither recompiling the binary
+  # nor re-running `go test` (that is <module>-go-tests' job). This also confines
+  # golangci-lint / .golangci.yml input churn to this derivation rather than the
+  # package build (ADR 0006).
+  #
+  #   config: path to the golangci-lint config (the repo-root .golangci.yml). It
+  #   lives OUTSIDE the module `src`, so it MUST be passed explicitly and becomes a
+  #   derivation input — otherwise golangci-lint falls back to its defaults and
+  #   loses the config's errcheck fmt.Fprint* exclusions.
+  mkGoLint =
+    {
+      src,
+      # Committed gomod2nix lockfile beside go.mod (REQUIRED; its path is derived
+      # from `pwd`, mirroring mkGoApp — passed only to signal it is committed).
+      gomod2nixToml,
+      config,
+      pname ? "golangci-lint",
+      modRoot ? null,
+    }:
+    let
+      version = "0.0.0-${(import ./version.nix).mkSrcDigest src}";
+      pwd = if modRoot != null then src + "/" + modRoot else src;
+    in
+    assert gomod2nixToml != null;
+    pkgs.buildGoApplication {
+      inherit
+        pname
+        version
+        src
+        pwd
+        ;
+      inherit (pkgs) go; # pin to our nixpkgs Go, matching mkGoApp
+      modules = pwd + "/gomod2nix.toml";
+      nativeBuildInputs = [ pkgs.golangci-lint ];
+      # Skip `go test`; linting only. (<module>-go-tests runs the suite.)
+      doCheck = false;
+      # goConfigHook (vendor setup + GOFLAGS=-mod=vendor) has already run by the
+      # time buildPhase starts, so replace the go build with the lint pass.
+      buildPhase = ''
+        runHook preBuild
+        # Sandbox $HOME (/homeless-shelter) is read-only; give golangci-lint and
+        # the Go build cache writable scratch dirs.
+        export HOME="$TMPDIR" \
+               GOCACHE="$TMPDIR/go-build" \
+               GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint"
+        golangci-lint run --config ${config} ./...
+        runHook postBuild
+      '';
+      installPhase = "touch $out";
+      meta.description = "golangci-lint (offline, gomod2nix vendor env): ${pname}";
+    };
 }

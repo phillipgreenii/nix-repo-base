@@ -66,6 +66,8 @@
             inherit pkgs bashBuilders;
             inherit (self.packages.${system}) update-locks-lib;
           };
+          # Go builders (mkGoApp / mkGoBinary / mkGoLint) over the gomod2nix engine.
+          goBuilders = import ./lib/go-builders.nix { inherit pkgs self; };
         in
         {
           _module.args.pkgs = import inputs.nixpkgs {
@@ -232,6 +234,25 @@
 
             # Go test suite for pjira (mirrors pn-go-tests pattern).
             pjira-go-tests = pkgs.callPackage ./modules/jira { inherit self; };
+
+            # golangci-lint over each Go module, run OFFLINE via gomod2nix's
+            # vendored dep env so it passes in the no-network `nix flake check`
+            # sandbox (bead pg2-6wly). Replaces the old network-dependent
+            # golangci-lint pre-commit hook, which fetched deps from proxy.golang.org
+            # and failed under sandbox=true. Both modules lint against the repo-root
+            # .golangci.yml (passed explicitly — it lives outside the module src).
+            pn-golangci = goBuilders.mkGoLint {
+              pname = "pn";
+              src = ./modules/pn;
+              gomod2nixToml = ./modules/pn/gomod2nix.toml;
+              config = ./.golangci.yml;
+            };
+            pjira-golangci = goBuilders.mkGoLint {
+              pname = "pjira";
+              src = ./modules/jira;
+              gomod2nixToml = ./modules/jira/gomod2nix.toml;
+              config = ./.golangci.yml;
+            };
 
             # Hermetically verify the exported darwinModules.default (the aggregate
             # the machine actually imports) registers logSources.pn.
