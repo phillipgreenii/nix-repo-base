@@ -56,6 +56,11 @@ type RepoConfig struct {
 	// When set, this overrides the default search paths (flake.nix, nix/flake.nix).
 	// Recorded in pn-workspace.toml only for non-default locations.
 	FlakePath string `toml:"flake_path,omitempty"`
+	// InstallHooks is the per-repo opt-in list of flake output names that
+	// `pn workspace install-hooks` runs (via `nix run .#<name>`) to (re)install
+	// this repo's git pre-commit hooks. Absent or empty means this repo did not
+	// opt in and is skipped (bd pg2-5yq5).
+	InstallHooks []string `toml:"install-hooks,omitempty"`
 }
 
 // HookCommand describes one entry under [hooks.<command>]; Pre/Post are
@@ -71,8 +76,10 @@ var workspaceIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 var knownHookCommands = map[string]struct{}{
 	"apply":            {},
 	"build":            {},
+	"clone":            {},
 	"flake-check":      {},
 	"init":             {},
+	"install-hooks":    {},
 	"lock":             {},
 	"pre-commit-check": {},
 	"push":             {},

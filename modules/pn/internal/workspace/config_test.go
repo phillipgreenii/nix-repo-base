@@ -171,6 +171,60 @@ url = "github:phillipgreenii/nix-overlay"
 	}
 }
 
+// TestParseConfig_InstallHooksPopulated verifies that a per-repo
+// install-hooks = ["x","y"] list is parsed into RepoConfig.InstallHooks in order.
+func TestParseConfig_InstallHooksPopulated(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[repos.foo]
+url = "github:owner/foo"
+install-hooks = ["install-pre-commit-hooks", "install-other-hook"]
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	got := cfg.Repos["foo"].InstallHooks
+	want := []string{"install-pre-commit-hooks", "install-other-hook"}
+	if len(got) != len(want) {
+		t.Fatalf("InstallHooks: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("InstallHooks[%d]: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestParseConfig_InstallHooksAbsentIsNil verifies that a repo without an
+// install-hooks key yields a nil/empty InstallHooks slice (opt-out).
+func TestParseConfig_InstallHooksAbsentIsNil(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[repos.foo]
+url = "github:owner/foo"
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if got := cfg.Repos["foo"].InstallHooks; len(got) != 0 {
+		t.Errorf("InstallHooks (absent): got %v, want empty", got)
+	}
+}
+
+// TestParseConfig_InstallHooksEmptyIsEmpty verifies that an explicit empty list
+// yields an empty (opt-out) InstallHooks slice.
+func TestParseConfig_InstallHooksEmptyIsEmpty(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[repos.foo]
+url = "github:owner/foo"
+install-hooks = []
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if got := cfg.Repos["foo"].InstallHooks; len(got) != 0 {
+		t.Errorf("InstallHooks (empty): got %v, want empty", got)
+	}
+}
+
 func TestKnownHookCommands(t *testing.T) {
 	want := []string{"apply", "build", "flake-check", "init", "lock", "pre-commit-check", "push", "rebase", "status", "tree", "update", "upgrade"}
 	for _, c := range want {

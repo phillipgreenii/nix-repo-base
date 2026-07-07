@@ -47,6 +47,7 @@ Environment variables:
 	ws.AddCommand(workspaceApplyCmd(&terminalFlag))
 	ws.AddCommand(workspaceFlakeCheckCmd(&terminalFlag))
 	ws.AddCommand(workspacePreCommitCheckCmd(&terminalFlag))
+	ws.AddCommand(workspaceInstallHooksCmd())
 	ws.AddCommand(workspacePushCmd(&terminalFlag))
 	ws.AddCommand(workspaceRebaseCmd(&terminalFlag))
 	ws.AddCommand(workspaceFormatCmd(&terminalFlag))
@@ -225,6 +226,31 @@ func workspacePreCommitCheckCmd(terminal *string) *cobra.Command {
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "pre-commit-check", func() error {
 				return w.PreCommitCheck(ctx, out, errOut, workspace.PreCommitCheckOptions{Terminal: *terminal})
+			})
+		},
+	}
+}
+
+func workspaceInstallHooksCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "install-hooks",
+		Aliases: []string{"sync-hooks"},
+		Short:   "(Re)install each workspace repo's git pre-commit hooks via opt-in flake outputs",
+		Long: `(Re)install each workspace repo's git pre-commit hooks.
+
+For every repo that opts in via its per-repo 'install-hooks' config key, this
+runs each named flake output ('nix run .#<name>') in that repo, in list order.
+Repos without an 'install-hooks' key are skipped. Use this to resync a repo's
+pre-commit config after its treefmt config changes and the pinned /nix/store
+config goes stale (bd pg2-5yq5).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			return runWithHooks(ctx, w, "install-hooks", func() error {
+				return w.InstallHooks(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			})
 		},
 	}
@@ -527,8 +553,8 @@ func workspaceCloneCmd(terminal *string) *cobra.Command {
 			}
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
-			return w.Clone(ctx, out, workspace.CloneOptions{
-				Terminal: *terminal,
+			return runWithHooks(ctx, w, "clone", func() error {
+				return w.Clone(ctx, out, workspace.CloneOptions{Terminal: *terminal})
 			})
 		},
 	}
