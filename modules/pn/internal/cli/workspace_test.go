@@ -151,6 +151,32 @@ func TestAllWorkspaceCommands_OpenFailurePropagates(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// removed install-hooks / sync-hooks subcommands (bd pg2-lbsi)
+// ---------------------------------------------------------------------------
+
+// TestWorkspaceInstallHooks_RemovedStubGuidesMigration verifies the removed
+// install-hooks / sync-hooks subcommands (pre-ADR-0019) now fail loudly with a
+// pointer to the event-hook replacement, rather than cobra printing group help
+// and exiting 0 — a silent no-op that would re-open the staleness bug for
+// muscle-memory / CI callers.
+func TestWorkspaceInstallHooks_RemovedStubGuidesMigration(t *testing.T) {
+	for _, name := range []string{"install-hooks", "sync-hooks"} {
+		t.Run(name, func(t *testing.T) {
+			_, stderr, err := runCobraCmd(t, []string{name})
+			if err == nil {
+				t.Fatalf("%s must exit non-zero, not silently no-op", name)
+			}
+			msg := err.Error() + stderr
+			for _, want := range []string{"repos.", "hooks", "ADR-0019"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("migration message missing %q; got err=%q stderr=%q", want, err, stderr)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
 

@@ -168,6 +168,45 @@ url = "github:phillipgreenii/nix-overlay"
 	}
 }
 
+// TestParseConfig_RejectsLegacyHooksTable verifies that a pn-workspace.toml still
+// using the pre-ADR-0019 [hooks.<command>] table schema (with pre/post arrays)
+// fails with an actionable migration message instead of the raw go-toml
+// "cannot store a table in a slice" error. This is load-bearing during the
+// coordinated cutover: pn-workspace-toml-enforce runs it at home.activation, so a
+// shape mismatch must explain how to migrate rather than emit a cryptic error.
+func TestParseConfig_RejectsLegacyHooksTable(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[hooks.apply]
+post = ["pb gate check"]
+`))
+	if err == nil {
+		t.Fatal("expected migration error for legacy [hooks.apply] table; got nil")
+	}
+	msg := err.Error()
+	// Must be actionable: name the legacy shape, the new shape, and the mapping.
+	for _, want := range []string{"[hooks.", "[[hooks]]", "when", "run", "apply"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("migration message missing %q; got %q", want, msg)
+		}
+	}
+	// Must NOT be the raw go-toml error.
+	if strings.Contains(msg, "cannot store a table in a slice") {
+		t.Errorf("message should be actionable, not the raw go-toml error; got %q", msg)
+	}
+}
+
+// TestParseConfig_LegacyDetectorDoesNotFalsePositive guards the migration
+// detector against tripping on the new [[hooks]] array-of-tables schema.
+func TestParseConfig_LegacyDetectorDoesNotFalsePositive(t *testing.T) {
+	cfg, err := ParseConfig([]byte("[[hooks]]\nwhen = [\"post-apply\"]\nrun = [\"pb gate check\"]\n"))
+	if err != nil {
+		t.Fatalf("new-schema [[hooks]] must parse cleanly; got %v", err)
+	}
+	if len(cfg.Hooks) != 1 || cfg.Hooks[0].Run[0] != "pb gate check" {
+		t.Fatalf("hooks not parsed: %+v", cfg.Hooks)
+	}
+}
+
 // TestConfig_ParsesEventHookLists verifies that workspace [[hooks]] and per-repo
 // [[repos.<r>.hooks]] parse into []RepoHook with when/run populated.
 func TestConfig_ParsesEventHookLists(t *testing.T) {

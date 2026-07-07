@@ -58,7 +58,30 @@ Environment variables:
 	ws.AddCommand(workspaceDoctorCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
 	ws.AddCommand(workspaceWorkforestCmd())
+	ws.AddCommand(workspaceRemovedInstallHooksCmd())
 	parent.AddCommand(ws)
+}
+
+// workspaceRemovedInstallHooksCmd is a hidden stub for the removed
+// `install-hooks` / `sync-hooks` subcommands (superseded by event hooks in
+// ADR-0019). Without it, cobra treats these muscle-memory / CI invocations as an
+// unknown subcommand, prints the group help, and exits 0 — a silent no-op that
+// would re-open the stale-gate bug. The stub fails loudly and points at the
+// replacement (bd pg2-lbsi).
+func workspaceRemovedInstallHooksCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "install-hooks",
+		Aliases: []string{"sync-hooks"},
+		Short:   "(removed) superseded by per-repo event hooks — see ADR-0019",
+		Hidden:  true,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return fmt.Errorf(
+				"`pn workspace install-hooks` (and `sync-hooks`) was removed: hook resync is now a per-repo event hook. " +
+					"Add to pn-workspace.toml, e.g. [[repos.<key>.hooks]] when=['post-clone','post-rebase','post-update'] " +
+					"run=['{nix_run install-pre-commit-hooks}']; it fires automatically on those commands. See ADR-0019",
+			)
+		},
+	}
 }
 
 // openWorkspace opens the workspace by walking up from cwd (or PN_WORKSPACE_ROOT).

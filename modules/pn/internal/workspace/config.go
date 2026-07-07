@@ -4,6 +4,8 @@ package workspace
 import (
 	"fmt"
 	"regexp"
+	"sort"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -124,6 +126,23 @@ type legacyWorkspaceConfig struct {
 	Repos map[string]legacyRepoConfig `toml:"repos"`
 }
 
+// legacyHookCommand mirrors the pre-ADR-0019 [hooks.<command>] table shape
+// (pre/post arrays), so ParseConfig can detect a config that predates the
+// event-hook list schema and emit an actionable migration message instead of
+// go-toml's opaque "cannot store a table in a slice" (bd pg2-lbsi).
+type legacyHookCommand struct {
+	Pre  []string `toml:"pre,omitempty"`
+	Post []string `toml:"post,omitempty"`
+}
+
+// legacyHooksConfig parses `hooks` as the removed map-of-tables shape. It only
+// unmarshals successfully against the OLD schema; the new [[hooks]]
+// array-of-tables makes this unmarshal fail (array into map), so a migrated
+// config is never flagged.
+type legacyHooksConfig struct {
+	Hooks map[string]legacyHookCommand `toml:"hooks"`
+}
+
 // ParseConfig parses pn-workspace.toml bytes into a WorkspaceConfig. Applies
 // defaults (e.g., empty branch → "main") and validates the shape. Returns an
 // error if any [repos.*] entry still has the removed input-name field.
@@ -140,6 +159,26 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 				)
 			}
 		}
+	}
+
+	// Detect the pre-ADR-0019 [hooks.<command>] table schema and guide migration
+	// before go-toml's opaque "cannot store a table in a slice" surfaces. This
+	// path also fires at home.activation via pn-workspace-toml-enforce, so the
+	// message MUST be actionable during the coordinated cutover (bd pg2-lbsi).
+	var legacyHooks legacyHooksConfig
+	if err := toml.Unmarshal(data, &legacyHooks); err == nil && len(legacyHooks.Hooks) > 0 {
+		cmds := make([]string, 0, len(legacyHooks.Hooks))
+		for cmd := range legacyHooks.Hooks {
+			cmds = append(cmds, cmd)
+		}
+		sort.Strings(cmds)
+		return nil, fmt.Errorf(
+			"pn-workspace.toml uses the removed [hooks.<command>] table schema (found: [hooks.%s]); "+
+				"migrate each to an event-hook list: [hooks.apply] post=['pb gate check'] becomes "+
+				"[[hooks]] when=['post-apply'] run=['pb gate check'] (a pre array maps to when=['pre-<command>']); "+
+				"per-repo hooks move to [[repos.<key>.hooks]]. See ADR-0019",
+			strings.Join(cmds, "], [hooks."),
+		)
 	}
 
 	cfg := &WorkspaceConfig{}
