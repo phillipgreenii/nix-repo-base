@@ -121,7 +121,7 @@ func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string
 // root; per-repo [[repos.<r>.hooks]] entries run in each processed repo
 // (cwd=repo), expanding any {nix_run} token against that repo's flake +
 // overrides. Pre-hooks abort on first failure; post-hooks warn and continue.
-func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out io.Writer) error {
+func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out, errOut io.Writer) error {
 	ev := eventName(phase, cmd)
 	// Workspace-scoped: once at root (no {nix_run}; enforced by validateAllHooks).
 	for _, h := range ws.config.Hooks {
@@ -131,40 +131,77 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 			}
 		}
 	}
-	// Repo-scoped: in each processed repo that declares a matching hook.
+	// Repo-scoped: in each processed repo that declares a matching hook. The
+	// effective lock backing {nix_run} override injection is derived at most once
+	// per call, and only when a matched hook actually carries a {nix_run} token —
+	// avoiding O(N^2) nix evals (deriveLock per repo) and spurious
+	// "effective lock unavailable" warnings on token-free hooks (bd pg2-4g2h).
+	var (
+		lk        *Lock
+		lockReady bool
+	)
+	varsCache := map[string]nixHookVars{}
+	varsFor := func(key string) nixHookVars {
+		if !lockReady {
+			var err error
+			lk, _, err = ws.effectiveLock(ctx)
+			lockReady = true
+			if err != nil {
+				fmt.Fprintf(errOut, "warning: hook overrides: effective lock unavailable (%v); gates may build against locked inputs\n", err)
+			}
+		}
+		if v, ok := varsCache[key]; ok {
+			return v
+		}
+		v := ws.nixHookVarsForLock(key, lk)
+		varsCache[key] = v
+		return v
+	}
 	for _, key := range processed {
 		hooks := ws.config.Repos[key].Hooks
 		if len(hooks) == 0 {
 			continue
 		}
-		vars := ws.repoNixHookVars(ctx, key) // resolve once per repo
 		dir := filepath.Join(ws.root, key)
 		for _, h := range hooks {
 			if !slices.Contains(h.When, ev) {
 				continue
 			}
 			for _, raw := range h.Run {
+				var vars nixHookVars
+				if nixRunTokenRe.MatchString(raw) {
+					vars = varsFor(key)
+				}
 				cmdStr, _, err := expandNixRunTokens(raw, vars)
 				if err == nil {
 					var resolved string
 					if resolved, err = rewriteFirstToken(cmdStr, dir); err == nil {
-						var res exec.Result
-						res, err = ws.runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: dir, Stdout: out, Stderr: out})
-						if err != nil && phase == HookPhasePost {
-							_, _ = os.Stderr.Write(res.Stderr)
-						}
+						// Subprocess stdout→out, stderr→errOut (separate writers);
+						// no manual res.Stderr re-print (that double-printed).
+						_, err = ws.runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: dir, Stdout: out, Stderr: errOut})
 					}
 				}
 				if err != nil {
 					if phase == HookPhasePre {
 						return fmt.Errorf("pre-hook %q in %s: %w", raw, key, err)
 					}
-					fmt.Fprintf(os.Stderr, "warning: post-hook %q in %s: %v\n", raw, key, err)
+					fmt.Fprintf(errOut, "warning: post-hook %q in %s: %v\n", raw, key, err)
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// nixHookVarsForLock builds the per-repo {nix_run} expansion values from an
+// ALREADY-DERIVED lock. Pure (no I/O, no warnings): RunEventHooks derives the
+// effective lock once and warns once on failure, then calls this per repo.
+func (ws *Workspace) nixHookVarsForLock(key string, lk *Lock) nixHookVars {
+	return nixHookVars{
+		NixExe:       "nix",
+		OverrideArgs: ws.overrideInputArgsForLock(lk, key, overrideOpts{}),
+		FlakeDir:     filepath.Join(ws.root, key, filepath.Dir(ws.resolveFlakePath(key))),
+	}
 }
 
 // repoNixHookVars builds the per-repo values for expanding a {nix_run} token,

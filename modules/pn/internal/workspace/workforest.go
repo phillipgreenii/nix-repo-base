@@ -147,7 +147,7 @@ func installSetHooks(ctx context.Context, w *Workspace, setDir string, repos []s
 		return
 	}
 	defer setWs.Close()
-	if err := setWs.RunEventHooks(ctx, HookPhasePost, "clone", repos, out); err != nil {
+	if err := setWs.RunEventHooks(ctx, HookPhasePost, "clone", repos, out, errOut); err != nil {
 		fmt.Fprintf(errOut, "warning: workforest hooks: %v\n", err)
 	}
 }

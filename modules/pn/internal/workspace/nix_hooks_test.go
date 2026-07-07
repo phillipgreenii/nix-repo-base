@@ -3,6 +3,8 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,7 +83,7 @@ func TestRunEventHooks_RepoScopedFiresForProcessedRepoOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	// processed = both repos; only "a" declares the post-rebase hook.
-	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a", "b"}, &bytes.Buffer{}); err != nil {
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a", "b"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	var sh []exec.Call
@@ -97,3 +99,103 @@ func TestRunEventHooks_RepoScopedFiresForProcessedRepoOnly(t *testing.T) {
 		t.Errorf("cwd = %q, want repo a", sh[0].Opts.Dir)
 	}
 }
+
+// openHookWS writes a minimal workspace with the given toml body + a flake.nix in
+// each named repo, optionally writes a matching lock, and opens it on runner f.
+func openHookWS(t *testing.T, tomlBody string, repos []string, lk *Lock) *Workspace {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), tomlBody)
+	for _, r := range repos {
+		mustMkdir(t, filepath.Join(root, r))
+		writeFile(t, filepath.Join(root, r, "flake.nix"), "{}")
+	}
+	if lk != nil {
+		if err := WriteLock(filepath.Join(root, LockFileName), lk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	return w
+}
+
+// TestRunEventHooks_RoutesStdoutStderrToSeparateWriters verifies the per-repo
+// hook subprocess is wired with Stdout=out and Stderr=errOut (not merged onto a
+// single writer) — the writer-discipline fix (bd pg2-4g2h).
+func TestRunEventHooks_RoutesStdoutStderrToSeparateWriters(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	w := openHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"echo hi\"]\n",
+		[]string{"a"}, lk)
+	f := w.runner.(*exec.FakeRunner)
+	f.AddResponse("sh", []string{"-c", "echo hi"}, exec.Result{}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	var sh *exec.Call
+	for i := range f.Calls() {
+		if f.Calls()[i].Name == "sh" {
+			c := f.Calls()[i]
+			sh = &c
+		}
+	}
+	if sh == nil {
+		t.Fatal("no sh call recorded")
+	}
+	if sh.Opts.Stdout != io.Writer(&out) {
+		t.Errorf("subprocess Stdout not wired to out")
+	}
+	if sh.Opts.Stderr != io.Writer(&errOut) {
+		t.Errorf("subprocess Stderr not wired to errOut (want separate from out)")
+	}
+}
+
+// TestRunEventHooks_PostHookFailureWarnsToErrOut verifies a failing post-hook
+// warns to errOut (not out, not os.Stderr) and does not propagate (bd pg2-4g2h).
+func TestRunEventHooks_PostHookFailureWarnsToErrOut(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	w := openHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"boom\"]\n",
+		[]string{"a"}, lk)
+	f := w.runner.(*exec.FakeRunner)
+	f.AddResponse("sh", []string{"-c", "boom"}, exec.Result{Stderr: []byte("kaboom")}, errBoom)
+
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatalf("post-hook failure must not propagate; got %v", err)
+	}
+	if !strings.Contains(errOut.String(), "post-hook") {
+		t.Errorf("errOut missing post-hook warning; got %q", errOut.String())
+	}
+	if strings.Contains(out.String(), "post-hook") {
+		t.Errorf("warning leaked to out: %q", out.String())
+	}
+}
+
+// TestRunEventHooks_SkipsLockDerivationWithoutNixRunToken verifies the effective
+// lock is NOT derived (and no "effective lock unavailable" warning is emitted)
+// when a matched hook has no {nix_run} token — the laziness fix that avoids
+// O(N^2) nix evals and spurious warnings on token-free hooks (bd pg2-4g2h).
+func TestRunEventHooks_SkipsLockDerivationWithoutNixRunToken(t *testing.T) {
+	// No lock on disk ⇒ eager code would derive (nix eval) and warn; lazy must not.
+	w := openHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"echo hi\"]\n",
+		[]string{"a"}, nil)
+	f := w.runner.(*exec.FakeRunner)
+	f.AddResponse("sh", []string{"-c", "echo hi"}, exec.Result{}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(errOut.String(), "effective lock unavailable") {
+		t.Errorf("token-free hook should not derive/warn about the lock; got %q", errOut.String())
+	}
+}
+
+var errBoom = errors.New("boom")

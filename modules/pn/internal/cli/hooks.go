@@ -14,10 +14,10 @@ import (
 // of fn's outcome and never propagate errors (warn-only).
 func runWithHooks(ctx context.Context, w *workspace.Workspace, name string, fn func() error) error {
 	processed := w.ProcessedReposFor(ctx, name)
-	if err := w.RunEventHooks(ctx, workspace.HookPhasePre, name, processed, os.Stdout); err != nil {
+	if err := w.RunEventHooks(ctx, workspace.HookPhasePre, name, processed, os.Stdout, os.Stderr); err != nil {
 		return err
 	}
 	fnErr := fn()
-	_ = w.RunEventHooks(ctx, workspace.HookPhasePost, name, processed, os.Stdout)
+	_ = w.RunEventHooks(ctx, workspace.HookPhasePost, name, processed, os.Stdout, os.Stderr)
 	return fnErr
 }
