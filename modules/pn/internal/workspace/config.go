@@ -10,9 +10,11 @@ import (
 
 // WorkspaceConfig is the parsed representation of pn-workspace.toml.
 type WorkspaceConfig struct {
-	Workspace WorkspaceSection       `toml:"workspace"`
-	Repos     map[string]RepoConfig  `toml:"repos"`
-	Hooks     map[string]HookCommand `toml:"hooks"`
+	Workspace WorkspaceSection      `toml:"workspace"`
+	Repos     map[string]RepoConfig `toml:"repos"`
+	// Hooks are workspace-scoped event hooks: each runs once at the workspace
+	// root when its `when` event fires. See RepoHook (bd pg2-5yq5).
+	Hooks []RepoHook `toml:"hooks,omitempty"`
 }
 
 // WorkspaceSection is the [workspace] table.
@@ -56,45 +58,23 @@ type RepoConfig struct {
 	// When set, this overrides the default search paths (flake.nix, nix/flake.nix).
 	// Recorded in pn-workspace.toml only for non-default locations.
 	FlakePath string `toml:"flake_path,omitempty"`
-	// InstallHooks is the per-repo opt-in list of flake output names that
-	// `pn workspace install-hooks` runs (via `nix run .#<name>`) to (re)install
-	// this repo's git pre-commit hooks. Absent or empty means this repo did not
-	// opt in and is skipped (bd pg2-5yq5).
-	InstallHooks []string `toml:"install-hooks,omitempty"`
+	// Hooks are per-repo event hooks: each runs in THIS repo (cwd=repo) when its
+	// `when` event fires for a command that processes the repo. A `{nix_run
+	// <attr>}` token in `run` expands to an override-aware `nix run` against this
+	// repo's flake (bd pg2-5yq5).
+	Hooks []RepoHook `toml:"hooks,omitempty"`
 }
 
-// HookCommand describes one entry under [hooks.<command>]; Pre/Post are
-// ordered lists of shell command strings.
-type HookCommand struct {
-	Pre  []string `toml:"pre"`
-	Post []string `toml:"post"`
+// RepoHook is one event hook entry ([[hooks]] or [[repos.<r>.hooks]]). When
+// lists the events (`<pre|post>-<command>`, e.g. "post-rebase") that fire it;
+// Run lists the shell commands to execute. Used for both workspace-scoped and
+// per-repo hooks (bd pg2-5yq5).
+type RepoHook struct {
+	When []string `toml:"when"`
+	Run  []string `toml:"run"`
 }
 
 var workspaceIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-
-// knownHookCommands is the set of pn-workspace commands that support hooks.
-var knownHookCommands = map[string]struct{}{
-	"apply":            {},
-	"build":            {},
-	"clone":            {},
-	"flake-check":      {},
-	"init":             {},
-	"install-hooks":    {},
-	"lock":             {},
-	"pre-commit-check": {},
-	"push":             {},
-	"rebase":           {},
-	"status":           {},
-	"tree":             {},
-	"update":           {},
-	"upgrade":          {},
-}
-
-// IsKnownHookCommand reports whether name is a recognized pn-workspace command.
-func IsKnownHookCommand(name string) bool {
-	_, ok := knownHookCommands[name]
-	return ok
-}
 
 const defaultBuildCommand = "{builder} build --flake {terminal_nix_dir}"
 
@@ -169,9 +149,6 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 	if cfg.Repos == nil {
 		cfg.Repos = make(map[string]RepoConfig)
 	}
-	if cfg.Hooks == nil {
-		cfg.Hooks = make(map[string]HookCommand)
-	}
 	// Validate workspace.id if set.
 	if cfg.Workspace.Id != "" && !workspaceIDRe.MatchString(cfg.Workspace.Id) {
 		return nil, fmt.Errorf("workspace.id %q must be a slug: lowercase letters, digits, dashes", cfg.Workspace.Id)
@@ -226,11 +203,10 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 			return nil, err
 		}
 	}
-	// Validate hook command names.
-	for cmd := range cfg.Hooks {
-		if !IsKnownHookCommand(cmd) {
-			return nil, fmt.Errorf("hooks.%s: unknown pn-workspace command", cmd)
-		}
+	// Event-hook validation (events, {nix_run} placement, single-token) is added
+	// in a subsequent step via validateHook.
+	if err := validateAllHooks(cfg); err != nil {
+		return nil, err
 	}
 	if t := cfg.Workspace.Terminal; t != "" {
 		if _, ok := cfg.Repos[t]; !ok {

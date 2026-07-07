@@ -20,8 +20,9 @@ branch = 'main'
 url = 'git@github.com:phillipgziprecruiter/phillipg_mbp.git'
 branch = 'main'
 
-[hooks.apply]
-post = ['pb gate check']
+[[hooks]]
+when = ['post-apply']
+run = ['pb gate check']
 `
 
 // run against a root whose file already matches → exit 0, no "enforced" line.
@@ -111,8 +112,8 @@ func TestRun_EnforcesBuildAndApplyCommands(t *testing.T) {
 	if err := os.WriteFile(p, []byte(liveTOML), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	const buildCmd = "darwin-rebuild build --flake {terminal_flake}"
-	const applyCmd = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+	const buildCmd = "darwin-rebuild build --flake {terminal_nix_dir}"
+	const applyCmd = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 	var out bytes.Buffer
 	code := run([]string{
 		"--root", dir,
@@ -128,10 +129,10 @@ func TestRun_EnforcesBuildAndApplyCommands(t *testing.T) {
 		t.Errorf("expected an 'enforced' line, got: %q", out.String())
 	}
 	data, _ := os.ReadFile(p)
-	if !bytes.Contains(data, []byte("build_command = 'darwin-rebuild build --flake {terminal_flake}'")) {
+	if !bytes.Contains(data, []byte("build_command = 'darwin-rebuild build --flake {terminal_nix_dir}'")) {
 		t.Errorf("build_command not written verbatim: %s", data)
 	}
-	if !bytes.Contains(data, []byte("apply_command = 'sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}'")) {
+	if !bytes.Contains(data, []byte("apply_command = 'sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}'")) {
 		t.Errorf("apply_command not written verbatim: %s", data)
 	}
 	// terminal must be preserved (pn-owned).
@@ -157,8 +158,9 @@ apply_command = 'custom apply'
 [repos.phillipg-nix-ziprecruiter]
 url = 'git@github.com:x/y.git'
 
-[hooks.apply]
-post = ['pb gate check']
+[[hooks]]
+when = ['post-apply']
+run = ['pb gate check']
 `
 	p := filepath.Join(dir, "pn-workspace.toml")
 	if err := os.WriteFile(p, []byte(withCustom), 0o600); err != nil {

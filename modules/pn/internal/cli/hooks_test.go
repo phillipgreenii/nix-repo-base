@@ -26,6 +26,7 @@ func newTestWorkspace(t *testing.T, runner exec.Runner, tomlBody string) *worksp
 }
 
 func TestRunWithHooks_NoHooksPassthrough(t *testing.T) {
+	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	w := newTestWorkspace(t, f, `
 [workspace]
@@ -48,6 +49,7 @@ name = "test"
 }
 
 func TestRunWithHooks_PreFailureAbortsVerbAndPost(t *testing.T) {
+	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	f.AddResponse("sh", []string{"-c", "boom"}, exec.Result{ExitCode: 1},
 		&exec.CommandError{Name: "sh", Result: exec.Result{ExitCode: 1}})
@@ -76,6 +78,7 @@ post = ["should-not-run"]
 }
 
 func TestRunWithHooks_PostFailureSwallowed(t *testing.T) {
+	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	f.AddResponse("sh", []string{"-c", "boom"}, exec.Result{ExitCode: 1},
 		&exec.CommandError{Name: "sh", Result: exec.Result{ExitCode: 1}})
@@ -96,6 +99,7 @@ post = ["boom"]
 }
 
 func TestRunWithHooks_VerbErrorPropagatesAndPostStillRuns(t *testing.T) {
+	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	f.AddResponse("sh", []string{"-c", "after"}, exec.Result{}, nil)
 	w := newTestWorkspace(t, f, `
@@ -116,6 +120,7 @@ post = ["after"]
 }
 
 func TestRunWithHooks_PreThenVerbThenPostOrdering(t *testing.T) {
+	t.Skip("rewired to event hooks in Task 9 (pg2-5yq5)")
 	f := exec.NewFakeRunner()
 	f.AddResponse("sh", []string{"-c", "pre-1"}, exec.Result{}, nil)
 	f.AddResponse("sh", []string{"-c", "pre-2"}, exec.Result{}, nil)

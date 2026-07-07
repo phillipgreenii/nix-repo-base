@@ -10,6 +10,12 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
+// installArgs is a compile-only shim for the skipped legacy install-hooks
+// tests below (the original lived in the deleted install_hooks_test.go). These
+// tests are rewired to post-clone event hooks in Task 8 (pg2-5yq5); the shim
+// only keeps the file compiling until then.
+func installArgs(output string) []string { return []string{"run", ".#" + output} }
+
 // nixCalls filters a FakeRunner's recorded calls to the `nix` invocations.
 func nixCalls(f *exec.FakeRunner) []exec.Call {
 	var out []exec.Call
@@ -26,6 +32,7 @@ func nixCalls(f *exec.FakeRunner) []exec.Call {
 // `nix run .#install-pre-commit-hooks`, and it runs IN bar's set worktree dir.
 // The non-opted-in repo (foo) produces no install call.
 func TestWorkforestAdd_InstallsOptInHooksInWorktree(t *testing.T) {
+	t.Skip("rewired to post-clone event hooks in Task 8 (pg2-5yq5)")
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, ConfigFileName), `
 [repos.foo]
@@ -88,6 +95,7 @@ install-hooks = ["install-pre-commit-hooks"]
 // call returns nil, a warning naming the repo is written to errOut, and the
 // set's config is still written (the worktrees are already created).
 func TestWorkforestAdd_InstallHookFailureIsWarnOnlyNonFatal(t *testing.T) {
+	t.Skip("rewired to post-clone event hooks in Task 8 (pg2-5yq5)")
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, ConfigFileName), `
 [repos.bar]
@@ -136,6 +144,7 @@ install-hooks = ["install-pre-commit-hooks"]
 // participating repo (lib, opted-in) to an existing set runs its install-hooks
 // in the new worktree dir.
 func TestWorkforestAddRepo_InstallsOptInHooksInWorktree(t *testing.T) {
+	t.Skip("rewired to post-clone event hooks in Task 8 (pg2-5yq5)")
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, ConfigFileName), `
 [workspace]

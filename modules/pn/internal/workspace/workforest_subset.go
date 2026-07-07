@@ -82,9 +82,9 @@ func excludedDepEdges(lock *Lock, memberSet map[string]bool) []LockEdge {
 // repos, then hooks. Used to write a subset set's pn-workspace.toml.
 func writeConfigTOMLTo(dest string, cfg *WorkspaceConfig) error {
 	type orderedConfig struct {
-		Workspace WorkspaceSection       `toml:"workspace"`
-		Repos     map[string]RepoConfig  `toml:"repos"`
-		Hooks     map[string]HookCommand `toml:"hooks,omitempty"`
+		Workspace WorkspaceSection      `toml:"workspace"`
+		Repos     map[string]RepoConfig `toml:"repos"`
+		Hooks     []RepoHook            `toml:"hooks,omitempty"`
 	}
 	out := orderedConfig{
 		Workspace: cfg.Workspace,

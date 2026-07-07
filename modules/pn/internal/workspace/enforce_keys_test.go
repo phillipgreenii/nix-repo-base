@@ -3,22 +3,33 @@ package workspace
 import (
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
 
+// applyPostRun returns the Run of the first workspace hook whose When includes
+// "post-apply", or nil. Mirrors EnforceKeys's ensure-present target.
+func applyPostRun(cfg *WorkspaceConfig) []string {
+	for _, h := range cfg.Hooks {
+		if slices.Contains(h.When, "post-apply") {
+			return h.Run
+		}
+	}
+	return nil
+}
+
 // realWorldTOML mirrors the shape of the live pn-workspace.toml: a [workspace]
-// section, several [repos.*] entries, and a [hooks.apply] table. Used to prove
-// EnforceKeys touches ONLY workspace.id + hooks.apply.post and preserves the
-// rest verbatim.
+// section, several [repos.*] entries, and a [[hooks]] post-apply entry. Used to
+// prove EnforceKeys touches ONLY workspace.id + the post-apply hook run and
+// preserves the rest verbatim.
 const realWorldTOML = `[workspace]
 name = ''
 description = ''
 id = 'phillipg-mbp'
 terminal = 'phillipg-nix-ziprecruiter'
-build_command = 'darwin-rebuild build --flake {terminal_flake}'
-apply_command = 'sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}'
+build_command = 'darwin-rebuild build --flake {terminal_nix_dir}'
+apply_command = 'sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}'
 
 [repos]
 [repos.phillipg-nix-repo-base]
@@ -29,8 +40,9 @@ branch = 'main'
 url = 'git@github.com:phillipgziprecruiter/phillipg_mbp.git'
 branch = 'main'
 
-[hooks.apply]
-post = ['pb gate check']
+[[hooks]]
+when = ['post-apply']
+run = ['pb gate check']
 `
 
 func writeTemp(t *testing.T, name, content string, mode os.FileMode) string {
@@ -70,8 +82,8 @@ func TestEnforceKeys_NoOpWhenAlreadyCorrect(t *testing.T) {
 	beforeInfo, _ := os.Stat(p)
 
 	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check",
-		"darwin-rebuild build --flake {terminal_flake}",
-		"sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}")
+		"darwin-rebuild build --flake {terminal_nix_dir}",
+		"sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,8 +115,9 @@ id = ''
 url = 'git@github.com:phillipgreenii/nix-repo-base.git'
 branch = 'main'
 
-[hooks.apply]
-post = ['pb gate check']
+[[hooks]]
+when = ['post-apply']
+run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", wrongID, 0o600)
 	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
@@ -128,7 +141,7 @@ post = ['pb gate check']
 	if r.URL != "git@github.com:phillipgreenii/nix-repo-base.git" {
 		t.Errorf("repo url mangled: %q", r.URL)
 	}
-	if got := cfg.Hooks["apply"].Post; !reflect.DeepEqual(got, []string{"pb gate check"}) {
+	if got := applyPostRun(cfg); !slices.Contains(got, "pb gate check") {
 		t.Errorf("apply.post = %v; want [pb gate check]", got)
 	}
 }
@@ -155,7 +168,7 @@ branch = 'main'
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Hooks["apply"].Post; !reflect.DeepEqual(got, []string{"pb gate check"}) {
+	if got := applyPostRun(cfg); !slices.Contains(got, "pb gate check") {
 		t.Errorf("apply.post = %v; want [pb gate check]", got)
 	}
 	if _, ok := cfg.Repos["phillipg-nix-repo-base"]; !ok {
@@ -193,12 +206,12 @@ func TestEnforceKeys_RejectsBadID(t *testing.T) {
 	}
 }
 
-// The committed template strings (verbatim; {terminal_flake}/{hostname} are pn
+// The committed template strings (verbatim; {terminal_nix_dir}/{hostname} are pn
 // placeholders that must survive the round-trip literally). Shared by the
 // build_command / apply_command tests below.
 const (
-	committedBuildCommand = "darwin-rebuild build --flake {terminal_flake}"
-	committedApplyCommand = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+	committedBuildCommand = "darwin-rebuild build --flake {terminal_nix_dir}"
+	committedApplyCommand = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 )
 
 // Setting build_command + apply_command rewrites the file, updates ONLY those two
@@ -221,8 +234,9 @@ branch = 'main'
 url = 'git@github.com:phillipgziprecruiter/phillipg_mbp.git'
 branch = 'main'
 
-[hooks.apply]
-post = ['pb gate check']
+[[hooks]]
+when = ['post-apply']
+run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", wrongCommands, 0o600)
 	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand)
@@ -259,7 +273,7 @@ post = ['pb gate check']
 	if cfg.Workspace.Id != "phillipg-mbp" {
 		t.Errorf("id = %q; want phillipg-mbp", cfg.Workspace.Id)
 	}
-	if got := cfg.Hooks["apply"].Post; !reflect.DeepEqual(got, []string{"pb gate check"}) {
+	if got := applyPostRun(cfg); !slices.Contains(got, "pb gate check") {
 		t.Errorf("apply.post = %v; want [pb gate check]", got)
 	}
 }
@@ -280,8 +294,9 @@ apply_command = 'custom apply cmd'
 url = 'git@github.com:phillipgziprecruiter/phillipg_mbp.git'
 branch = 'main'
 
-[hooks.apply]
-post = ['pb gate check']
+[[hooks]]
+when = ['post-apply']
+run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", customCommands, 0o600)
 	before, err := os.ReadFile(p)
@@ -354,8 +369,9 @@ terminal = 'phillipg-nix-ziprecruiter'
 [repos.phillipg-nix-ziprecruiter]
 url = 'git@github.com:x/y.git'
 
-[hooks.apply]
-post = ['pb gate check']
+[[hooks]]
+when = ['post-apply']
+run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", wrong, 0o600)
 	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand); err != nil {
@@ -386,7 +402,7 @@ func TestEnforceKeys_AbsentFileNoOpWithCommands(t *testing.T) {
 	}
 }
 
-// The template placeholders {terminal_flake} / {hostname} survive the round-trip
+// The template placeholders {terminal_nix_dir} / {hostname} survive the round-trip
 // verbatim (they are pn expansion tokens, not something the enforcer resolves).
 func TestEnforceKeys_PreservesTemplatePlaceholdersVerbatim(t *testing.T) {
 	wrong := `[workspace]
@@ -398,8 +414,9 @@ apply_command = 'stale'
 [repos.phillipg-nix-ziprecruiter]
 url = 'git@github.com:x/y.git'
 
-[hooks.apply]
-post = ['pb gate check']
+[[hooks]]
+when = ['post-apply']
+run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", wrong, 0o600)
 	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand); err != nil {
@@ -409,8 +426,8 @@ post = ['pb gate check']
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "{terminal_flake}") {
-		t.Errorf("{terminal_flake} placeholder not preserved verbatim in:\n%s", raw)
+	if !strings.Contains(string(raw), "{terminal_nix_dir}") {
+		t.Errorf("{terminal_nix_dir} placeholder not preserved verbatim in:\n%s", raw)
 	}
 	if !strings.Contains(string(raw), "{hostname}") {
 		t.Errorf("{hostname} placeholder not preserved verbatim in:\n%s", raw)

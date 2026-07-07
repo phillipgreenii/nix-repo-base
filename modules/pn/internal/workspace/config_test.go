@@ -17,12 +17,17 @@ branch = "main"
 [repos.nix-overlay]
 url = "github:phillipgreenii/nix-overlay"
 
-[hooks.update]
-pre = ["pn-osx-tcc-check", "./hooks/check-vault-ready.sh"]
-post = ["echo update done"]
+[[hooks]]
+when = ["pre-update"]
+run = ["pn-osx-tcc-check", "./hooks/check-vault-ready.sh"]
 
-[hooks.build]
-pre = ["./hooks/preflight.sh"]
+[[hooks]]
+when = ["post-update"]
+run = ["echo update done"]
+
+[[hooks]]
+when = ["pre-build"]
+run = ["./hooks/preflight.sh"]
 `
 
 func TestParseConfig_Workspace(t *testing.T) {
@@ -71,28 +76,20 @@ func TestParseConfig_Hooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	update := cfg.Hooks["update"]
-	if len(update.Pre) != 2 {
-		t.Errorf("update.pre: got %d entries", len(update.Pre))
+	if len(cfg.Hooks) != 3 {
+		t.Fatalf("expected 3 workspace hooks, got %d", len(cfg.Hooks))
 	}
-	if update.Pre[0] != "pn-osx-tcc-check" {
-		t.Errorf("update.pre[0]: got %q", update.Pre[0])
+	var preUpdate *RepoHook
+	for i := range cfg.Hooks {
+		if len(cfg.Hooks[i].When) == 1 && cfg.Hooks[i].When[0] == "pre-update" {
+			preUpdate = &cfg.Hooks[i]
+		}
 	}
-	if len(update.Post) != 1 {
-		t.Errorf("update.post: got %d entries", len(update.Post))
+	if preUpdate == nil {
+		t.Fatal("missing pre-update hook")
 	}
-}
-
-func TestParseConfig_RejectsUnknownHookCommand(t *testing.T) {
-	bad := `[hooks.notacommand]
-pre = ["foo"]
-`
-	_, err := ParseConfig([]byte(bad))
-	if err == nil {
-		t.Fatal("expected error for unknown hook command; got nil")
-	}
-	if !strings.Contains(err.Error(), "notacommand") {
-		t.Errorf("error should name the bad command; got %q", err.Error())
+	if len(preUpdate.Run) != 2 || preUpdate.Run[0] != "pn-osx-tcc-check" {
+		t.Errorf("pre-update run: got %v", preUpdate.Run)
 	}
 }
 
@@ -171,69 +168,29 @@ url = "github:phillipgreenii/nix-overlay"
 	}
 }
 
-// TestParseConfig_InstallHooksPopulated verifies that a per-repo
-// install-hooks = ["x","y"] list is parsed into RepoConfig.InstallHooks in order.
-func TestParseConfig_InstallHooksPopulated(t *testing.T) {
+// TestConfig_ParsesEventHookLists verifies that workspace [[hooks]] and per-repo
+// [[repos.<r>.hooks]] parse into []RepoHook with when/run populated.
+func TestConfig_ParsesEventHookLists(t *testing.T) {
 	cfg, err := ParseConfig([]byte(`
+[[hooks]]
+when = ["post-apply"]
+run = ["pb gate check"]
+
 [repos.foo]
 url = "github:owner/foo"
-install-hooks = ["install-pre-commit-hooks", "install-other-hook"]
+[[repos.foo.hooks]]
+when = ["post-clone", "post-rebase"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `))
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
-	got := cfg.Repos["foo"].InstallHooks
-	want := []string{"install-pre-commit-hooks", "install-other-hook"}
-	if len(got) != len(want) {
-		t.Fatalf("InstallHooks: got %v, want %v", got, want)
+	if len(cfg.Hooks) != 1 || len(cfg.Hooks[0].When) != 1 || cfg.Hooks[0].When[0] != "post-apply" || cfg.Hooks[0].Run[0] != "pb gate check" {
+		t.Fatalf("workspace hooks: %+v", cfg.Hooks)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("InstallHooks[%d]: got %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-// TestParseConfig_InstallHooksAbsentIsNil verifies that a repo without an
-// install-hooks key yields a nil/empty InstallHooks slice (opt-out).
-func TestParseConfig_InstallHooksAbsentIsNil(t *testing.T) {
-	cfg, err := ParseConfig([]byte(`
-[repos.foo]
-url = "github:owner/foo"
-`))
-	if err != nil {
-		t.Fatalf("ParseConfig: %v", err)
-	}
-	if got := cfg.Repos["foo"].InstallHooks; len(got) != 0 {
-		t.Errorf("InstallHooks (absent): got %v, want empty", got)
-	}
-}
-
-// TestParseConfig_InstallHooksEmptyIsEmpty verifies that an explicit empty list
-// yields an empty (opt-out) InstallHooks slice.
-func TestParseConfig_InstallHooksEmptyIsEmpty(t *testing.T) {
-	cfg, err := ParseConfig([]byte(`
-[repos.foo]
-url = "github:owner/foo"
-install-hooks = []
-`))
-	if err != nil {
-		t.Fatalf("ParseConfig: %v", err)
-	}
-	if got := cfg.Repos["foo"].InstallHooks; len(got) != 0 {
-		t.Errorf("InstallHooks (empty): got %v, want empty", got)
-	}
-}
-
-func TestKnownHookCommands(t *testing.T) {
-	want := []string{"apply", "build", "flake-check", "init", "lock", "pre-commit-check", "push", "rebase", "status", "tree", "update", "upgrade"}
-	for _, c := range want {
-		if !IsKnownHookCommand(c) {
-			t.Errorf("expected %q to be a known hook command", c)
-		}
-	}
-	if IsKnownHookCommand("not-a-real-command") {
-		t.Error("not-a-real-command should not be known")
+	fh := cfg.Repos["foo"].Hooks
+	if len(fh) != 1 || len(fh[0].When) != 2 || fh[0].Run[0] != "{nix_run install-pre-commit-hooks}" {
+		t.Fatalf("repo hooks: %+v", fh)
 	}
 }
 

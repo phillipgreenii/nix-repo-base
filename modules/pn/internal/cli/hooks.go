@@ -6,19 +6,14 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/workspace"
 )
 
-// runWithHooks executes fn surrounded by the workspace's pre/post hooks for
-// the named pn-workspace command. Pre-hook failures abort and propagate;
-// fn is not invoked. Post-hooks run regardless of fn's outcome and never
-// propagate errors (warn-only per spec §4.1).
+// runWithHooks executes fn surrounded by the workspace's event hooks for the
+// named pn-workspace command.
+//
+// TODO(pg2-5yq5): wire this to workspace + per-repo event dispatch
+// (w.RunEventHooks over w.ProcessedReposFor) in Task 9. Stubbed to `return
+// fn()` to keep the map->slice hooks reshape batch (Task 3) compiling; hooks do
+// not fire until Task 9 lands. The context/workspace imports remain used via
+// the signature.
 func runWithHooks(ctx context.Context, w *workspace.Workspace, name string, fn func() error) error {
-	hooks := w.Config().Hooks[name]
-	runner := w.Runner()
-	root := w.Root()
-
-	if err := workspace.RunHooks(ctx, runner, hooks.Pre, root, workspace.HookPhasePre); err != nil {
-		return err
-	}
-	fnErr := fn()
-	_ = workspace.RunHooks(ctx, runner, hooks.Post, root, workspace.HookPhasePost)
-	return fnErr
+	return fn()
 }

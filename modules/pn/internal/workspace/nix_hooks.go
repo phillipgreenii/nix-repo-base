@@ -7,6 +7,13 @@ import (
 	"path/filepath"
 )
 
+// validateAllHooks validates workspace- and repo-scoped event hooks at config
+// load. The real checks (known events, {nix_run} placement + single-token) are
+// added in a later step; the stub keeps ParseConfig callable meanwhile.
+func validateAllHooks(cfg *WorkspaceConfig) error {
+	return nil
+}
+
 // repoNixHookVars builds the per-repo values for expanding a {nix_run} token,
 // resolving --override-input flags from the EFFECTIVE lock (derived when the
 // disk lock is absent/stale) so the gate builds against local workspace

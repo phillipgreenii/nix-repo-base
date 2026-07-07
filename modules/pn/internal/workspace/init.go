@@ -139,9 +139,9 @@ func (w *Workspace) writeConfigTOMLAtomic() error {
 	// Build ordered output struct. toml.Marshal preserves the struct field
 	// order; repos come out sorted because we collect them that way.
 	type orderedConfig struct {
-		Workspace WorkspaceSection       `toml:"workspace"`
-		Repos     map[string]RepoConfig  `toml:"repos"`
-		Hooks     map[string]HookCommand `toml:"hooks,omitempty"`
+		Workspace WorkspaceSection      `toml:"workspace"`
+		Repos     map[string]RepoConfig `toml:"repos"`
+		Hooks     []RepoHook            `toml:"hooks,omitempty"`
 	}
 	out := orderedConfig{
 		Workspace: w.config.Workspace,
@@ -179,9 +179,9 @@ func (w *Workspace) writeConfigTOMLAtomic() error {
 // compatibility; new code should prefer writeConfigTOMLAtomic.
 func (w *Workspace) writeConfigTOML() error {
 	type orderedConfig struct {
-		Workspace WorkspaceSection       `toml:"workspace"`
-		Repos     map[string]RepoConfig  `toml:"repos"`
-		Hooks     map[string]HookCommand `toml:"hooks,omitempty"`
+		Workspace WorkspaceSection      `toml:"workspace"`
+		Repos     map[string]RepoConfig `toml:"repos"`
+		Hooks     []RepoHook            `toml:"hooks,omitempty"`
 	}
 	out := orderedConfig{
 		Workspace: w.config.Workspace,

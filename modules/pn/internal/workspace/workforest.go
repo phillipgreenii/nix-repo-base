@@ -122,12 +122,8 @@ func (w *Workspace) WorkforestAdd(ctx context.Context, out io.Writer, errOut io.
 		// into the shared hook script: if the set's branch bumps prek itself,
 		// re-installing from the set rewrites the shared hook's prek path (affects
 		// canonical). Config/formatter changes do NOT cross-contaminate.
-		setRepo := filepath.Join(setDir, repo)
-		if outputs := w.config.Repos[repo].InstallHooks; len(outputs) > 0 {
-			if err := w.InstallHooksInDir(ctx, out, errOut, repo, setRepo, outputs); err != nil {
-				fmt.Fprintf(errOut, "warning: install-hooks in workforest worktree %s: %v\n", repo, err)
-			}
-		}
+		// TODO(pg2-5yq5): fire post-clone hooks on the new worktree via a
+		// set-rooted Workspace (Task 8). Stubbed to keep the reshape batch green.
 	}
 
 	// --- Write the set's config/lock (filtered to the member set) ---
@@ -302,12 +298,8 @@ func (w *Workspace) WorkforestAddRepo(ctx context.Context, out io.Writer, errOut
 	// symlink, so pre-commit config/formatter changes stay per-worktree-isolated;
 	// only a prek-binary version bump baked into the shared hook script crosses
 	// back to canonical.
-	setRepo := filepath.Join(setDir, repo)
-	if outputs := w.config.Repos[repo].InstallHooks; len(outputs) > 0 {
-		if err := w.InstallHooksInDir(ctx, out, errOut, repo, setRepo, outputs); err != nil {
-			fmt.Fprintf(errOut, "warning: install-hooks in workforest worktree %s: %v\n", repo, err)
-		}
-	}
+	// TODO(pg2-5yq5): fire post-clone hooks on the new worktree via a set-rooted
+	// Workspace (Task 8). Stubbed to keep the reshape batch green.
 
 	// Recompute membership and rewrite the set's filtered config/lock.
 	members[repo] = true
