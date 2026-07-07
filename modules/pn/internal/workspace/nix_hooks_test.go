@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -51,5 +52,48 @@ func TestRepoNixRunString_InjectsConsumerOverrides(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "'"+filepath.Join(root, "consumer")+"#install-pre-commit-hooks'") {
 		t.Errorf("bad flakeref suffix in %q", got)
+	}
+}
+
+// TestRunEventHooks_RepoScopedFiresForProcessedRepoOnly verifies a repo-scoped
+// hook fires only for the repo that declares it (a), runs in that repo's dir,
+// and is skipped for a repo (b) that has no matching hook.
+func TestRunEventHooks_RepoScopedFiresForProcessedRepoOnly(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"{nix_run install-pre-commit-hooks}\"]\n[repos.b]\nurl=\"github:o/b\"\n")
+	for _, r := range []string{"a", "b"} {
+		mustMkdir(t, filepath.Join(root, r))
+		writeFile(t, filepath.Join(root, r, "flake.nix"), "{}")
+	}
+	lk := &Lock{Repos: map[string]LockRepoEntry{
+		"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"},
+		"b": {FlakePath: "flake.nix", RemoteURL: "github:o/b"},
+	}}
+	if err := WriteLock(filepath.Join(root, LockFileName), lk); err != nil {
+		t.Fatal(err)
+	}
+	wantCmd := "nix run '" + filepath.Join(root, "a") + "#install-pre-commit-hooks'"
+	f := exec.NewFakeRunner()
+	f.AddResponse("sh", []string{"-c", wantCmd}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// processed = both repos; only "a" declares the post-rebase hook.
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a", "b"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var sh []exec.Call
+	for _, c := range f.Calls() {
+		if c.Name == "sh" {
+			sh = append(sh, c)
+		}
+	}
+	if len(sh) != 1 {
+		t.Fatalf("want 1 sh call (repo a only), got %d", len(sh))
+	}
+	if sh[0].Opts.Dir != filepath.Join(root, "a") {
+		t.Errorf("cwd = %q, want repo a", sh[0].Opts.Dir)
 	}
 }

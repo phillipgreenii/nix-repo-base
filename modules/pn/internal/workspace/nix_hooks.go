@@ -3,14 +3,109 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
+
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+// repoIteratingCommands are the pn-workspace commands that process every repo in
+// turn; only these (plus upgrade) fan a per-repo hook out to all repos.
+var repoIteratingCommands = map[string]struct{}{
+	"clone": {}, "rebase": {}, "update": {}, "status": {},
+	"flake-check": {}, "format": {}, "push": {}, "pre-commit-check": {},
+}
 
 // validateAllHooks validates workspace- and repo-scoped event hooks at config
 // load. The real checks (known events, {nix_run} placement + single-token) are
 // added in a later step; the stub keeps ParseConfig callable meanwhile.
 func validateAllHooks(cfg *WorkspaceConfig) error {
+	return nil
+}
+
+// eventName returns the "<phase>-<command>" event string.
+func eventName(phase HookPhase, cmd string) string {
+	if phase == HookPhasePre {
+		return "pre-" + cmd
+	}
+	return "post-" + cmd
+}
+
+// processedReposFor returns the repos a command operates on — the set whose
+// per-repo hooks should fire. Repo-iterating commands (and upgrade, whose update
+// phase touches every repo) process all repos in topoAlpha order; build/apply
+// process only the terminal; everything else processes none.
+func (ws *Workspace) processedReposFor(ctx context.Context, cmd string) []string {
+	if _, ok := repoIteratingCommands[cmd]; ok {
+		return ws.topoAlpha(ctx)
+	}
+	switch cmd {
+	case "upgrade":
+		return ws.topoAlpha(ctx)
+	case "build", "apply":
+		if t, err := ws.config.TerminalRepo(); err == nil {
+			return []string{t}
+		}
+	}
+	return nil
+}
+
+// ProcessedReposFor is the exported wrapper the cli layer uses to compute the
+// per-command repo set for runWithHooks.
+func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string {
+	return ws.processedReposFor(ctx, cmd)
+}
+
+// RunEventHooks fires the hooks for one (phase, command) event. Workspace
+// [[hooks]] entries whose `when` contains the event run once at the workspace
+// root; per-repo [[repos.<r>.hooks]] entries run in each processed repo
+// (cwd=repo), expanding any {nix_run} token against that repo's flake +
+// overrides. Pre-hooks abort on first failure; post-hooks warn and continue.
+func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out io.Writer) error {
+	ev := eventName(phase, cmd)
+	// Workspace-scoped: once at root (no {nix_run}; enforced by validateAllHooks).
+	for _, h := range ws.config.Hooks {
+		if slices.Contains(h.When, ev) {
+			if err := RunHooks(ctx, ws.runner, h.Run, ws.root, phase); err != nil {
+				return err
+			}
+		}
+	}
+	// Repo-scoped: in each processed repo that declares a matching hook.
+	for _, key := range processed {
+		hooks := ws.config.Repos[key].Hooks
+		if len(hooks) == 0 {
+			continue
+		}
+		vars := ws.repoNixHookVars(ctx, key) // resolve once per repo
+		dir := filepath.Join(ws.root, key)
+		for _, h := range hooks {
+			if !slices.Contains(h.When, ev) {
+				continue
+			}
+			for _, raw := range h.Run {
+				cmdStr, _, err := expandNixRunTokens(raw, vars)
+				if err == nil {
+					var resolved string
+					if resolved, err = rewriteFirstToken(cmdStr, dir); err == nil {
+						var res exec.Result
+						res, err = ws.runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: dir, Stdout: out, Stderr: out})
+						if err != nil && phase == HookPhasePost {
+							_, _ = os.Stderr.Write(res.Stderr)
+						}
+					}
+				}
+				if err != nil {
+					if phase == HookPhasePre {
+						return fmt.Errorf("pre-hook %q in %s: %w", raw, key, err)
+					}
+					fmt.Fprintf(os.Stderr, "warning: post-hook %q in %s: %v\n", raw, key, err)
+				}
+			}
+		}
+	}
 	return nil
 }
 
