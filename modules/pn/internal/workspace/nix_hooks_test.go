@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -195,6 +197,69 @@ func TestRunEventHooks_SkipsLockDerivationWithoutNixRunToken(t *testing.T) {
 	}
 	if strings.Contains(errOut.String(), "effective lock unavailable") {
 		t.Errorf("token-free hook should not derive/warn about the lock; got %q", errOut.String())
+	}
+}
+
+// TestRunEventHooks_PerRepoPreHookFailureAborts covers the load-bearing
+// pre-hook abort branch: a failing per-repo pre-* hook must abort the command
+// (return the error), not warn-and-continue (bd pg2-eo09).
+func TestRunEventHooks_PerRepoPreHookFailureAborts(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	w := openHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"pre-rebase\"]\nrun=[\"gate\"]\n",
+		[]string{"a"}, lk)
+	f := w.runner.(*exec.FakeRunner)
+	f.AddResponse("sh", []string{"-c", "gate"}, exec.Result{Stderr: []byte("nope")}, errBoom)
+
+	var out, errOut bytes.Buffer
+	err := w.RunEventHooks(context.Background(), HookPhasePre, "rebase", []string{"a"}, &out, &errOut)
+	if err == nil {
+		t.Fatal("a failing per-repo pre-hook must abort (return error), not continue")
+	}
+	if !strings.Contains(err.Error(), "pre-hook") || !strings.Contains(err.Error(), "a") {
+		t.Errorf("error should name the failing pre-hook and its repo; got %v", err)
+	}
+}
+
+// TestProcessedReposFor covers the per-command repo-set mapping (bd pg2-eo09):
+// repo-iterating commands and upgrade process every repo; build/apply process
+// only the terminal; everything else processes none.
+func TestProcessedReposFor(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{
+		"term": {FlakePath: "flake.nix", RemoteURL: "github:o/term"},
+		"base": {FlakePath: "flake.nix", RemoteURL: "github:o/base"},
+	}}
+	w := openHookWS(t,
+		"[workspace]\nterminal=\"term\"\n[repos.term]\nurl=\"github:o/term\"\n[repos.base]\nurl=\"github:o/base\"\n",
+		[]string{"term", "base"}, lk)
+	ctx := context.Background()
+	all := []string{"base", "term"}
+	cases := []struct {
+		cmd  string
+		want []string
+	}{
+		{"clone", all},
+		{"rebase", all},
+		{"update", all},
+		{"status", all},
+		{"flake-check", all},
+		{"format", all},
+		{"push", all},
+		{"pre-commit-check", all},
+		{"upgrade", all},
+		{"build", []string{"term"}},
+		{"apply", []string{"term"}},
+		{"lock", nil},
+		{"tree", nil},
+		{"init", nil},
+	}
+	for _, tc := range cases {
+		got := w.processedReposFor(ctx, tc.cmd)
+		sorted := append([]string(nil), got...)
+		sort.Strings(sorted)
+		if !slices.Equal(sorted, tc.want) {
+			t.Errorf("processedReposFor(%q) = %v; want %v", tc.cmd, sorted, tc.want)
+		}
 	}
 }
 

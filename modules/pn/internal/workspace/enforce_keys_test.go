@@ -176,6 +176,51 @@ branch = 'main'
 	}
 }
 
+// TestEnforceKeys_AppendsToExistingPostApplyWithoutClobbering covers the
+// ensure-present APPEND branch: when a [[hooks]] post-apply entry already exists
+// with OTHER run commands but not the enforced one, EnforceKeys appends applyPost
+// and preserves the user's existing commands (ADR-0019 don't-clobber; bd pg2-eo09).
+func TestEnforceKeys_AppendsToExistingPostApplyWithoutClobbering(t *testing.T) {
+	withExtra := `[workspace]
+id = 'phillipg-mbp'
+
+[repos.phillipg-nix-repo-base]
+url = 'git@github.com:phillipgreenii/nix-repo-base.git'
+branch = 'main'
+
+[[hooks]]
+when = ['post-apply']
+run = ['echo custom', 'notify send']
+`
+	p := writeTemp(t, "pn-workspace.toml", withExtra, 0o600)
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("changed = false; want true when applyPost must be appended")
+	}
+	cfg, err := loadConfigFile(t, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := applyPostRun(cfg)
+	// User's commands preserved AND the enforced one added — not clobbered.
+	if !slices.Equal(got, []string{"echo custom", "notify send", "pb gate check"}) {
+		t.Errorf("post-apply run = %v; want the 2 existing + enforced appended", got)
+	}
+
+	// Idempotent: a second enforce with the same value is a no-op (append branch
+	// must not re-append when already present).
+	changed2, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error on second enforce: %v", err)
+	}
+	if changed2 {
+		t.Errorf("second enforce changed the file; append branch should be idempotent")
+	}
+}
+
 // The write preserves the original file mode (0600).
 func TestEnforceKeys_PreservesMode0600(t *testing.T) {
 	wrongID := `[workspace]
