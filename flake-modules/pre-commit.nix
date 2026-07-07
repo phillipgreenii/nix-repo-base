@@ -66,54 +66,6 @@ in
       ...
     }:
     let
-      # Module-aware golangci-lint entry. The stock git-hooks.nix
-      # `hooks.golangci-lint` runs `golangci-lint run ./<dir>` from the repo
-      # root, which fails here: this repo is MULTI-MODULE (go.mod lives in
-      # modules/pn and modules/jira, not at the repo root), and golangci-lint
-      # must be invoked from within the Go module. This entry instead walks each
-      # changed .go file up to its nearest go.mod and lints that whole module
-      # once. The repo-root .golangci.yml (discovered by walking up) pins the
-      # linter set so this hook and a manual `golangci-lint run` agree.
-      golangciLintEntry = pkgs.writeShellScript "precommit-golangci-lint" ''
-        set -euo pipefail
-        # Opt-in guard: this hook lints Go ONLY in a repo that ships a root
-        # golangci config. git-hooks/pre-commit runs hooks from the repo root, so
-        # $PWD here is the repo root. repo-base has one (it lints modules/pn +
-        # modules/jira); consumers of flakeModules.pre-commit do NOT, so the hook
-        # no-ops for them instead of linting their differently-maintained,
-        # sometimes sandbox-unbuildable Go. (bd: pg2-q6i5)
-        if [ ! -f .golangci.yml ] && [ ! -f .golangci.yaml ] && [ ! -f .golangci.toml ]; then
-          exit 0
-        fi
-        golangci="${pkgs.golangci-lint}/bin/golangci-lint"
-        # golangci-lint loads the full package graph via `go/packages`, so it
-        # needs the `go` toolchain on PATH (matched to golangci-lint's build) and
-        # writable module/build caches. Provide them here rather than relying on
-        # the ambient shell so the hook works from `nix flake check` too.
-        export PATH="${pkgs.go}/bin:$PATH"
-        export GOFLAGS="-mod=mod"
-        export GOCACHE="''${GOCACHE:-$(mktemp -d)/go-build}"
-        export GOPATH="''${GOPATH:-$(mktemp -d)/go}"
-        # Resolve each changed file to its owning go.mod directory, dedupe.
-        mods=""
-        for f in "$@"; do
-          dir=$(dirname "$f")
-          while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
-            if [ -f "$dir/go.mod" ]; then
-              mods="$mods$dir"$'\n'
-              break
-            fi
-            dir=$(dirname "$dir")
-          done
-        done
-        [ -n "$mods" ] || exit 0
-        rc=0
-        for mod in $(printf '%s' "$mods" | sort -u); do
-          ( cd "$mod" && "$golangci" run ./... ) || rc=1
-        done
-        exit $rc
-      '';
-
       # Resolve the function-or-attrset extraHooks against the per-system pkgs so
       # a function-form definition (pkgs -> hooks) picks up the building system's
       # tooling. An attrset-form definition passes through unchanged.
@@ -163,18 +115,14 @@ in
             entry = "${pkgs.python3Packages.pre-commit-hooks}/bin/end-of-file-fixer";
           };
           check-case-conflicts.enable = true;
-          # Go linting. The stock git-hooks.nix golangci-lint hook is not
-          # multi-module-aware (see golangciLintEntry above), so this uses a
-          # custom module-aware entry while keeping the standard hook shape
-          # (files, require_serial). package is wired to pkgs.golangci-lint.
-          golangci-lint = {
-            enable = true;
-            name = "golangci-lint";
-            package = pkgs.golangci-lint;
-            entry = builtins.toString golangciLintEntry;
-            files = "\\.go$";
-            require_serial = true;
-          };
+          # NOTE: Go linting is intentionally NOT a pre-commit hook. golangci-lint
+          # must load the full package graph, which cannot be done offline in the
+          # no-network `nix flake check` sandbox that runs checks.pre-commit
+          # (bead pg2-6wly). It is instead a dedicated, sandbox-safe check per Go
+          # module (checks.<module>-golangci) via gomod2nix's vendored dep env —
+          # see lib/go-builders.nix `mkGoLint`. Repos wanting local commit/push-time
+          # Go lint feedback can add their own hook via `extraHooks` (e.g. at
+          # stages = [ "pre-push" ] to keep it out of the sandboxed check).
         }
         // resolvedExtraHooks;
       };
