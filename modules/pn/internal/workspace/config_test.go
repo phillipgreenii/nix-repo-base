@@ -194,6 +194,34 @@ run = ["{nix_run install-pre-commit-hooks}"]
 	}
 }
 
+func TestConfig_RejectsUnknownEvent(t *testing.T) {
+	_, err := ParseConfig([]byte("[[hooks]]\nwhen = [\"post-frobnicate\"]\nrun = [\"echo hi\"]\n"))
+	if err == nil || !strings.Contains(err.Error(), "post-frobnicate") {
+		t.Fatalf("expected unknown-event error naming post-frobnicate; got %v", err)
+	}
+}
+
+func TestConfig_RejectsNixRunInWorkspaceHook(t *testing.T) {
+	_, err := ParseConfig([]byte("[[hooks]]\nwhen = [\"post-rebase\"]\nrun = [\"{nix_run install-pre-commit-hooks}\"]\n"))
+	if err == nil || !strings.Contains(err.Error(), "nix_run") {
+		t.Fatalf("expected {nix_run}-in-workspace-hook error; got %v", err)
+	}
+}
+
+func TestConfig_RejectsMultipleTokens(t *testing.T) {
+	_, err := ParseConfig([]byte("[repos.a]\nurl = \"github:o/a\"\n[[repos.a.hooks]]\nwhen = [\"post-rebase\"]\nrun = [\"{nix_run x} {nix_run y}\"]\n"))
+	if err == nil {
+		t.Fatal("expected >1-token rejection")
+	}
+}
+
+func TestConfig_AllowsRepoNixRun(t *testing.T) {
+	_, err := ParseConfig([]byte("[repos.a]\nurl = \"github:o/a\"\n[[repos.a.hooks]]\nwhen = [\"post-rebase\", \"post-clone\"]\nrun = [\"{nix_run install-pre-commit-hooks}\"]\n"))
+	if err != nil {
+		t.Fatalf("per-repo {nix_run} should be allowed; got %v", err)
+	}
+}
+
 func TestParseConfig_WorkspaceCommands(t *testing.T) {
 	cfg, err := ParseConfig([]byte(`
 [workspace]
