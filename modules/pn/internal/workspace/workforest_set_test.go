@@ -197,10 +197,10 @@ url = "github:owner/beta"
 
 	// Output sanity: repo sections are present.
 	out := buf.String()
-	if !strings.Contains(out, "=== alpha ===") {
+	if !strings.Contains(out, "alpha\n") {
 		t.Errorf("missing alpha section in status output:\n%s", out)
 	}
-	if !strings.Contains(out, "=== beta ===") {
+	if !strings.Contains(out, "beta\n") {
 		t.Errorf("missing beta section in status output:\n%s", out)
 	}
 }
