@@ -45,9 +45,11 @@ very bug), and a separate participation list duplicated information.
 - The `pn workspace install-hooks` subcommand and the per-repo `install-hooks` field are **removed**.
 - `pn workspace workforest add`/`add-repo` fire the `post-clone` event on each new worktree via a
   **set-rooted** Workspace, so overrides resolve to the set's worktrees (P1-safe).
-- `doctor`/`lock` SHOULD verify that a per-repo `{nix_run <attr>}` names a real flake output and that a
-  per-repo hook can actually fire, and warn otherwise (advisory; runtime failure is the backstop).
-  _(Tracked separately; not shipped in the initial change.)_
+- `doctor` verifies that a per-repo `{nix_run <attr>}` names a real flake output and that a per-repo
+  hook can actually fire, and warns otherwise (advisory `SevWarning`; runtime failure is the
+  backstop). _(Shipped in bd pg2-uswb: `pn workspace doctor` emits `hook-nix-run-output` — probed via
+  `nix eval`, swallowed-as-absent, skipped under `--offline` — and `hook-never-fires`. Load-time
+  validation already hard-errors unknown build/apply placeholders and malformed `{nix_run}` tokens.)_
 
 ### Amendment to ADR-0017 (enforce semantics)
 
