@@ -1,4 +1,4 @@
-# pn-workspace.toml — reference fixture (ADR 0002)
+# pn-workspace.toml — reference fixture (schema per ADR 0002; hooks per ADR 0019)
 # This file lives at workspace root, machine-local, not inside any repo.
 
 [workspace]
@@ -8,6 +8,12 @@ description = "phillipgreenii's nix workspace"
 [repos.nix-repo-base]
 url = "github:phillipgreenii/nix-repo-base"
 branch = "main"
+# Per-repo event hook (ADR 0019): resync this repo's gate after its checkout or
+# flake inputs change. {nix_run <attr>} expands to an override-injected `nix run`
+# of the repo's flake output, executed with cwd = the repo.
+[[repos.nix-repo-base.hooks]]
+when = ["post-clone", "post-rebase", "post-update"]
+run = ["{nix_run install-pre-commit-hooks}"]
 
 [repos.nix-overlay]
 url = "github:phillipgreenii/nix-overlay"
@@ -21,9 +27,17 @@ url = "github:phillipgreenii/nix-agent-support"
 [repos.homelab]
 url = "github:twistcone/homelab"
 
-[hooks.update]
-pre = ["pn-osx-tcc-check", "./hooks/check-vault-ready.sh"]
-post = ["echo update done"]
+# Workspace-scoped event hooks (ADR 0019): each entry runs once at the workspace
+# root when one of its `when` events (<pre|post>-<command>) fires. This replaces
+# the old [hooks.<command>] pre/post tables from ADR 0002.
+[[hooks]]
+when = ["pre-update"]
+run = ["pn-osx-tcc-check", "./hooks/check-vault-ready.sh"]
 
-[hooks.build]
-pre = ["./hooks/preflight.sh"]
+[[hooks]]
+when = ["post-update"]
+run = ["echo update done"]
+
+[[hooks]]
+when = ["pre-build"]
+run = ["./hooks/preflight.sh"]

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -48,14 +47,21 @@ var repoIteratingCommands = map[string]struct{}{
 // entry may hold at most one {nix_run} token; and {nix_run} is valid only in
 // per-repo hooks (a workspace hook has no repo to resolve it against).
 func validateAllHooks(cfg *WorkspaceConfig) error {
-	validate := func(h RepoHook, repoScoped bool) error {
+	validate := func(h EventHook, repoScoped bool) error {
 		for _, ev := range h.When {
 			if _, _, ok := splitEvent(ev); !ok {
 				return fmt.Errorf("hook: unknown event %q (want <pre|post>-<command>)", ev)
 			}
 		}
 		for _, entry := range h.Run {
-			switch len(nixRunTokenRe.FindAllString(entry, -1)) {
+			wellFormed := nixRunTokenRe.FindAllString(entry, -1)
+			// A "{nix_run" opener that did not form a well-formed token is a
+			// malformed near-miss (no attr, illegal char); reject it rather than
+			// let the literal reach the shell.
+			if len(nixRunOpenerRe.FindAllString(entry, -1)) != len(wellFormed) {
+				return fmt.Errorf("hook %q: malformed {nix_run …} token (want {nix_run <attr>} with attr matching [A-Za-z0-9._-]+)", entry)
+			}
+			switch len(wellFormed) {
 			case 0:
 				// no token
 			case 1:
@@ -91,11 +97,11 @@ func eventName(phase HookPhase, cmd string) string {
 	return "post-" + cmd
 }
 
-// processedReposFor returns the repos a command operates on — the set whose
+// ProcessedReposFor returns the repos a command operates on — the set whose
 // per-repo hooks should fire. Repo-iterating commands (and upgrade, whose update
 // phase touches every repo) process all repos in topoAlpha order; build/apply
 // process only the terminal; everything else processes none.
-func (ws *Workspace) processedReposFor(ctx context.Context, cmd string) []string {
+func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string {
 	if _, ok := repoIteratingCommands[cmd]; ok {
 		return ws.topoAlpha(ctx)
 	}
@@ -108,12 +114,6 @@ func (ws *Workspace) processedReposFor(ctx context.Context, cmd string) []string
 		}
 	}
 	return nil
-}
-
-// ProcessedReposFor is the exported wrapper the cli layer uses to compute the
-// per-command repo set for runWithHooks.
-func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string {
-	return ws.processedReposFor(ctx, cmd)
 }
 
 // RunEventHooks fires the hooks for one (phase, command) event. Workspace
@@ -202,31 +202,4 @@ func (ws *Workspace) nixHookVarsForLock(key string, lk *Lock) nixHookVars {
 		OverrideArgs: ws.overrideInputArgsForLock(lk, key, overrideOpts{}),
 		FlakeDir:     filepath.Join(ws.root, key, filepath.Dir(ws.resolveFlakePath(key))),
 	}
-}
-
-// repoNixHookVars builds the per-repo values for expanding a {nix_run} token,
-// resolving --override-input flags from the EFFECTIVE lock (derived when the
-// disk lock is absent/stale) so the gate builds against local workspace
-// siblings rather than locked inputs. If the effective lock is unavailable the
-// overrides collapse to empty — which would silently build against locked
-// inputs — so this warns rather than proceeding quietly (bd pg2-5yq5).
-func (ws *Workspace) repoNixHookVars(ctx context.Context, key string) nixHookVars {
-	lk, _, err := ws.effectiveLock(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: hook overrides for %s: effective lock unavailable (%v); gate may build against locked inputs\n", key, err)
-	}
-	return nixHookVars{
-		NixExe:       "nix",
-		OverrideArgs: ws.overrideInputArgsForLock(lk, key, overrideOpts{}),
-		FlakeDir:     filepath.Join(ws.root, key, filepath.Dir(ws.resolveFlakePath(key))),
-	}
-}
-
-// repoNixRunString returns the `sh -c`-ready command that runs flake output
-// attr in repo key with the workspace's override overlays injected. The caller
-// MUST set cwd to key's directory: install-pre-commit-hooks installs into $PWD,
-// so cwd is load-bearing (the absolute flakeref only selects config content).
-func (ws *Workspace) repoNixRunString(ctx context.Context, key, attr string) string {
-	s, _, _ := expandNixRunTokens("{nix_run "+attr+"}", ws.repoNixHookVars(ctx, key))
-	return s
 }

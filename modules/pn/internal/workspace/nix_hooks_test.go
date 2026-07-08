@@ -22,10 +22,11 @@ func mustMkdir(t *testing.T, d string) {
 	}
 }
 
-// TestRepoNixRunString_InjectsConsumerOverrides verifies that a {nix_run}
-// expansion for a consumer repo carries that repo's --override-input flags
-// (from the effective lock) and an absolute flakeref, single-quoted.
-func TestRepoNixRunString_InjectsConsumerOverrides(t *testing.T) {
+// TestNixHookVars_InjectsConsumerOverrides verifies that a {nix_run} expansion
+// for a consumer repo carries that repo's --override-input flags (from the lock)
+// and an absolute flakeref, single-quoted — exercising the production path
+// (nixHookVarsForLock + expandNixRunTokens) RunEventHooks uses.
+func TestNixHookVars_InjectsConsumerOverrides(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.repo-base]\nurl=\"github:o/repo-base\"\n[repos.consumer]\nurl=\"github:o/consumer\"\n")
 	for _, r := range []string{"repo-base", "consumer"} {
@@ -49,7 +50,11 @@ func TestRepoNixRunString_InjectsConsumerOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	got := w.repoNixRunString(context.Background(), "consumer", "install-pre-commit-hooks")
+	vars := w.nixHookVarsForLock("consumer", lk)
+	got, _, err := expandNixRunTokens("{nix_run install-pre-commit-hooks}", vars)
+	if err != nil {
+		t.Fatalf("expandNixRunTokens: %v", err)
+	}
 	wantOverride := "--override-input base 'git+file://" + filepath.Join(root, "repo-base") + "'"
 	if !strings.Contains(got, wantOverride) {
 		t.Errorf("missing override in %q", got)
@@ -254,7 +259,7 @@ func TestProcessedReposFor(t *testing.T) {
 		{"init", nil},
 	}
 	for _, tc := range cases {
-		got := w.processedReposFor(ctx, tc.cmd)
+		got := w.ProcessedReposFor(ctx, tc.cmd)
 		sorted := append([]string(nil), got...)
 		sort.Strings(sorted)
 		if !slices.Equal(sorted, tc.want) {

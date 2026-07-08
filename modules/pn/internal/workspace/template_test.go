@@ -234,3 +234,23 @@ func TestExpandNixRunTokens_MultipleTokensError(t *testing.T) {
 		t.Fatal("want error for >1 token")
 	}
 }
+
+// TestExpandNixRunTokens_ShellEscapesSingleQuoteInPath verifies a workspace path
+// containing a single quote is POSIX-escaped ('\”) so the generated `sh -c`
+// string still parses the override URL and flakeref as single arguments
+// (bd pg2-eubf item 7).
+func TestExpandNixRunTokens_ShellEscapesSingleQuoteInPath(t *testing.T) {
+	v := nixHookVars{
+		NixExe:       "nix",
+		OverrideArgs: []string{"--override-input", "base", "git+file:///w/o'brien"},
+		FlakeDir:     "/w/it's here",
+	}
+	got, _, err := expandNixRunTokens("{nix_run gate}", v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `nix run --override-input base 'git+file:///w/o'\''brien' '/w/it'\''s here#gate'`
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+}

@@ -79,7 +79,7 @@ func TestParseConfig_Hooks(t *testing.T) {
 	if len(cfg.Hooks) != 3 {
 		t.Fatalf("expected 3 workspace hooks, got %d", len(cfg.Hooks))
 	}
-	var preUpdate *RepoHook
+	var preUpdate *EventHook
 	for i := range cfg.Hooks {
 		if len(cfg.Hooks[i].When) == 1 && cfg.Hooks[i].When[0] == "pre-update" {
 			preUpdate = &cfg.Hooks[i]
@@ -208,7 +208,7 @@ func TestParseConfig_LegacyDetectorDoesNotFalsePositive(t *testing.T) {
 }
 
 // TestConfig_ParsesEventHookLists verifies that workspace [[hooks]] and per-repo
-// [[repos.<r>.hooks]] parse into []RepoHook with when/run populated.
+// [[repos.<r>.hooks]] parse into []EventHook with when/run populated.
 func TestConfig_ParsesEventHookLists(t *testing.T) {
 	cfg, err := ParseConfig([]byte(`
 [[hooks]]
@@ -251,6 +251,30 @@ func TestConfig_RejectsMultipleTokens(t *testing.T) {
 	_, err := ParseConfig([]byte("[repos.a]\nurl = \"github:o/a\"\n[[repos.a.hooks]]\nwhen = [\"post-rebase\"]\nrun = [\"{nix_run x} {nix_run y}\"]\n"))
 	if err == nil {
 		t.Fatal("expected >1-token rejection")
+	}
+}
+
+// TestConfig_RejectsMalformedNixRunToken verifies a {nix_run-prefixed token that
+// is not well-formed (no attr, or an illegal char like '/') is rejected at
+// config load instead of silently matching zero tokens and running as a literal
+// sh string (bd pg2-eubf item 8).
+func TestConfig_RejectsMalformedNixRunToken(t *testing.T) {
+	for _, run := range []string{"{nix_run}", "{nix_run }", "{nix_run a/b}"} {
+		body := "[repos.a]\nurl = \"github:o/a\"\n[[repos.a.hooks]]\nwhen = [\"post-rebase\"]\nrun = [\"" + run + "\"]\n"
+		_, err := ParseConfig([]byte(body))
+		if err == nil || !strings.Contains(err.Error(), "nix_run") {
+			t.Errorf("run %q: expected malformed {nix_run} rejection; got %v", run, err)
+		}
+	}
+}
+
+// TestConfig_AllowsShellBracesAlongsideNixRun guards the malformed-token check
+// against false positives: a legit shell brace (${HOME}) plus a well-formed
+// {nix_run} token must still validate.
+func TestConfig_AllowsShellBracesAlongsideNixRun(t *testing.T) {
+	body := "[repos.a]\nurl = \"github:o/a\"\n[[repos.a.hooks]]\nwhen = [\"post-rebase\"]\nrun = [\"echo ${HOME} && {nix_run gate}\"]\n"
+	if _, err := ParseConfig([]byte(body)); err != nil {
+		t.Fatalf("shell brace + well-formed nix_run should validate; got %v", err)
 	}
 }
 

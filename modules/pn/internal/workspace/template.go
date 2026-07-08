@@ -199,6 +199,13 @@ func shortHostname() string {
 // build/apply command substitution in substituteCommand is unaffected.
 var nixRunTokenRe = regexp.MustCompile(`\{nix_run\s+([A-Za-z0-9._-]+)\}`)
 
+// nixRunOpenerRe matches a "{nix_run" token opener at a word boundary. It catches
+// malformed near-misses ({nix_run}, {nix_run a/b}) that nixRunTokenRe does not
+// match: validateAllHooks rejects a run entry whose opener count exceeds its
+// well-formed-token count, rather than letting the literal reach the shell. The
+// word boundary excludes non-token substrings like ${nix_run_foo} (bd pg2-eubf).
+var nixRunOpenerRe = regexp.MustCompile(`\{nix_run\b`)
+
 // nixHookVars carries the per-repo values a {nix_run} token expands with:
 // the nix executable, that consumer repo's --override-input flags, and its
 // absolute flake directory.
@@ -230,15 +237,22 @@ func expandNixRunTokens(raw string, v nixHookVars) (string, []string, error) {
 		if v.OverrideArgs[i] == "--override-input" && i+2 < len(v.OverrideArgs) {
 			b.WriteString(" --override-input ")
 			b.WriteString(v.OverrideArgs[i+1]) // alias — unquoted
-			b.WriteString(" '")
-			b.WriteString(v.OverrideArgs[i+2]) // git+file://… — quoted
-			b.WriteString("'")
+			b.WriteString(" ")
+			b.WriteString(shSingleQuote(v.OverrideArgs[i+2])) // git+file://… — shell-safe
 			i += 2
 			continue
 		}
 		b.WriteString(" ")
 		b.WriteString(v.OverrideArgs[i])
 	}
-	fmt.Fprintf(&b, " '%s#%s'", v.FlakeDir, attr)
+	b.WriteString(" ")
+	b.WriteString(shSingleQuote(v.FlakeDir + "#" + attr))
 	return raw[:locs[0][0]] + b.String() + raw[locs[0][1]:], []string{attr}, nil
+}
+
+// shSingleQuote wraps s in single quotes for `sh -c`, POSIX-escaping any embedded
+// single quote as '\” so a path containing a quote does not prematurely close
+// the quoted argument.
+func shSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

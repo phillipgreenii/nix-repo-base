@@ -141,7 +141,7 @@ func (w *Workspace) writeConfigTOMLAtomic() error {
 	type orderedConfig struct {
 		Workspace WorkspaceSection      `toml:"workspace"`
 		Repos     map[string]RepoConfig `toml:"repos"`
-		Hooks     []RepoHook            `toml:"hooks,omitempty"`
+		Hooks     []EventHook           `toml:"hooks,omitempty"`
 	}
 	out := orderedConfig{
 		Workspace: w.config.Workspace,
@@ -181,7 +181,7 @@ func (w *Workspace) writeConfigTOML() error {
 	type orderedConfig struct {
 		Workspace WorkspaceSection      `toml:"workspace"`
 		Repos     map[string]RepoConfig `toml:"repos"`
-		Hooks     []RepoHook            `toml:"hooks,omitempty"`
+		Hooks     []EventHook           `toml:"hooks,omitempty"`
 	}
 	out := orderedConfig{
 		Workspace: w.config.Workspace,

@@ -15,11 +15,13 @@ and what hooks to run around workspace commands.
 - pn-workspace.toml lives at workspace root (machine-local, not inside any repo)
 - [workspace] section: name, description, id (slug `^[a-z0-9][a-z0-9-]*$`, machine-invariant; the wsid used by `pn:applied` gates — see ADR-0012)
 - [repos.<key>] table-of-tables: url (flake URL), optional branch (default: "main")
-- [hooks.<command>] section: pre and post arrays of command strings
-  - Commands: apply, build, flake-check, init, pre-commit-check, push, rebase, status, update, upgrade
-  - Path resolution: /foo = absolute; ./foo = file-relative to TOML; bare name = PATH lookup
-  - Failure semantics: pre non-zero aborts; post non-zero warns but does not change exit status
-  - No when clauses (machine-local file; users edit for their machine)
+- **Hooks — SUPERSEDED by [ADR-0019](0019-per-repo-event-hooks.md).** As originally
+  decided here, hooks were `[hooks.<command>]` tables with `pre`/`post` arrays run once at the
+  workspace root. ADR-0019 replaced that with event-hook **lists** — `[[hooks]]` (workspace-scoped)
+  and `[[repos.<key>.hooks]]` (per-repo), each `{ when = [<pre|post>-<command>…], run = […] }` — so
+  see ADR-0019 for the current shape and semantics. The path-resolution (`/foo` absolute, `./foo`
+  file-relative, bare name = PATH) and failure semantics (`pre` non-zero aborts; `post` non-zero
+  warns) carry over unchanged; the command set is now any hookable pn-workspace command.
 
 ## Consequences
 

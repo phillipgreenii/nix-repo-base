@@ -15,8 +15,8 @@ type WorkspaceConfig struct {
 	Workspace WorkspaceSection      `toml:"workspace"`
 	Repos     map[string]RepoConfig `toml:"repos"`
 	// Hooks are workspace-scoped event hooks: each runs once at the workspace
-	// root when its `when` event fires. See RepoHook (bd pg2-5yq5).
-	Hooks []RepoHook `toml:"hooks,omitempty"`
+	// root when its `when` event fires. See EventHook (bd pg2-5yq5).
+	Hooks []EventHook `toml:"hooks,omitempty"`
 }
 
 // WorkspaceSection is the [workspace] table.
@@ -64,14 +64,14 @@ type RepoConfig struct {
 	// `when` event fires for a command that processes the repo. A `{nix_run
 	// <attr>}` token in `run` expands to an override-aware `nix run` against this
 	// repo's flake (bd pg2-5yq5).
-	Hooks []RepoHook `toml:"hooks,omitempty"`
+	Hooks []EventHook `toml:"hooks,omitempty"`
 }
 
-// RepoHook is one event hook entry ([[hooks]] or [[repos.<r>.hooks]]). When
+// EventHook is one event hook entry ([[hooks]] or [[repos.<r>.hooks]]). When
 // lists the events (`<pre|post>-<command>`, e.g. "post-rebase") that fire it;
 // Run lists the shell commands to execute. Used for both workspace-scoped and
 // per-repo hooks (bd pg2-5yq5).
-type RepoHook struct {
+type EventHook struct {
 	When []string `toml:"when"`
 	Run  []string `toml:"run"`
 }
@@ -242,8 +242,9 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 			return nil, err
 		}
 	}
-	// Event-hook validation (events, {nix_run} placement, single-token) is added
-	// in a subsequent step via validateHook.
+	// Event-hook validation: every `when` event is a known <pre|post>-<command>,
+	// {nix_run} placement/count is legal, and no malformed {nix_run …} token
+	// slips through as a literal (see validateAllHooks).
 	if err := validateAllHooks(cfg); err != nil {
 		return nil, err
 	}

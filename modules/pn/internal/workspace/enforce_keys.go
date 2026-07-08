@@ -90,7 +90,7 @@ func EnforceKeys(path, id, applyPost, buildCommand, applyCommand string) (bool, 
 		}
 	}
 	if !found {
-		cfg.Hooks = append(cfg.Hooks, RepoHook{When: []string{"post-apply"}, Run: []string{applyPost}})
+		cfg.Hooks = append(cfg.Hooks, EventHook{When: []string{"post-apply"}, Run: []string{applyPost}})
 		changed = true
 	}
 
@@ -125,7 +125,7 @@ func writeConfigTOMLAtomicMode(dest string, cfg *WorkspaceConfig, mode os.FileMo
 	type orderedConfig struct {
 		Workspace WorkspaceSection      `toml:"workspace"`
 		Repos     map[string]RepoConfig `toml:"repos"`
-		Hooks     []RepoHook            `toml:"hooks,omitempty"`
+		Hooks     []EventHook           `toml:"hooks,omitempty"`
 	}
 	out := orderedConfig{
 		Workspace: cfg.Workspace,
