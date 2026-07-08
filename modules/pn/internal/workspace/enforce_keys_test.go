@@ -41,7 +41,7 @@ url = 'git@github.com:phillipgziprecruiter/phillipg_mbp.git'
 branch = 'main'
 
 [[hooks]]
-when = ['post-apply']
+when = ['post-apply', 'post-upgrade']
 run = ['pb gate check']
 `
 
@@ -221,6 +221,40 @@ run = ['echo custom', 'notify send']
 	}
 }
 
+// TestEnforceKeys_GateFiresOnApplyAndUpgrade verifies the enforced gate entry
+// carries BOTH post-apply and post-upgrade events, so `pn workspace upgrade`
+// (whose inner apply phase does not emit post-apply) still runs the gate
+// (bd pg2-vn2k).
+func TestEnforceKeys_GateFiresOnApplyAndUpgrade(t *testing.T) {
+	noHooks := `[workspace]
+id = 'phillipg-mbp'
+
+[repos.phillipg-nix-repo-base]
+url = 'git@github.com:phillipgreenii/nix-repo-base.git'
+branch = 'main'
+`
+	p := writeTemp(t, "pn-workspace.toml", noHooks, 0o600)
+	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cfg, err := loadConfigFile(t, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gate *EventHook
+	for i := range cfg.Hooks {
+		if slices.Contains(cfg.Hooks[i].Run, "pb gate check") {
+			gate = &cfg.Hooks[i]
+		}
+	}
+	if gate == nil {
+		t.Fatal("no enforced gate entry found")
+	}
+	if !slices.Contains(gate.When, "post-apply") || !slices.Contains(gate.When, "post-upgrade") {
+		t.Errorf("gate when = %v; want both post-apply and post-upgrade", gate.When)
+	}
+}
+
 // The write preserves the original file mode (0600).
 func TestEnforceKeys_PreservesMode0600(t *testing.T) {
 	wrongID := `[workspace]
@@ -340,7 +374,7 @@ url = 'git@github.com:phillipgziprecruiter/phillipg_mbp.git'
 branch = 'main'
 
 [[hooks]]
-when = ['post-apply']
+when = ['post-apply', 'post-upgrade']
 run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", customCommands, 0o600)

@@ -268,4 +268,36 @@ func TestProcessedReposFor(t *testing.T) {
 	}
 }
 
+// TestRunEventHooks_EnforcedGateRunsOnUpgrade proves the enforced gate actually
+// fires during `pn workspace upgrade`: after EnforceKeys, the gate [[hooks]]
+// entry carries post-upgrade, so RunEventHooks(post,"upgrade") triggers it —
+// closing the gap where upgrade bypassed the post-apply gate (bd pg2-vn2k).
+func TestRunEventHooks_EnforcedGateRunsOnUpgrade(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "pn-workspace.toml")
+	writeFile(t, p, "[workspace]\nid = 'x'\n[repos.a]\nurl = \"github:o/a\"\n")
+	if _, err := EnforceKeys(p, "x", "pb gate check", "", ""); err != nil {
+		t.Fatalf("EnforceKeys: %v", err)
+	}
+	f := exec.NewFakeRunner()
+	f.AddResponse("sh", []string{"-c", "pb gate check"}, exec.Result{}, nil)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// processed=nil: the workspace-scoped gate fires independent of repo set.
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "upgrade", nil, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	for _, c := range f.Calls() {
+		if c.Name == "sh" && len(c.Args) == 2 && c.Args[1] == "pb gate check" {
+			ran = true
+		}
+	}
+	if !ran {
+		t.Error("enforced gate 'pb gate check' did NOT run on post-upgrade")
+	}
+}
+
 var errBoom = errors.New("boom")

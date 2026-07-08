@@ -58,6 +58,13 @@ first such entry, or creating a dedicated one), and no longer clobbers other `ru
 added to a post-apply hook. The binary's flags are unchanged, so the nix `home.activation` wiring is
 untouched.
 
+The enforced gate entry's `when` also covers **`post-upgrade`** (bd pg2-vn2k). `pn workspace
+upgrade` calls `Update` + `Apply` directly (`upgrade.go`), so its inner apply phase does **not**
+emit `post-apply` — only the outer `post-upgrade` fires. Enforcing the gate under both events keeps
+`pn workspace upgrade` gated (the operator who upgrades instead of update+apply still runs
+`<applyPost>`), with no double-firing of per-repo `post-update` hooks. `EnforceKeys` ensures both
+events on the gate entry (create-with-both / add-`post-upgrade`-if-missing); it is idempotent.
+
 ## Consequences
 
 - The homogeneous "resync all repos after clone/rebase/update" case is expressed as one

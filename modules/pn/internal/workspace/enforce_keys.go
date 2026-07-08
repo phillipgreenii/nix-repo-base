@@ -73,11 +73,14 @@ func EnforceKeys(path, id, applyPost, buildCommand, applyCommand string) (bool, 
 		changed = true
 	}
 
-	// Ensure a post-apply workspace hook runs applyPost. Ensure-present
-	// semantics (ADR 0017): if some [[hooks]] entry with a "post-apply" event
-	// already contains applyPost, no-op; else append it to the first post-apply
-	// entry, or create a dedicated entry when none exists. Idempotent, and never
-	// clobbers other run commands the user added to a post-apply hook.
+	// Ensure the enforced gate (applyPost) runs after every activation — both
+	// `pn workspace apply` (post-apply) AND `pn workspace upgrade` (post-upgrade).
+	// upgrade's inner apply phase does not itself emit post-apply (upgrade.go
+	// calls Apply directly), so without post-upgrade the gate would be skipped on
+	// upgrade (bd pg2-vn2k). Ensure-present semantics (ADR 0017/0019): find the
+	// gate's home (first [[hooks]] entry with a post-apply event), guarantee
+	// applyPost is in its run and its when covers post-apply + post-upgrade; else
+	// create a dedicated entry. Idempotent; never clobbers other run commands.
 	found := false
 	for i := range cfg.Hooks {
 		if slices.Contains(cfg.Hooks[i].When, "post-apply") {
@@ -85,12 +88,16 @@ func EnforceKeys(path, id, applyPost, buildCommand, applyCommand string) (bool, 
 				cfg.Hooks[i].Run = append(cfg.Hooks[i].Run, applyPost)
 				changed = true
 			}
+			if !slices.Contains(cfg.Hooks[i].When, "post-upgrade") {
+				cfg.Hooks[i].When = append(cfg.Hooks[i].When, "post-upgrade")
+				changed = true
+			}
 			found = true
 			break
 		}
 	}
 	if !found {
-		cfg.Hooks = append(cfg.Hooks, EventHook{When: []string{"post-apply"}, Run: []string{applyPost}})
+		cfg.Hooks = append(cfg.Hooks, EventHook{When: []string{"post-apply", "post-upgrade"}, Run: []string{applyPost}})
 		changed = true
 	}
 

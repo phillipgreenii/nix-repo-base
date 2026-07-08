@@ -21,7 +21,7 @@ url = 'git@github.com:phillipgziprecruiter/phillipg_mbp.git'
 branch = 'main'
 
 [[hooks]]
-when = ['post-apply']
+when = ['post-apply', 'post-upgrade']
 run = ['pb gate check']
 `
 
@@ -159,7 +159,7 @@ apply_command = 'custom apply'
 url = 'git@github.com:x/y.git'
 
 [[hooks]]
-when = ['post-apply']
+when = ['post-apply', 'post-upgrade']
 run = ['pb gate check']
 `
 	p := filepath.Join(dir, "pn-workspace.toml")
