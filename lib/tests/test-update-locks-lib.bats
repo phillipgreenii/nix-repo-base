@@ -546,7 +546,10 @@ MOCK
   local ready_fifo="$MOCK_BIN/step-ready"
   mkfifo "$ready_fifo"
 
-  cat > "$TEST_DIR/signal-test.bash" <<SCRIPT
+  # Driver lives OUTSIDE the git tree (in $MOCK_BIN, like the fifo): if it were
+  # an untracked file in $TEST_DIR, ul_setup's clean-tree gate would reject it
+  # and slow_step would never signal ready, deadlocking the read below (pg2-31h9y).
+  cat > "$MOCK_BIN/signal-test.bash" <<SCRIPT
 #!/usr/bin/env bash
 export PATH="$MOCK_BIN:\$PATH"
 export XDG_STATE_HOME="$XDG_STATE_HOME"
@@ -556,10 +559,10 @@ ul_setup "test-project" "$TEST_DIR"
 slow_step() { echo "dirty" > file.txt; echo ready > "$ready_fifo"; sleep 60; }
 ul_run_step "slow" "msg" slow_step
 SCRIPT
-  _fix_mock_shebang "$TEST_DIR/signal-test.bash"
-  chmod +x "$TEST_DIR/signal-test.bash"
+  _fix_mock_shebang "$MOCK_BIN/signal-test.bash"
+  chmod +x "$MOCK_BIN/signal-test.bash"
 
-  bash "$TEST_DIR/signal-test.bash" &
+  bash "$MOCK_BIN/signal-test.bash" &
   local script_pid=$!
   read -r < "$ready_fifo"
   kill -TERM "$script_pid"
@@ -581,7 +584,10 @@ SCRIPT
   local ready_fifo="$MOCK_BIN/step-ready"
   mkfifo "$ready_fifo"
 
-  cat > "$TEST_DIR/signal-test.bash" <<SCRIPT
+  # Driver lives OUTSIDE the git tree (in $MOCK_BIN, like the fifo): if it were
+  # an untracked file in $TEST_DIR, ul_setup's clean-tree gate would reject it
+  # and slow_step would never signal ready, deadlocking the read below (pg2-31h9y).
+  cat > "$MOCK_BIN/signal-test.bash" <<SCRIPT
 #!/usr/bin/env bash
 export PATH="$MOCK_BIN:\$PATH"
 export XDG_STATE_HOME="$XDG_STATE_HOME"
@@ -591,10 +597,10 @@ ul_setup "test-project" "$TEST_DIR"
 slow_step() { echo ready > "$ready_fifo"; sleep 60; }
 ul_run_step "slow" "msg" slow_step
 SCRIPT
-  _fix_mock_shebang "$TEST_DIR/signal-test.bash"
-  chmod +x "$TEST_DIR/signal-test.bash"
+  _fix_mock_shebang "$MOCK_BIN/signal-test.bash"
+  chmod +x "$MOCK_BIN/signal-test.bash"
 
-  bash "$TEST_DIR/signal-test.bash" &
+  bash "$MOCK_BIN/signal-test.bash" &
   local script_pid=$!
   read -r < "$ready_fifo"
   kill -TERM "$script_pid"
