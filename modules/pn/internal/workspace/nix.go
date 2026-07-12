@@ -16,8 +16,10 @@ import (
 // than the declared upstream URLs. We refuse to run them via `pn workspace
 // nix`; users who genuinely want to update locks should run `nix` directly.
 //
-// Matched as a `<subcommand>` prefix of args: e.g. {"flake", "update", ...}
-// matches the "flake update" entry regardless of trailing args/flags.
+// Matched against the de-flagged command tokens (option-like tokens removed) as
+// a contiguous subsequence anywhere: e.g. {"flake", "update"} matches
+// `flake update`, `--verbose flake update`, `--option build-cores 4 flake
+// update`, and `flake --verbose update` alike (bead pg2-odu4p).
 var denyListedNixSubcommands = [][]string{
 	{"flake", "update"},
 	{"flake", "lock"},
@@ -53,24 +55,44 @@ func (ws *Workspace) NixCommand(ctx context.Context, out io.Writer, args []strin
 	return err
 }
 
-// matchesDeniedSubcommand returns (true, matched) if args begins with any
-// of the denyListedNixSubcommands prefixes. Comparison is positional and
-// exact for the prefix; extra args after the matched prefix are tolerated
-// (e.g. `nix flake update --commit-lock-file` still matches "flake update").
-func matchesDeniedSubcommand(args []string) (bool, []string) {
-	for _, deny := range denyListedNixSubcommands {
-		if len(args) < len(deny) {
+// commandTokens strips option-like tokens (any beginning with "-", incl. a lone
+// "--", short flags like -v, and value-taking flags like --option) so the
+// deny-list is matched against the resolved nix subcommand path rather than the
+// raw argv. Nix subcommand words and installables never begin with "-"; value
+// words of value-taking flags survive as harmless positionals that cannot equal
+// an adjacent deny sequence.
+func commandTokens(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
 			continue
 		}
-		match := true
-		for i := range deny {
-			if args[i] != deny[i] {
-				match = false
-				break
+		out = append(out, a)
+	}
+	return out
+}
+
+// matchesDeniedSubcommand reports whether the resolved nix subcommand path
+// (args with option-like tokens removed) contains any denyListedNixSubcommands
+// sequence as a contiguous run. Matching the de-flagged path — rather than the
+// raw argv from index 0 — makes the guard insensitive to leading, value-taking,
+// and interspersed global flags (e.g. `--verbose flake update`,
+// `--option build-cores 4 flake update`). Trailing args after a match are
+// tolerated (e.g. `flake update --commit-lock-file` still matches).
+func matchesDeniedSubcommand(args []string) (bool, []string) {
+	cmd := commandTokens(args)
+	for _, deny := range denyListedNixSubcommands {
+		for i := 0; i+len(deny) <= len(cmd); i++ {
+			match := true
+			for j := range deny {
+				if cmd[i+j] != deny[j] {
+					match = false
+					break
+				}
 			}
-		}
-		if match {
-			return true, deny
+			if match {
+				return true, deny
+			}
 		}
 	}
 	return false, nil

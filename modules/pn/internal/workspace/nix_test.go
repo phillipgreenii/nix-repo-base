@@ -171,3 +171,92 @@ url = "github:o/foo"
 		t.Errorf("error should name the denied subcommand: %v", err)
 	}
 }
+
+// TestMatchesDeniedSubcommand exercises the de-flagged subsequence matcher over
+// the bypass vectors (leading boolean/value-taking flags, leading --, trailing
+// args, interspersed flags) and the allow cases (bead pg2-odu4p).
+func TestMatchesDeniedSubcommand(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"bare flake update", []string{"flake", "update"}, true},
+		{"bare flake lock", []string{"flake", "lock"}, true},
+		{"leading boolean flag", []string{"--verbose", "flake", "update"}, true},
+		{"leading short flag", []string{"-L", "flake", "lock"}, true},
+		{"leading value-taking flag", []string{"--option", "build-cores", "4", "flake", "update"}, true},
+		{"leading double dash", []string{"--", "flake", "update"}, true},
+		{"trailing args", []string{"flake", "update", "--commit-lock-file"}, true},
+		{"interspersed flag", []string{"flake", "--verbose", "update"}, true},
+		{"allow flake show", []string{"flake", "show"}, false},
+		{"allow build", []string{"build"}, false},
+		{"allow flagged build", []string{"--verbose", "build"}, false},
+		{"allow develop", []string{"develop"}, false},
+		{"allow empty", []string{}, false},
+		{"allow flake check", []string{"flake", "check"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := matchesDeniedSubcommand(tc.args)
+			if got != tc.want {
+				t.Errorf("matchesDeniedSubcommand(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNixCommand_RefusesFlakeUpdateWithLeadingFlag proves the cited bypass
+// (`pn workspace nix --verbose flake update`) is refused through the public
+// entry point (bead pg2-odu4p).
+func TestNixCommand_RefusesFlakeUpdateWithLeadingFlag(t *testing.T) {
+	cfg := `
+[workspace]
+name = "test"
+terminal = "foo"
+
+[repos.foo]
+url = "github:o/foo"
+`
+	w := newTestWorkspace(t, cfg, map[string]struct {
+		flakeInputs string
+		gitRemotes  string
+		createFlake bool
+	}{
+		"foo": {flakeInputs: `{}`, gitRemotes: "origin\tgithub:o/foo (fetch)\norigin\tgithub:o/foo (push)\n", createFlake: true},
+	})
+	err := w.NixCommand(context.Background(), io.Discard, []string{"--verbose", "flake", "update"})
+	if err == nil {
+		t.Fatal("expected refusal of `nix --verbose flake update`")
+	}
+	if !strings.Contains(err.Error(), "flake update") {
+		t.Errorf("error should name the denied subcommand: %v", err)
+	}
+}
+
+// TestNixCommand_AllowsFlaggedBuild proves a legit flagged build is NOT a false
+// positive, and that only the original args (not the de-flagged form) are
+// forwarded to nix (bead pg2-odu4p).
+func TestNixCommand_AllowsFlaggedBuild(t *testing.T) {
+	cfg := `
+[workspace]
+name = "test"
+terminal = "foo"
+
+[repos.foo]
+url = "github:o/foo"
+`
+	w := newTestWorkspace(t, cfg, map[string]struct {
+		flakeInputs string
+		gitRemotes  string
+		createFlake bool
+	}{
+		"foo": {flakeInputs: `{}`, gitRemotes: "origin\tgithub:o/foo (fetch)\norigin\tgithub:o/foo (push)\n", createFlake: true},
+	})
+	// foo has no override edges, so the forwarded argv is exactly the original.
+	runner := w.Runner().(*exec.FakeRunner)
+	runner.AddResponse("nix", []string{"--verbose", "build"}, exec.Result{}, nil)
+	if err := w.NixCommand(context.Background(), io.Discard, []string{"--verbose", "build"}); err != nil {
+		t.Fatalf("NixCommand should allow `nix --verbose build`: %v", err)
+	}
+}
