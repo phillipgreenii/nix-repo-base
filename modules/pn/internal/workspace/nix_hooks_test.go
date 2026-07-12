@@ -13,12 +13,23 @@ import (
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
 func mustMkdir(t *testing.T, d string) {
 	t.Helper()
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// trustWS records trust for root under an isolated XDG_STATE_HOME so hook-firing
+// tests pass the RunEventHooks trust gate (bead pg2-oymai).
+func trustWS(t *testing.T, root string) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := trust.Allow(root); err != nil {
+		t.Fatalf("trust.Allow(%s): %v", root, err)
 	}
 }
 
@@ -89,6 +100,7 @@ func TestRunEventHooks_RepoScopedFiresForProcessedRepoOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	trustWS(t, root)
 	// processed = both repos; only "a" declares the post-rebase hook.
 	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a", "b"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
@@ -126,6 +138,9 @@ func openHookWS(t *testing.T, tomlBody string, repos []string, lk *Lock) *Worksp
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	// openHookWS is used only by hook-firing tests; trust the root so the
+	// RunEventHooks trust gate (bead pg2-oymai) does not block them.
+	trustWS(t, root)
 	return w
 }
 
@@ -285,6 +300,7 @@ func TestRunEventHooks_EnforcedGateRunsOnUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	trustWS(t, root)
 	// processed=nil: the workspace-scoped gate fires independent of repo set.
 	if err := w.RunEventHooks(context.Background(), HookPhasePost, "upgrade", nil, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
@@ -297,6 +313,79 @@ func TestRunEventHooks_EnforcedGateRunsOnUpgrade(t *testing.T) {
 	}
 	if !ran {
 		t.Error("enforced gate 'pb gate check' did NOT run on post-upgrade")
+	}
+}
+
+// untrustedHookWS opens a hook-declaring workspace WITHOUT establishing trust
+// (isolated empty XDG_STATE_HOME), for exercising the RunEventHooks trust gate.
+func untrustedHookWS(t *testing.T, tomlBody string, repos []string) *Workspace {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), tomlBody)
+	for _, r := range repos {
+		mustMkdir(t, filepath.Join(root, r))
+		writeFile(t, filepath.Join(root, r, "flake.nix"), "{}")
+	}
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	return w
+}
+
+// TestRunEventHooks_UntrustedPreAborts: an untrusted workspace with a matching
+// pre-hook aborts with ErrUntrusted and executes NO `sh` (bead pg2-oymai).
+func TestRunEventHooks_UntrustedPreAborts(t *testing.T) {
+	w := untrustedHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"pre-rebase\"]\nrun=[\"gate\"]\n",
+		[]string{"a"})
+	f := w.runner.(*exec.FakeRunner)
+	var out, errOut bytes.Buffer
+	err := w.RunEventHooks(context.Background(), HookPhasePre, "rebase", []string{"a"}, &out, &errOut)
+	if !errors.Is(err, trust.ErrUntrusted) {
+		t.Fatalf("untrusted pre-hook must abort with ErrUntrusted; got %v", err)
+	}
+	if n := len(shCalls(f)); n != 0 {
+		t.Errorf("no hook may run when untrusted; got %d sh calls", n)
+	}
+}
+
+// TestRunEventHooks_UntrustedPostWarnsAndSkips: an untrusted workspace with a
+// matching post-hook warns and skips (no error, no `sh`) (bead pg2-oymai).
+func TestRunEventHooks_UntrustedPostWarnsAndSkips(t *testing.T) {
+	w := untrustedHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"echo hi\"]\n",
+		[]string{"a"})
+	f := w.runner.(*exec.FakeRunner)
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatalf("untrusted post-hook must not error; got %v", err)
+	}
+	if n := len(shCalls(f)); n != 0 {
+		t.Errorf("untrusted post-hook must be skipped; got %d sh calls", n)
+	}
+	if !strings.Contains(errOut.String(), "not trusted") {
+		t.Errorf("expected untrusted warning on errOut; got %q", errOut.String())
+	}
+}
+
+// TestRunEventHooks_NonMatchingEventNeedsNoTrust: even untrusted, an event with
+// no matching hook incurs no trust check, no fire, no error (bead pg2-oymai).
+func TestRunEventHooks_NonMatchingEventNeedsNoTrust(t *testing.T) {
+	w := untrustedHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"echo hi\"]\n",
+		[]string{"a"})
+	f := w.runner.(*exec.FakeRunner)
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "status", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatalf("non-matching event must not error even untrusted; got %v", err)
+	}
+	if n := len(shCalls(f)); n != 0 {
+		t.Errorf("non-matching event must not fire; got %d sh calls", n)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("non-matching event must not warn; got %q", errOut.String())
 	}
 }
 

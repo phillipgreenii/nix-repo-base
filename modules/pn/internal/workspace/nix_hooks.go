@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
 // hookableCommands is every pn-workspace command that may appear in an event
@@ -123,6 +124,43 @@ func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string
 // overrides. Pre-hooks abort on first failure; post-hooks warn and continue.
 func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out, errOut io.Writer) error {
 	ev := eventName(phase, cmd)
+
+	// Trust gate (bead pg2-oymai): hooks execute `sh -c` from a pn-workspace.toml
+	// discovered by walking up from cwd, so an untrusted checkout must not run
+	// them. Engage the gate ONLY when a hook actually fires for this
+	// (phase, command) — hook-free / non-matching commands incur no friction.
+	// --root / PN_WORKSPACE_ROOT do not bypass it (an untrusted dir can also plant
+	// an env var). Pre-phase: abort (nothing executed). Post-phase: warn + skip.
+	willFire := false
+	for _, h := range ws.config.Hooks {
+		if slices.Contains(h.When, ev) {
+			willFire = true
+			break
+		}
+	}
+	if !willFire {
+		for _, key := range processed {
+			for _, h := range ws.config.Repos[key].Hooks {
+				if slices.Contains(h.When, ev) {
+					willFire = true
+					break
+				}
+			}
+			if willFire {
+				break
+			}
+		}
+	}
+	if willFire {
+		if err := trust.EnsureAllowed(ws.root); err != nil {
+			if phase == HookPhasePre {
+				return err
+			}
+			fmt.Fprintf(errOut, "warning: skipping post-%s hooks: %v\n", cmd, err)
+			return nil
+		}
+	}
+
 	// Workspace-scoped: once at root (no {nix_run}; enforced by validateAllHooks).
 	for _, h := range ws.config.Hooks {
 		if slices.Contains(h.When, ev) {

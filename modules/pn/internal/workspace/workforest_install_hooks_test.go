@@ -56,6 +56,7 @@ run = ["{nix_run install-pre-commit-hooks}"]
 		t.Fatalf("Open: %v", err)
 	}
 
+	trustWS(t, root) // trust the canonical so post-clone hooks propagate + fire
 	barCanonical := filepath.Join(root, "bar")
 	fooCanonical := filepath.Join(root, "foo")
 	setDir := filepath.Join(w.WorkforestsDir(), "feature")
@@ -110,6 +111,7 @@ run = ["{nix_run install-pre-commit-hooks}"]
 		t.Fatalf("Open: %v", err)
 	}
 
+	trustWS(t, root) // trust the canonical so the post-clone hook propagates + fires
 	barCanonical := filepath.Join(root, "bar")
 	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
@@ -170,6 +172,7 @@ run = ["{nix_run install-pre-commit-hooks}"]
 		t.Fatalf("Open: %v", err)
 	}
 
+	trustWS(t, root) // trust the canonical so the added repo's post-clone hook fires
 	// Existing set has only app; add "lib" (which declares a post-clone hook).
 	setDir := seedSubsetSet(t, w, "feature", "app")
 	libCanonical := filepath.Join(root, "lib")
@@ -196,5 +199,52 @@ run = ["{nix_run install-pre-commit-hooks}"]
 	members := setMembers(t, setDir)
 	if !members["lib"] || !members["app"] {
 		t.Errorf("set should contain app+lib after add-repo; got %v", members)
+	}
+}
+
+// TestWorkforestAdd_UntrustedCanonicalWarnSkipsPostClone verifies that when the
+// canonical workspace is NOT trusted, trust is not propagated to the derived
+// set and its post-clone hook is warn-skipped (no `sh`, add still succeeds).
+// (bead pg2-oymai)
+func TestWorkforestAdd_UntrustedCanonicalWarnSkipsPostClone(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // isolated; canonical NOT trusted
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ConfigFileName), `
+[repos.bar]
+url = "github:owner/bar"
+[[repos.bar.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
+`)
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["bar"],
+  "repos": {"bar": {"remote_url": "github:owner/bar"}},
+  "edges": []
+}`)
+	f := exec.NewFakeRunner()
+	makeFakeCanonicalRepos(t, root, "bar")
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	barCanonical := filepath.Join(root, "bar")
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
+	barSet := filepath.Join(setDir, "bar")
+	addWorktreeListClean(f, barCanonical, "bar")
+	addBranchNotExists(f, barCanonical, "feature")
+	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
+	// No `sh` response scripted: the hook must be trust-skipped, not executed.
+
+	var out, errOut bytes.Buffer
+	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
+		t.Fatalf("WorkforestAdd must succeed (post-clone warn-only); got %v", err)
+	}
+	if n := len(shCalls(f)); n != 0 {
+		t.Errorf("post-clone hook must be trust-skipped on an untrusted canonical; got %d sh calls", n)
+	}
+	if !fileExists(filepath.Join(setDir, ConfigFileName)) {
+		t.Errorf("set config should still be written")
 	}
 }

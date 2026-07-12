@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/workspace"
 )
 
@@ -1176,5 +1177,43 @@ url = "github:owner/myrepo"
 	}
 	if _, statErr := os.Stat(filepath.Join(root, workspace.LockFileName)); statErr != nil {
 		t.Errorf("lock file should exist after --allow-missing-edges; err = %v", statErr)
+	}
+}
+
+// TestWorkspaceAllowDeny_RoundTrip: `pn workspace allow` echoes the declared
+// hooks and trusts the resolved root; `pn workspace deny` revokes it. (pg2-oymai)
+func TestWorkspaceAllowDeny_RoundTrip(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, workspace.ConfigFileName), []byte(`
+[workspace]
+name = "test"
+[[hooks]]
+when = ["pre-status"]
+run = ["echo hi"]
+`), 0o644); err != nil {
+		t.Fatalf("write toml: %v", err)
+	}
+	t.Setenv("PN_WORKSPACE_ROOT", root)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	stdout, _, err := runCobraCmd(t, []string{"allow"})
+	if err != nil {
+		t.Fatalf("allow: %v", err)
+	}
+	if !strings.Contains(stdout, "trusted workspace hooks") {
+		t.Errorf("allow should confirm trust; got %q", stdout)
+	}
+	if !strings.Contains(stdout, "echo hi") {
+		t.Errorf("allow should echo declared hook run lines for review; got %q", stdout)
+	}
+	if err := trust.EnsureAllowed(root); err != nil {
+		t.Errorf("after allow, EnsureAllowed should pass; got %v", err)
+	}
+
+	if _, _, err := runCobraCmd(t, []string{"deny"}); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	if err := trust.EnsureAllowed(root); err == nil {
+		t.Errorf("after deny, EnsureAllowed should fail")
 	}
 }

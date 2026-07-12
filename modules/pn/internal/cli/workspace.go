@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/spf13/cobra"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/eventlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/workspace"
 )
 
@@ -29,6 +32,10 @@ All subcommands resolve the workspace root using this order:
 
 Once resolved, PN_WORKSPACE_ROOT and WORKSPACE_ROOT are exported into
 every subprocess pn spawns (hooks, update-locks.sh, etc.).
+
+A workspace that declares [[hooks]] must be trusted once with
+'pn workspace allow' before those hooks will execute; editing
+pn-workspace.toml re-blocks until re-allowed. See ADR-0019.
 
 Environment variables:
   PN_WORKSPACE_ROOT          Override workspace root (path to dir with pn-workspace.toml)
@@ -58,6 +65,8 @@ Environment variables:
 	ws.AddCommand(workspaceDoctorCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
 	ws.AddCommand(workspaceWorkforestCmd())
+	ws.AddCommand(workspaceAllowCmd())
+	ws.AddCommand(workspaceDenyCmd())
 	ws.AddCommand(workspaceRemovedInstallHooksCmd())
 	parent.AddCommand(ws)
 }
@@ -733,4 +742,81 @@ func workspaceLockCmd(terminal *string) *cobra.Command {
 	cmd.Flags().BoolVar(&allowMissingEdges, "allow-missing-edges", false,
 		"write the lock even if a repo's flake inputs fail to evaluate (edges for that repo are omitted; risks a build resolving that sibling from its published locked input)")
 	return cmd
+}
+
+// printDeclaredHooks echoes every [[hooks]] and [[repos.*.hooks]] run line so the
+// operator reviews exactly what `pn workspace allow` will trust (bead pg2-oymai).
+func printDeclaredHooks(out io.Writer, cfg *workspace.WorkspaceConfig) {
+	any := false
+	for _, h := range cfg.Hooks {
+		for _, r := range h.Run {
+			fmt.Fprintf(out, "  [workspace] when=%v run: %s\n", h.When, r)
+			any = true
+		}
+	}
+	keys := make([]string, 0, len(cfg.Repos))
+	for k := range cfg.Repos {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, h := range cfg.Repos[k].Hooks {
+			for _, r := range h.Run {
+				fmt.Fprintf(out, "  [repos.%s] when=%v run: %s\n", k, h.When, r)
+				any = true
+			}
+		}
+	}
+	if !any {
+		fmt.Fprintln(out, "  (no hooks declared)")
+	}
+}
+
+// workspaceAllowCmd trusts the resolved workspace root (TOFU) so its hooks may
+// execute. It is intentionally NOT routed through runWithHooks — `allow` is not
+// a hookable command, so no hook can fire for it. (bead pg2-oymai)
+func workspaceAllowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "allow",
+		Short: "Trust this workspace's pn-workspace.toml hooks (trust-on-first-use)",
+		Long: "Record trust for the resolved workspace root so its [[hooks]] and\n" +
+			"[[repos.*.hooks]] may execute. The declared hook commands are echoed for\n" +
+			"review. Editing pn-workspace.toml re-blocks until you run this again. See ADR-0019.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, err := resolveWorkspaceRoot("")
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if w, oerr := workspace.Open(root, exec.NewRealRunner()); oerr == nil {
+				defer w.Close()
+				fmt.Fprintf(out, "hooks declared in %s:\n", root)
+				printDeclaredHooks(out, w.Config())
+			}
+			if err := trust.Allow(root); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "trusted workspace hooks in %s\n", root)
+			return nil
+		},
+	}
+}
+
+// workspaceDenyCmd revokes trust for the resolved workspace root. (bead pg2-oymai)
+func workspaceDenyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "deny",
+		Short: "Revoke trust for this workspace's hooks",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, err := resolveWorkspaceRoot("")
+			if err != nil {
+				return err
+			}
+			if err := trust.Deny(root); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "revoked hook trust for %s\n", root)
+			return nil
+		},
+	}
 }

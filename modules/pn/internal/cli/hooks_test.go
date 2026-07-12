@@ -8,8 +8,19 @@ import (
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/workspace"
 )
+
+// trustCLIWorkspace trusts w's root under an isolated XDG_STATE_HOME so
+// runWithHooks tests pass the hook trust gate (bead pg2-oymai).
+func trustCLIWorkspace(t *testing.T, w *workspace.Workspace) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := trust.Allow(w.Root()); err != nil {
+		t.Fatalf("trust.Allow: %v", err)
+	}
+}
 
 func newTestWorkspace(t *testing.T, runner exec.Runner, tomlBody string) *workspace.Workspace {
 	t.Helper()
@@ -63,6 +74,7 @@ run = ["boom"]
 when = ["post-update"]
 run = ["should-not-run"]
 `)
+	trustCLIWorkspace(t, w)
 	called := false
 	err := runWithHooks(context.Background(), w, "update", func() error {
 		called = true
@@ -91,6 +103,7 @@ name = "test"
 when = ["post-update"]
 run = ["boom"]
 `)
+	trustCLIWorkspace(t, w)
 	err := runWithHooks(context.Background(), w, "update", func() error { return nil })
 	if err != nil {
 		t.Fatalf("post-hook failure must not propagate; got %v", err)
@@ -111,6 +124,7 @@ name = "test"
 when = ["post-update"]
 run = ["after"]
 `)
+	trustCLIWorkspace(t, w)
 	verbErr := errors.New("verb failed")
 	err := runWithHooks(context.Background(), w, "update", func() error { return verbErr })
 	if !errors.Is(err, verbErr) {
@@ -138,6 +152,7 @@ run = ["pre-1", "pre-2"]
 when = ["post-update"]
 run = ["post-1"]
 `)
+	trustCLIWorkspace(t, w)
 	var verbAt int
 	err := runWithHooks(context.Background(), w, "update", func() error {
 		verbAt = len(f.Calls())

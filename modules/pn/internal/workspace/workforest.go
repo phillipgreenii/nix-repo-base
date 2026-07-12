@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
 // WorkforestAddOptions configures WorkforestAdd.
@@ -147,6 +148,16 @@ func installSetHooks(ctx context.Context, w *Workspace, setDir string, repos []s
 		return
 	}
 	defer setWs.Close()
+	// Propagate trust from an already-trusted canonical to the pn-authored set so
+	// its post-clone hooks are not warn-skipped by the trust gate. Never grant
+	// trust to a set derived from an untrusted canonical (fail closed). Covers
+	// both full-set (copyFile) and subset (writeConfigTOMLTo) sets, since the set
+	// config is already on disk here. (bead pg2-oymai)
+	if ok, _ := trust.IsAllowed(w.root); ok {
+		if aerr := trust.Allow(setDir); aerr != nil {
+			fmt.Fprintf(errOut, "warning: workforest hooks: propagate trust to %s: %v\n", setDir, aerr)
+		}
+	}
 	if err := setWs.RunEventHooks(ctx, HookPhasePost, "clone", repos, out, errOut); err != nil {
 		fmt.Fprintf(errOut, "warning: workforest hooks: %v\n", err)
 	}

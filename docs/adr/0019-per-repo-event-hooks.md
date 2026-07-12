@@ -82,3 +82,41 @@ events on the gate entry (create-with-both / add-`post-upgrade`-if-missing); it 
 
 Reference: bd pg2-5yq5 (supersedes pg2-ic7x). Implementation plan:
 `docs/superpowers/plans/2026-07-07-overlay-aware-nix-hooks.md`.
+
+## Amendment: hook trust gate (bd pg2-oymai)
+
+Event hooks execute `sh -c` from a `pn-workspace.toml` that `resolveWorkspaceRoot`
+discovers by walking up from the cwd, with no ownership/trust check. Merely `cd`-ing
+into an attacker-controlled checkout that declares e.g. `[[hooks]] when=['pre-status']`
+therefore ran arbitrary code on the next hookable `pn workspace` command. This is closed
+with a **direnv-style trust-on-first-use (TOFU) allowlist**:
+
+- **Guard at the single chokepoint.** `RunEventHooks` (the only path that executes hooks)
+  MUST call `trust.EnsureAllowed(root)` — but ONLY when a hook actually fires for the
+  `(phase, command)` (fire-precise gating; hook-free commands incur no friction). Pre-phase:
+  the command aborts (nothing executed). Post-phase: a warning is emitted and hooks are
+  skipped (the command result is never masked).
+- **Content-hash TOFU.** The allow record (`${XDG_STATE_HOME:-~/.local/state}/pn/trust/`,
+  keyed by the SHA-256 of the absolute root, dir `0o700` / file `0o600`) stores the SHA-256
+  of `pn-workspace.toml`. Editing the TOML re-blocks until re-allowed. `pn workspace allow`
+  echoes the declared hook `run` lines for review, then records trust; `pn workspace deny`
+  revokes it.
+- **`--root` / `PN_WORKSPACE_ROOT` do NOT bypass** the gate (an untrusted directory can also
+  plant an env var). One `pn workspace allow` per workspace is required regardless.
+- **Trust propagation, never conjuring.** `WorkforestAdd`/`WorkforestAddRepo` (via
+  `installSetHooks`) propagate trust to the pn-authored set root ONLY when the canonical root
+  is already trusted; an untrusted canonical's derived set stays untrusted (its post-clone
+  hooks warn-skip).
+- **One-time migration.** Existing hook-bearing workspaces — including the operator's own,
+  whose enforced `post-apply`/`post-upgrade` gate runs during `pn workspace apply`/`upgrade`
+  — MUST run `pn workspace allow` once after the new `pn` is deployed.
+- **Residual TOCTOU:** the guard hashes the TOML, then `RunHooks` re-reads/executes; a swap
+  between check and exec requires local write access to the root (already full compromise).
+- **Residual, NOT closed here (same vuln class, tracked separately):** `build_command` /
+  `apply_command` are also arbitrary commands taken from the discovered `pn-workspace.toml`,
+  executed as argv at `build.go`/`apply.go` — they do NOT pass through `RunEventHooks` and are
+  NOT covered by this gate. Their trigger bar is higher (a deliberate `pn workspace
+build`/`apply` plus a terminal repo present on disk); a follow-up bead SHOULD gate them
+  behind the same trust check.
+
+Reference: bd pg2-oymai (RFC 2119 language MUST/SHOULD as above).
