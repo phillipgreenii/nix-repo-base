@@ -57,11 +57,12 @@ let
   };
 
   test-sample-module = pkgs.runCommand "test-sample-module" { } ''
-    # sample-cmd is public (packages list has entries)
-    # sample-cmd-with-lib is public (packages list has entries)
-    # sample-internal is NOT public (packages list is empty)
-    # Count total packages
-    expected=4
+    # Each public script contributes exactly ONE package: since ADR 0011 the man
+    # page is folded into the script derivation's installPhase, so mkBashScript
+    # returns `packages = if public then [ script ] else [ ]` (one derivation per
+    # public script). sample-cmd (public) + sample-cmd-with-lib (public) => 2;
+    # sample-internal (public = false) contributes 0. (bead pg2-fqar3)
+    expected=2
     actual=${toString (builtins.length sample-module.packages)}
     if [ "$actual" -ne "$expected" ]; then
       echo "FAIL: expected $expected public packages, got $actual"

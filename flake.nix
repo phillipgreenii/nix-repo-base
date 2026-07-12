@@ -302,7 +302,11 @@
                   touch $out
                 '';
           }
-          // ulScripts.checks;
+          // ulScripts.checks
+          # Light the foundational bash-builder contract suite (18 bats + module-shape
+          # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
+          # never imported by any .nix (bead pg2-fqar3 / prior deep-dive T1).
+          // (import ./lib/bash-builders-tests { inherit bashBuilders pkgs; }).checks;
         };
 
       flake = {
