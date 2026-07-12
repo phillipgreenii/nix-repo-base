@@ -227,6 +227,10 @@
             # (bead pg2-28wwb).
             bash-builders-artifact-smoke = import ./lib/bash-builders-smoke-tests.nix { inherit pkgs; };
 
+            # Config-injection safety: metacharacter values are escaped, not
+            # executed, and non-identifier keys fail at eval (pg2-92603).
+            bash-config-injection = import ./lib/bash-builders-injection-tests.nix { inherit pkgs; };
+
             # Per-source digest in the Python derivation version (ADR 0011): the
             # mkPythonBuilders factory's mkPythonPackage must stamp 0.0.0-<digest>.
             python-version-digest = import ./lib/python-package-version-tests.nix { inherit pkgs; };
