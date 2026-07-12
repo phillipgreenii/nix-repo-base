@@ -134,6 +134,36 @@
             };
             test-update-locks-lib = checksHelpers.testUpdateLocksLib { };
 
+            # Pure-function unit tests for lib/ul-pin.nix:isUnpinnedUpdateLocks,
+            # the predicate behind the auto-contributed update-locks-pinned guard
+            # (bead pg2-o784p). Covers detected (bare), not-detected (pinned), and
+            # not-detected (base direct-source) cases.
+            update-locks-pin-predicate =
+              let
+                failures = pkgs.lib.runTests (import ./lib/ul-pin-tests.nix { inherit (pkgs) lib; });
+              in
+              pkgs.runCommand "check-update-locks-pin-predicate" { } (
+                if failures == [ ] then
+                  "touch $out"
+                else
+                  "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
+              );
+
+            # Fixture test for the NRB_REV extraction jq filter that each consumer
+            # update-locks.sh uses to pin the resolver (bead pg2-o784p). Asserts both
+            # branches: node present -> rev; node absent -> empty (unpinned fallback).
+            update-locks-nrb-rev-filter =
+              pkgs.runCommand "check-update-locks-nrb-rev-filter" { nativeBuildInputs = [ pkgs.jq ]; }
+                ''
+                  set -euo pipefail
+                  filter='.locks.nodes."phillipgreenii-nix-base".locked.rev // empty'
+                  got=$(echo '{"locks":{"nodes":{"phillipgreenii-nix-base":{"locked":{"rev":"deadbeef"}}}}}' | jq -r "$filter")
+                  [ "$got" = "deadbeef" ] || { echo "expected deadbeef, got '$got'" >&2; exit 1; }
+                  got=$(echo '{"locks":{"nodes":{"other":{}}}}' | jq -r "$filter")
+                  [ -z "$got" ] || { echo "expected empty, got '$got'" >&2; exit 1; }
+                  touch $out
+                '';
+
             # Pure-function unit tests for lib/version.nix:mkVersion.
             version-lib =
               let

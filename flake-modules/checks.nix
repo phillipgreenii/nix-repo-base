@@ -217,6 +217,28 @@ in
               [ "$failed" = 0 ] || exit 1
               touch $out
             '';
+
+        # Auto-contributed security drift guard (bead pg2-o784p). Reads the
+        # consumer's OWN update-locks.sh via inputs.self (NOT phillipgreenii.src,
+        # which may be scoped to a subdirectory — mirrors consumer-input-alignment
+        # above). Fails if the script still calls the nix-repo-base resolver at
+        # unpinned HEAD, which lets token-bearing CI execute arbitrary default-branch
+        # code. Pure eval-time read (no IFD: inputs.self is an already-realised store
+        # path, exactly like pre-commit.nix reads .gitignore). Every repo that imports
+        # flakeModules.checks inherits this with zero per-repo wiring, so the pin
+        # fix cannot silently fail to propagate to a new consumer.
+        update-locks-pinned =
+          let
+            ulPath = inputs.self + "/update-locks.sh";
+            inherit (import ../lib/ul-pin.nix { inherit lib; }) isUnpinnedUpdateLocks;
+          in
+          if !builtins.pathExists ulPath then
+            # No update-locks.sh to guard — trivially compliant.
+            pkgs.runCommand "update-locks-pinned" { } "touch $out"
+          else if isUnpinnedUpdateLocks (builtins.readFile ulPath) then
+            throw "phillipgreenii.checks.update-locks-pinned: ${toString ulPath} calls the nix-repo-base resolver at UNPINNED HEAD (nix run github:phillipgreenii/nix-repo-base#determine-ul-lib-dir). In token-bearing CI this builds and runs whatever is at nix-repo-base's default branch — an arbitrary code-execution hole (bead pg2-o784p). Pin it to the locked rev: resolve NRB_REV via 'nix flake metadata' and nix run the rev-pinned ref. Reference implementation: phillipgreenii-nix-overlay/update-locks.sh."
+          else
+            pkgs.runCommand "update-locks-pinned" { } "touch $out";
       };
     };
 }
