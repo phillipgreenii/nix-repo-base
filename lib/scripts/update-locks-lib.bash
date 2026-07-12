@@ -34,8 +34,10 @@
 #   to the gate.
 #
 # ANCHOR: ul_setup-clean-tree-gate
-#   Asserts git diff --quiet && git diff --cached --quiet. Exits 1 with
-#   a git status --short dump on a dirty tree.
+#   Asserts `git status --porcelain --untracked-files=normal` is empty: tracked
+#   modifications, staged changes, AND non-ignored UNTRACKED files all fail the
+#   gate (ignored files, e.g. the .pre-commit-config.yaml symlink, are excluded).
+#   Exits 1 with a git status --short dump on a dirty tree.
 #
 # ANCHOR: ul_setup-full-cleanup-trap
 #   AFTER the gate passes, swaps the non-destructive trap for the full
@@ -52,7 +54,8 @@
 #   increments).
 #
 # ANCHOR: ul_run_step-dirty-tree-fatal
-#   Asserts clean tree before invoking <cmd>. A dirty tree here is FATAL
+#   Asserts clean tree before invoking <cmd> via `git status --porcelain
+#   --untracked-files=normal` (untracked included). A dirty tree here is FATAL
 #   (exits 1) — it means a prior step's commit attempt failed silently.
 #
 # ANCHOR: ul_run_step-success-commit
@@ -160,10 +163,12 @@ _ul_cleanup() {
   fi
   _UL_CHILD_PID=""
 
-  # Clean dirty git state
+  # Clean dirty git state. This trap is armed only AFTER the ul_setup gate, which
+  # guarantees no pre-existing non-ignored untracked files, so the porcelain check
+  # + `git clean -fd` here target step-created files only (bead pg2-31h9y).
   if [[ -n $_UL_SCRIPT_DIR ]] && [[ -d "$_UL_SCRIPT_DIR/.git" ]]; then
     cd "$_UL_SCRIPT_DIR" 2>/dev/null || true
-    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    if [[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
       git reset --hard HEAD 2>/dev/null || true
       git clean -fd 2>/dev/null || true
     fi
@@ -322,8 +327,21 @@ ul_setup() {
   # it cannot trip the gate below and nothing is committed on its behalf.
   _ul_ensure_pre_commit_hooks
 
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "ERROR: Working directory is not clean. Commit or stash changes first."
+  # Gate on `git status --porcelain --untracked-files=normal` (NOT git diff):
+  # git diff is tracked-only, so a pre-existing UNTRACKED user file would pass
+  # and then be swept into a step commit by `git add -A` (_ul_commit_updated) or
+  # destroyed by a rollback `git clean -fd`. Porcelain also lists non-ignored
+  # untracked files, matching `git clean -fd`'s scope, so a passing gate
+  # guarantees the tree holds only step-created files thereafter. The explicit
+  # --untracked-files=normal defeats a user's `status.showUntrackedFiles=no`
+  # git config, which would otherwise silently reintroduce this bug. (Ignored
+  # files — e.g. the gitignored .pre-commit-config.yaml symlink, ADR 0016 — are
+  # excluded by both porcelain and `git clean -fd`, so regenerating it is safe.)
+  # Rejected alt (git add -u / tracked-only commit): steps legitimately create
+  # new files that must commit (e.g. a first gomod2nix.toml). See bead pg2-31h9y.
+  if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+    echo "ERROR: Working directory is not clean (tracked changes or untracked files present)."
+    echo "       Commit, stash (git stash --include-untracked), or remove untracked files first."
     git status --short
     exit 1
   fi
@@ -359,7 +377,9 @@ ul_run_step() {
     return 0
   fi
 
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  # Porcelain (untracked included) so a leftover untracked file — meaning a
+  # prior step's commit failed silently — is also caught here. See pg2-31h9y.
+  if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "FATAL: workspace dirty before step '${step_name}'. Stopping."
     git status --short
     exit 1

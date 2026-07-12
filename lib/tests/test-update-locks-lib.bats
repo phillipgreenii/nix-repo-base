@@ -142,6 +142,18 @@ MOCK
   [ "$(cat file.txt)" = "user edit" ]
 }
 
+@test "ul_setup exits 1 on untracked file and does NOT delete it" {
+  echo "precious user data" > untracked.txt # never git-added
+  run bash -c "source '$UL_LOCKS_LIB'; ul_setup test-project '$TEST_DIR'"
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "not clean" ]]
+  # The pre-existing untracked file MUST survive the gate-fail path — at exit 1
+  # the trap is still the non-destructive _ul_restore_fsmonitor (the full
+  # cleanup trap is armed only AFTER the gate).
+  [ -f "$TEST_DIR/untracked.txt" ]
+  [ "$(cat "$TEST_DIR/untracked.txt")" = "precious user data" ]
+}
+
 # --- ul_run_step: success path ---
 
 @test "ul_run_step commits changes on success" {
@@ -328,6 +340,27 @@ MOCK
   run ul_run_step "step" "msg" true
   [ "$status" -eq 1 ]
   [[ "$output" =~ "dirty" ]]
+}
+
+@test "ul_run_step is FATAL when an untracked file appears before a step" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  echo "sneaky" > sneaky.txt # untracked, appears after the setup gate
+
+  run ul_run_step "step" "msg" true
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "dirty" ]]
+}
+
+@test "ul_run_step commits a NEW file created by the step (git add -A retained)" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  newfile_step() { echo "generated" > generated.lock; }
+  ul_run_step "gen-step" "update: gen" newfile_step
+
+  git ls-files --error-unmatch generated.lock # tracked => committed
 }
 
 # --- ul_run_step: cache integration ---
