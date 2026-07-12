@@ -265,6 +265,19 @@
             # mkPythonBuilders factory's mkPythonPackage must stamp 0.0.0-<digest>.
             python-version-digest = import ./lib/python-package-version-tests.nix { inherit pkgs; };
 
+            # Fail-fast dependency resolution (bead pg2-gjwpl): an unresolved
+            # pyproject dependency must throw by default, not silently drop.
+            python-resolve-fail-fast =
+              let
+                failures = pkgs.lib.runTests (import ./lib/python-package-resolve-tests.nix { inherit pkgs; });
+              in
+              pkgs.runCommand "check-python-resolve-fail-fast" { } (
+                if failures == [ ] then
+                  "touch $out"
+                else
+                  "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
+              );
+
             # Go test suite for pn. buildGoModule runs `go test ./...` during
             # the check phase, so building the package is equivalent to running
             # the tests. Exposing it as a check ensures `nix flake check`

@@ -1,0 +1,11 @@
+[project]
+name = "py-missing-dep"
+version = "0.0.0"
+description = "Fixture: declares a dependency absent from nixpkgs (bead pg2-gjwpl fail-fast test)"
+dependencies = [
+    "this-package-is-not-in-nixpkgs-xyz>=1.0",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

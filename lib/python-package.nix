@@ -28,6 +28,12 @@
       src,
       customDeps ? { },
       pypiToNixNameMappings ? { },
+      # Escape hatch for the fail-fast dependency resolution (bead pg2-gjwpl).
+      # Default false: a pyproject dependency that resolves to neither customDeps
+      # nor a nixpkgs package is a hard error (it would otherwise ship a package
+      # that ImportErrors at runtime). Set true only to deliberately tolerate a
+      # known-missing dep.
+      allowMissingDeps ? false,
       runtimeDeps ? [ ],
       versionPlaceholder ? "0.0.0",
       baseVersion ? "0.0.0",
@@ -75,9 +81,13 @@
         # Then check if it's in nixpkgs
         else if builtins.hasAttr nixName python.pkgs then
           python.pkgs.${nixName}
-        # Otherwise skip it with a warning
+        # Otherwise fail loudly — silently dropping a dependency ships a package
+        # that ImportErrors at runtime (bead pg2-gjwpl). The escape hatch keeps
+        # the old skip-with-warning behavior only when explicitly requested.
+        else if allowMissingDeps then
+          builtins.trace "Warning: Python package '${pypiName}' (as '${nixName}') not found in nixpkgs, skipping" null
         else
-          builtins.trace "Warning: Python package '${pypiName}' (as '${nixName}') not found in nixpkgs, skipping" null;
+          throw "mkPythonPackage(${name}): dependency '${pypiName}' (as '${nixName}') not found in customDeps or nixpkgs. Add it to customDeps/pypiToNixNameMappings, or set allowMissingDeps = true to tolerate it.";
 
       # Generate propagatedBuildInputs, filtering out nulls (missing packages)
       propagatedBuildInputs = builtins.filter (x: x != null) (map resolveDep depNames);
@@ -132,8 +142,10 @@
         ''}
       '';
 
-      # Disable runtime dependency check since we handle deps manually
-      dontCheckRuntimeDeps = true;
+      # Runtime dependency check re-enabled (bead pg2-gjwpl): with fail-fast
+      # resolution above, the propagated closure should satisfy the imports, so
+      # the nixpkgs check is a real safety net rather than a silenced warning.
+      dontCheckRuntimeDeps = false;
 
       # Install completion scripts and generate man page
       postInstall = ''
