@@ -707,7 +707,8 @@ func workspaceWorkforestPruneCmd() *cobra.Command {
 }
 
 func workspaceLockCmd(terminal *string) *cobra.Command {
-	return &cobra.Command{
+	var allowMissingEdges bool
+	cmd := &cobra.Command{
 		Use:   "lock",
 		Short: "Derive and write pn-workspace.lock.json",
 		Long:  "Evaluate flake inputs, build edges, resolve terminal, and write pn-workspace.lock.json atomically. Exits non-zero and preserves any existing lock file if validation errors are found.",
@@ -720,7 +721,7 @@ func workspaceLockCmd(terminal *string) *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "lock", func() error {
-				if err := w.WriteDerivedLockTo(ctx, w.Root(), out, *terminal); err != nil {
+				if err := w.WriteDerivedLockTo(ctx, w.Root(), out, *terminal, allowMissingEdges); err != nil {
 					fmt.Fprintln(errOut, err)
 					return err
 				}
@@ -729,4 +730,7 @@ func workspaceLockCmd(terminal *string) *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&allowMissingEdges, "allow-missing-edges", false,
+		"write the lock even if a repo's flake inputs fail to evaluate (edges for that repo are omitted; risks a build resolving that sibling from its published locked input)")
+	return cmd
 }

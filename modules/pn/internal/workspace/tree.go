@@ -41,7 +41,8 @@ func (ws *Workspace) Tree(ctx context.Context, w io.Writer, opts TreeOptions) er
 	if opts.AllInputs {
 		return ws.treeAllInputs(ctx, w, terminal)
 	}
-	inputURLs, err := ws.gatherInputURLs(ctx)
+	// Tree is a display command; it MAY ignore eval failures (tolerant behavior).
+	inputURLs, _, err := ws.gatherInputURLs(ctx)
 	if err != nil {
 		return err
 	}

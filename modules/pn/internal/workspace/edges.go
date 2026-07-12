@@ -31,8 +31,15 @@ type InputSpec struct {
 //
 // Returns the map keyed by repoKey. Repos without a resolvable flake_path
 // or whose eval fails entirely contribute an empty inner map (no edges).
-func (ws *Workspace) gatherInputURLs(ctx context.Context) (map[string]map[string]InputSpec, error) {
+//
+// The second return value lists repos whose flake was present on disk but
+// failed EVERY eval tier (case 3 below). It distinguishes an eval failure —
+// which must be fatal for the persisted lock (bead pg2-cqcex), because pn
+// cannot prove the un-evaluable repo has no workspace inputs — from the
+// legitimately-empty cases (no flake_path, or not cloned), which are excluded.
+func (ws *Workspace) gatherInputURLs(ctx context.Context) (map[string]map[string]InputSpec, []string, error) {
 	result := make(map[string]map[string]InputSpec)
+	var evalFailed []string
 	// Alpha (not topoAlpha): gatherInputURLs feeds buildEdges which feeds the
 	// lock — using topoAlpha would be circular.
 	names := orderedRepoNames(ws.config.Repos)
@@ -51,14 +58,20 @@ func (ws *Workspace) gatherInputURLs(ctx context.Context) (map[string]map[string
 
 		specs, err := evalInputSpecs(ctx, ws.runner, absFlake)
 		if err != nil {
-			// Log and continue; this repo contributes no edges.
+			// Log and continue; this repo contributes no edges. Record it as an
+			// eval failure (flake present on disk, all tiers exhausted) so the
+			// caller can gate the persisted lock rather than silently omit its
+			// override edges. Cases 1/2 above (no flake_path, not cloned) are
+			// legitimately empty and MUST NOT be recorded here.
 			fmt.Fprintf(os.Stderr, "pn: warn: gatherInputURLs %s: %v\n", key, err)
 			result[key] = nil
+			evalFailed = append(evalFailed, key)
 			continue
 		}
 		result[key] = specs
 	}
-	return result, nil
+	sort.Strings(evalFailed)
+	return result, evalFailed, nil
 }
 
 // evalInputSpecs evaluates a flake's inputs and returns alias → InputSpec.

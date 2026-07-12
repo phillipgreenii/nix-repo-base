@@ -408,7 +408,7 @@ url = "github:o/base"
 	}
 
 	var notice strings.Builder
-	if err := ws.WriteDerivedLockTo(context.Background(), root, &notice, ""); err != nil {
+	if err := ws.WriteDerivedLockTo(context.Background(), root, &notice, "", false); err != nil {
 		t.Fatalf("WriteDerivedLockTo: %v", err)
 	}
 
@@ -457,7 +457,7 @@ url = "github:o/override"
 	}
 
 	// Without flag, WriteDerivedLock would fail (ambiguous terminal — two isolated sinks).
-	errNoFlag := ws.WriteDerivedLockTo(context.Background(), root, nil, "")
+	errNoFlag := ws.WriteDerivedLockTo(context.Background(), root, nil, "", false)
 	if errNoFlag == nil {
 		t.Fatal("expected error without flagTerminal (ambiguous terminal); got nil")
 	}
@@ -474,7 +474,7 @@ url = "github:o/override"
 	}
 
 	// With flagTerminal = "override", it should succeed and write override as terminal.
-	if err := ws2.WriteDerivedLockTo(context.Background(), root, nil, "override"); err != nil {
+	if err := ws2.WriteDerivedLockTo(context.Background(), root, nil, "override", false); err != nil {
 		t.Fatalf("WriteDerivedLockTo with flagTerminal: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, LockFileName))
@@ -567,5 +567,123 @@ url = "github:smoke-test/producer-noflakenix"
 	// The lock should still have the edge and repos (best-effort).
 	if len(lock.Edges) != 1 {
 		t.Errorf("expected 1 edge, got %d: %v", len(lock.Edges), lock.Edges)
+	}
+}
+
+// openEvalFailWorkspace writes a single-repo config with an explicit terminal
+// (so no missing_terminal error is emitted) whose flake fails every eval tier,
+// and returns the opened workspace. Fresh FakeRunner per call because eval
+// responses are consumed FIFO.
+func openEvalFailWorkspace(t *testing.T, root string) *Workspace {
+	t.Helper()
+	f := exec.NewFakeRunner()
+	scriptAllTiersFail(f, filepath.Join(root, "myrepo", "flake.nix"))
+	ws, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	return ws
+}
+
+// TestDeriveLock_EvalFailure_EmitsValidationError: a repo whose flake is present
+// but fails every eval tier yields an eval_failed ValidationError naming the
+// repo, with err == nil (best-effort callers still ignore validErrs). (pg2-cqcex)
+func TestDeriveLock_EvalFailure_EmitsValidationError(t *testing.T) {
+	root := t.TempDir()
+	makeRepoWithFlakeAt(t, root, "myrepo", "flake.nix")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "myrepo"
+
+[repos.myrepo]
+url = "github:owner/myrepo"
+`)
+	ws := openEvalFailWorkspace(t, root)
+
+	_, validErrs, err := deriveLock(context.Background(), ws, "")
+	if err != nil {
+		t.Fatalf("deriveLock: unexpected err: %v", err)
+	}
+	found := false
+	for _, ve := range validErrs {
+		if ve.Code == "eval_failed" {
+			found = true
+			if !strings.Contains(ve.Message, "myrepo") {
+				t.Errorf("eval_failed message should name the repo %q; got: %q", "myrepo", ve.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected an eval_failed ValidationError; got %v", validErrs)
+	}
+}
+
+// TestWriteDerivedLockTo_EvalFailure_RefusesThenAllows: with allowMissingEdges
+// false the write is refused (error, no lock file); with true it writes and
+// warns. missing_terminal remains blocking regardless of the flag. (pg2-cqcex)
+func TestWriteDerivedLockTo_EvalFailure_RefusesThenAllows(t *testing.T) {
+	root := t.TempDir()
+	makeRepoWithFlakeAt(t, root, "myrepo", "flake.nix")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "myrepo"
+
+[repos.myrepo]
+url = "github:owner/myrepo"
+`)
+	lockPath := filepath.Join(root, LockFileName)
+
+	// allowMissingEdges = false → refuse, no file written.
+	wsRefuse := openEvalFailWorkspace(t, root)
+	errRefuse := wsRefuse.WriteDerivedLockTo(context.Background(), root, nil, "", false)
+	if errRefuse == nil {
+		t.Fatal("expected error when eval_failed and --allow-missing-edges absent; got nil")
+	}
+	if !strings.Contains(errRefuse.Error(), "could not be evaluated") {
+		t.Errorf("error should describe the eval failure; got %v", errRefuse)
+	}
+	if _, statErr := os.Stat(lockPath); !os.IsNotExist(statErr) {
+		t.Errorf("no lock file should be written on refusal; stat err = %v", statErr)
+	}
+
+	// allowMissingEdges = true → writes the lock, warns on out.
+	wsAllow := openEvalFailWorkspace(t, root)
+	var out strings.Builder
+	if err := wsAllow.WriteDerivedLockTo(context.Background(), root, &out, "", true); err != nil {
+		t.Fatalf("WriteDerivedLockTo with allowMissingEdges: unexpected err: %v", err)
+	}
+	if _, statErr := os.Stat(lockPath); statErr != nil {
+		t.Errorf("lock file should be written with --allow-missing-edges; stat err = %v", statErr)
+	}
+	if !strings.Contains(out.String(), "allow-missing-edges") {
+		t.Errorf("expected --allow-missing-edges warning on out; got %q", out.String())
+	}
+}
+
+// TestWriteDerivedLockTo_MissingTerminalBlocksRegardlessOfFlag: missing_terminal
+// is not eval_failed, so --allow-missing-edges must NOT let it through. (pg2-cqcex)
+func TestWriteDerivedLockTo_MissingTerminalBlocksRegardlessOfFlag(t *testing.T) {
+	root := t.TempDir()
+	// Two isolated repos, no terminal configured → ambiguous → missing_terminal.
+	makeFlakeDirs(t, root, "a", "b")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.a]
+url = "github:o/a"
+
+[repos.b]
+url = "github:o/b"
+`)
+	fullExpr := `is: builtins.mapAttrs (n: v: { url = v.url or null; flake = v.flake or true; }) is`
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"eval", "--json", "--file", filepath.Join(root, "a", "flake.nix"), "inputs", "--apply", fullExpr},
+		exec.Result{Stdout: []byte(`{}`)}, nil)
+	f.AddResponse("nix", []string{"eval", "--json", "--file", filepath.Join(root, "b", "flake.nix"), "inputs", "--apply", fullExpr},
+		exec.Result{Stdout: []byte(`{}`)}, nil)
+	ws, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := ws.WriteDerivedLockTo(context.Background(), root, nil, "", true); err == nil {
+		t.Fatal("missing_terminal must block even with --allow-missing-edges; got nil error")
 	}
 }

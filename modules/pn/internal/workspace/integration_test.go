@@ -330,7 +330,7 @@ url = "github:o/base"
 	}
 
 	var notice strings.Builder
-	if err := ws.WriteDerivedLockTo(context.Background(), root, &notice, ""); err != nil {
+	if err := ws.WriteDerivedLockTo(context.Background(), root, &notice, "", false); err != nil {
 		t.Fatalf("WriteDerivedLockTo: %v", err)
 	}
 

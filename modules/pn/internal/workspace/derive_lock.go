@@ -23,7 +23,7 @@ import (
 //   - err: non-nil only on fatal I/O errors (config not readable, etc.).
 func deriveLock(ctx context.Context, ws *Workspace, flagTerminal string) (*Lock, []ValidationError, error) {
 	// Gather input URLs from every repo's flake.
-	inputURLs, err := ws.gatherInputURLs(ctx)
+	inputURLs, evalFailed, err := ws.gatherInputURLs(ctx)
 	if err != nil {
 		return emptyLock(), nil, fmt.Errorf("deriveLock: gather input URLs: %w", err)
 	}
@@ -82,6 +82,21 @@ func deriveLock(ctx context.Context, ws *Workspace, flagTerminal string) (*Lock,
 		}
 	}
 
+	// Emit eval_failed for each repo whose flake was present on disk but failed
+	// every eval tier (bead pg2-cqcex). This is the fatal-for-persist signal:
+	// gatherInputURLs could not resolve the repo's inputs, so its override edges
+	// were omitted; writing that lock would let a build resolve the sibling from
+	// its published locked input instead of the local clone. Best-effort callers
+	// still ignore validErrs; only the write path (WriteDerivedLockTo) acts on it.
+	for _, key := range evalFailed {
+		validErrs = append(validErrs, ValidationError{
+			Code: "eval_failed",
+			Message: fmt.Sprintf("flake inputs for repo %q could not be evaluated; its edges were omitted "+
+				"(a build would resolve %q from its published locked input, not the local clone) — fix the "+
+				"flake or pass --allow-missing-edges", key, key),
+		})
+	}
+
 	lock := &Lock{
 		Terminal: terminal,
 		Order:    order,
@@ -137,21 +152,37 @@ func lockMatchesConfig(lock *Lock, cfg *WorkspaceConfig) bool {
 // After a successful write, if the legacy pn-workspace.lock exists in the same
 // directory, it is removed and a notice is written to out (may be nil to silence).
 func (ws *Workspace) WriteDerivedLock(ctx context.Context, dir string) error {
-	return ws.WriteDerivedLockTo(ctx, dir, nil, "")
+	return ws.WriteDerivedLockTo(ctx, dir, nil, "", false)
 }
 
 // WriteDerivedLockTo is like WriteDerivedLock but accepts an io.Writer for notices
 // (legacy lock removal) and a flagTerminal override. Pass nil out to suppress
 // notices. Pass "" for flagTerminal to use the config or auto-detect.
-func (ws *Workspace) WriteDerivedLockTo(ctx context.Context, dir string, out io.Writer, flagTerminal string) error {
+//
+// allowMissingEdges downgrades an "eval_failed" validation error (a repo whose
+// flake could not be evaluated, so its override edges were omitted) from
+// blocking to a warning, allowing the lock to be written anyway (bead
+// pg2-cqcex). All other validation codes (missing_terminal, missing_flake_path,
+// …) remain blocking regardless of the flag.
+func (ws *Workspace) WriteDerivedLockTo(ctx context.Context, dir string, out io.Writer, flagTerminal string, allowMissingEdges bool) error {
 	lock, validErrs, err := deriveLock(ctx, ws, flagTerminal)
 	if err != nil {
 		return err
 	}
-	if len(validErrs) > 0 {
-		// Surface all validation errors but do NOT write.
+	var blocking []ValidationError
+	for _, ve := range validErrs {
+		if ve.Code == "eval_failed" && allowMissingEdges {
+			if out != nil {
+				fmt.Fprintf(out, "pn: warn (--allow-missing-edges): %s\n", ve.Message)
+			}
+			continue
+		}
+		blocking = append(blocking, ve)
+	}
+	if len(blocking) > 0 {
+		// Surface all blocking validation errors but do NOT write.
 		var msgs string
-		for i, ve := range validErrs {
+		for i, ve := range blocking {
 			if i > 0 {
 				msgs += "; "
 			}

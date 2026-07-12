@@ -229,7 +229,12 @@ func httpsToFlakeURL(https string) string {
 // inputs and writes it to pn-workspace.lock.json. Uses the new gatherInputURLs
 // + buildEdges approach (replacing the old gatherDeclaredInputs + buildDAG).
 func (w *Workspace) RefreshLock(ctx context.Context) error {
-	inputURLs, err := w.gatherInputURLs(ctx)
+	// NOTE (bead pg2-cqcex): this legacy path writes via WriteLock and does NOT
+	// enforce the eval_failed gate that WriteDerivedLockTo applies. It has no
+	// non-test caller today; if it is ever re-wired to a command it SHOULD route
+	// through WriteDerivedLockTo so an un-evaluable flake cannot silently produce
+	// an edge-deficient lock.
+	inputURLs, _, err := w.gatherInputURLs(ctx)
 	if err != nil {
 		return fmt.Errorf("gather input URLs: %w", err)
 	}

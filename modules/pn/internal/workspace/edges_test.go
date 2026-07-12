@@ -261,7 +261,7 @@ url = "github:owner/myrepo"
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	result, err := ws.gatherInputURLs(context.Background())
+	result, _, err := ws.gatherInputURLs(context.Background())
 
 	_ = w.Close()
 	os.Stderr = oldStderr
@@ -331,5 +331,58 @@ url = "github:o/base"
 	}
 	if len(lock.Edges) != 1 || lock.Edges[0].Consumer != "term" || lock.Edges[0].Target != "base" {
 		t.Errorf("lock.Edges = %v, want [{term nb base}]", lock.Edges)
+	}
+}
+
+// scriptAllTiersFail scripts the FakeRunner so all three evalInputSpecs tiers
+// (full, fallback, attrNames) fail for the given absolute flake path.
+func scriptAllTiersFail(f *exec.FakeRunner, flakeAbs string) {
+	exprs := []string{
+		`is: builtins.mapAttrs (n: v: { url = v.url or null; flake = v.flake or true; }) is`,
+		`is: builtins.mapAttrs (n: v: { url = v.url or null; flake = true; }) is`,
+		"builtins.attrNames",
+	}
+	for _, expr := range exprs {
+		cmdErr := &exec.CommandError{Name: "nix", Result: exec.Result{ExitCode: 1}}
+		f.AddResponse("nix", []string{"eval", "--json", "--file", flakeAbs, "inputs", "--apply", expr},
+			exec.Result{ExitCode: 1}, cmdErr)
+	}
+}
+
+// TestGatherInputURLs_AllTiersFail_ReportsFailedRepo: a flake present on disk
+// whose every eval tier fails is reported in the evalFailed slice (bead
+// pg2-cqcex); a configured repo with no flake on disk is NOT reported (it is
+// legitimately empty, not an eval failure).
+func TestGatherInputURLs_AllTiersFail_ReportsFailedRepo(t *testing.T) {
+	root := t.TempDir()
+	makeRepoWithFlakeAt(t, root, "myrepo", "flake.nix")
+	// "nogit" is configured but has no flake.nix on disk (never cloned).
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.myrepo]
+url = "github:owner/myrepo"
+
+[repos.nogit]
+url = "github:owner/nogit"
+`)
+
+	f := exec.NewFakeRunner()
+	scriptAllTiersFail(f, filepath.Join(root, "myrepo", "flake.nix"))
+
+	ws, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	result, evalFailed, err := ws.gatherInputURLs(context.Background())
+	if err != nil {
+		t.Fatalf("gatherInputURLs: unexpected err: %v", err)
+	}
+	if result["myrepo"] != nil {
+		t.Errorf("expected nil specs for the eval-failed repo; got %v", result["myrepo"])
+	}
+	if !containsStr(evalFailed, "myrepo") {
+		t.Errorf("expected evalFailed to contain %q; got %v", "myrepo", evalFailed)
+	}
+	if containsStr(evalFailed, "nogit") {
+		t.Errorf("repo with no flake on disk must NOT be in evalFailed; got %v", evalFailed)
 	}
 }

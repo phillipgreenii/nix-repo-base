@@ -1113,3 +1113,68 @@ func TestPersistentTerminalFlag_IsInheritedByAllSubcommands(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkspaceLock_EvalFailure_RefusesThenAllows: `pn workspace lock` exits
+// non-zero when a repo's flake fails every eval tier; --allow-missing-edges
+// downgrades that to a warning and writes the lock. (bead pg2-cqcex)
+func TestWorkspaceLock_EvalFailure_RefusesThenAllows(t *testing.T) {
+	root := t.TempDir()
+	// Repo with a flake on disk whose eval fails; explicit terminal so the only
+	// validation error is eval_failed.
+	if err := os.MkdirAll(filepath.Join(root, "myrepo"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "myrepo", "flake.nix"), []byte("{ outputs = {}; }"), 0o644); err != nil {
+		t.Fatalf("write flake: %v", err)
+	}
+	toml := `[workspace]
+name = "test"
+terminal = "myrepo"
+
+[repos.myrepo]
+url = "github:owner/myrepo"
+`
+	if err := os.WriteFile(filepath.Join(root, workspace.ConfigFileName), []byte(toml), 0o644); err != nil {
+		t.Fatalf("write toml: %v", err)
+	}
+
+	flakeAbs := filepath.Join(root, "myrepo", "flake.nix")
+	evalExprs := []string{
+		`is: builtins.mapAttrs (n: v: { url = v.url or null; flake = v.flake or true; }) is`,
+		`is: builtins.mapAttrs (n: v: { url = v.url or null; flake = true; }) is`,
+		"builtins.attrNames",
+	}
+	// Each runCobraCmd calls openWorkspace(), which must return a workspace with a
+	// FRESH runner (eval responses are consumed FIFO). Rebuild per call.
+	orig := openWorkspace
+	t.Cleanup(func() { openWorkspace = orig })
+	openWorkspace = func() (*workspace.Workspace, error) {
+		fr := exec.NewFakeRunner()
+		for _, expr := range evalExprs {
+			cmdErr := &exec.CommandError{Name: "nix", Result: exec.Result{ExitCode: 1}}
+			fr.AddResponse("nix", []string{"eval", "--json", "--file", flakeAbs, "inputs", "--apply", expr},
+				exec.Result{ExitCode: 1}, cmdErr)
+		}
+		return workspace.Open(root, fr)
+	}
+
+	// Without the flag → refuse (non-zero exit).
+	if _, _, err := runCobraCmd(t, []string{"lock"}); err == nil {
+		t.Fatal("lock with an un-evaluable repo flake: expected non-zero exit")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, workspace.LockFileName)); !os.IsNotExist(statErr) {
+		t.Errorf("no lock file should be written on refusal; stat err = %v", statErr)
+	}
+
+	// With the flag → succeed and write the lock.
+	stdout, _, err := runCobraCmd(t, []string{"lock", "--allow-missing-edges"})
+	if err != nil {
+		t.Fatalf("lock --allow-missing-edges: unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout, "pn-workspace.lock.json") {
+		t.Errorf("expected confirmation on stdout; got %q", stdout)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, workspace.LockFileName)); statErr != nil {
+		t.Errorf("lock file should exist after --allow-missing-edges; err = %v", statErr)
+	}
+}
