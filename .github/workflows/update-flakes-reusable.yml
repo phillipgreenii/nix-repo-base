@@ -1,0 +1,155 @@
+name: Update Flake Dependencies (reusable)
+
+# Reusable scheduled-dependency-update workflow, hosted in the public
+# phillipg-nix-repo-base and consumed by every workspace repo that keeps
+# scheduled-update automation (bead pg2-wwpy9). Callers set only their variable
+# parts (schedule cron in their own trigger, auto-merge strategy, whether private
+# inputs need an auth token) and `secrets: inherit`. This is the single source of
+# truth: it always runs `./update-locks.sh --ci`, so per-package lock artifacts
+# (uv.lock / gomod2nix.toml / Brewfile) refresh on the schedule — not just
+# flake.lock. Action pins here are the canonical set for the fleet.
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        type: string
+        default: macos-latest
+        description: "Runner label."
+      timeout_minutes:
+        type: number
+        default: 60
+        description: "Job timeout in minutes."
+      automerge:
+        type: string
+        default: squash
+        description: "Auto-merge strategy for the generated PR: squash | rebase | none."
+      needs_private_deps_auth:
+        type: boolean
+        default: false
+        description: >-
+          When true, mint a phillipgreenii-org read token and write it into
+          nix.conf so `nix flake update` can fetch private phillipgreenii inputs
+          (e.g. github:phillipgreenii/nix-personal). Requires the
+          PHILLIPGREENII_READ_ONLY_DEPS_APP_* secrets (see bead pg2-wwpy9 D4).
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write # required for FlakeHub Cache OIDC auth when enabled
+
+jobs:
+  update-flakes:
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - name: Generate write token for PR management
+        id: generate-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ secrets.UPDATE_BOT_APP_ID }}
+          private-key: ${{ secrets.UPDATE_BOT_APP_PRIVATE_KEY }}
+
+      - name: Generate readonly token for phillipgreenii private dependencies
+        id: phillipgreenii-readonly-token
+        if: ${{ inputs.needs_private_deps_auth }}
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ secrets.PHILLIPGREENII_READ_ONLY_DEPS_APP_ID }}
+          private-key: ${{ secrets.PHILLIPGREENII_READ_ONLY_DEPS_APP_PRIVATE_KEY }}
+          # The app lives in the phillipgreenii org; owner: makes the token an
+          # org-installation token instead of a current-repo-installation lookup
+          # (the latter returns Not Found for cross-owner callers).
+          owner: phillipgreenii
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.generate-token.outputs.token || github.token }}
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Configure GitHub authentication for Nix
+        if: ${{ inputs.needs_private_deps_auth }}
+        env:
+          READ_TOKEN: ${{ steps.phillipgreenii-readonly-token.outputs.token }}
+        run: |
+          mkdir -p ~/.config/nix
+          echo "access-tokens = github.com=${READ_TOKEN}" >> ~/.config/nix/nix.conf
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run update-locks.sh
+        id: update
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token || github.token }}
+        run: |
+          BEFORE=$(git rev-parse HEAD)
+          echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
+
+          ./update-locks.sh --ci
+
+          AFTER=$(git rev-parse HEAD)
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            echo "No updates available"
+          else
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "changes<<EOF"
+              git log --pretty=format:'- %s' "$BEFORE..$AFTER"
+              echo
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Pull Request
+        if: steps.update.outputs.updated == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.generate-token.outputs.token || github.token }}
+          commit-message: "chore: update flake dependencies"
+          title: "chore: Update flake dependencies"
+          body: |
+            ## Automated Flake Update
+
+            This PR refreshes the flake.lock file (and any per-package lock
+            artifacts owned by update-locks.sh) with the latest versions.
+
+            ### Changes
+            ```
+            ${{ steps.update.outputs.changes }}
+            ```
+
+            ### Verification
+            - Required CI checks run automatically on this PR.
+            - Auto-merge (if enabled for this repo) merges once required checks pass.
+            - Close this PR to abort if the updates should not be applied.
+
+            ---
+            *This PR was created automatically by the reusable update-flakes workflow*
+          branch: automated/flake-updates
+          delete-branch: true
+          labels: |
+            dependencies
+            automated
+
+      - name: Enable auto-merge
+        if: ${{ steps.create-pr.outputs.pull-request-number && inputs.automerge != 'none' }}
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token || github.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          MERGE_STRATEGY: ${{ inputs.automerge }}
+        run: |
+          gh pr merge "$PR_NUMBER" \
+            --auto \
+            "--${MERGE_STRATEGY}" \
+            --delete-branch

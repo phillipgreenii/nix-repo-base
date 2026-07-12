@@ -11,11 +11,13 @@ case "${1:-}" in
   ;;
 -h | --help)
   echo "Usage: $0 [--ci]"
+  echo "  --ci  Disable laptop-only checks (nix daemon health, time-based cache)"
   exit 0
   ;;
 "") ;;
 *)
   echo "Unknown argument: $1" >&2
+  echo "Usage: $0 [--ci]" >&2
   exit 1
   ;;
 esac
