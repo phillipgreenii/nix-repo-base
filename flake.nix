@@ -222,6 +222,11 @@
             # must produce the same script drvPath. See ADR 0006.
             bash-version-rev-independent = import ./lib/bash-builders-version-tests.nix { inherit pkgs; };
 
+            # Forces an mkBashScript fixture's `.check` to build so `nix flake check`
+            # exercises the assembled-artifact floor smoke + SCRIPT_UNDER_TEST path
+            # (bead pg2-28wwb).
+            bash-builders-artifact-smoke = import ./lib/bash-builders-smoke-tests.nix { inherit pkgs; };
+
             # Per-source digest in the Python derivation version (ADR 0011): the
             # mkPythonBuilders factory's mkPythonPackage must stamp 0.0.0-<digest>.
             python-version-digest = import ./lib/python-package-version-tests.nix { inherit pkgs; };

@@ -92,6 +92,13 @@ let
   #   testSupport    — optional path to a bats test support directory
   #   testDeps       — additional packages needed at test time
   #
+  # Check environment (bead pg2-28wwb): the `check` runs bats with both SCRIPTS_DIR
+  # (raw source, legacy — retained for backward compatibility) and SCRIPT_UNDER_TEST
+  # (path to the assembled, shipped bin/<name>) exported. New bats tests SHOULD target
+  # SCRIPT_UNDER_TEST to cover the injected header/config/source lines and PATH wrapper.
+  # Every `check` also runs a mandatory `<name> --version`/`-v` floor smoke against the
+  # assembled artifact, so a defect introduced purely by assembly fails the check.
+  #
   # Returns: { script, tldr, completion, check, packages, internalPackages }
   mkBashScript =
     {
@@ -292,11 +299,32 @@ let
             ++ testDeps;
           }
           ''
+            # Floor smoke (bead pg2-28wwb): the shipped, ASSEMBLED + wrapped artifact must
+            # run end-to-end — shebang + injected `set -euo pipefail` + version handler +
+            # runtimeDeps PATH wrapper — which the bats suites (raw source via SCRIPTS_DIR)
+            # never exercise. Placed before the `cp` so it is independent of the tests/ dir
+            # and never masked by a copy error. Written defensively so it does not rely on
+            # runCommand's set -e. ${name}/${script} are Nix interpolations; $smoke_out is a
+            # shell var (no braces) passed through literally.
+            smoke_out="$("${script}/bin/${name}" --version)" || {
+              echo "FAIL: assembled '${name} --version' exited non-zero" >&2; exit 1; }
+            case "$smoke_out" in
+              "${name} "*) ;;
+              *) echo "FAIL: assembled '${name} --version' did not emit '${name} <version>': $smoke_out" >&2; exit 1 ;;
+            esac
+            "${script}/bin/${name}" -v >/dev/null || {
+              echo "FAIL: assembled '${name} -v' exited non-zero" >&2; exit 1; }
+
             # Copy tests to $TMPDIR for writability
             cp -r ${testDir}/* $TMPDIR/
             chmod -R u+w $TMPDIR/
 
             export SCRIPTS_DIR="${src}"
+            # Assembled-artifact handle so bats authors MAY drive the shipped script
+            # (covering injected header/config/source lines + runtimeDeps PATH wrapper)
+            # instead of the raw .sh via SCRIPTS_DIR. Legacy SCRIPTS_DIR retained for
+            # backward compatibility. (bead pg2-28wwb)
+            export SCRIPT_UNDER_TEST="${script}/bin/${name}"
             ${lib.optionalString (libraries != [ ]) ''
               export LIB_PATH="${lib.concatMapStringsSep ":" (dep: "${dep.lib}") libraries}"
             ''}
