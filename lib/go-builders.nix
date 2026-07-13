@@ -186,10 +186,12 @@ rec {
     {
       pname,
       src,
-      # Go linker target for the version string. Defaults to lowercase
-      # `main.version`; pass "main.Version" for packages that export it
-      # capitalised.
-      versionPath ? "main.version",
+      # Go linker target for the version string. Defaults to `main.Version` to
+      # match mkGoBinary and the fleet convention (packages export
+      # `var Version`), so a direct mkGoApp caller does not silently get a no-op
+      # `-X main.version=` against code that declares `Version` (bead pg2-nc6vq).
+      # Pass another symbol (e.g. "main.version") for a package that uses one.
+      versionPath ? "main.Version",
       # Human-facing base; the per-source digest is appended for uniqueness.
       baseVersion ? "0.0.0",
       ldflags ? [ ],
