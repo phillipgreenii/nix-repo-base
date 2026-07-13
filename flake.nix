@@ -84,11 +84,6 @@
               cp ${./lib/scripts/update-cache-lib.bash} $out/lib/scripts/update-cache-lib.bash
             '';
 
-            # Autofix helper
-            fix-lint = pkgs.writeShellScriptBin "fix-lint" ''
-              ${pkgs.lib.getExe pkgs.statix} fix ${./.}
-            '';
-
             # Update-locks resolver
             determine-ul-lib-dir = ulScripts.determine-ul-lib-dir.script;
 

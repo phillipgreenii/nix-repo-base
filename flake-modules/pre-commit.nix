@@ -160,5 +160,15 @@ in
         echo "Pre-commit hooks installed successfully!"
         echo "Run 'pre-commit run --all-files' to test them."
       '';
+
+      # Autofix helper for the `statix` pre-commit hook. Runs `statix fix` over
+      # the CURRENT working directory (or the paths given as args) — NOT ${./.},
+      # which resolves to a read-only /nix/store copy statix can never write to.
+      # Auto-contributed to every consumer that imports this flakeModule, so the
+      # six hand-rolled per-repo copies (five of them broken with the ${./.} bug)
+      # are deleted in favour of this single source of truth (bead pg2-7vhvn).
+      packages.fix-lint = pkgs.writeShellScriptBin "fix-lint" ''
+        exec ${pkgs.lib.getExe pkgs.statix} fix "''${@:-.}"
+      '';
     };
 }
