@@ -30,10 +30,9 @@ Extract shared infrastructure into this dedicated public repository
 - `lib/bash-builders.nix` and `lib/version.nix` provide the core Nix lib functions
 - `lib/scripts/` holds `update-locks-lib.bash` and `update-cache-lib.bash`
 - `nix/dev-env.nix` provides `mkTreefmtConfig`, `mkPreCommitHooks`, `mkDevShell`
-- `nix/module-helpers.nix` provides `mkProgramModule` and related helpers
 - `nix/packages.nix` provides `mkManPage` and re-exports `mkBashBuilders`
 - `nix/checks.nix` provides reusable check derivations
-- The `lib` flake output exposes all 14 functions for downstream consumption
+- The `lib` flake output exposes all 10 functions for downstream consumption
 - Overlay factories (`mkUnstableOverlay`, `mkLlmAgentsOverlay`,
   `mkVscodeExtensionsOverlay`) are co-located here since they are consumed by downstream repos
 

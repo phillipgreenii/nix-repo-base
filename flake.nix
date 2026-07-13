@@ -415,15 +415,6 @@
           // {
             mkPythonBuilders = import ./lib/python-package.nix;
           }
-          # Module generation helpers
-          // {
-            inherit ((import ./nix/module-helpers.nix { }))
-              mkSimplePackageModule
-              mkEnableablePackageModule
-              mkDockRegistration
-              mkProgramModule
-              ;
-          }
           # Activation-script output helpers
           // (import ./lib/activation.nix { });
       };
