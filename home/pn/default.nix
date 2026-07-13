@@ -23,19 +23,26 @@
   pkgs,
   ...
 }:
-with lib;
 let
+  inherit (lib)
+    mkEnableOption
+    mkPackageOption
+    mkOption
+    mkIf
+    types
+    ;
   cfg = config.phillipgreenii.pn;
 
-  storeToml = pkgs.writeText "pn-store.toml" (
-    "search_dirs = ["
-    + (concatStringsSep ", " (map (d: ''"${d}"'') cfg.store.searchDirs))
-    + ''
-      ]
-      keep_days = 14
-      keep_count = 3
-    ''
-  );
+  # Generate store.toml through pkgs.formats.toml so values are serialized as
+  # real TOML: hand-concatenating `"${d}"` broke on a searchDir containing a
+  # quote or backslash (bead pg2-v6j3h). keep_days/keep_count are now options
+  # rather than magic numbers baked into the string.
+  tomlFormat = pkgs.formats.toml { };
+  storeToml = tomlFormat.generate "pn-store.toml" {
+    search_dirs = cfg.store.searchDirs;
+    keep_days = cfg.store.keepDays;
+    keep_count = cfg.store.keepCount;
+  };
 in
 {
   options.phillipgreenii.pn = {
@@ -43,17 +50,32 @@ in
 
     package = mkPackageOption pkgs "pn" { };
 
-    store.searchDirs = mkOption {
-      type = types.listOf types.str;
-      default = [ ];
-      description = "Directories to search for Nix project roots in pn store-audit and pn store-deepclean. If empty, the tool defaults to $HOME.";
+    store = {
+      searchDirs = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Directories to search for Nix project roots in pn store-audit and pn store-deepclean. If empty, the tool defaults to $HOME.";
+      };
+
+      keepDays = mkOption {
+        type = types.ints.unsigned;
+        default = 14;
+        description = "pn store-deepclean: keep generations newer than this many days.";
+      };
+
+      keepCount = mkOption {
+        type = types.ints.unsigned;
+        default = 3;
+        description = "pn store-deepclean: keep at least this many most-recent generations regardless of age.";
+      };
     };
   };
 
   config = mkIf cfg.enable {
     home.packages = [ cfg.package ];
 
-    # Install store config only when searchDirs is non-empty
+    # Install store config only when searchDirs is non-empty (unchanged gating;
+    # keepDays/keepCount default to the tool's prior hardcoded 14/3).
     home.file = mkIf (cfg.store.searchDirs != [ ]) {
       ".config/pn/store.toml".source = storeToml;
     };

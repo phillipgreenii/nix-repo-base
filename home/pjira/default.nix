@@ -6,8 +6,8 @@
   pkgs,
   ...
 }:
-with lib;
 let
+  inherit (lib) mkEnableOption mkPackageOption mkIf;
   cfg = config.phillipgreenii.pjira;
 in
 {
