@@ -519,3 +519,48 @@ url = "github:owner/foo"
 		t.Errorf("error should reflect cancellation; got %q", err.Error())
 	}
 }
+
+// TestIsDirty proves the probe distinguishes the `git diff --quiet` "changes
+// exist" signal (exit 1 -> dirty) from a genuine probe failure (exit 128 -> a
+// non-nil error, NOT silently reported as dirty). Prior code conflated any
+// non-zero exit with dirty (bead pg2-6qtr8).
+func TestIsDirty(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.foo]\nurl = \"github:o/foo\"\n")
+	foo := filepath.Join(root, "foo")
+
+	cases := []struct {
+		name      string
+		exit      int // exit code of the first `diff --quiet`; 0 also runs the cached probe
+		wantDirty bool
+		wantErr   bool
+	}{
+		{"clean", 0, false, false},
+		{"modified tree exit 1", 1, true, false},
+		{"probe failure exit 128", 128, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := exec.NewFakeRunner()
+			var derr error
+			if tc.exit != 0 {
+				derr = &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: tc.exit}}
+			}
+			f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{ExitCode: tc.exit}, derr)
+			if tc.exit == 0 {
+				f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+			}
+			w, err := Open(root, f)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			dirty, derr2 := w.isDirty(context.Background(), foo)
+			if dirty != tc.wantDirty {
+				t.Errorf("isDirty dirty = %v, want %v", dirty, tc.wantDirty)
+			}
+			if (derr2 != nil) != tc.wantErr {
+				t.Errorf("isDirty err = %v, wantErr %v", derr2, tc.wantErr)
+			}
+		})
+	}
+}

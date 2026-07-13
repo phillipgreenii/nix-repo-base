@@ -61,7 +61,9 @@ func (ws *Workspace) primaryMainState(ctx context.Context, primary string) prima
 	if cur != "main" {
 		return primaryOnOtherBranch
 	}
-	if ws.isDirty(ctx, primary) {
+	// A probe error means cleanliness is indeterminate; defer rather than risk a
+	// merge --ff-only that assumes a clean primary (bead pg2-6qtr8).
+	if dirty, err := ws.isDirty(ctx, primary); err != nil || dirty {
 		return primaryOnDirtyMain
 	}
 	return primaryOnCleanMain

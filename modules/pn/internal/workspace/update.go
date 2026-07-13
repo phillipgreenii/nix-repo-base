@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -135,8 +136,16 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		}
 		repoDir := filepath.Join(ws.root, name)
 
-		// Skip (non-fatal) if the working tree is dirty (modified or staged).
-		if ws.isDirty(ctx, repoDir) {
+		// Skip (non-fatal) if the working tree is dirty (modified or staged), or
+		// if cleanliness could not be determined — either way updating is unsafe.
+		dirty, dirtyErr := ws.isDirty(ctx, repoDir)
+		if dirtyErr != nil {
+			fmt.Fprintf(out, "  ⊘ skipping %s — could not check working tree: %v\n", name, dirtyErr)
+			_ = opts.Log.Emit("warn", "project_result", "project skipped (dirty-check failed)",
+				map[string]any{"name": name, "outcome": "skipped", "error": dirtyErr.Error()})
+			continue
+		}
+		if dirty {
 			fmt.Fprintf(out, "  ⊘ skipping %s — working tree has uncommitted changes\n", name)
 			_ = opts.Log.Emit("warn", "project_result", "project skipped (dirty working tree)",
 				map[string]any{"name": name, "outcome": "skipped"})
@@ -231,17 +240,31 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 	return nil
 }
 
-// isDirty reports whether repoDir has uncommitted changes — modified or staged
-// (untracked files are allowed). Probes are ordered so a dirty modified tree
-// short-circuits before the staged check.
-func (ws *Workspace) isDirty(ctx context.Context, repoDir string) bool {
-	if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "diff", "--quiet"}, exec.RunOptions{}); err != nil {
-		return true
+// isDirty reports whether repoDir has tracked uncommitted changes — modified or
+// staged (untracked files are intentionally allowed; the update flow pulls with
+// --autostash). Probes are ordered so a dirty modified tree short-circuits
+// before the staged check.
+//
+// It distinguishes the "changes exist" signal from a genuine probe failure
+// (bead pg2-6qtr8): `git diff --quiet` exits 1 iff a diff exists, so exit 1
+// means dirty; any OTHER non-zero exit (e.g. 128 — not a repo / bad path) or a
+// runner error means cleanliness could not be determined and is returned as a
+// non-nil error rather than being silently reported as dirty. Callers decide
+// whether an indeterminate probe is fatal, skippable, or a defer.
+func (ws *Workspace) isDirty(ctx context.Context, repoDir string) (bool, error) {
+	for _, args := range [][]string{
+		{"-C", repoDir, "diff", "--quiet"},
+		{"-C", repoDir, "diff", "--cached", "--quiet"},
+	} {
+		if _, err := ws.runner.Run(ctx, "git", args, exec.RunOptions{}); err != nil {
+			var cmdErr *exec.CommandError
+			if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == 1 {
+				return true, nil
+			}
+			return false, fmt.Errorf("git diff probe in %s: %w", repoDir, err)
+		}
 	}
-	if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "diff", "--cached", "--quiet"}, exec.RunOptions{}); err != nil {
-		return true
-	}
-	return false
+	return false, nil
 }
 
 // captureHead returns the trimmed SHA of HEAD for repoDir.

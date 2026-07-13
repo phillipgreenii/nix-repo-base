@@ -10,7 +10,11 @@ import (
 // switchToDefaultBranch checks out branch in repoDir. It refuses to switch a
 // dirty working tree (tracked changes) so no local work is silently shelved.
 func (ws *Workspace) switchToDefaultBranch(ctx context.Context, repoDir, branch string) error {
-	if ws.isDirty(ctx, repoDir) {
+	dirty, err := ws.isDirty(ctx, repoDir)
+	if err != nil {
+		return fmt.Errorf("refusing to switch %s: %w", repoDir, err)
+	}
+	if dirty {
 		return fmt.Errorf("refusing to switch %s: working tree is dirty", repoDir)
 	}
 	if _, err := ws.runner.Run(ctx, "git",

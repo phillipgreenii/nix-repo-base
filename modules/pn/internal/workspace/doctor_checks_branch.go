@@ -44,7 +44,14 @@ func (ws *Workspace) checkBranches(ctx context.Context, env *doctorEnv) []Findin
 		}
 
 		// tree-clean
-		if ws.isDirty(ctx, dir) {
+		dirty, dirtyErr := ws.isDirty(ctx, dir)
+		switch {
+		case dirtyErr != nil:
+			fs = append(fs, Finding{
+				CheckID: "tree-clean", Repo: name, Severity: SevError,
+				Message: fmt.Sprintf("repo %q: could not determine tree cleanliness: %v", name, dirtyErr),
+			})
+		case dirty:
 			sev := SevError
 			if env.mode == "worktree" {
 				sev = SevWarning
