@@ -237,6 +237,12 @@ rec {
         "meta"
       ];
     in
+    # `version` is DERIVED (baseVersion + source digest) and then stripped from
+    # `forwarded`, so a caller-passed `version` was silently discarded — the open
+    # `...` arg set hid the mistake that mkGoBinary (a closed arg set) rejects.
+    # Fail loudly and name the right knob instead (bead pg2-zvt37).
+    assert lib.assertMsg (!(args ? version))
+      "mkGoApp: `version` is derived from baseVersion + the source digest and cannot be set directly; pass `baseVersion` instead.";
     # `gomod2nixToml` is required (the committed lockfile must exist beside
     # go.mod) but its location is derived from `pwd`, so it is asserted rather
     # than threaded by value.

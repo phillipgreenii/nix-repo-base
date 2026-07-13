@@ -286,6 +286,29 @@
                   "echo 'mkGoBinary partial completions not merged over defaults (bead pg2-beppe)' >&2; exit 1"
               );
 
+            # mkGoApp's `version` is derived (baseVersion + digest); its open
+            # `...` arg set used to SILENTLY discard a caller-passed `version`.
+            # It must now throw instead (bead pg2-zvt37).
+            go-builders-app-rejects-version =
+              let
+                rejected =
+                  !(builtins.tryEval (
+                    goBuilders.mkGoApp {
+                      pname = "reject-version-probe";
+                      src = ./modules/pn;
+                      gomod2nixToml = ./modules/pn/gomod2nix.toml;
+                      subPackages = [ "cmd/pn" ];
+                      version = "9.9.9"; # illegal: version is derived, use baseVersion
+                    }
+                  )).success;
+              in
+              pkgs.runCommand "check-go-builders-app-rejects-version" { } (
+                if rejected then
+                  "touch $out"
+                else
+                  "echo 'mkGoApp silently accepted a caller-passed version (bead pg2-zvt37)' >&2; exit 1"
+              );
+
             # Per-source digest in the Python derivation version (ADR 0011): the
             # mkPythonBuilders factory's mkPythonPackage must stamp 0.0.0-<digest>.
             python-version-digest = import ./lib/python-package-version-tests.nix { inherit pkgs; };
