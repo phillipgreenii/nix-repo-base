@@ -49,8 +49,11 @@ func (w *Workspace) Clone(ctx context.Context, out io.Writer, opts CloneOptions)
 		}
 
 		fmt.Fprintf(out, "  --== clone %s ==--  \n", name)
+		// "--" terminates option parsing so a URL beginning with '-' cannot be
+		// misread as a git option (bead pg2-3j8b2). --branch's value is consumed
+		// by the option itself, so it needs no such guard.
 		if _, err := w.runner.Run(ctx, "git",
-			[]string{"clone", "--branch", branch, cloneURL, repoDir},
+			[]string{"clone", "--branch", branch, "--", cloneURL, repoDir},
 			exec.RunOptions{Dir: w.root, Stdout: out, Stderr: out}); err != nil {
 			return fmt.Errorf("clone %s: %w", name, err)
 		}
@@ -62,7 +65,7 @@ func (w *Workspace) Clone(ctx context.Context, out io.Writer, opts CloneOptions)
 				continue
 			}
 			if _, err := w.runner.Run(ctx, "git",
-				[]string{"-C", repoDir, "remote", "add", rm.Name, rm.URL},
+				[]string{"-C", repoDir, "remote", "add", "--", rm.Name, rm.URL},
 				exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 				return fmt.Errorf("clone %s: add remote %s: %w", name, rm.Name, err)
 			}

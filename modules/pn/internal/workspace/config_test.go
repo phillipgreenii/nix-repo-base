@@ -135,6 +135,41 @@ branch = "main"
 	}
 }
 
+// TestParseConfig_RejectsUnsafeRepoNames verifies that a repo name which is not
+// a single safe path segment is rejected before it can be joined onto the
+// workspace root as a directory (bead pg2-3j8b2).
+func TestParseConfig_RejectsUnsafeRepoNames(t *testing.T) {
+	for _, name := range []string{
+		"../elsewhere", // path traversal above the root
+		"a/b",          // nested path
+		"..",           // parent dir
+		".hidden",      // leading dot
+		"-rf",          // leading dash (looks like a flag)
+	} {
+		body := "[repos.\"" + name + "\"]\nurl = \"github:o/a\"\n"
+		if _, err := ParseConfig([]byte(body)); err == nil {
+			t.Errorf("expected error for unsafe repo name %q", name)
+		}
+	}
+}
+
+// TestParseConfig_AcceptsSafeRepoNames verifies that the real-world repo naming
+// styles (dashes, underscores, dots, mixed case) still parse.
+func TestParseConfig_AcceptsSafeRepoNames(t *testing.T) {
+	for _, name := range []string{
+		"phillipg-nix-repo-base",
+		"a_dep",
+		"dep1",
+		"lib.x",
+		"NAME",
+	} {
+		body := "[repos.\"" + name + "\"]\nurl = \"github:o/a\"\n"
+		if _, err := ParseConfig([]byte(body)); err != nil {
+			t.Errorf("safe repo name %q should parse, got: %v", name, err)
+		}
+	}
+}
+
 func TestParseConfig_EmptyConfig(t *testing.T) {
 	cfg, err := ParseConfig([]byte(""))
 	if err != nil {

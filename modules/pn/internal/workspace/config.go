@@ -78,6 +78,15 @@ type EventHook struct {
 
 var workspaceIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
+// repoNameRe constrains a [repos.<name>] key to a single safe path segment. The
+// name becomes a directory under the workspace root (filepath.Join(root, name)),
+// so a value with a path separator ("../elsewhere"), or a leading '.' ("..") or
+// '-', could escape the root or be misread as a git option (bead pg2-3j8b2).
+// Forbidding path separators also guarantees name == filepath.Base(name). Real
+// repo names are letters/digits/dash/underscore/dot, e.g. "phillipg-nix-repo-base"
+// or "a_dep".
+var repoNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 const defaultBuildCommand = "{builder} build --flake {terminal_nix_dir}"
 
 // TerminalRepo returns the configured terminal repo key, or an error if unset.
@@ -194,6 +203,14 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 	}
 	// Apply repo defaults + validate each repo.
 	for name, r := range cfg.Repos {
+		// Reject a name that is not a single safe path segment before it is ever
+		// joined onto the workspace root as a directory (bead pg2-3j8b2).
+		if !repoNameRe.MatchString(name) {
+			return nil, fmt.Errorf(
+				"repo name %q is invalid: must be a single path segment (letters, digits, '.', '_', '-'; no path separators; no leading '.' or '-')",
+				name,
+			)
+		}
 		if r.URL != "" && len(r.Remotes) > 0 {
 			return nil, fmt.Errorf("repo %q: url and remotes are mutually exclusive", name)
 		}
