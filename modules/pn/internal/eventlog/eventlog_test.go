@@ -91,6 +91,105 @@ func TestEmit_conformsToJSONLStandard(t *testing.T) {
 	}
 }
 
+// TestNewWithLimit_RotatesWhenOverThreshold verifies that opening a log already
+// at/over the size threshold renames it to "<path>.1" and starts a fresh active
+// file, so growth is bounded across runs (bead pg2-6z0rm).
+func TestNewWithLimit_RotatesWhenOverThreshold(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "events.jsonl")
+	old := []byte("{\"old\":1}\n{\"old\":2}\n")
+	if err := os.WriteFile(p, old, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWithLimit(p, int64(len(old))) // size >= threshold => rotate
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Emit("info", "k", "fresh", nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+
+	// Backup holds the old content verbatim.
+	got, err := os.ReadFile(p + ".1")
+	if err != nil {
+		t.Fatalf("expected rotated backup %s.1: %v", p, err)
+	}
+	if string(got) != string(old) {
+		t.Errorf("backup content = %q, want %q", got, old)
+	}
+	// Active file was reopened fresh: exactly the one new line.
+	if recs := readAll(t, p); len(recs) != 1 || recs[0]["msg"] != "fresh" {
+		t.Errorf("active file should contain only the post-rotation line, got %v", recs)
+	}
+}
+
+// TestNewWithLimit_NoRotateUnderThreshold verifies that a log under the
+// threshold is appended to, not rotated.
+func TestNewWithLimit_NoRotateUnderThreshold(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "events.jsonl")
+	if err := os.WriteFile(p, []byte("{\"old\":1}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWithLimit(p, 1<<20) // 1 MiB: well above the tiny file
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Emit("info", "k", "appended", nil)
+	_ = w.Close()
+
+	if _, err := os.Stat(p + ".1"); !os.IsNotExist(err) {
+		t.Errorf("no backup expected under threshold; stat err = %v", err)
+	}
+	if recs := readAll(t, p); len(recs) != 2 {
+		t.Errorf("expected append (2 lines), got %d", len(recs))
+	}
+}
+
+// TestNewWithLimit_KeepsSingleBackup verifies that repeated rotations retain
+// exactly one backup generation (the newest), never accumulating .2/.3/...
+func TestNewWithLimit_KeepsSingleBackup(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "events.jsonl")
+
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(p, []byte("{\"gen\":1}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		w, err := NewWithLimit(p, 1) // always over threshold => rotate every time
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = w.Close()
+	}
+	if _, err := os.Stat(p + ".2"); !os.IsNotExist(err) {
+		t.Errorf("only one backup generation expected, found %s.2", p)
+	}
+	if _, err := os.Stat(p + ".1"); err != nil {
+		t.Errorf("expected the single backup %s.1: %v", p, err)
+	}
+}
+
+// TestNewWithLimit_DisabledWhenNonPositive verifies maxBytes <= 0 never rotates.
+func TestNewWithLimit_DisabledWhenNonPositive(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "events.jsonl")
+	if err := os.WriteFile(p, []byte("{\"old\":1}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWithLimit(p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	if _, err := os.Stat(p + ".1"); !os.IsNotExist(err) {
+		t.Errorf("rotation should be disabled for maxBytes<=0; stat err = %v", err)
+	}
+}
+
 func TestNilLoggerIsSafe(t *testing.T) {
 	var w *Writer // nil
 	if err := w.Emit("info", "k", "m", nil); err != nil {
