@@ -86,7 +86,9 @@ let
   #   description    — human-readable description (used for man page)
   #   public         — if true, command appears on PATH (default: true)
   #   libraries      — list of mkBashLibrary outputs whose .lib will be sourced
-  #   runtimeDeps    — packages to add to PATH at runtime
+  #   runtimeDeps    — packages appended to PATH at runtime (via `--suffix`, so a
+  #                    user's ambient tools win and these act as a fallback —
+  #                    matching mkGoBinary's policy; see bead pg2-9e89l)
   #   config         — attrset of local (unexported) variables
   #   exportedConfig — attrset of exported variables
   #   testSupport    — optional path to a bats test support directory
@@ -240,8 +242,13 @@ let
           install -m 0755 ${name} $out/bin/${name}
 
           ${lib.optionalString (runtimeDeps != [ ]) ''
+            # `--suffix` (not `--prefix`): runtimeDeps are a FALLBACK appended
+            # after the user's PATH, so an ambient tool wins and a dep supplied
+            # only for hosts that lack it fills the gap. Matches mkGoBinary's
+            # documented policy (modules/pn/default.nix); the two builders used
+            # to disagree (bead pg2-9e89l).
             wrapProgram $out/bin/${name} \
-              --prefix PATH : ${lib.makeBinPath runtimeDeps}
+              --suffix PATH : ${lib.makeBinPath runtimeDeps}
           ''}
 
           ${lib.optionalString hasBashCompletion ''
