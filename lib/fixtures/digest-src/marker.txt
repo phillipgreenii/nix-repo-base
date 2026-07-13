@@ -1,0 +1,1 @@
+mkSrcDigest path-stability fixture (bead pg2-6mrm7). Fixed content: do not edit.

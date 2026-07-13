@@ -8,6 +8,20 @@ let
   shortRev = "a41345d";
   digest = nar: builtins.substring 0 8 (builtins.hashString "sha256" nar);
 
+  # Sources are store-path-like values, never bare strings (bead pg2-6mrm7). A
+  # `{ outPath = ...; }` attrset stands in for a lib.cleanSource/derivation
+  # result: it satisfies the content-addressed contract and coerces to its
+  # outPath, so these digests match the documented first8(sha256(...)) format.
+  srcA = {
+    outPath = "src-a";
+  };
+  srcOnlyA = {
+    outPath = "a";
+  };
+  srcOnlyB = {
+    outPath = "b";
+  };
+
   # Minimal stand-ins for a flake's `self`, covering the cases mkVersion sees.
   cleanSelf = {
     lastModifiedDate = "20260604225706";
@@ -60,20 +74,20 @@ in
 
   # Single source: digest is first8(sha256) of the (stringified) source.
   testSrcDigestSingle = {
-    expr = mkSrcDigest "src-a";
+    expr = mkSrcDigest srcA;
     expected = digest "src-a";
   };
-  # A single path equals the singleton list of that path.
+  # A single source equals the singleton list of that source.
   testSrcDigestSingleEqualsSingleton = {
-    expr = mkSrcDigest "src-a" == mkSrcDigest [ "src-a" ];
+    expr = mkSrcDigest srcA == mkSrcDigest [ srcA ];
     expected = true;
   };
   # Multiple sources are joined with ":" before hashing.
   # The ":" separator is an intentional format pin (matches the bare-hash form).
   testSrcDigestListConcat = {
     expr = mkSrcDigest [
-      "a"
-      "b"
+      srcOnlyA
+      srcOnlyB
     ];
     expected = digest "a:b";
   };
@@ -81,17 +95,43 @@ in
   testSrcDigestOrderSensitive = {
     expr =
       mkSrcDigest [
-        "a"
-        "b"
+        srcOnlyA
+        srcOnlyB
       ] != mkSrcDigest [
-        "b"
-        "a"
+        srcOnlyB
+        srcOnlyA
       ];
     expected = true;
   };
   # Content change changes the digest.
   testSrcDigestTracksContent = {
-    expr = mkSrcDigest "a" != mkSrcDigest "b";
+    expr = mkSrcDigest srcOnlyA != mkSrcDigest srcOnlyB;
+    expected = true;
+  };
+
+  # A context-free bare string is rejected: it is not a store reference, so it
+  # would silently drop content tracking (bead pg2-6mrm7).
+  testSrcDigestThrowsOnBareString = {
+    expr = (builtins.tryEval (mkSrcDigest "src-a")).success;
+    expected = false;
+  };
+  # A store-path STRING with context (as produced by builtins.path or by
+  # coercing a path) IS accepted, and equals the digest of the path it came from
+  # — this is the endorsed builtins.path pattern in lib/claude-marketplace.nix.
+  testSrcDigestAcceptsStorePathString = {
+    expr = mkSrcDigest "${./fixtures/digest-src}" == mkSrcDigest ./fixtures/digest-src;
+    expected = true;
+  };
+  # A raw path source is accepted (the isPath branch) and yields an 8-char digest.
+  testSrcDigestAcceptsPath = {
+    expr = builtins.stringLength (mkSrcDigest ./fixtures/digest-src);
+    expected = 8;
+  };
+  # Path stability: the digest of a path derives ONLY from that path's own store
+  # representation, so it is a pure function of the source content — it does not
+  # pick up any flake-level hash (bead pg2-6mrm7).
+  testSrcDigestPathStableFromContentOnly = {
+    expr = mkSrcDigest ./fixtures/digest-src == digest "${./fixtures/digest-src}";
     expected = true;
   };
 }
