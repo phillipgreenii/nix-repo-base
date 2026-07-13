@@ -47,3 +47,28 @@ jobs:
 
       - name: Run nix flake check
         run: nix flake check --show-trace -L
+
+  # The tagged (//go:build smoke) end-to-end suite — the P1 gating-workforest
+  # invariant plus the ~50 scenario-based verb tests — was previously reachable
+  # only through `just pn-smoke`, so it never ran in CI (bead pg2-tu4yd). It
+  # drives the built pn binary against bare git remotes in temp dirs and is
+  # hermetic (self-supplied git identity, neutralized global/system git config);
+  # nix-dependent scenarios self-skip when nix is absent, so it needs only git
+  # (+ a Go toolchain to build pn). Kept a separate, Nix-free job so it stays
+  # cheap and does not gate on the flake-check matrix.
+  pn-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: modules/pn/go.mod
+          cache-dependency-path: modules/pn/go.sum
+
+      - name: Run pn smoke suite
+        run: CGO_ENABLED=0 go test -tags=smoke ./internal/workspace/smoke/...
+        working-directory: modules/pn
