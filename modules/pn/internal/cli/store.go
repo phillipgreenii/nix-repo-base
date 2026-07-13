@@ -1,11 +1,68 @@
 package cli
 
 import (
+	"bufio"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/store"
 )
+
+// isInteractive reports whether stdin is a terminal. It is a package var so
+// tests can override it. Uses a char-device check (stdlib only — no extra
+// dependency to regenerate gomod2nix for).
+var isInteractive = func() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// confirmDeepClean decides whether the destructive `store deepclean` may
+// proceed (bead pg2-w0y8u). A dry run or an explicit --yes proceeds without
+// prompting. Otherwise an interactive session is prompted (default No) and a
+// non-interactive session is refused — deepclean makes privileged, destructive
+// changes (sudo nix-store --gc plus profile-generation deletions) that must not
+// happen on a bare `pn store deepclean` typed by accident or from a script.
+func confirmDeepClean(in io.Reader, errOut io.Writer, dryRun, yes, interactive bool) (proceed bool, err error) {
+	if dryRun || yes {
+		return true, nil
+	}
+	if !interactive {
+		return false, fmt.Errorf(
+			"deepclean makes privileged, destructive changes (sudo nix-store --gc and profile-generation deletions); " +
+				"refusing to run non-interactively — re-run with --yes to confirm",
+		)
+	}
+	fmt.Fprintln(errOut, "pn store deepclean will delete old profile generations and run 'sudo nix-store --gc' (destructive and privileged).")
+	fmt.Fprint(errOut, "Proceed? [y/N]: ")
+	if readYes(in) {
+		return true, nil
+	}
+	fmt.Fprintln(errOut, "Aborted.")
+	return false, nil
+}
+
+// readYes reads one line from r and reports whether it is affirmative
+// (y / yes, case-insensitive). EOF or anything else is a No.
+func readYes(r io.Reader) bool {
+	sc := bufio.NewScanner(r)
+	if !sc.Scan() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(sc.Text())) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
 
 func addStoreCmd(parent *cobra.Command) {
 	s := &cobra.Command{
@@ -44,6 +101,7 @@ Examples:
 
   # Include the reclaimable-space estimate
   pn store audit --full`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return store.New(exec.NewRealRunner()).Audit(
 				cmd.Context(),
@@ -59,6 +117,7 @@ Examples:
 
 func storeDeepCleanCmd() *cobra.Command {
 	var dryRun bool
+	var yes bool
 	var keepSince string
 	var keep int
 	cmd := &cobra.Command{
@@ -78,7 +137,15 @@ is disabled so flake-update fetches stay fast).
 
 Finally, shows runtime roots summary (store paths held by running processes that
 could be freed by restarting applications).`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			proceed, err := confirmDeepClean(cmd.InOrStdin(), cmd.ErrOrStderr(), dryRun, yes, isInteractive())
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
+			}
 			return store.New(exec.NewRealRunner()).DeepClean(
 				cmd.Context(),
 				cmd.OutOrStdout(),
@@ -88,6 +155,7 @@ could be freed by restarting applications).`,
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be cleaned without deleting")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the confirmation prompt (required for non-interactive/scripted use)")
 	cmd.Flags().StringVar(&keepSince, "keep-since", "", "Keep generations newer than this (e.g. 14d, 2w)")
 	cmd.Flags().IntVar(&keep, "keep", -1, "Keep N most recent generations (-1 = config default)")
 	return cmd
