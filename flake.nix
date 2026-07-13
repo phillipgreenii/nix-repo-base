@@ -256,6 +256,36 @@
             # executed, and non-identifier keys fail at eval (pg2-92603).
             bash-config-injection = import ./lib/bash-builders-injection-tests.nix { inherit pkgs; };
 
+            # mkGoBinary must MERGE a partial `completions` override over the
+            # all-true defaults, not replace the whole attrset (bead pg2-beppe).
+            # Forcing the probe derivation's drvPath forces the postInstall
+            # interpolation that reads completions'.{bash,zsh,fish} — the pre-fix
+            # "replace" behavior threw "attribute 'bash' missing" here — while the
+            # pure merge asserts the untouched shells stay enabled.
+            go-builders-completions-merge =
+              let
+                probe = goBuilders.mkGoBinary {
+                  name = "completions-probe";
+                  src = ./modules/pn;
+                  gomod2nixToml = ./modules/pn/gomod2nix.toml;
+                  subPackages = [ "cmd/pn" ];
+                  completions = {
+                    fish = false;
+                  }; # partial override — bash/zsh must survive
+                };
+                instantiates = (builtins.tryEval probe.drvPath).success;
+                merged = goBuilders.completionDefaults // {
+                  fish = false;
+                };
+                ok = instantiates && merged.bash && merged.zsh && !merged.fish;
+              in
+              pkgs.runCommand "check-go-builders-completions-merge" { } (
+                if ok then
+                  "touch $out"
+                else
+                  "echo 'mkGoBinary partial completions not merged over defaults (bead pg2-beppe)' >&2; exit 1"
+              );
+
             # Per-source digest in the Python derivation version (ADR 0011): the
             # mkPythonBuilders factory's mkPythonPackage must stamp 0.0.0-<digest>.
             python-version-digest = import ./lib/python-package-version-tests.nix { inherit pkgs; };
