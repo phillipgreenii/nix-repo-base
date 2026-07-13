@@ -127,6 +127,53 @@
                 ./lib/scripts/update-cache-lib.bash
               ];
             };
+
+            # Regression guard for the allowWarnings shellcheck helper (bead
+            # pg2-ncyg5, commit 31a48ab). allowWarnings raises the reporting FLOOR
+            # to `error` so warnings are tolerated while genuine ERRORS still fail.
+            # The helper previously appended `|| true`, which swallowed EVERY
+            # finding — errors included. A planted script carrying an ERROR-level
+            # finding (SC2157) is fed to checksHelpers.shellcheck with
+            # allowWarnings = true; the resulting helper derivation MUST fail to
+            # build. We run the helper's OWN build command in an errexit subshell
+            # and INVERT its exit status, so this check passes only when the helper
+            # still fails on the error — pre-fix (`|| true`) it would have "passed"
+            # the planted error, failing this check. The fixture is a generated
+            # store path (pkgs.writeText), NOT a tracked .sh, so the repo-wide
+            # treefmt/pre-commit shellcheck never sees the deliberate error.
+            shellcheck-allowwarnings-errors-not-swallowed =
+              let
+                plantedError = pkgs.writeText "planted-shellcheck-error.sh" ''
+                  #!/usr/bin/env bash
+                  # SC2157 (severity=error): argument to -n is always true due to a
+                  # literal string. A genuine ERROR-level finding, not a warning.
+                  if [ -n foo ]; then
+                    echo always
+                  fi
+                '';
+                helperDrv = checksHelpers.shellcheck {
+                  scripts = [ plantedError ];
+                  allowWarnings = true;
+                };
+              in
+              pkgs.runCommand "check-shellcheck-allowwarnings-errors-not-swallowed" { } ''
+                # Keep errexit OFF out here so we can inspect the exit code; run the
+                # helper's own build command in a subshell WITH errexit so its
+                # shellcheck failure aborts before the helper's trailing `touch $out`.
+                set +e
+                (
+                  set -e
+                  ${helperDrv.buildCommand}
+                )
+                rc=$?
+                set -e
+                if [ "$rc" -eq 0 ]; then
+                  echo "FAIL: checksHelpers.shellcheck allowWarnings=true PASSED a script with an ERROR-level finding — errors are being swallowed (regression of bead pg2-ncyg5)" >&2
+                  exit 1
+                fi
+                echo "OK: allowWarnings=true still FAILS on ERROR-level shellcheck findings (helper exited $rc); errors are not swallowed"
+                touch $out
+              '';
             test-update-locks-lib = checksHelpers.testUpdateLocksLib { };
 
             # Pure-function unit tests for lib/ul-pin.nix:isUnpinnedUpdateLocks,
