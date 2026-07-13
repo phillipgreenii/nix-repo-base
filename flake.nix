@@ -373,14 +373,29 @@
                   "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
               );
 
-            # Go test suite for pn. buildGoModule runs `go test ./...` during
-            # the check phase, so building the package is equivalent to running
-            # the tests. Exposing it as a check ensures `nix flake check`
-            # exercises the Go tests.
-            pn-go-tests = pkgs.callPackage ./modules/pn { inherit self; };
+            # Full Go test gate for pn: runs `go test ./...` UNSCOPED over the whole
+            # module (cmd/* + internal/*). The pn *package* build pins
+            # subPackages=[cmd/pn], which scopes gomod2nix's check hook and would
+            # skip the internal/* suite — so the real test gate is a dedicated
+            # mkGoTest, NOT the package build (bead pg2-2jqj0). git+nix are supplied
+            # for the tests that shell out to them.
+            pn-go-tests = goBuilders.mkGoTest {
+              pname = "pn";
+              src = ./modules/pn;
+              gomod2nixToml = ./modules/pn/gomod2nix.toml;
+              testDeps = [
+                pkgs.git
+                pkgs.nix
+              ];
+            };
 
-            # Go test suite for pjira (mirrors pn-go-tests pattern).
-            pjira-go-tests = pkgs.callPackage ./modules/jira { inherit self; };
+            # Full Go test gate for pjira (explicit mkGoTest so it stays real even if
+            # pjira ever grows a second cmd/* entrypoint — mirrors pn-go-tests).
+            pjira-go-tests = goBuilders.mkGoTest {
+              pname = "pjira";
+              src = ./modules/jira;
+              gomod2nixToml = ./modules/jira/gomod2nix.toml;
+            };
 
             # golangci-lint over each Go module, run OFFLINE via gomod2nix's
             # vendored dep env so it passes in the no-network `nix flake check`

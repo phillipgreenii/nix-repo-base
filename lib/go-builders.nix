@@ -322,4 +322,64 @@ rec {
       installPhase = "touch $out";
       meta.description = "golangci-lint (offline, gomod2nix vendor env): ${pname}";
     };
+
+  # mkGoTest — run the FULL `go test ./...` suite for a Go module OFFLINE,
+  # reusing gomod2nix's vendored dep env (ADR 0008), exactly like mkGoLint.
+  # This is the real test gate: it MUST NOT set `subPackages` — that scopes
+  # gomod2nix's check hook (getGoDirs, go-config-hook.sh:37) to a single
+  # entrypoint and silently skips the internal/* suite (bead pg2-2jqj0). We run
+  # `go test ./...` in buildPhase (not via buildGoApplication's subPackage-scoped
+  # check phase) so coverage is explicit and independent of the package's own
+  # subPackages pin. `go vet` runs (the `go test` default) — intentionally
+  # stricter than gomod2nix's -vet=off check hook, matching a dev's `go test`.
+  #
+  #   testDeps: tools the suite shells out to at test time (e.g. git, nix).
+  #     Placed on nativeBuildInputs so they are on PATH during the sandboxed run.
+  #   testFlags: extra flags for `go test` (e.g. [ "-count=1" ]).
+  mkGoTest =
+    {
+      src,
+      # Committed gomod2nix lockfile beside go.mod (REQUIRED; path derived from
+      # pwd, mirroring mkGoApp/mkGoLint — passed only to signal it is committed).
+      gomod2nixToml,
+      pname ? "go-tests",
+      modRoot ? null,
+      testDeps ? [ ],
+      testFlags ? [ ],
+    }:
+    let
+      version = "0.0.0-${(import ./version.nix).mkSrcDigest src}";
+      pwd = if modRoot != null then src + "/" + modRoot else src;
+    in
+    assert gomod2nixToml != null;
+    pkgs.buildGoApplication {
+      inherit
+        pname
+        version
+        src
+        pwd
+        ;
+      inherit (pkgs) go; # pin to our nixpkgs Go, matching mkGoApp/mkGoLint
+      modules = pwd + "/gomod2nix.toml";
+      nativeBuildInputs = testDeps;
+      # Deliberately NO `subPackages`: the whole point of this builder.
+      doCheck = false;
+      # goConfigHook (vendor setup + GOFLAGS=-mod=vendor) has already run by the
+      # time buildPhase starts, so replace the go build with the full test pass.
+      buildPhase = ''
+        runHook preBuild
+        # Sandbox $HOME (/homeless-shelter) is read-only; give the Go build+test
+        # cache writable scratch. GOFLAGS=-mod=vendor comes from goConfigHook.
+        export HOME="$TMPDIR" \
+               GOCACHE="$TMPDIR/go-build"
+        # Mirror gomod2nix's goCheckHook: drop -trimpath for the test run so
+        # tests resolving assets via runtime.Caller/source paths behave the same
+        # as a developer's `go test ./...`. Safe: the $out (touch) has no binary.
+        export GOFLAGS=''${GOFLAGS//-trimpath/}
+        go test ${lib.escapeShellArgs testFlags} ./...
+        runHook postBuild
+      '';
+      installPhase = "touch $out";
+      meta.description = "go test ./... (offline, gomod2nix vendor env): ${pname}";
+    };
 }
