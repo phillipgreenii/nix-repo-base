@@ -10,8 +10,18 @@ fi
 # Replace the shebang on $1 with one that uses an absolute bash path.
 # Required for environments where /usr/bin/env doesn't exist (e.g. the
 # Nix build sandbox, where only /nix/store paths are visible).
+# Uses a temp file rather than `sed -i` so it works under both GNU and
+# BSD/macOS sed (BSD `sed -i` requires a backup-suffix argument), keeping
+# `bats lib/tests` a usable fast local loop on macOS (bead pg2-uepg7).
 _fix_mock_shebang() {
-  sed -i "1s|.*|#!$(command -v bash)|" "$1"
+  local f="$1" tmp
+  tmp=$(mktemp)
+  {
+    printf '#!%s\n' "$(command -v bash)"
+    tail -n +2 "$f"
+  } >"$tmp"
+  cat "$tmp" >"$f"
+  rm -f "$tmp"
 }
 
 setup() {
