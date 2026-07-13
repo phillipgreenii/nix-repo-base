@@ -89,6 +89,47 @@ func TestWorkerPool_CloseWaitsForInflight(t *testing.T) {
 	}
 }
 
+// TestWorkerPool_RecoversPanickingJob verifies that a job which panics does not
+// crash the process or kill its worker: the pool keeps running later jobs and
+// records the recovered value (bead pg2-oewgp).
+func TestWorkerPool_RecoversPanickingJob(t *testing.T) {
+	pool := NewWorkerPool(NewFakeRunner(), 1) // single worker: prove it survives
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	pool.Submit(func() {
+		defer wg.Done()
+		panic("boom")
+	})
+	// A later job on the same (single) worker must still run.
+	var ran int64
+	wg.Add(1)
+	pool.Submit(func() {
+		defer wg.Done()
+		atomic.StoreInt64(&ran, 1)
+	})
+	wg.Wait()
+	pool.Close()
+
+	if atomic.LoadInt64(&ran) != 1 {
+		t.Error("worker did not survive a panicking job")
+	}
+	if ps := pool.Panics(); len(ps) != 1 || ps[0] != "boom" {
+		t.Errorf("Panics() = %v; want one recovered %q", ps, "boom")
+	}
+}
+
+// TestWorkerPool_SubmitAfterCloseDoesNotPanic verifies that Submit after Close
+// drops the job instead of panicking on a send to a closed channel.
+func TestWorkerPool_SubmitAfterCloseDoesNotPanic(t *testing.T) {
+	pool := NewWorkerPool(NewFakeRunner(), 2)
+	pool.Close()
+	// Must not panic; the job is simply dropped.
+	pool.Submit(func() { t.Error("dropped job should not run after Close") })
+	// Give any (erroneously) scheduled job a chance to run before we finish.
+	time.Sleep(20 * time.Millisecond)
+}
+
 func TestWorkerPool_RunMethodDispatchesToInnerRunner(t *testing.T) {
 	inner := NewFakeRunner()
 	inner.AddResponse("echo", []string{"hi"}, Result{Stdout: []byte("hi\n")}, nil)

@@ -543,6 +543,7 @@ func workspaceNixCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer w.Close() // not a hookable verb, so not covered by runWithHooks (bead pg2-oewgp)
 			return w.NixCommand(context.Background(), cmd.OutOrStdout(), args)
 		},
 	}
