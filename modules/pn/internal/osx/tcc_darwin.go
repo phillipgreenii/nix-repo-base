@@ -9,6 +9,7 @@ package osx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -68,6 +69,16 @@ func (t *TCC) Check(ctx context.Context, out, errOut io.Writer, opts CheckOption
 	// Probe Full Disk Access — bash uses `sqlite3 $TCC_DB "SELECT 1 FROM access LIMIT 1"`
 	// and treats failure as "FDA not granted, skip check (exit 0)".
 	if _, err := t.runner.Run(ctx, "sqlite3", []string{dbPath, tccFDAProbeQuery}, exec.RunOptions{}); err != nil {
+		// Distinguish two failure modes conflated by the bash `|| exit 0`
+		// (bead pg2-clyzt): a *CommandError means sqlite3 ran and exited
+		// non-zero (it cannot open the DB — FDA not granted), which we warn on
+		// and skip; any other error means sqlite3 itself could not be executed
+		// (missing binary — normally supplied via runtimeDeps), which is a real
+		// error we surface rather than silently mislabel as an FDA denial.
+		var cmdErr *exec.CommandError
+		if !errors.As(err, &cmdErr) {
+			return fmt.Errorf("tcc: could not run the sqlite3 FDA probe: %w", err)
+		}
 		// FDA not granted; warn on errOut and exit 0, mirroring the bash skip.
 		fmt.Fprint(errOut, "⚠️  TCC check skipped — terminal lacks Full Disk Access\n"+
 			"   Grant FDA: System Preferences > Privacy & Security > Full Disk Access > [your terminal]\n")

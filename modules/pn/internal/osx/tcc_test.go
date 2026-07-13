@@ -40,7 +40,7 @@ func TestCheck_ProbesThenQueries(t *testing.T) {
 func TestCheck_NoFDAExitsCleanly(t *testing.T) {
 	// Probe fails — bash exits 0 with a warning. We mirror that: no error.
 	f := exec.NewFakeRunner()
-	f.AddResponse("sqlite3", []string{testDB, tccFDAProbeQuery}, exec.Result{ExitCode: 1}, errors.New("FDA not granted"))
+	f.AddResponse("sqlite3", []string{testDB, tccFDAProbeQuery}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "sqlite3", Result: exec.Result{ExitCode: 1}})
 
 	var out, errOut bytes.Buffer
 	if err := New(f).Check(context.Background(), &out, &errOut, CheckOptions{DBPath: testDB}); err != nil {
@@ -56,7 +56,7 @@ func TestCheck_NoFDAExitsCleanly(t *testing.T) {
 // to errOut (not stdout) and that stdout stays empty.
 func TestCheck_NoFDAWritesWarning(t *testing.T) {
 	f := exec.NewFakeRunner()
-	f.AddResponse("sqlite3", []string{testDB, tccFDAProbeQuery}, exec.Result{ExitCode: 1}, errors.New("FDA not granted"))
+	f.AddResponse("sqlite3", []string{testDB, tccFDAProbeQuery}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "sqlite3", Result: exec.Result{ExitCode: 1}})
 
 	var out, errOut bytes.Buffer
 	if err := New(f).Check(context.Background(), &out, &errOut, CheckOptions{DBPath: testDB}); err != nil {
@@ -70,6 +70,25 @@ func TestCheck_NoFDAWritesWarning(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Errorf("out should be empty on FDA skip; got: %q", out.String())
+	}
+}
+
+// TestCheck_MissingSqlite3ReturnsError proves a probe error that is NOT a
+// *exec.CommandError (sqlite3 could not be executed — e.g. missing binary) is
+// surfaced as a real error rather than being silently mislabeled as an FDA
+// denial (bead pg2-clyzt).
+func TestCheck_MissingSqlite3ReturnsError(t *testing.T) {
+	f := exec.NewFakeRunner()
+	f.AddResponse("sqlite3", []string{testDB, tccFDAProbeQuery}, exec.Result{},
+		errors.New(`exec: "sqlite3": executable file not found in $PATH`))
+
+	var out, errOut bytes.Buffer
+	err := New(f).Check(context.Background(), &out, &errOut, CheckOptions{DBPath: testDB})
+	if err == nil {
+		t.Fatal("expected an error when sqlite3 cannot be executed")
+	}
+	if strings.Contains(errOut.String(), "Full Disk Access") {
+		t.Errorf("missing-binary must not emit the FDA-denied warning; got: %q", errOut.String())
 	}
 }
 
