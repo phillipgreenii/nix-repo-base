@@ -1,13 +1,17 @@
 # shellcheck shell=bash
-# Update cache library for zn-self-upgrade
+# Update cache library for update-locks.
 # Provides time-based caching for remote-checking steps.
 # Source this file, then use ul_init, ul_should_run, ul_write_stamp.
 
 UL_STALE_SECONDS="${UL_STALE_SECONDS:-43200}"
 UL_FORCE="${NIX_UL_FORCE_UPDATE:-false}"
 UL_CI_MODE="${UL_CI_MODE:-false}"
-# shellcheck disable=SC2034  # consumed by sibling update-locks-lib.bash (pre-commit-drv-path marker)
-UL_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/zn-self-upgrade"
+# State dir for the pre-commit-drv-path marker (consumed by sibling
+# update-locks-lib.bash). Named for update-locks; the legacy "zn-self-upgrade"
+# name was dropped (pg2-k8a6i) — an existing legacy marker is simply orphaned,
+# triggering one harmless pre-commit reinstall.
+# shellcheck disable=SC2034  # consumed by sibling update-locks-lib.bash
+UL_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/update-locks"
 
 _UL_PROJECT=""
 _UL_STAMP_DIR=""
@@ -67,13 +71,31 @@ ul_should_run() {
   return 1
 }
 
+# Run "$@" under a wall-clock timeout, tolerating hosts where GNU `timeout` is
+# not on PATH (macOS has no `timeout` by default — coreutils ships it as
+# `gtimeout`, and it may be absent entirely). Falls back to running without a
+# timeout so the health check still executes instead of failing with
+# command-not-found (pg2-k8a6i). Note: the 124 "wedged" exit is only observable
+# when a timeout tool is present.
+_ul_timeout() {
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
 ul_check_nix_daemon() {
   if [[ $UL_CI_MODE == "true" ]]; then
     return 0
   fi
 
   local rc=0
-  timeout 10 nix eval --expr 'true' >/dev/null 2>&1 || rc=$?
+  _ul_timeout 10 nix eval --expr 'true' >/dev/null 2>&1 || rc=$?
 
   if [[ $rc -eq 0 ]]; then
     return 0
@@ -89,7 +111,7 @@ ul_check_nix_daemon() {
         sudo launchctl kickstart -k system/org.nixos.nix-daemon
         sleep 2
         # Re-check after restart
-        if timeout 10 nix eval --expr 'true' >/dev/null 2>&1; then
+        if _ul_timeout 10 nix eval --expr 'true' >/dev/null 2>&1; then
           echo "Nix daemon restarted successfully." >&2
           return 0
         fi

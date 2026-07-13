@@ -198,10 +198,24 @@ _ul_restore_fsmonitor() {
 
 _ul_ensure_pre_commit_hooks() {
   # Tier 1: does the flake declare install-pre-commit-hooks?
-  # --no-link avoids polluting the project dir; if the attribute doesn't exist,
-  # nix prints an error and we silently skip via || return 0.
-  local drv_path
-  drv_path=$(nix build .#install-pre-commit-hooks --no-link --print-out-paths) || return 0
+  # --no-link avoids polluting the project dir. Distinguish "flake does not
+  # declare the attribute" (a legitimate silent skip) from a genuine build
+  # failure, which was previously swallowed by a blanket `|| return 0`
+  # (pg2-k8a6i): a real failure is now surfaced instead of hiding a broken
+  # hook install.
+  local drv_path errfile err
+  errfile=$(mktemp)
+  if ! drv_path=$(nix build .#install-pre-commit-hooks --no-link --print-out-paths 2>"$errfile"); then
+    err=$(<"$errfile")
+    rm -f "$errfile"
+    if [[ $err == *"does not provide attribute"* ]]; then
+      return 0 # attribute not declared → nothing to install
+    fi
+    echo "==> warning: 'nix build .#install-pre-commit-hooks' failed (not an attr-missing error); skipping hook install:" >&2
+    printf '%s\n' "$err" >&2
+    return 0
+  fi
+  rm -f "$errfile"
 
   # Tier 2: is the hook binary still valid (not GC'd)?
   local hooks_dir hook_file exec_target needs_install
@@ -210,7 +224,9 @@ _ul_ensure_pre_commit_hooks() {
   needs_install=false
 
   if [[ -f $hook_file ]]; then
-    exec_target=$(grep '^exec ' "$hook_file" | sed 's/^exec \([^ ]*\).*/\1/')
+    # -m1: take only the FIRST `exec ` line so a hook with more than one never
+    # yields a multiline exec_target that breaks the `-x` test below (pg2-k8a6i).
+    exec_target=$(grep -m1 '^exec ' "$hook_file" | sed 's/^exec \([^ ]*\).*/\1/')
     if [[ -n $exec_target && ! -x $exec_target ]]; then
       echo "==> pre-commit hook binary missing (GC'd), reinstalling..."
       needs_install=true
@@ -392,6 +408,13 @@ ul_run_step() {
   local _ul_restore_e
   if [[ -o errexit ]]; then _ul_restore_e="set -e"; else _ul_restore_e="set +e"; fi
   set +e
+  # The step runs in a backgrounded subshell so _UL_CHILD_PID lets the
+  # EXIT/INT/TERM trap (_ul_cleanup) TERM and reap it for a clean rollback. This
+  # does NOT SIGTTIN-hang a prompting step in the normal path (pg2-k8a6i):
+  # update-locks.sh runs non-interactively (monitor mode off), so the subshell
+  # shares the shell's process group and can read /dev/tty, while a step reading
+  # plain stdin gets bash's async /dev/null. (A prompting step is an anti-pattern
+  # here regardless — steps are meant to be non-interactive.)
   (
     set -e
     "$@"
