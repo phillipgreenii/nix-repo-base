@@ -16,10 +16,11 @@ import (
 // than the declared upstream URLs. We refuse to run them via `pn workspace
 // nix`; users who genuinely want to update locks should run `nix` directly.
 //
-// Matched against the de-flagged command tokens (option-like tokens removed) as
-// a contiguous subsequence anywhere: e.g. {"flake", "update"} matches
-// `flake update`, `--verbose flake update`, `--option build-cores 4 flake
-// update`, and `flake --verbose update` alike (bead pg2-odu4p).
+// Matched against the de-flagged command tokens (option-like tokens AND their
+// consumed values removed) as a contiguous run anywhere: e.g. {"flake",
+// "update"} matches `flake update`, `--verbose flake update`,
+// `--option build-cores 4 flake update`, `flake --verbose update`, and
+// `flake --option build-cores 4 update` alike (beads pg2-odu4p, pg2-9p527).
 var denyListedNixSubcommands = [][]string{
 	{"flake", "update"},
 	{"flake", "lock"},
@@ -55,16 +56,65 @@ func (ws *Workspace) NixCommand(ctx context.Context, out io.Writer, args []strin
 	return err
 }
 
-// commandTokens strips option-like tokens (any beginning with "-", incl. a lone
-// "--", short flags like -v, and value-taking flags like --option) so the
-// deny-list is matched against the resolved nix subcommand path rather than the
-// raw argv. Nix subcommand words and installables never begin with "-"; value
-// words of value-taking flags survive as harmless positionals that cannot equal
-// an adjacent deny sequence.
+// nixValueFlagArity lists the nix flags that consume following tokens as VALUES,
+// mapped to how many they consume. commandTokens skips those value tokens so a
+// value cannot land between two deny-list words and break the resolved
+// subcommand path's contiguity (bead pg2-9p527): e.g.
+// `flake --option build-cores 4 update`, which nix parses as `flake update`
+// with a global option, must still be recognized as `flake update`.
+//
+// This is a best-effort table for a GUARD-RAIL, not a security boundary: nix
+// exposes many settings as `--<setting> VALUE`, so an unlisted value-taking flag
+// whose (non-dash) value is wedged between deny words could still slip a
+// lock-mutating subcommand past the guard. Users can always run `nix` directly,
+// the documented escape hatch. The `--flag=value` form is a single token and
+// needs no entry here.
+var nixValueFlagArity = map[string]int{
+	// Arity 2: NAME VALUE (or NAME EXPR).
+	"--option":         2,
+	"--arg":            2,
+	"--argstr":         2,
+	"--override-input": 2,
+	"--override-flake": 2,
+	// Arity 1: common global and flake value-taking flags / settings.
+	"--log-format":               1,
+	"--max-jobs":                 1,
+	"-j":                         1,
+	"--cores":                    1,
+	"--builders":                 1,
+	"--store":                    1,
+	"--eval-store":               1,
+	"--include":                  1,
+	"-I":                         1,
+	"--file":                     1,
+	"-f":                         1,
+	"--expr":                     1,
+	"--out-link":                 1,
+	"-o":                         1,
+	"--profile":                  1,
+	"--inputs-from":              1,
+	"--update-input":             1,
+	"--reference-lock-file":      1,
+	"--output-lock-file":         1,
+	"--commit-lock-file-summary": 1,
+}
+
+// commandTokens resolves the nix subcommand path from raw argv by dropping
+// option-like tokens (any beginning with "-", incl. a lone "--" and short flags)
+// AND the value tokens consumed by value-taking flags (see nixValueFlagArity).
+// Nix subcommand words and installables never begin with "-", so what remains is
+// the subcommand path plus any trailing positionals — with deny-list words kept
+// CONTIGUOUS even when a value-taking global flag sits between them (bead
+// pg2-9p527, extending pg2-odu4p).
 func commandTokens(args []string) []string {
 	out := make([]string, 0, len(args))
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if strings.HasPrefix(a, "-") {
+			// Also skip this flag's value tokens (arity 0 for unknown/boolean
+			// flags via the map's zero value) so they never survive as
+			// positionals that break deny-sequence contiguity.
+			i += nixValueFlagArity[a]
 			continue
 		}
 		out = append(out, a)

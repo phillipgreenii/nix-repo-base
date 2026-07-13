@@ -186,9 +186,14 @@ func TestMatchesDeniedSubcommand(t *testing.T) {
 		{"leading boolean flag", []string{"--verbose", "flake", "update"}, true},
 		{"leading short flag", []string{"-L", "flake", "lock"}, true},
 		{"leading value-taking flag", []string{"--option", "build-cores", "4", "flake", "update"}, true},
+		{"value-taking flag BETWEEN deny words", []string{"flake", "--option", "build-cores", "4", "update"}, true},
+		{"short value-taking flag between deny words", []string{"flake", "-j", "4", "lock"}, true},
 		{"leading double dash", []string{"--", "flake", "update"}, true},
 		{"trailing args", []string{"flake", "update", "--commit-lock-file"}, true},
 		{"interspersed flag", []string{"flake", "--verbose", "update"}, true},
+		// A deny word appearing only as a value-taking flag's VALUE (consumed,
+		// not a positional) must NOT match — no false positive (pg2-9p527).
+		{"deny word only as an option value", []string{"build", "--argstr", "x", "flake", "--argstr", "y", "update"}, false},
 		{"allow flake show", []string{"flake", "show"}, false},
 		{"allow build", []string{"build"}, false},
 		{"allow flagged build", []string{"--verbose", "build"}, false},
@@ -228,6 +233,36 @@ url = "github:o/foo"
 	err := w.NixCommand(context.Background(), io.Discard, []string{"--verbose", "flake", "update"})
 	if err == nil {
 		t.Fatal("expected refusal of `nix --verbose flake update`")
+	}
+	if !strings.Contains(err.Error(), "flake update") {
+		t.Errorf("error should name the denied subcommand: %v", err)
+	}
+}
+
+// TestNixCommand_RefusesFlakeUpdateWithInterspersedValueFlag proves the bypass
+// where a value-taking global flag sits BETWEEN the deny words
+// (`pn workspace nix flake --option build-cores 4 update`) is refused through
+// the public entry point — nix parses that argv as `flake update` (bead
+// pg2-9p527).
+func TestNixCommand_RefusesFlakeUpdateWithInterspersedValueFlag(t *testing.T) {
+	cfg := `
+[workspace]
+name = "test"
+terminal = "foo"
+
+[repos.foo]
+url = "github:o/foo"
+`
+	w := newTestWorkspace(t, cfg, map[string]struct {
+		flakeInputs string
+		gitRemotes  string
+		createFlake bool
+	}{
+		"foo": {flakeInputs: `{}`, gitRemotes: "origin\tgithub:o/foo (fetch)\norigin\tgithub:o/foo (push)\n", createFlake: true},
+	})
+	err := w.NixCommand(context.Background(), io.Discard, []string{"flake", "--option", "build-cores", "4", "update"})
+	if err == nil {
+		t.Fatal("expected refusal of `nix flake --option build-cores 4 update`")
 	}
 	if !strings.Contains(err.Error(), "flake update") {
 		t.Errorf("error should name the denied subcommand: %v", err)
