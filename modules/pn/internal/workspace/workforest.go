@@ -221,7 +221,7 @@ func (w *Workspace) writeSetMembership(out io.Writer, errOut io.Writer, setDir s
 		}
 	} else {
 		subLock := filterLock(w.lock, memberSet)
-		if err := WriteLock(filepath.Join(setDir, LockFileName), subLock); err != nil {
+		if err := writeLockAtomic(filepath.Join(setDir, LockFileName), subLock); err != nil {
 			return fmt.Errorf("workforest add: write filtered %s: %w", LockFileName, err)
 		}
 		w.noticeExcludedDeps(errOut, memberSet)
@@ -414,7 +414,7 @@ func (w *Workspace) rewriteSetMembership(errOut io.Writer, setDir string, member
 	if err := writeConfigTOMLTo(filepath.Join(setDir, ConfigFileName), filterConfig(w.config, memberSet)); err != nil {
 		return fmt.Errorf("write set %s: %w", ConfigFileName, err)
 	}
-	if err := WriteLock(filepath.Join(setDir, LockFileName), filterLock(w.lock, memberSet)); err != nil {
+	if err := writeLockAtomic(filepath.Join(setDir, LockFileName), filterLock(w.lock, memberSet)); err != nil {
 		return fmt.Errorf("write set %s: %w", LockFileName, err)
 	}
 	w.noticeExcludedDeps(errOut, memberSet)

@@ -174,27 +174,6 @@ func (w *Workspace) writeConfigTOMLAtomic() error {
 	return nil
 }
 
-// writeConfigTOML serializes w.config back to pn-workspace.toml at w.root.
-// Used by reconciliation to record discovered repos. Kept for backward
-// compatibility; new code should prefer writeConfigTOMLAtomic.
-func (w *Workspace) writeConfigTOML() error {
-	type orderedConfig struct {
-		Workspace WorkspaceSection      `toml:"workspace"`
-		Repos     map[string]RepoConfig `toml:"repos"`
-		Hooks     []EventHook           `toml:"hooks,omitempty"`
-	}
-	out := orderedConfig{
-		Workspace: w.config.Workspace,
-		Repos:     w.config.Repos,
-		Hooks:     w.config.Hooks,
-	}
-	data, err := toml.Marshal(out)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(w.root, ConfigFileName), data, 0o644)
-}
-
 func isGitRepo(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, ".git"))
 	if err != nil {
@@ -259,7 +238,7 @@ func (w *Workspace) RefreshLock(ctx context.Context) error {
 		Repos: repos,
 		Edges: edges,
 	}
-	if err := WriteLock(filepath.Join(w.root, LockFileName), lock); err != nil {
+	if err := writeLockAtomic(filepath.Join(w.root, LockFileName), lock); err != nil {
 		return fmt.Errorf("write lock: %w", err)
 	}
 	w.lock = lock
@@ -332,5 +311,5 @@ func (w *Workspace) reconcileFromFilesystem(ctx context.Context) error {
 		}
 	}
 
-	return w.writeConfigTOML()
+	return w.writeConfigTOMLAtomic()
 }
