@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -76,6 +77,47 @@ func paginatedSearchServerCLI(t *testing.T) *httptest.Server {
 			http.Error(w, "unexpected token", http.StatusBadRequest)
 		}
 	}))
+}
+
+// TestCLI_AuthStatus_ExitCodes proves auth-status now maps credential states to
+// exit codes via a returned exitCodeError (testable, cobra teardown runs)
+// instead of an in-RunE os.Exit (bead pg2-yfjm7).
+func TestCLI_AuthStatus_ExitCodes(t *testing.T) {
+	cases := []struct {
+		status    int
+		wantCode  int // 0 == expect a nil error (exit 0)
+		wantState string
+	}{
+		{http.StatusOK, 0, "OK"},
+		{http.StatusForbidden, 4, "FORBIDDEN"},
+		{http.StatusUnauthorized, 5, "UNAUTHENTICATED"},
+		{http.StatusInternalServerError, 1, "ERROR"},
+	}
+	for _, c := range cases {
+		t.Run(c.wantState, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(c.status)
+			}))
+			defer srv.Close()
+			out, err := runCLI(t, srv.URL, "auth-status")
+			if !strings.Contains(out, c.wantState) {
+				t.Errorf("stdout = %q, want state %q", out, c.wantState)
+			}
+			if c.wantCode == 0 {
+				if err != nil {
+					t.Errorf("want nil error (exit 0), got %v", err)
+				}
+				return
+			}
+			var ec exitCodeError
+			if !errors.As(err, &ec) {
+				t.Fatalf("want exitCodeError, got %T: %v", err, err)
+			}
+			if ec.code != c.wantCode {
+				t.Errorf("exit code = %d, want %d", ec.code, c.wantCode)
+			}
+		})
+	}
 }
 
 func TestCLI_Issue(t *testing.T) {

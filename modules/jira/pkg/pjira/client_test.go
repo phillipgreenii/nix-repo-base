@@ -117,6 +117,24 @@ func TestAuthStatus_mapsHTTP(t *testing.T) {
 	}
 }
 
+// TestAuthStatus_transportErrorReturned proves a transport failure yields
+// AuthError AND a non-nil error, rather than the error being discarded (bead
+// pg2-yfjm7).
+func TestAuthStatus_transportErrorReturned(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	url := srv.URL
+	srv.Close() // make the endpoint unreachable (connection refused)
+	c := NewClient(url, "user@example.com", "tok")
+	c.HTTP = &http.Client{Timeout: 2 * time.Second}
+	got, err := c.AuthStatus(context.Background())
+	if got != AuthError {
+		t.Errorf("state = %s, want %s", got, AuthError)
+	}
+	if err == nil {
+		t.Error("want a non-nil transport error, got nil")
+	}
+}
+
 func TestSearchPage_sendsTokenAndSurfacesNext(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any

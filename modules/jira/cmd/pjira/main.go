@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,18 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/jira/pkg/pjira"
 	"github.com/spf13/cobra"
 )
+
+// exitCodeError carries a desired process exit code (and an optional stderr
+// message) up to main(). RunE returns it instead of calling os.Exit directly,
+// so cobra runs its normal teardown and the exit-code mapping stays unit-
+// testable (bead pg2-yfjm7). An empty msg means "exit with code, print nothing"
+// (used for the auth-status states, whose human line is already on stdout).
+type exitCodeError struct {
+	code int
+	msg  string
+}
+
+func (e exitCodeError) Error() string { return e.msg }
 
 // osRunner backs the command secret source in production (exec'd directly, no shell).
 type osRunner struct{}
@@ -171,21 +184,25 @@ func newAuthStatusCmd() *cobra.Command {
 			token, terr := src.Token(cmd.Context())
 			if terr != nil || token == "" {
 				fmt.Fprintln(cmd.OutOrStdout(), pjira.AuthMissing)
-				os.Exit(3)
+				return exitCodeError{code: 3}
 			}
-			state, _ := pjira.NewClient(cfg.BaseURL, cfg.Email, token).AuthStatus(cmd.Context())
+			state, statusErr := pjira.NewClient(cfg.BaseURL, cfg.Email, token).AuthStatus(cmd.Context())
 			fmt.Fprintln(cmd.OutOrStdout(), state)
 			switch state {
 			case pjira.AuthOK:
 				return nil
 			case pjira.AuthForbidden:
-				os.Exit(4)
+				return exitCodeError{code: 4}
 			case pjira.AuthUnauthenticated:
-				os.Exit(5)
+				return exitCodeError{code: 5}
 			default:
-				os.Exit(1)
+				// AuthError, incl. a transport failure: surface the underlying
+				// cause on stderr (no longer discarded) before exiting 1.
+				if statusErr != nil {
+					return exitCodeError{code: 1, msg: fmt.Sprintf("pjira auth-status: %v", statusErr)}
+				}
+				return exitCodeError{code: 1}
 			}
-			return nil
 		},
 	}
 }
@@ -204,8 +221,20 @@ func NewRootCmd() *cobra.Command {
 }
 
 func main() {
-	if err := NewRootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	err := NewRootCmd().Execute()
+	if err == nil {
+		return
 	}
+	// A command that wants a specific exit code returns an exitCodeError; honor
+	// its code and print its message only when non-empty. Everything else is a
+	// generic failure (exit 1).
+	var ec exitCodeError
+	if errors.As(err, &ec) {
+		if ec.msg != "" {
+			fmt.Fprintln(os.Stderr, ec.msg)
+		}
+		os.Exit(ec.code)
+	}
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
 }

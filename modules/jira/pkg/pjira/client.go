@@ -294,7 +294,10 @@ func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
 // AuthStatus performs a live credential check via GET /rest/api/3/myself.
 // 401 -> Unauthenticated (Atlassian returns 401 for both invalid and expired
 // tokens, so there is deliberately no EXPIRED state), 403 -> Forbidden,
-// 2xx -> OK, anything else (incl. transport error) -> Error.
+// 2xx -> OK, any non-auth status -> Error. A transport failure also yields
+// Error, but the underlying error is now RETURNED rather than discarded (bead
+// pg2-yfjm7) so callers can distinguish "server said no" from "couldn't reach
+// the server" and surface the cause.
 func (c *Client) AuthStatus(ctx context.Context) (AuthState, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/rest/api/3/myself", nil)
 	if err != nil {
@@ -302,7 +305,7 @@ func (c *Client) AuthStatus(ctx context.Context) (AuthState, error) {
 	}
 	resp, err := c.do(req)
 	if err != nil {
-		return AuthError, nil
+		return AuthError, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch {
