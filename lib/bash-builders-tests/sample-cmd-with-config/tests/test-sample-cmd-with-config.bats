@@ -61,3 +61,15 @@ teardown() {
   echo "$output" | grep -qx "port: 8080"
   ! echo "$output" | grep -q "port: /nix/store"
 }
+
+# Drives the ASSEMBLED artifact so the REAL injected bool config is exercised
+# (bead pg2-jucnb): a bool must inline as the unambiguous literal true/false via
+# lib.boolToString, NOT toString's "1"/"" — which would emit `flag: 1` and
+# `flag_off:` (empty, reads as unset).
+@test "injects a bool scalar as a literal true/false, not toString's 1/empty" {
+  [ -n "${SCRIPT_UNDER_TEST:-}" ] || skip "SCRIPT_UNDER_TEST not set (raw-source run)"
+  run "$SCRIPT_UNDER_TEST"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qx "flag: true"
+  echo "$output" | grep -qx "flag_off: false"
+}

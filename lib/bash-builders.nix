@@ -151,11 +151,14 @@ let
       # in a caller value are inert data, not code executed at script/test start;
       # and assert varName is a bash identifier so a bad key fails fast at eval.
       #
-      # Scalars are inlined (bead pg2-jucnb): a string passes through, and any
-      # other scalar (int/float/bool/path) is inlined via toString so
-      # `config.PORT = 8080` yields PORT=8080 rather than a path to a JSON file
-      # holding "8080". Only composite values (lists/attrsets) are written to a
-      # JSON file whose PATH is assigned, for the script to read (e.g. with jq).
+      # Scalars are inlined (bead pg2-jucnb): a string passes through; a bool
+      # inlines as the literal `true`/`false` via lib.boolToString (NOT
+      # toString, which maps false -> "" and true -> "1" — an unset-looking /
+      # ambiguous value); any other scalar (int/float/path) is inlined via
+      # toString so `config.PORT = 8080` yields PORT=8080 rather than a path to
+      # a JSON file holding "8080". Only composite values (lists/attrsets) are
+      # written to a JSON file whose PATH is assigned, for the script to read
+      # (e.g. with jq).
       mkConfigLine =
         prefix: varName: value:
         assert lib.assertMsg (builtins.match "[A-Za-z_][A-Za-z0-9_]*" varName != null)
@@ -170,6 +173,12 @@ let
           rendered =
             if builtins.isString value then
               value
+            # A bool inlines as the unambiguous literal `true`/`false` via
+            # lib.boolToString. Checked BEFORE the generic scalar branch because
+            # `toString` maps false -> "" (looks unset) and true -> "1", which
+            # are wrong for a bool config value (bead pg2-jucnb).
+            else if builtins.isBool value then
+              lib.boolToString value
             else if isScalar then
               toString value
             else

@@ -33,6 +33,10 @@ let
       # Non-string scalar: must be inlined as SAMPLE_PORT=8080, not a JSON file
       # path (bead pg2-jucnb).
       SAMPLE_PORT = 8080;
+      # Bool scalars: must inline as the literal true/false via lib.boolToString,
+      # NOT toString's "1"/"" (bead pg2-jucnb).
+      SAMPLE_FLAG = true;
+      SAMPLE_FLAG_OFF = false;
       SAMPLE_CONFIG = {
         name = "testuser";
       };

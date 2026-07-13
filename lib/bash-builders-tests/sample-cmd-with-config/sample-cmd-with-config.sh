@@ -40,6 +40,10 @@ echo "greeting: ${SAMPLE_GREETING}"
 # Use non-string scalar config (inlined verbatim, not a file path; pg2-jucnb)
 echo "port: ${SAMPLE_PORT:-}"
 
+# Use bool scalar config (inlined as literal true/false, not toString's 1/""; pg2-jucnb)
+echo "flag: ${SAMPLE_FLAG:-}"
+echo "flag_off: ${SAMPLE_FLAG_OFF:-}"
+
 # Use JSON config (parse with jq)
 name=$(jq -r '.name' "$SAMPLE_CONFIG")
 echo "name: ${name}"
