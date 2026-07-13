@@ -59,7 +59,7 @@ func TestInfo_FindsOverridePathAppliedState(t *testing.T) {
 [workspace]
 id = "ws1"
 terminal = "leaf"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_flake}#{hostname}"
+apply_command = "sudo darwin-rebuild switch --flake {terminal_repo_dir}#{hostname}"
 
 [repos.leaf]
 url = "github:owner/leaf"
