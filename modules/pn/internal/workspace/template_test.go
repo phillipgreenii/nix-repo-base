@@ -62,6 +62,28 @@ func TestSubstituteCommand_NoPlaceholders(t *testing.T) {
 	}
 }
 
+// TestSubstituteCommand_SpaceInPathStaysOneArg verifies a placeholder value
+// containing spaces (e.g. a repo dir under "~/Library/Mobile Documents") is
+// substituted as a single argv element rather than fragmenting into multiple
+// arguments (bead pg2-14djc).
+func TestSubstituteCommand_SpaceInPathStaysOneArg(t *testing.T) {
+	v := baseVars()
+	v.TerminalRepoDir = "/Users/x/Library/Mobile Documents/ws/leaf"
+	v.TerminalNixDir = "/Users/x/Library/Mobile Documents/ws/leaf/nix"
+	got, err := substituteCommand("{builder} switch --flake {terminal_nix_dir} {terminal_repo_dir}", v)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		"darwin-rebuild", "switch", "--flake",
+		"/Users/x/Library/Mobile Documents/ws/leaf/nix",
+		"/Users/x/Library/Mobile Documents/ws/leaf",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v want %#v", got, want)
+	}
+}
+
 func TestSubstituteCommand_BuilderEmptyReferenced_Errors(t *testing.T) {
 	v := baseVars()
 	v.Builder = ""

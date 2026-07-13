@@ -91,10 +91,15 @@ func validateCommandPlaceholders(field, tmpl string) error {
 	return nil
 }
 
-// substituteCommand expands the known placeholders in a command template and
-// splits the result into argv on whitespace. It fails loudly when the template
-// references {builder} on an OS with no built-in builder, when it references an
-// unknown placeholder, or when it expands to an empty command.
+// substituteCommand splits the command template into argv on whitespace and
+// THEN expands the known placeholders in each element. Splitting first (rather
+// than expanding first) keeps a placeholder value that contains spaces — e.g. a
+// {terminal_repo_dir} under "~/Library/Mobile Documents" — as a single argv
+// element instead of fragmenting it across multiple arguments (bead pg2-14djc):
+// the argv is exec'd directly, not via a shell, so there is no later word
+// splitting to rely on. It fails loudly when the template references {builder}
+// on an OS with no built-in builder, when it references an unknown placeholder,
+// or when it expands to an empty command.
 func substituteCommand(tmpl string, v templateVars) ([]string, error) {
 	names := scanPlaceholders(tmpl)
 
@@ -123,7 +128,17 @@ func substituteCommand(tmpl string, v templateVars) ([]string, error) {
 		"{hostname}", v.Hostname,
 		"{builder}", v.Builder,
 	)
-	args := strings.Fields(r.Replace(tmpl))
+	// Tokenize the template first, then expand each token, so spaces inside a
+	// substituted value do not split it into separate arguments. Skip elements
+	// that expand to empty (matching the old strings.Fields behavior, which
+	// never yielded empty fields).
+	fields := strings.Fields(tmpl)
+	args := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if s := r.Replace(f); s != "" {
+			args = append(args, s)
+		}
+	}
 	if len(args) == 0 {
 		return nil, fmt.Errorf("command template %q expands to an empty command", tmpl)
 	}
