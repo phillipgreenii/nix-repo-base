@@ -48,8 +48,12 @@ let
       # The composed library as a single file in the nix store
       composedLib = pkgs.writeText "${name}.bash" composedContent;
 
-      # Test directory lives at src/tests/
+      # Test directory lives at src/tests/. It is OPTIONAL: guarded like the
+      # optional files above (and mkBashScript's best-effort man page) so a
+      # library without tests/ still gets a shellcheck pass instead of a raw
+      # bats "no such directory" error (bead pg2-d7vvp).
       testDir = src + "/tests";
+      hasTests = builtins.pathExists testDir;
 
       # Build the test check derivation
       check =
@@ -69,7 +73,12 @@ let
               export BATS_SUPPORT_PATH="$TMPDIR"
               cp ${testSupport}/*.bash $TMPDIR/ 2>/dev/null || true
             ''}
-            bats ${testDir}
+            ${
+              if hasTests then
+                "bats ${testDir}"
+              else
+                ''echo "check-${name}: no tests/ directory; skipping bats (shellcheck passed)" >&2''
+            }
             touch $out
           '';
     in
@@ -310,8 +319,11 @@ let
         zsh = if hasZshCompletion then "${script}/share/zsh/site-functions/_${name}" else null;
       };
 
-      # Test check derivation
+      # Test check derivation. tests/ is OPTIONAL and guarded (bead pg2-d7vvp):
+      # a script without tests/ still gets the mandatory assembled-artifact floor
+      # smoke below, instead of a raw `cp`/bats "no such directory" failure.
       testDir = src + "/tests";
+      hasTests = builtins.pathExists testDir;
       check =
         pkgs.runCommand "check-${name}"
           {
@@ -338,9 +350,11 @@ let
             "${script}/bin/${name}" -v >/dev/null || {
               echo "FAIL: assembled '${name} -v' exited non-zero" >&2; exit 1; }
 
-            # Copy tests to $TMPDIR for writability
-            cp -r ${testDir}/* $TMPDIR/
-            chmod -R u+w $TMPDIR/
+            # Copy tests to $TMPDIR for writability (only when tests/ exists).
+            ${lib.optionalString hasTests ''
+              cp -r ${testDir}/* $TMPDIR/
+              chmod -R u+w $TMPDIR/
+            ''}
 
             export SCRIPTS_DIR="${src}"
             # Assembled-artifact handle so bats authors MAY drive the shipped script
@@ -360,7 +374,12 @@ let
             ${lib.concatMapStringsSep "\n" (e: e.testExport) exportedConfigEntries}
             ${lib.concatMapStringsSep "\n" (e: e.testExport) configEntries}
 
-            bats $TMPDIR/
+            ${
+              if hasTests then
+                "bats $TMPDIR/"
+              else
+                ''echo "check-${name}: no tests/ directory; only the assembled-artifact floor smoke ran" >&2''
+            }
             touch $out
           '';
     in

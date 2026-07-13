@@ -46,6 +46,20 @@ let
     public = false;
   };
 
+  # No tests/ directory: proves tests/ is optional/best-effort (bead pg2-d7vvp).
+  # The script's check still runs the floor smoke; the library's still shellchecks.
+  sample-cmd-no-tests = bashBuilders.mkBashScript {
+    name = "sample-cmd-no-tests";
+    src = ./sample-cmd-no-tests;
+    description = "A sample command with no tests/ directory";
+  };
+
+  sample-lib-no-tests = bashBuilders.mkBashLibrary {
+    name = "sample-lib-no-tests";
+    src = ./sample-lib-no-tests;
+    description = "A sample library with no tests/ directory";
+  };
+
   sample-module = bashBuilders.mkBashModule {
     name = "sample";
     libraries = [ sample-lib ];
@@ -79,6 +93,8 @@ in
     test-sample-cmd-with-lib = sample-cmd-with-lib.check;
     test-sample-cmd-with-config = sample-cmd-with-config.check;
     test-sample-internal = sample-internal.check;
+    test-sample-cmd-no-tests = sample-cmd-no-tests.check;
+    test-sample-lib-no-tests = sample-lib-no-tests.check;
     inherit test-sample-module;
   };
 
