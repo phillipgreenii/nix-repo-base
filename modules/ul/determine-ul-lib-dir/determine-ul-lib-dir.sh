@@ -8,7 +8,7 @@
 #   3. UL_LIB_PACKAGE_PATH (injected at build time by mkBashScript's `config`)
 #
 # Consumers invoke this via:
-#   UL_LIB_DIR=$(nix run github:phillipgreenii/phillipg-nix-repo-base#determine-ul-lib-dir)
+#   UL_LIB_DIR=$(nix run github:phillipgreenii/nix-repo-base#determine-ul-lib-dir)
 #
 # WORKSPACE_ROOT must be exported by the caller for the sibling check to fire.
 
