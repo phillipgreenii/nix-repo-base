@@ -31,6 +31,13 @@ func initRealRepo(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	runGitT(t, dir, "init", "-q", "-b", "main")
+	// Set a repo-local identity so commits made by the PRODUCTION code under
+	// test (which spawns its own git without runGitT's per-command env identity)
+	// succeed even when the environment has no global git identity — e.g. the
+	// nix build sandbox, whose auto-detected `_nixbld1@host.(none)` git rejects.
+	// Mirrors propEnv in propagate_test.go.
+	runGitT(t, dir, "config", "user.email", "t@t")
+	runGitT(t, dir, "config", "user.name", "t")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("init\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +71,12 @@ func currentBranch(t *testing.T, dir string) string {
 func setupLocalBareRemote(t *testing.T, dir string) string {
 	t.Helper()
 	bare := dir + ".git"
-	runGitT(t, dir, "init", "-q", "--bare", bare)
+	// -b main so the bare repo's HEAD points at main regardless of the ambient
+	// init.defaultBranch (unset in the nix sandbox → "master"). Otherwise a
+	// clone of this remote lands on an unborn "master", commits made in that
+	// clone create "master", and `push origin main` fails with
+	// "src refspec main does not match any".
+	runGitT(t, dir, "init", "-q", "--bare", "-b", "main", bare)
 	runGitT(t, dir, "remote", "add", "origin", bare)
 	runGitT(t, dir, "push", "-q", "origin", currentBranch(t, dir))
 	return bare
@@ -77,7 +89,8 @@ func setupLocalBareRemote(t *testing.T, dir string) string {
 func setupLocalBareRemoteNamed(t *testing.T, dir, remote string) string {
 	t.Helper()
 	bare := dir + "." + remote + ".git"
-	runGitT(t, dir, "init", "-q", "--bare", bare)
+	// -b main: see setupLocalBareRemote for why the bare HEAD must be pinned.
+	runGitT(t, dir, "init", "-q", "--bare", "-b", "main", bare)
 	runGitT(t, dir, "remote", "add", remote, bare)
 	runGitT(t, dir, "push", "-q", remote, currentBranch(t, dir))
 	// Track the remote branch so `git rev-parse @{u}` / aheadBehind work.
