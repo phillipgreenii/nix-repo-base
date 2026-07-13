@@ -74,7 +74,11 @@ in
           }:
           let
             excludeArgs = if exclude != [ ] then "-e ${lib.concatStringsSep "," exclude}" else "";
-            errorHandling = if allowWarnings then " || true" else "";
+            # allowWarnings raises the reporting FLOOR to `error` so warnings no
+            # longer fail the check while genuine errors still do. It previously
+            # appended `|| true`, which swallowed EVERY shellcheck failure —
+            # errors included — despite the "allowWarnings" name (bead pg2-ncyg5).
+            severity = if allowWarnings then "error" else "warning";
           in
           p.runCommand "check-shellcheck"
             {
@@ -84,7 +88,7 @@ in
               ${lib.concatMapStringsSep "\n" (
                 # --severity=warning keeps this check consistent with the treefmt
                 # shellcheck formatter and the pre-commit shellcheck hook (tc-neh26).
-                script: "${p.shellcheck}/bin/shellcheck --severity=warning ${excludeArgs} ${script}${errorHandling}"
+                script: "${p.shellcheck}/bin/shellcheck --severity=${severity} ${excludeArgs} ${script}"
               ) scripts}
               touch $out
             '';
