@@ -145,28 +145,40 @@ let
       hasSupportBash = builtins.pathExists (src + "/${name}.bash");
       supportBashFile = src + "/${name}.bash";
 
-      # Build config variable lines with shared store paths for script and test
+      # Build config variable lines with shared store paths for script and test.
       # Injected config assignments (bead pg2-92603): escape every value with
       # lib.escapeShellArg so shell metacharacters ($( ), backticks, quotes, $VAR)
       # in a caller value are inert data, not code executed at script/test start;
       # and assert varName is a bash identifier so a bad key fails fast at eval.
+      #
+      # Scalars are inlined (bead pg2-jucnb): a string passes through, and any
+      # other scalar (int/float/bool/path) is inlined via toString so
+      # `config.PORT = 8080` yields PORT=8080 rather than a path to a JSON file
+      # holding "8080". Only composite values (lists/attrsets) are written to a
+      # JSON file whose PATH is assigned, for the script to read (e.g. with jq).
       mkConfigLine =
         prefix: varName: value:
         assert lib.assertMsg (builtins.match "[A-Za-z_][A-Za-z0-9_]*" varName != null)
           "mkBashScript: config variable name ${builtins.toJSON varName} is not a valid bash identifier (must match [A-Za-z_][A-Za-z0-9_]*)";
-        if builtins.isString value then
-          {
-            scriptLine = "${prefix}${varName}=${lib.escapeShellArg value}";
-            testExport = "export ${varName}=${lib.escapeShellArg value}";
-          }
-        else
-          let
-            jsonFile = pkgs.writeText "${name}-${varName}.json" (builtins.toJSON value);
-          in
-          {
-            scriptLine = "${prefix}${varName}=${lib.escapeShellArg "${jsonFile}"}";
-            testExport = "export ${varName}=${lib.escapeShellArg "${jsonFile}"}";
-          };
+        let
+          isScalar =
+            builtins.isString value
+            || builtins.isInt value
+            || builtins.isFloat value
+            || builtins.isBool value
+            || builtins.isPath value;
+          rendered =
+            if builtins.isString value then
+              value
+            else if isScalar then
+              toString value
+            else
+              "${pkgs.writeText "${name}-${varName}.json" (builtins.toJSON value)}";
+        in
+        {
+          scriptLine = "${prefix}${varName}=${lib.escapeShellArg rendered}";
+          testExport = "export ${varName}=${lib.escapeShellArg rendered}";
+        };
 
       configEntries = lib.mapAttrsToList (n: v: mkConfigLine "" n v) config;
       exportedConfigEntries = lib.mapAttrsToList (n: v: mkConfigLine "export " n v) exportedConfig;

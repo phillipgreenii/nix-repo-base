@@ -37,6 +37,9 @@ done
 # Use scalar config
 echo "greeting: ${SAMPLE_GREETING}"
 
+# Use non-string scalar config (inlined verbatim, not a file path; pg2-jucnb)
+echo "port: ${SAMPLE_PORT:-}"
+
 # Use JSON config (parse with jq)
 name=$(jq -r '.name' "$SAMPLE_CONFIG")
 echo "name: ${name}"

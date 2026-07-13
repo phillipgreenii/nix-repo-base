@@ -50,3 +50,14 @@ teardown() {
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "exported: exported-value"
 }
+
+# Drives the ASSEMBLED artifact so the REAL injected SAMPLE_PORT is exercised
+# (bead pg2-jucnb): a non-string scalar must be inlined (SAMPLE_PORT=8080), not
+# assigned a /nix/store/...json file path.
+@test "injects a non-string scalar inline, not as a JSON file path" {
+  [ -n "${SCRIPT_UNDER_TEST:-}" ] || skip "SCRIPT_UNDER_TEST not set (raw-source run)"
+  run "$SCRIPT_UNDER_TEST"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qx "port: 8080"
+  ! echo "$output" | grep -q "port: /nix/store"
+}

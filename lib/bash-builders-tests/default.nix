@@ -30,6 +30,9 @@ let
     testDeps = [ pkgs.jq ];
     config = {
       SAMPLE_GREETING = "howdy";
+      # Non-string scalar: must be inlined as SAMPLE_PORT=8080, not a JSON file
+      # path (bead pg2-jucnb).
+      SAMPLE_PORT = 8080;
       SAMPLE_CONFIG = {
         name = "testuser";
       };
