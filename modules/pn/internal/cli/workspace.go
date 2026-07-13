@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -162,7 +161,7 @@ func workspaceStatusCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			return runWithHooks(ctx, w, "status", func() error {
 				return w.Status(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr(), workspace.StatusOptions{Terminal: *terminal})
 			})
@@ -179,7 +178,7 @@ func workspaceInitCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "init", func() error {
 				return w.Init(ctx, out, workspace.InitOptions{Terminal: *terminal})
@@ -197,7 +196,7 @@ func workspaceBuildCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "build", func() error {
 				return w.Build(ctx, out, workspace.BuildOptions{Terminal: *terminal})
@@ -215,7 +214,7 @@ func workspaceApplyCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "apply", func() error {
 				return w.Apply(ctx, out, workspace.ApplyOptions{Terminal: *terminal})
@@ -233,7 +232,7 @@ func workspaceFlakeCheckCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "flake-check", func() error {
@@ -252,7 +251,7 @@ func workspacePreCommitCheckCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "pre-commit-check", func() error {
@@ -289,7 +288,7 @@ To configure a default push remote for a multi-remote repo:
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "push", func() error {
@@ -324,7 +323,7 @@ performed. Repos where the ref does not resolve are skipped with a notice.`,
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			opts := workspace.RebaseOptions{Terminal: *terminal}
@@ -347,7 +346,7 @@ func workspaceFormatCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "format", func() error {
@@ -366,7 +365,7 @@ func workspaceTreeCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			return runWithHooks(ctx, w, "tree", func() error {
 				return w.Tree(ctx, cmd.OutOrStdout(), workspace.TreeOptions{Terminal: *terminal})
 			})
@@ -385,7 +384,7 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 
 			lw, err := eventlog.New(eventlog.DefaultPath())
@@ -415,7 +414,7 @@ func workspaceUpgradeCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "upgrade", func() error {
 				return w.Upgrade(ctx, out, workspace.UpgradeOptions{Terminal: *terminal, InPlace: inPlace})
@@ -544,7 +543,7 @@ func workspaceNixCmd() *cobra.Command {
 				return err
 			}
 			defer w.Close() // not a hookable verb, so not covered by runWithHooks (bead pg2-oewgp)
-			return w.NixCommand(context.Background(), cmd.OutOrStdout(), args)
+			return w.NixCommand(cmd.Context(), cmd.OutOrStdout(), args)
 		},
 	}
 }
@@ -558,7 +557,7 @@ func workspaceCloneCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "clone", func() error {
 				return w.Clone(ctx, out, workspace.CloneOptions{Terminal: *terminal})
@@ -727,7 +726,7 @@ func workspaceLockCmd(terminal *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "lock", func() error {

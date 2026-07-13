@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
 // ExitCodeError carries a process exit code up to main(). cobra only
@@ -23,7 +25,8 @@ func (e ExitCodeError) Error() string {
 }
 
 // ExitCode maps an error to a process exit code: 0 for nil, the carried
-// code for an ExitCodeError, 1 for any other error.
+// code for an ExitCodeError, the failed subprocess's own code for a
+// CommandError, and 1 for any other error.
 func ExitCode(err error) int {
 	if err == nil {
 		return 0
@@ -31,6 +34,12 @@ func ExitCode(err error) int {
 	var ec ExitCodeError
 	if errors.As(err, &ec) {
 		return ec.Code
+	}
+	// A wrapped subprocess failure should propagate the child's own non-zero
+	// exit code rather than collapsing every failure to 1 (bead pg2-x3r0a).
+	var ce *exec.CommandError
+	if errors.As(err, &ce) && ce.Result.ExitCode != 0 {
+		return ce.Result.ExitCode
 	}
 	return 1
 }
