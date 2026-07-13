@@ -92,6 +92,15 @@ let
   #   testSupport    — optional path to a bats test support directory
   #   testDeps       — additional packages needed at test time
   #
+  # Reserved conventions (bead pg2-38ava): the assembled header injected below is
+  # NOT invisible — it is documented here and self-labelled in the emitted script.
+  # Every packaged script unconditionally inherits `set -euo pipefail`, and the
+  # builder reserves `-v` / `--version` for the version handler, intercepting them
+  # BEFORE the caller's body runs. Scripts therefore MUST NOT repurpose `-v` /
+  # `--version` for other options. The `-v` alias is deliberate: it is also
+  # asserted by every check's mandatory `--version`/`-v` floor smoke (below), so
+  # freeing `-v` would break that contract.
+  #
   # Check environment (bead pg2-28wwb): the `check` runs bats with both SCRIPTS_DIR
   # (raw source, legacy — retained for backward compatibility) and SCRIPT_UNDER_TEST
   # (path to the assembled, shipped bin/<name>) exported. New bats tests SHOULD target
@@ -204,9 +213,10 @@ let
           # Assemble script: header + body
           {
             echo '#!/usr/bin/env bash'
+            echo '# Strict mode injected by mkBashBuilders; -v/--version reserved (pg2-38ava).'
             echo 'set -euo pipefail'
             echo ""
-            echo '# Version handling (injected by mkBashBuilders)'
+            echo '# Version handling (injected by mkBashBuilders; reserves -v/--version)'
             echo "if [[ \"\''${1:-}\" == \"-v\" || \"\''${1:-}\" == \"--version\" ]]; then"
             echo "  echo \"${name} $FULL_VERSION\""
             echo "  exit 0"
