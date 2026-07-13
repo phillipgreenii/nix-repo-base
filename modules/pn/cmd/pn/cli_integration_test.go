@@ -11,6 +11,14 @@ import (
 var pnBinary string
 
 func TestMain(m *testing.M) {
+	// os.Exit skips deferred functions, so run the suite in a helper whose
+	// deferred temp-dir cleanup actually executes (on both the normal return
+	// and a setup panic) before we exit. Previously the cleanup deferred here
+	// never ran, leaking a pn-binary-* temp dir per run (bead pg2-xtmil).
+	os.Exit(runIntegrationTests(m))
+}
+
+func runIntegrationTests(m *testing.M) int {
 	// Build the pn binary once for all integration tests.
 	tmp, err := os.MkdirTemp("", "pn-binary-")
 	if err != nil {
@@ -24,7 +32,7 @@ func TestMain(m *testing.M) {
 	if err := cmd.Run(); err != nil {
 		panic(err)
 	}
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 func TestIntegration_Version(t *testing.T) {
