@@ -350,11 +350,10 @@ cd .workforests/my-feature && unset PN_WORKSPACE_ROOT
 pn workspace rebase main
 
 # 2. In dependency (topological) order — see `pn workspace tree`, or the order recorded
-#    in `pn-workspace.lock.json` — run the `integrate-branch` skill from each repo's
-#    worktree in the set, one repo at a time, stopping at the first blocked repo:
-cd <repo-a> && <invoke integrate-branch> && cd ..
-cd <repo-b> && <invoke integrate-branch> && cd ..
-# … continue in order.
+#    in `pn-workspace.lock.json` — invoke the `integrate-branch` SKILL (an agent action
+#    via the Skill tool, NOT a shell command) from each repo's worktree, one repo at a
+#    time, stopping at the first blocked repo:
+#      run integrate-branch in <repo-a>; if it lands, run it in <repo-b>; then the next; …
 ```
 
 - **Ordered transaction.** Never land a repo ahead of the dependency it consumes — a
