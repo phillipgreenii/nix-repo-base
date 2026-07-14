@@ -130,6 +130,8 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 	})
 
 	var failed []string
+	var aborted bool
+	var abortedName string
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
@@ -195,12 +197,27 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 				fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 			case fileExists(filepath.Join(repoDir, "update-locks.sh")):
 				if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out}); err != nil {
-					projectFailed = true
-					// Keep going to push whatever update-locks committed.
+					var cmdErr *exec.CommandError
+					if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {
+						aborted, abortedName = true, name
+						fmt.Fprintf(out, "  ⛔ %s: environmental/resource failure — aborting run\n", name)
+					} else {
+						projectFailed = true
+						// Keep going to push whatever update-locks committed.
+					}
 				}
 			default:
 				fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (workspace inputs already propagated)\n", name)
 			}
+		}
+		// An environmental/resource abort applies to every remaining repo: record
+		// it and stop before the push block and the rest of the loop.
+		if aborted {
+			failed = append(failed, name)
+			_ = opts.Log.Emit("error", "project_result", "project aborted", map[string]any{
+				"name": name, "outcome": "aborted", "failed_step": "update-locks",
+			})
+			break
 		}
 		// Push only when pull and propagation succeeded (even on partial
 		// update-locks failure).
@@ -231,6 +248,11 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		}
 	}
 
+	if aborted {
+		_ = opts.Log.Emit("error", "run_end", "workspace update aborted (environmental/resource failure)",
+			map[string]any{"status": "aborted", "failed": len(failed), "aborted_project": abortedName, "failed_step": "update-locks"})
+		return fmt.Errorf("update aborted at %s (update-locks): environmental/resource failure — free resources and re-run; remaining repos were not attempted", abortedName)
+	}
 	if len(failed) > 0 {
 		_ = opts.Log.Emit("error", "run_end", "workspace update finished with failures",
 			map[string]any{"status": "failed", "failed": len(failed), "failed_projects": failed})

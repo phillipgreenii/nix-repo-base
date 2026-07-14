@@ -102,6 +102,60 @@ func TestUpdateViaWorktree_HappyPath_CleanMain(t *testing.T) {
 	}
 }
 
+// TestUpdateViaWorktree_AbortsRunOnResourceExit77: when a repo's update-locks.sh
+// exits ulExitAbort (77 = environmental/resource failure, e.g. ENOSPC), the run
+// must STOP — the later repo is never attempted — and the error must say so.
+func TestUpdateViaWorktree_AbortsRunOnResourceExit77(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "zzz"
+
+[repos.aaa]
+url = "github:owner/aaa"
+
+[repos.zzz]
+url = "github:owner/zzz"
+`)
+	aaa := filepath.Join(root, "aaa")
+	zzz := filepath.Join(root, "zzz")
+	wtAaa := filepath.Join(root, ".workforests", updateWorktreesSubdir, "aaa-TEST")
+	mkUpdateLocks(t, wtAaa) // aaa runs first (alphabetical); zzz must never run
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", aaa, "worktree", "add", "-b", branch, wtAaa, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wtAaa, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wtAaa, "rebase", "origin/main"}, exec.Result{}, nil)
+	// update-locks.sh aborts with 77 (captured stderr shows the ENOSPC cause).
+	f.AddResponse("./update-locks.sh", nil,
+		exec.Result{ExitCode: ulExitAbort, Stderr: []byte("error: write of 9 bytes: No space left on device")},
+		&exec.CommandError{Name: "./update-locks.sh", Result: exec.Result{ExitCode: ulExitAbort, Stderr: []byte("No space left on device")}})
+	// zzz: intentionally NOT scripted — the run must abort before touching it.
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"})
+	if err == nil {
+		t.Fatal("expected an abort error, got nil")
+	}
+	if !strings.Contains(err.Error(), "abort") {
+		t.Errorf("error should mention the abort; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "aaa") {
+		t.Errorf("error should name the aborting repo (aaa); got %q", err.Error())
+	}
+	for _, c := range f.Calls() {
+		joined := c.Name + " " + strings.Join(c.Args, " ")
+		if strings.Contains(joined, zzz) {
+			t.Fatalf("zzz must not be attempted after an abort; saw call: %s", joined)
+		}
+	}
+}
+
 // TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir: with
 // SiblingsOnly the worktree flow MUST skip step-4 update-locks.sh (even though
 // the script exists on disk) AND MUST NOT resolve/require UL_LIB_DIR (the

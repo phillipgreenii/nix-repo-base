@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -78,7 +79,17 @@ const (
 	statusOK       repoStatus = "ok"
 	statusFailed   repoStatus = "failed"
 	statusDeferred repoStatus = "deferred"
+	// statusAborted: update-locks.sh signalled an environmental / resource
+	// exhaustion failure (see ulExitAbort). Unlike statusFailed, it stops the
+	// whole run — every remaining repo would fail identically.
+	statusAborted repoStatus = "aborted"
 )
+
+// ulExitAbort is the exit code update-locks.sh uses to signal an environmental /
+// resource-exhaustion abort (out of disk, or an unhealthy nix daemon). pn stops
+// the run rather than marching into the same wall. Contract: the UL_RC_ABORT
+// sentinel in lib/scripts/update-locks-lib.bash (ADR 0020).
+const ulExitAbort = 77
 
 // repoOutcome records one repo's worktree-update result for the run summary.
 type repoOutcome struct {
@@ -148,15 +159,29 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 			"name": oc.name, "outcome": outcome, "failed_step": oc.failedStep, "note": oc.note,
 		})
 		outcomes = append(outcomes, oc)
+		// An environmental/resource abort applies to every remaining repo, so stop
+		// the run here rather than attempting them and failing identically.
+		if oc.status == statusAborted {
+			break
+		}
 	}
 
 	printUpdateSummary(out, outcomes)
 
 	var failed []string
-	for _, oc := range outcomes {
-		if oc.status != statusOK {
-			failed = append(failed, oc.name)
+	var aborted *repoOutcome
+	for i := range outcomes {
+		if outcomes[i].status == statusAborted {
+			aborted = &outcomes[i]
 		}
+		if outcomes[i].status != statusOK {
+			failed = append(failed, outcomes[i].name)
+		}
+	}
+	if aborted != nil {
+		_ = opts.Log.Emit("error", "run_end", "workspace update aborted (environmental/resource failure)",
+			map[string]any{"status": "aborted", "failed": len(failed), "aborted_project": aborted.name, "failed_step": aborted.failedStep})
+		return fmt.Errorf("update aborted at %s (%s): environmental/resource failure — free resources and re-run; remaining repos were not attempted", aborted.name, aborted.failedStep)
 	}
 	if len(failed) > 0 {
 		_ = opts.Log.Emit("error", "run_end", "workspace update finished with failures",
@@ -196,6 +221,17 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		fmt.Fprintf(out, "  ✗ %s: failed at %s — worktree left at %s (branch %s)\n", name, step, wt, branch)
 		return oc
 	}
+	// abort marks an environmental / resource-exhaustion failure (update-locks.sh
+	// exit ulExitAbort). Like fail it leaves the worktree/branch for inspection,
+	// but the outer loop stops the whole run on this status.
+	abort := func(step string, cause error) repoOutcome {
+		oc.status, oc.failedStep = statusAborted, step
+		if cause != nil {
+			oc.note = cause.Error()
+		}
+		fmt.Fprintf(out, "  ⛔ %s: environmental/resource failure at %s — aborting run (worktree left at %s, branch %s)\n", name, step, wt, branch)
+		return oc
+	}
 
 	// Step 1: create worktree + branch off local main.
 	if err := git(primary, "worktree", "add", "-b", branch, wt, "main"); err != nil {
@@ -232,6 +268,10 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
 			Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out,
 		}); err != nil {
+			var cmdErr *exec.CommandError
+			if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {
+				return abort("update-locks", err)
+			}
 			return fail("update-locks", err, "")
 		}
 	default:

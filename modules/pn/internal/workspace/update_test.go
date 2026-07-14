@@ -290,6 +290,69 @@ url = "github:owner/bar"
 	}
 }
 
+// TestUpdateInPlace_AbortsRunOnResourceExit77: when a repo's update-locks.sh
+// exits ulExitAbort (77 = environmental/resource failure), the in-place flow
+// must STOP the run (not fall through to push, not attempt later repos) and
+// return an error naming the abort — never report the abort as success.
+func TestUpdateInPlace_AbortsRunOnResourceExit77(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "zzz"
+
+[repos.aaa]
+url = "github:owner/aaa"
+
+[repos.zzz]
+url = "github:owner/zzz"
+`)
+	aaa := filepath.Join(root, "aaa")
+	zzz := filepath.Join(root, "zzz")
+	mkUpdateLocks(t, aaa)
+	mkUpdateLocks(t, zzz) // exists but must never be run (run aborts at aaa)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", aaa, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", aaa, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", aaa, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", aaa, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
+	// aaa's update-locks aborts with 77 — the run must stop before push and zzz.
+	f.AddResponse("./update-locks.sh", nil,
+		exec.Result{ExitCode: ulExitAbort, Stderr: []byte("No space left on device")},
+		&exec.CommandError{Name: "./update-locks.sh", Result: exec.Result{ExitCode: ulExitAbort, Stderr: []byte("No space left on device")}})
+	// aaa's push and all of zzz: intentionally NOT scripted.
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	err = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true})
+	if err == nil {
+		t.Fatal("expected an abort error, got nil (abort must not report success)")
+	}
+	if !strings.Contains(err.Error(), "abort") {
+		t.Errorf("error should mention the abort; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "aaa") {
+		t.Errorf("error should name the aborting repo (aaa); got %q", err.Error())
+	}
+	for _, c := range f.Calls() {
+		joined := c.Name + " " + strings.Join(c.Args, " ")
+		if strings.Contains(joined, zzz) {
+			t.Fatalf("zzz must not be attempted after an abort; saw call: %s", joined)
+		}
+	}
+	locksCalls := 0
+	for _, c := range f.Calls() {
+		if c.Name == "./update-locks.sh" {
+			locksCalls++
+		}
+	}
+	if locksCalls != 1 {
+		t.Errorf("expected exactly 1 update-locks.sh call (aaa only); got %d", locksCalls)
+	}
+}
+
 // TestUpdate_PullFailureSkipsLocksAndPush: a failed git pull marks the repo as
 // failed and skips update-locks and push (the working tree is suspect).
 func TestUpdate_PullFailureSkipsLocksAndPush(t *testing.T) {
