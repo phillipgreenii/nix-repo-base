@@ -34,7 +34,11 @@ skips a real update**, which is worse than a visible failure.
 ## Decision
 
 `ul_run_step` captures each step's stderr and, on a non-zero (non-`75`) exit, classifies
-it with `ul_classify_step_failure <stderr_file>` → `resource` | `transient` | `hard`:
+it with `ul_classify_step_failure <stderr_file>` → `resource` | `transient` | `hard`. The
+checks run in **precedence order** — resource, then definitive-hard, then transient — so a
+step whose log contains BOTH a transient blip (a network retry) and a genuine failure is
+classified by the more serious signature. Erring toward `resource`/`hard` is the safe
+direction; a false `transient` would silently skip a real update.
 
 - **transient** — a curated allowlist of **transport-scoped** connectivity signatures
   (DNS/TLS/timeout/connection-reset, git remote transients, HTTP 5xx, 429). Roll back
@@ -44,10 +48,13 @@ it with `ul_classify_step_failure <stderr_file>` → `resource` | `transient` | 
 - **resource** — **only** `No space left on device` / `ENOSPC` (checked first, so it beats
   co-occurring network noise). Roll back, print an actionable message, and `exit
 UL_RC_ABORT` (**77**). A wedged/unreachable nix daemon in `ul_setup` also exits 77.
-- **hard** — everything else (unchanged): roll back, record the failed step, `ul_finalize`
-  exits 1. This deliberately includes genuine **broken pins** (HTTP **4xx**), **OOM**
-  (`cannot allocate memory` — too ambiguous to abort the world or silently defer), and all
-  provenance/verification failures (hash mismatch, cosign/attestation).
+- **hard** — matched by a definitive-failure allowlist **before** the transient check
+  (so it wins over a co-occurring transient blip), plus the default for anything unmatched:
+  roll back, record the failed step, `ul_finalize` exits 1. The definitive-hard signatures
+  are genuine **broken pins** (HTTP **4xx**), **hash / provenance mismatches**,
+  **signature/attestation/cosign failures**, **OOM** (`cannot allocate memory` — too
+  ambiguous to abort the world or silently defer), and genuine **nix build failures**
+  (`builder for … failed`).
 
 `pn` recognizes `update-locks.sh` exit **77** (`ulExitAbort`) in both update flows and
 **stops the whole run** — the aborting repo's worktree/branch are left for inspection, no

@@ -859,6 +859,27 @@ SCRIPT
   [ "$output" = "resource" ]
 }
 
+@test "ul_classify_step_failure: hash mismatch wins over co-occurring transient blip" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf 'warning: Could not resolve host: cache.nixos.org (retrying)\nerror: hash mismatch in fixed-output derivation\n' > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "hard" ]
+}
+
+@test "ul_classify_step_failure: 404 broken pin wins over a co-occurring 503 retry" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf "error: unable to download 'x': HTTP error 503 (retrying)\nerror: unable to download 'x': HTTP error 404\n" > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "hard" ]
+}
+
+@test "ul_classify_step_failure: builder failure wins over a co-occurring connection reset" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf "read: connection reset by peer\nerror: builder for '/nix/store/x.drv' failed with exit code 1\n" > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "hard" ]
+}
+
 @test "ul_classify_step_failure: empty stderr -> hard" {
   source "$UL_LOCKS_LIB"
   f=$(mktemp); : > "$f"

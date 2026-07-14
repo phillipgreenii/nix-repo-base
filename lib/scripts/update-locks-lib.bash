@@ -86,9 +86,11 @@
 # ANCHOR: ul-classify-step-failure
 #   ul_classify_step_failure <stderr_file> echoes resource | transient | hard.
 #   CONSERVATIVE: only unambiguous signatures leave "hard" (a false "transient"
-#   silently skips a real update). ENOSPC → resource (checked first, beats any
-#   co-occurring network noise). A curated allowlist of transport-scoped network
-#   signatures → transient. Genuine broken pins (HTTP 4xx) and OOM stay "hard".
+#   silently skips a real update). Precedence order: ENOSPC → resource; a
+#   definitive-hard allowlist (HTTP 4xx, hash/provenance mismatch, signature
+#   failures, OOM, "builder for … failed") → hard; a transport-scoped network
+#   allowlist → transient; default → hard. Hard is matched BEFORE transient so a
+#   genuine failure that co-occurs with a transient retry blip stays hard.
 #
 # -----------------------------------------------------------------
 # ul_reexec_in_dev_shell
@@ -178,42 +180,60 @@ UL_RC_ABORT=77
 # git/nix/network. See ADR 0020 for the signature policy.
 ul_classify_step_failure() {
   local stderr_file="$1"
-  local text
-  text="$(cat "$stderr_file" 2>/dev/null || true)"
+  [[ -r $stderr_file ]] || {
+    echo hard
+    return 0
+  }
 
   # Resource exhaustion FIRST — it must win over any co-occurring network noise,
   # since deferring is pointless when the disk is full (every later step/repo hits
-  # it too). ONLY disk (ENOSPC): OOM is too ambiguous to abort the whole run on, so
-  # it stays "hard" (a visible failure) rather than resource or transient.
-  if printf '%s' "$text" | grep -qiE 'No space left on device|ENOSPC'; then
+  # it too). ONLY disk (ENOSPC): OOM is handled as a hard signal below.
+  if grep -qiE 'No space left on device|ENOSPC' "$stderr_file" 2>/dev/null; then
     echo resource
     return 0
   fi
 
+  # Definitive HARD signatures SECOND — these WIN over any co-occurring transient
+  # line. A retry-heavy run often logs a transient blip (a network retry) and THEN
+  # hits a genuine failure (broken pin, hash mismatch, build error) in the same
+  # step; classifying that step transient would silently skip a real update. So we
+  # match unambiguous genuine-failure signatures before the transient allowlist.
+  # Erring toward hard is the SAFE direction (a visible failure, which the policy
+  # explicitly prefers over a false deferral). See ADR 0020.
+  local hard_re
+  hard_re='HTTP error 4[0-9][0-9]|returned error: 4[0-9][0-9]'     # broken pin (4xx), not 5xx
+  hard_re+='|hash mismatch|does not match'                         # FOD / provenance mismatch
+  hard_re+='|refusing to verify'                                   # verify-provenance TOCTOU guard
+  hard_re+='|(cosign|attestation|verify-blob|gpg|signature).*fail' # provenance/signature failures
+  hard_re+='|cannot allocate memory'                               # OOM (ambiguous → visible failure)
+  hard_re+='|builder for .* failed'                                # genuine nix build failure
+  if grep -qiE "$hard_re" "$stderr_file" 2>/dev/null; then
+    echo hard
+    return 0
+  fi
+
   # Transient external-source / connectivity failures from nix, curl, git, go, uv.
-  # Each pattern is transport-scoped so a package's own log text (e.g. a test that
-  # prints "connection refused") is not misread as a fetch failure. A genuine
-  # broken pin (404 / "HTTP error 4xx") must stay "hard" — only 5xx/timeouts defer.
+  # Transport-scoped so a package's own log text is not misread as a fetch failure;
+  # 5xx/timeouts defer, 4xx (above) does not. Extend deliberately (ADR 0020).
   local net_re
   net_re='Could not resolve host'
   net_re+='|Temporary failure in name resolution'
-  net_re+='|Network is unreachable|No route to host'
   net_re+='|TLS handshake timeout|handshake timed out'
   net_re+='|Failed to connect to [^ ]+ port'
-  net_re+='|connect: (connection refused|network is unreachable|operation timed out)'
-  net_re+='|dial tcp .*(i/o timeout|connection refused|no such host)'
+  net_re+='|connect: (connection refused|network is unreachable|operation timed out|no route to host)'
+  net_re+='|dial tcp .*(i/o timeout|connection refused|no such host|network is unreachable)'
   net_re+='|read: connection reset by peer'
   net_re+='|unable to download .*: (Couldn|Timeout|Connection|SSL|Resolving|Failed to connect)'
   net_re+='|HTTP error 5[0-9][0-9]|The requested URL returned error: 5[0-9][0-9]'
   net_re+='|429 Too Many Requests'
-  # git remote transients
+  # git remote transients (a persistent auth failure prints different text and
+  # falls through to hard; these are disconnect/timeout signatures only)
   net_re+='|The remote end hung up unexpectedly'
   net_re+='|RPC failed; (curl|HTTP|result)'
   net_re+='|early EOF'
   net_re+='|fetch-pack: unexpected disconnect'
-  net_re+='|Could not read from remote repository'
   net_re+='|ssh: connect to host .* (Connection|Operation) '
-  if printf '%s' "$text" | grep -qiE "$net_re"; then
+  if grep -qiE "$net_re" "$stderr_file" 2>/dev/null; then
     echo transient
     return 0
   fi
