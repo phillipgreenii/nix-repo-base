@@ -37,6 +37,13 @@ Any failed step leaves that repo's worktree and branch in place for inspection. 
 continues to the next repo. The end-of-run summary names each repo's outcome, the step it stopped
 at, the actual git error, and a recovery hint.
 
+This is `pn workspace update`'s own recovery path for its own worktree-isolated flow: the
+worktree and branch inspected/removed below are that flow's ephemeral artifacts, not the
+canonical checkout's primary branch. It is not a general recipe for manipulating a repo from the
+outside — an agent that finds the canonical unexpectedly off its primary branch or dirty outside
+this flow MUST stop and report (Tier R / R-3), not reset, re-checkout, stash, or otherwise work
+around it.
+
 To resume or clean up a left-behind worktree:
 
 ```bash
@@ -57,6 +64,12 @@ git -C <root>/<repo> branch -D pn-update/<run-ts>
 
 ### Asymmetric-defer recovery
 
+This is `pn workspace update`'s own documented recovery step for one specific, bounded failure
+mode of its worktree-isolated flow — not a general technique for handling an off-`main`/dirty
+canonical elsewhere. Outside this pn-update flow, an agent that finds the canonical unexpectedly
+off its primary branch or dirty MUST stop and report (Tier R / R-3) — not reset, re-checkout,
+stash, or otherwise work around it.
+
 If a repo's defer happens _after_ the push (step 4 succeeded, step 5 failed), remote `main` is
 already ahead of local `main`. The run summary will say so and tell you to _reset_ local main to
 the remote, **not** to merge:
@@ -71,6 +84,10 @@ git -C <root>/<repo> branch -f main origin/main
 
 Do not use `git merge origin/main` here — the remote `main` already contains the pushed update
 commits; a merge would create duplicates.
+
+Run the matching command above only in response to the run summary reporting this specific
+state — it is `pn workspace update`'s prescribed recovery for its own asymmetric-defer failure
+mode, not a general fix for an off-branch/dirty canonical.
 
 ### `--in-place` escape hatch
 
