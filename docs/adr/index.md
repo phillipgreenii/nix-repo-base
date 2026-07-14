@@ -24,3 +24,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0017](0017-pn-workspace-toml-enforce-entrypoint.md)             | Separate `pn-workspace-toml-enforce` entrypoint for the nix-owned keys  | Accepted                                              |
 | [0018](0018-os-aware-builder-and-terminal-path-template-vars.md) | OS-aware `{builder}` + explicit terminal-path template variables        | Accepted                                              |
 | [0019](0019-per-repo-event-hooks.md)                             | Event-based workspace + per-repo hooks with override-aware `{nix_run}`  | Accepted (supersedes 0002 hooks; amends 0017)         |
+| [0020](0020-update-locks-failure-classification.md)              | `update-locks` failure classification (transient / resource / hard)     | Accepted                                              |
