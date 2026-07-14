@@ -790,3 +790,168 @@ SCRIPT
   [[ "$output" =~ "DEVELOP_TARGET=/some/repo/nix" ]]
   [[ ! "$output" =~ "FALLTHROUGH" ]]
 }
+
+# ---------------------------------------------------------------------------
+# ul_classify_step_failure — failure signature classification (ADR 0020)
+# ---------------------------------------------------------------------------
+
+@test "ul_classify_step_failure: ENOSPC -> resource" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf 'error: write of 1113 bytes: No space left on device\n' > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "resource" ]
+}
+
+@test "ul_classify_step_failure: could not resolve host -> transient" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf 'fatal: unable to access ...: Could not resolve host: github.com\n' > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "transient" ]
+}
+
+@test "ul_classify_step_failure: TLS handshake timeout -> transient" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf 'net/http: TLS handshake timeout\n' > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "transient" ]
+}
+
+@test "ul_classify_step_failure: HTTP 503 -> transient" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf "error: unable to download 'https://x/y.tar.gz': HTTP error 503\n" > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "transient" ]
+}
+
+@test "ul_classify_step_failure: git remote hung up -> transient" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf 'fatal: The remote end hung up unexpectedly\n' > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "transient" ]
+}
+
+@test "ul_classify_step_failure: HTTP 404 broken pin stays hard (not transient)" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf "error: unable to download 'https://x/y.tar.gz': HTTP error 404\n" > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "hard" ]
+}
+
+@test "ul_classify_step_failure: generic build failure stays hard" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf "error: builder for '/nix/store/x.drv' failed with exit code 1\n" > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "hard" ]
+}
+
+@test "ul_classify_step_failure: OOM stays hard (not resource, not transient)" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf 'fatal error: runtime: cannot allocate memory\n' > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "hard" ]
+}
+
+@test "ul_classify_step_failure: resource wins over co-occurring network noise" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); printf 'Could not resolve host: x\nNo space left on device\n' > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "resource" ]
+}
+
+@test "ul_classify_step_failure: empty stderr -> hard" {
+  source "$UL_LOCKS_LIB"
+  f=$(mktemp); : > "$f"
+  run ul_classify_step_failure "$f"
+  [ "$output" = "hard" ]
+}
+
+# ---------------------------------------------------------------------------
+# ul_run_step — transient / resource classification of a failed step
+# ---------------------------------------------------------------------------
+
+@test "ul_run_step streams step stdout+stderr live while capturing stderr" {
+  run bash -c '
+    source "'"$UL_LOCKS_LIB"'"
+    ul_setup "test-project" "'"$TEST_DIR"'" >/dev/null 2>&1
+    noisy() { echo "OUT-LINE"; echo "ERR-LINE-XYZZY" >&2; echo c > file.txt; }
+    ul_run_step "noisy" "update: noisy" noisy
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OUT-LINE"* ]]
+  [[ "$output" == *"ERR-LINE-XYZZY"* ]]
+}
+
+@test "ul_run_step transient failure: rollback, NO stamp, no fail, run continues" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  before=$(git rev-parse HEAD)
+  net_fail() { echo "junk" > file.txt; echo "fatal: Could not resolve host: github.com" >&2; return 1; }
+  ul_run_step "net-step" "update: net" net_fail
+  [ "$(git rev-parse HEAD)" = "$before" ]                        # no commit
+  [ ! -f "$TEST_DIR/.update-locks/steps/net-step" ]              # NO stamp (retry next run)
+  [ "$(cat file.txt)" = "initial" ]                             # content rolled back
+  git diff --quiet
+  git diff --cached --quiet
+  [ "$_UL_STEPS_TRANSIENT" -eq 1 ]
+  [ "$_UL_STEPS_FAILED" -eq 0 ]
+}
+
+@test "ul_run_step: transient step defers but a later successful step still commits" {
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  net_fail() { echo "boom" > file.txt; echo "The remote end hung up unexpectedly" >&2; return 1; }
+  good_step() { echo "updated" > file.txt; }
+  ul_run_step "net-step" "update: net" net_fail
+  ul_run_step "good-step" "update: good" good_step
+  [ "$_UL_STEPS_TRANSIENT" -eq 1 ]
+  [ "$_UL_STEPS_FAILED" -eq 0 ]
+  [ "$_UL_STEPS_SUCCEEDED" -eq 1 ]
+  run git log -1 --format=%s
+  [ "$output" = "update: good" ]
+  [ "$(cat "$TEST_DIR/file.txt")" = "updated" ]
+}
+
+@test "ul_run_step transient does not make ul_finalize exit non-zero; summary shows Transient" {
+  # Run the whole sequence in a sub-bash: ul_run_step backgrounds a tee for
+  # stderr capture, and following a direct ul_run_step with a second `run` in the
+  # same test trips bats' fd/accounting. The sub-bash isolates it (as tests 52/56
+  # do) and its exit status IS ul_finalize's, which is what we assert.
+  run bash -c '
+    source "'"$UL_LOCKS_LIB"'"
+    ul_setup "test-project" "'"$TEST_DIR"'" >/dev/null 2>&1
+    net_fail() { echo "dial tcp 1.2.3.4:443: i/o timeout" >&2; return 1; }
+    ul_run_step "net-step" "update: net" net_fail
+    ul_finalize
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Transient: 1"* ]]
+  [[ "$output" == *"Failed:  0"* ]]
+}
+
+@test "ul_run_step resource failure aborts update-locks with UL_RC_ABORT (77)" {
+  run bash -c '
+    source "'"$UL_LOCKS_LIB"'"
+    ul_setup "test-project" "'"$TEST_DIR"'" >/dev/null 2>&1
+    disk_fail() { echo "x" > file.txt; echo "error: write of 9 bytes: No space left on device" >&2; return 1; }
+    ul_run_step "disk-step" "update: disk" disk_fail
+    echo "SHOULD-NOT-REACH"
+  '
+  [ "$status" -eq 77 ]
+  [[ "$output" != *"SHOULD-NOT-REACH"* ]]
+  [[ "$output" == *"disk full"* || "$output" == *"No space left"* ]]
+}
+
+@test "ul_setup aborts with 77 when the nix daemon health check fails" {
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in
+  *eval*--expr*) exit 1 ;;
+esac
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+  run bash -c 'source "'"$UL_LOCKS_LIB"'"; ul_setup "p" "'"$TEST_DIR"'"'
+  [ "$status" -eq 77 ]
+}

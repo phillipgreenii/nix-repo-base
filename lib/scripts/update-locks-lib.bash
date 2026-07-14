@@ -71,9 +71,24 @@
 #   ul_finalize does NOT exit non-zero solely due to deferrals.
 #
 # ANCHOR: ul_run_step-fail-rollback
-#   On any other non-zero exit: rolls back content, records the step in
-#   _UL_FAILED_STEPS, does NOT commit anything. ul_finalize exits 1 with
-#   a list of failed step names.
+#   On any other non-zero exit, the step's captured stderr is classified by
+#   ul_classify_step_failure into resource | transient | hard (see ANCHOR
+#   ul-classify-step-failure). All three roll back content first, then:
+#     - transient: write NO stamp, count _UL_STEPS_TRANSIENT, keep the run
+#       passing (retried next run — a transient external-source failure means we
+#       never learned whether an update exists).
+#     - resource: print an actionable message and `exit $UL_RC_ABORT` (77),
+#       aborting update-locks.sh so pn stops the whole run (every remaining repo
+#       would fail identically). See ADR 0020.
+#     - hard: record the step in _UL_FAILED_STEPS, commit nothing; ul_finalize
+#       exits 1 with the list of failed step names.
+#
+# ANCHOR: ul-classify-step-failure
+#   ul_classify_step_failure <stderr_file> echoes resource | transient | hard.
+#   CONSERVATIVE: only unambiguous signatures leave "hard" (a false "transient"
+#   silently skips a real update). ENOSPC → resource (checked first, beats any
+#   co-occurring network noise). A curated allowlist of transport-scoped network
+#   signatures → transient. Genuine broken pins (HTTP 4xx) and OOM stay "hard".
 #
 # -----------------------------------------------------------------
 # ul_reexec_in_dev_shell
@@ -119,15 +134,23 @@
 #
 # ANCHOR: ul_finalize-exit-code
 #   Exits 0 if _UL_STEPS_FAILED is 0; exits 1 with the failed step list
-#   otherwise. Deferrals do NOT contribute to a non-zero exit.
+#   otherwise. Deferrals AND transient rollbacks do NOT contribute to a non-zero
+#   exit (a resource abort exits earlier, from ul_run_step, with UL_RC_ABORT).
 #
 # -----------------------------------------------------------------
 # Exit codes used by step commands invoked under ul_run_step
 # -----------------------------------------------------------------
 # ANCHOR: ul-exit-codes
 #   0                  = success (commit content if any, else stamp-only)
-#   $UL_RC_ATTEMPTED (75) = valid attempt, no update applied (deferred)
-#   any other non-zero = failure (rollback, do not commit, fail the run)
+#   $UL_RC_ATTEMPTED (75) = valid attempt, no update applied (deferred; stamp written)
+#   any other non-zero = failure; ul_classify_step_failure then decides:
+#                          transient → rollback, no stamp, run stays green (retry)
+#                          resource  → update-locks.sh exits $UL_RC_ABORT (77), run aborts
+#                          hard      → rollback, record failure, ul_finalize exits 1
+# ANCHOR: ul-abort-exit-code
+#   $UL_RC_ABORT (77) = environmental/resource abort emitted by update-locks.sh
+#   itself (ENOSPC step, or unhealthy nix daemon in ul_setup). pn recognizes it
+#   as ulExitAbort and stops the whole workspace run. See ADR 0020.
 #
 # =================================================================
 
@@ -140,17 +163,81 @@ _UL_LOCKS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UL_RC_ATTEMPTED=75
 ul_attempted() { exit "$UL_RC_ATTEMPTED"; }
 
+# Sentinel exit code update-locks.sh uses to abort the whole run for an
+# environmental / resource-exhaustion failure (out of disk, unhealthy nix
+# daemon). Unlike a per-step failure, it means every remaining repo would fail
+# identically, so pn stops the run rather than marching on. Distinct from 75
+# (per-step deferral), generic 1/2, and Nix's 100/101; recognized on the Go side
+# as ulExitAbort. See ADR 0020.
+UL_RC_ABORT=77
+
+# Classify a FAILED step's captured stderr into one of: resource | transient | hard.
+# CONSERVATIVE by design: only UNAMBIGUOUS signatures map away from "hard", because
+# a false "transient" silently skips a real update — worse than a visible failure
+# (same philosophy as the opt-in 75 deferral above). Pure: reads the file only, no
+# git/nix/network. See ADR 0020 for the signature policy.
+ul_classify_step_failure() {
+  local stderr_file="$1"
+  local text
+  text="$(cat "$stderr_file" 2>/dev/null || true)"
+
+  # Resource exhaustion FIRST — it must win over any co-occurring network noise,
+  # since deferring is pointless when the disk is full (every later step/repo hits
+  # it too). ONLY disk (ENOSPC): OOM is too ambiguous to abort the whole run on, so
+  # it stays "hard" (a visible failure) rather than resource or transient.
+  if printf '%s' "$text" | grep -qiE 'No space left on device|ENOSPC'; then
+    echo resource
+    return 0
+  fi
+
+  # Transient external-source / connectivity failures from nix, curl, git, go, uv.
+  # Each pattern is transport-scoped so a package's own log text (e.g. a test that
+  # prints "connection refused") is not misread as a fetch failure. A genuine
+  # broken pin (404 / "HTTP error 4xx") must stay "hard" — only 5xx/timeouts defer.
+  local net_re
+  net_re='Could not resolve host'
+  net_re+='|Temporary failure in name resolution'
+  net_re+='|Network is unreachable|No route to host'
+  net_re+='|TLS handshake timeout|handshake timed out'
+  net_re+='|Failed to connect to [^ ]+ port'
+  net_re+='|connect: (connection refused|network is unreachable|operation timed out)'
+  net_re+='|dial tcp .*(i/o timeout|connection refused|no such host)'
+  net_re+='|read: connection reset by peer'
+  net_re+='|unable to download .*: (Couldn|Timeout|Connection|SSL|Resolving|Failed to connect)'
+  net_re+='|HTTP error 5[0-9][0-9]|The requested URL returned error: 5[0-9][0-9]'
+  net_re+='|429 Too Many Requests'
+  # git remote transients
+  net_re+='|The remote end hung up unexpectedly'
+  net_re+='|RPC failed; (curl|HTTP|result)'
+  net_re+='|early EOF'
+  net_re+='|fetch-pack: unexpected disconnect'
+  net_re+='|Could not read from remote repository'
+  net_re+='|ssh: connect to host .* (Connection|Operation) '
+  if printf '%s' "$text" | grep -qiE "$net_re"; then
+    echo transient
+    return 0
+  fi
+
+  echo hard
+}
+
 _UL_STEPS_RAN=0
 _UL_STEPS_SUCCEEDED=0
 _UL_STEPS_FAILED=0
 _UL_STEPS_SKIPPED=0
 _UL_STEPS_DEFERRED=0
+_UL_STEPS_TRANSIENT=0
 _UL_FAILED_STEPS=()
 _UL_UPGRADED_STEPS=()
 _UL_UPGRADE_NOTES=()
 _UL_SCRIPT_DIR=""
 _UL_CHILD_PID=""
 _UL_CAUGHT_SIGNAL=""
+# Per-step stderr capture (set by ul_run_step). Module-level so _ul_cleanup can
+# remove the temp file + fifo and reap the tee on an interrupted run.
+_ul_step_err_file=""
+_ul_err_fifo=""
+_ul_tee_pid=""
 
 _ul_cleanup() {
   local signal="${1:-EXIT}"
@@ -162,6 +249,19 @@ _ul_cleanup() {
     wait "$_UL_CHILD_PID" 2>/dev/null || true
   fi
   _UL_CHILD_PID=""
+
+  # Reap the stderr-capture tee and remove its fifo + capture file. The tee
+  # normally exits on its own once the killed child closes fd2 (EOF); this just
+  # guarantees no stray process/temp survives an interrupted run.
+  if [[ -n $_ul_tee_pid ]] && kill -0 "$_ul_tee_pid" 2>/dev/null; then
+    kill -TERM "$_ul_tee_pid" 2>/dev/null
+    wait "$_ul_tee_pid" 2>/dev/null || true
+  fi
+  _ul_tee_pid=""
+  [[ -n $_ul_err_fifo ]] && rm -f "$_ul_err_fifo"
+  _ul_err_fifo=""
+  [[ -n $_ul_step_err_file ]] && rm -f "$_ul_step_err_file"
+  _ul_step_err_file=""
 
   # Clean dirty git state. This trap is armed only AFTER the ul_setup gate, which
   # guarantees no pre-existing non-ignored untracked files, so the porcelain check
@@ -334,7 +434,15 @@ ul_setup() {
   rm -f .git/fsmonitor--daemon.ipc
   trap '_ul_restore_fsmonitor' EXIT INT TERM
 
-  ul_check_nix_daemon
+  # A wedged/unreachable nix daemon fails every repo identically, so treat it as
+  # an environmental abort (UL_RC_ABORT) — pn then stops the whole run instead of
+  # marching into the same wall. ul_check_nix_daemon already printed actionable
+  # guidance (update-cache-lib.bash). This runs under the non-destructive pre-gate
+  # trap, so exiting here restores fsmonitor without touching the working tree.
+  ul_check_nix_daemon || {
+    echo "Aborting update: nix daemon is unhealthy." >&2
+    exit "$UL_RC_ABORT"
+  }
 
   # Ensure the pre-commit hook binary is installed/current BEFORE the clean-tree
   # gate — it evaluates the flake, so it must run after fsmonitor is disabled
@@ -373,6 +481,7 @@ ul_setup() {
   _UL_STEPS_FAILED=0
   _UL_STEPS_SKIPPED=0
   _UL_STEPS_DEFERRED=0
+  _UL_STEPS_TRANSIENT=0
   _UL_FAILED_STEPS=()
   _UL_UPGRADED_STEPS=()
   _UL_UPGRADE_NOTES=()
@@ -415,14 +524,46 @@ ul_run_step() {
   # shares the shell's process group and can read /dev/tty, while a step reading
   # plain stdin gets bash's async /dev/null. (A prompting step is an anti-pattern
   # here regardless — steps are meant to be non-interactive.)
-  (
-    set -e
-    "$@"
-  ) &
-  _UL_CHILD_PID=$!
-  wait "$_UL_CHILD_PID"
-  rc=$?
-  _UL_CHILD_PID=""
+  #
+  # The step's stderr is captured for failure classification (ul_classify_step_failure)
+  # while STILL streaming live to fd2 (pn tees fd2 into the terminal transcript). A
+  # named fifo read by a tracked `tee` is race-free: the subshell's fd2 close makes
+  # tee see EOF, and `wait "$_ul_tee_pid"` guarantees the capture file is complete
+  # before we read it. `$!` still names the step subshell (backgrounded last), so
+  # _UL_CHILD_PID and the SIGTERM path are unchanged; stdout is untouched (fd1).
+  # Steps MUST be synchronous one-shot commands (the non-interactive contract
+  # above): a step that backgrounds an fd2-inheriting process would hold the fifo
+  # open and stall the flush wait.
+  _ul_step_err_file="$(mktemp)"
+  _ul_err_fifo="$(mktemp -u)"
+  if mkfifo "$_ul_err_fifo" 2>/dev/null; then
+    tee "$_ul_step_err_file" <"$_ul_err_fifo" >&2 &
+    _ul_tee_pid=$!
+    (
+      set -e
+      "$@"
+    ) 2>"$_ul_err_fifo" &
+    _UL_CHILD_PID=$!
+    wait "$_UL_CHILD_PID"
+    rc=$?
+    _UL_CHILD_PID=""
+    wait "$_ul_tee_pid" 2>/dev/null || true
+    _ul_tee_pid=""
+    rm -f "$_ul_err_fifo"
+    _ul_err_fifo=""
+  else
+    # mkfifo unavailable — run without stderr capture (classifier then sees an
+    # empty file → "hard", i.e. today's behavior). Never block the step on capture.
+    : >"$_ul_step_err_file"
+    (
+      set -e
+      "$@"
+    ) &
+    _UL_CHILD_PID=$!
+    wait "$_UL_CHILD_PID"
+    rc=$?
+    _UL_CHILD_PID=""
+  fi
   $_ul_restore_e
 
   if [[ $rc -eq 0 ]]; then
@@ -437,12 +578,38 @@ ul_run_step() {
       _UL_STEPS_DEFERRED=$((_UL_STEPS_DEFERRED + 1))
     fi
   else
-    echo "  ✗ Step '${step_name}' failed (exit code ${rc})"
+    # Non-zero, non-deferral: classify the captured stderr. Rollback is common to
+    # all three sub-cases; only the accounting (and abort) differs.
+    local _ul_class
+    _ul_class="$(ul_classify_step_failure "$_ul_step_err_file")"
     git reset --hard HEAD 2>/dev/null || true
     git clean -fd 2>/dev/null || true
-    _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
-    _UL_FAILED_STEPS+=("$step_name")
+    case "$_ul_class" in
+    transient)
+      # Transient external-source failure: roll back, write NO stamp (so it is
+      # retried next run, not skipped until the TTL), keep the run passing.
+      echo "  ⟳ Step '${step_name}' hit a transient external-source error — rolled back, will retry next run"
+      _UL_STEPS_TRANSIENT=$((_UL_STEPS_TRANSIENT + 1))
+      ;;
+    resource)
+      # Resource exhaustion (disk full): every later step/repo would fail the
+      # same way, so abort the whole run with the sentinel pn recognizes.
+      echo "  ✗ Step '${step_name}' failed: out of a system resource (disk full)." >&2
+      echo "     Free space, then re-run 'pn workspace update'. Aborting the run." >&2
+      rm -f "$_ul_step_err_file"
+      _ul_step_err_file=""
+      exit "$UL_RC_ABORT"
+      ;;
+    *)
+      echo "  ✗ Step '${step_name}' failed (exit code ${rc})"
+      _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
+      _UL_FAILED_STEPS+=("$step_name")
+      ;;
+    esac
   fi
+
+  rm -f "$_ul_step_err_file"
+  _ul_step_err_file=""
 }
 
 # Record what a content-changing step upgraded, for the end-of-run summary.
@@ -550,6 +717,7 @@ ul_finalize() {
   echo "  Passed:  ${_UL_STEPS_SUCCEEDED}"
   echo "  Upgraded: ${#_UL_UPGRADED_STEPS[@]}"
   echo "  Deferred: ${_UL_STEPS_DEFERRED}"
+  echo "  Transient: ${_UL_STEPS_TRANSIENT}"
   echo "  Failed:  ${_UL_STEPS_FAILED}"
   echo "  Skipped: ${_UL_STEPS_SKIPPED}"
 
