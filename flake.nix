@@ -531,6 +531,23 @@
                   throw "pn darwin module did not register logSources.pn"
               );
 
+            # Eval-level check: the Light capability framework (Plan 5) behaves —
+            # feature/isHuman gating, development subscription, bundle veto, and the
+            # account-property typo→error guarantee.
+            capability-framework-eval =
+              let
+                r = import ./tests/capability-framework.nix { inherit (pkgs) lib; };
+                failures = builtins.attrNames (
+                  pkgs.lib.filterAttrs (_: v: v == false) (removeAttrs r [ "allPass" ])
+                );
+              in
+              pkgs.runCommand "capability-framework-eval" { } (
+                if r.allPass then
+                  "touch $out"
+                else
+                  throw "capability-framework assertions failed: ${toString failures}"
+              );
+
             # Eval-time check: fixture files exist and lock declares all heavy inputs.
             consumer-fixture-eval =
               pkgs.runCommand "consumer-fixture-eval"
@@ -572,6 +589,11 @@
           pn = import ./home/pn/default.nix;
           pjira = import ./home/pjira/default.nix;
           install-metadata = ./home-modules/install-metadata.nix;
+          # Light capability model framework (Plan 5): declares the shared
+          # phillipgreenii.account.* property namespace + phillipgreenii.bundles.*
+          # aggregation options. Installs nothing; capability DEFINITIONS live in
+          # the consuming flakes. Import alongside those capability modules.
+          capability-framework = import ./home/capability-framework/default.nix;
         };
         # repo-base's first darwin module set, exported as the aggregate
         # darwinModules.default (mirrors agent-support). Currently carries the pn
@@ -616,7 +638,10 @@
             };
           }
           # Activation-script output helpers
-          // (import ./lib/activation.nix { });
+          // (import ./lib/activation.nix { })
+          # Capability-authoring helpers for the Light capability model (Plan 5):
+          # mkCapability / mkBundle / enableFeatureIf.
+          // (import ./lib/capabilities.nix { lib = inputs.nixpkgs.lib; });
       };
     };
 }
