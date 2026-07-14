@@ -228,8 +228,15 @@ git -C <root>/<repo> branch -D pn-update/<run-ts>
 
 ### Asymmetric-defer recovery
 
+This is `pn workspace update`'s **own** documented recovery step for one specific, bounded
+failure mode of its worktree-isolated flow — not a general technique for handling an
+off-`main`/dirty canonical elsewhere. Outside this pn-update flow, an agent that finds the
+canonical unexpectedly off its primary branch or dirty MUST stop and report (Tier R) — not
+reset, re-checkout, stash, or otherwise work around it.
+
 If a defer occurs _after_ the push (remote `main` already advanced, local `main` still behind),
-**reset** local main to the remote — do NOT merge:
+`pn workspace update`'s run summary calls out that this recovery applies — **reset** local main
+to the remote — do NOT merge:
 
 ```bash
 # main IS checked out:
@@ -239,7 +246,9 @@ git -C <root>/<repo> reset --hard origin/main
 git -C <root>/<repo> branch -f main origin/main
 ```
 
-The run summary will call this out explicitly when it detects this state.
+Run the matching command above only in response to the run summary reporting this specific
+state — it is `pn workspace update`'s prescribed recovery for its own asymmetric-defer failure
+mode, not a general fix for an off-branch/dirty canonical.
 
 Full details: `docs/worktrees.md` (section "per-repo ephemeral update worktrees — the update default")
 and ADR 0009 (`docs/adr/0009-pn-workspace-update-worktree-isolation.md`) in the `phillipg-nix-repo-base` repo.
@@ -270,6 +279,10 @@ Once resolved, `pn` exports the root as both `PN_WORKSPACE_ROOT` and `WORKSPACE_
 ## Coordinated Workforest Sets
 
 A **coordinated workforest set** is a directory that acts as a complete, self-contained workspace whose repos are git worktrees — all on the same feature branch. It lets an agent work a cross-repo feature in isolation without touching the canonical checkouts.
+
+### `bd` works from a set — no canonical-root restriction
+
+`bd` (beads) resolves its database by filesystem walk-up and then git-common-dir discovery — both work from inside a set's per-repo worktrees, not only from a canonical checkout. There is **no** "run `bd` only from the canonical root" restriction: `bd` commands behave the same whether run from `<canonical_root>/<repo>` or from `.workforests/<branch>/<repo>`.
 
 ### How a set is laid out
 
@@ -322,33 +335,55 @@ These two enhancements are the natural workflow companions for a fresh set:
 - **`pn workspace rebase <branch>`** — rebase each repo's current branch onto the given local ref. No fetch. Any git ref works (`main`, `origin/main`, another worktree's branch). Repos where the ref does not resolve are skipped with a notice. Use `pn workspace rebase main` to sync a set's feature branches onto local `main`.
 - **`pn workspace push --set-upstream`** (or `-u`) — for repos that have no upstream yet, runs `git push -u origin <current-branch>`. Without the flag, repos with no upstream are silently skipped. This is the explicit one-time step to publish a fresh set's branches; afterwards plain `push`/`rebase`/`update` track normally.
 
-### Landing a set onto `main` locally (manual merge-back recipe)
+### Landing a set onto `main` via `integrate-branch`
 
-`pn workspace` has **no** local merge/integrate verb (pg2-fdx0). The documented
-integration model is set → `push --set-upstream` → review/merge via remote/PR. To land a
-set's work onto each repo's **local** `main` without pushing, run this recipe by hand. P1
-(the canonical checkouts' working state) holds until the explicit `merge` step.
+`pn workspace` has **no** local merge/integrate verb (pg2-fdx0), and landing a set does not
+add one: **`integrate-branch` is a skill**, invoked per repo — it is not a `pn workspace`
+verb and does not belong in the [Command Surface Cheat-Sheet](#command-surface-cheat-sheet)
+above. Landing a set is a **best-effort ordered transaction**: local ff-merges can't be
+rolled back, so repos land one at a time, in dependency (topological) order, and a repo
+that can't land **stops the run** rather than being skipped past.
 
 ```bash
 # 1. In the set: rebase every repo's feature branch onto local main (fast-forward-able).
 cd .workforests/my-feature && unset PN_WORKSPACE_ROOT
 pn workspace rebase main
 
-# 2. In each CANONICAL repo (main is checked out there), fast-forward main to the branch.
-#    --ff-only refuses to merge if the branch diverged — re-run step 1 if it does.
-for r in <repo-a> <repo-b> …; do
-  git -C <canonical_root>/$r merge --ff-only my-feature
-done
-
-# 3. Remove the set worktrees (frees the branch from being checked out), then delete the branch.
-cd <canonical_root>
-pn workspace workforest remove my-feature
-for r in <repo-a> <repo-b> …; do git -C $r branch -d my-feature; done
+# 2. In dependency (topological) order — see `pn workspace tree`, or the order recorded
+#    in `pn-workspace.lock.json` — run the `integrate-branch` skill from each repo's
+#    worktree in the set, one repo at a time, stopping at the first blocked repo:
+cd <repo-a> && <invoke integrate-branch> && cd ..
+cd <repo-b> && <invoke integrate-branch> && cd ..
+# … continue in order.
 ```
 
-Only repos that actually have commits on `my-feature` need the `merge`; for a repo where
-`my-feature == main` the `branch -d` alone suffices. Validate with `pn workspace build`
-before removing the set. Nothing is pushed — push/PR remains the separate, explicit path.
+- **Ordered transaction.** Never land a repo ahead of the dependency it consumes — a
+  consumer landing first can pin a stale sibling.
+- **Stop-and-report on a blocked repo.** If `integrate-branch` reports `stopped:<reason>`
+  for a repo (e.g. an unresolved rebase conflict, or a persistent ff-race after its
+  retries), stop the run immediately — do not continue to later repos, some of which may
+  depend on the blocked one. **Keep the set** and report which repos already landed and
+  which repo is blocked.
+- **Remove the set only once every repo has landed and is clean.** Once `integrate-branch`
+  has reported a landed (or otherwise resolved) outcome for every repo, validate the
+  result — e.g. `pn workspace build` (or the matching Completion Gate tier) — then remove:
+
+  ```bash
+  cd <canonical_root>
+  pn workspace workforest remove my-feature
+  ```
+
+  `integrate-branch`'s `ff-merge-to-main` handler already removes a landed repo's own
+  worktree and branch as part of landing it; `workforest remove` clears whatever
+  scaffolding remains. A set with any repo still blocked is left in place for
+  retry/inspection — do not remove it.
+
+`integrate-branch` decides each repo's landing method itself (declared git config,
+inferred signals, or asking) — most `pn` repos resolve to `ff-merge-to-main` and land with
+nothing pushed, but a repo that resolves to `pull-request` instead pushes and
+opens/updates a PR (its worktree/branch stay). See the `integrate-branch` skill for the
+full decision logic; this recipe only fixes the **order** and the **transaction
+semantics** across a set's repos.
 
 ### `PN_WORKSPACE_ROOT` must be unset (or point at the set)
 
