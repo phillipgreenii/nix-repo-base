@@ -68,6 +68,20 @@
           };
           # Go builders (mkGoApp / mkGoBinary / mkGoLint) over the gomod2nix engine.
           goBuilders = import ./lib/go-builders.nix { inherit pkgs self; };
+          # Pattern-B (local `replace => ../sibling`) fixture source shared by the
+          # go-builders-patternb-* checks below. base ships no Pattern-B module of
+          # its own, so this dep-free fixture is what gives base's OWN flake check
+          # coverage of the local-replace path that mkGoLint/mkGoTest's modRoot
+          # forwarding depends on (bead pg2-sjxhy). Rooted at the parent so the
+          # `replace => ../modb` sibling lives in the same store tree, mirroring the
+          # real Pattern-B packages (e.g. agent-support's ccpool).
+          goPatternBFixtureSrc = lib.fileset.toSource {
+            root = ./lib/tests/fixtures/patternb;
+            fileset = lib.fileset.unions [
+              ./lib/tests/fixtures/patternb/moda
+              ./lib/tests/fixtures/patternb/modb
+            ];
+          };
         in
         {
           _module.args.pkgs = import inputs.nixpkgs {
@@ -414,6 +428,38 @@
               src = ./modules/jira;
               gomod2nixToml = ./modules/jira/gomod2nix.toml;
               config = ./.golangci.yml;
+            };
+
+            # Pattern-B regression guard for the Go builders (bead pg2-sjxhy).
+            # base has no Pattern-B (local `replace`) module of its own, so
+            # mkGoLint/mkGoTest's modRoot forwarding would otherwise be validated
+            # only downstream. These three checks exercise the local-replace path
+            # in base's OWN flake check via the lib/tests/fixtures/patternb fixture
+            # (moda imports sibling modb through `replace => ../modb`, so the
+            # builder must cd into modRoot="moda" with modb resolved alongside).
+            # They are RED before the modRoot fix — golangci-lint / go test run at
+            # the fileset root, which has no go.mod ("directory prefix . does not
+            # contain main module") — and GREEN after. The -build check pins
+            # mkGoApp (already correct) so the whole builder family stays covered.
+            go-builders-patternb-lint = goBuilders.mkGoLint {
+              pname = "patternb-fixture";
+              src = goPatternBFixtureSrc;
+              modRoot = "moda";
+              gomod2nixToml = ./lib/tests/fixtures/patternb/moda/gomod2nix.toml;
+              config = ./.golangci.yml;
+            };
+            go-builders-patternb-test = goBuilders.mkGoTest {
+              pname = "patternb-fixture";
+              src = goPatternBFixtureSrc;
+              modRoot = "moda";
+              gomod2nixToml = ./lib/tests/fixtures/patternb/moda/gomod2nix.toml;
+            };
+            go-builders-patternb-build = goBuilders.mkGoApp {
+              pname = "patternb-fixture";
+              src = goPatternBFixtureSrc;
+              modRoot = "moda";
+              gomod2nixToml = ./lib/tests/fixtures/patternb/moda/gomod2nix.toml;
+              subPackages = [ "." ];
             };
 
             # Hermetically verify the exported darwinModules.default (the aggregate

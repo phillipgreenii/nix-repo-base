@@ -295,33 +295,44 @@ rec {
       pwd = if modRoot != null then src + "/" + modRoot else src;
     in
     assert gomod2nixToml != null;
-    pkgs.buildGoApplication {
-      inherit
-        pname
-        version
-        src
-        pwd
-        ;
-      inherit (pkgs) go; # pin to our nixpkgs Go, matching mkGoApp
-      modules = pwd + "/gomod2nix.toml";
-      nativeBuildInputs = [ pkgs.golangci-lint ];
-      # Skip `go test`; linting only. (<module>-go-tests runs the suite.)
-      doCheck = false;
-      # goConfigHook (vendor setup + GOFLAGS=-mod=vendor) has already run by the
-      # time buildPhase starts, so replace the go build with the lint pass.
-      buildPhase = ''
-        runHook preBuild
-        # Sandbox $HOME (/homeless-shelter) is read-only; give golangci-lint and
-        # the Go build cache writable scratch dirs.
-        export HOME="$TMPDIR" \
-               GOCACHE="$TMPDIR/go-build" \
-               GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint"
-        golangci-lint run --config ${config} ./...
-        runHook postBuild
-      '';
-      installPhase = "touch $out";
-      meta.description = "golangci-lint (offline, gomod2nix vendor env): ${pname}";
-    };
+    pkgs.buildGoApplication (
+      {
+        inherit
+          pname
+          version
+          src
+          pwd
+          ;
+        inherit (pkgs) go; # pin to our nixpkgs Go, matching mkGoApp
+        modules = pwd + "/gomod2nix.toml";
+        nativeBuildInputs = [ pkgs.golangci-lint ];
+        # Skip `go test`; linting only. (<module>-go-tests runs the suite.)
+        doCheck = false;
+        # goConfigHook (vendor setup + GOFLAGS=-mod=vendor) has already run by the
+        # time buildPhase starts, so replace the go build with the lint pass.
+        buildPhase = ''
+          runHook preBuild
+          # Sandbox $HOME (/homeless-shelter) is read-only; give golangci-lint and
+          # the Go build cache writable scratch dirs.
+          export HOME="$TMPDIR" \
+                 GOCACHE="$TMPDIR/go-build" \
+                 GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint"
+          golangci-lint run --config ${config} ./...
+          runHook postBuild
+        '';
+        installPhase = "touch $out";
+        meta.description = "golangci-lint (offline, gomod2nix vendor env): ${pname}";
+      }
+      # Forward modRoot so goConfigHook cd's into the module subdir instead of the
+      # fileset root. For Pattern-B modules (local `replace => ../sibling`) the
+      # fileset root is the PARENT (no go.mod), so without this golangci-lint fails
+      # with "directory prefix . does not contain main module". `pwd` (eval-time
+      # store path for gomod2nix's replace resolution) and `modRoot` (build-time
+      # relative cd) are orthogonal — this mirrors the proven mkGoApp path. The
+      # optionalAttrs guard omits modRoot for Pattern-A callers (modRoot == null),
+      # leaving their derivation hash unchanged (bead pg2-sjxhy).
+      // lib.optionalAttrs (modRoot != null) { inherit modRoot; }
+    );
 
   # mkGoTest — run the FULL `go test ./...` suite for a Go module OFFLINE,
   # reusing gomod2nix's vendored dep env (ADR 0008), exactly like mkGoLint.
@@ -352,34 +363,40 @@ rec {
       pwd = if modRoot != null then src + "/" + modRoot else src;
     in
     assert gomod2nixToml != null;
-    pkgs.buildGoApplication {
-      inherit
-        pname
-        version
-        src
-        pwd
-        ;
-      inherit (pkgs) go; # pin to our nixpkgs Go, matching mkGoApp/mkGoLint
-      modules = pwd + "/gomod2nix.toml";
-      nativeBuildInputs = testDeps;
-      # Deliberately NO `subPackages`: the whole point of this builder.
-      doCheck = false;
-      # goConfigHook (vendor setup + GOFLAGS=-mod=vendor) has already run by the
-      # time buildPhase starts, so replace the go build with the full test pass.
-      buildPhase = ''
-        runHook preBuild
-        # Sandbox $HOME (/homeless-shelter) is read-only; give the Go build+test
-        # cache writable scratch. GOFLAGS=-mod=vendor comes from goConfigHook.
-        export HOME="$TMPDIR" \
-               GOCACHE="$TMPDIR/go-build"
-        # Mirror gomod2nix's goCheckHook: drop -trimpath for the test run so
-        # tests resolving assets via runtime.Caller/source paths behave the same
-        # as a developer's `go test ./...`. Safe: the $out (touch) has no binary.
-        export GOFLAGS=''${GOFLAGS//-trimpath/}
-        go test ${lib.escapeShellArgs testFlags} ./...
-        runHook postBuild
-      '';
-      installPhase = "touch $out";
-      meta.description = "go test ./... (offline, gomod2nix vendor env): ${pname}";
-    };
+    pkgs.buildGoApplication (
+      {
+        inherit
+          pname
+          version
+          src
+          pwd
+          ;
+        inherit (pkgs) go; # pin to our nixpkgs Go, matching mkGoApp/mkGoLint
+        modules = pwd + "/gomod2nix.toml";
+        nativeBuildInputs = testDeps;
+        # Deliberately NO `subPackages`: the whole point of this builder.
+        doCheck = false;
+        # goConfigHook (vendor setup + GOFLAGS=-mod=vendor) has already run by the
+        # time buildPhase starts, so replace the go build with the full test pass.
+        buildPhase = ''
+          runHook preBuild
+          # Sandbox $HOME (/homeless-shelter) is read-only; give the Go build+test
+          # cache writable scratch. GOFLAGS=-mod=vendor comes from goConfigHook.
+          export HOME="$TMPDIR" \
+                 GOCACHE="$TMPDIR/go-build"
+          # Mirror gomod2nix's goCheckHook: drop -trimpath for the test run so
+          # tests resolving assets via runtime.Caller/source paths behave the same
+          # as a developer's `go test ./...`. Safe: the $out (touch) has no binary.
+          export GOFLAGS=''${GOFLAGS//-trimpath/}
+          go test ${lib.escapeShellArgs testFlags} ./...
+          runHook postBuild
+        '';
+        installPhase = "touch $out";
+        meta.description = "go test ./... (offline, gomod2nix vendor env): ${pname}";
+      }
+      # Forward modRoot for Pattern-B modules — identical fix and rationale as
+      # mkGoLint above; optionalAttrs keeps Pattern-A callers' derivation hash
+      # unchanged (bead pg2-sjxhy).
+      // lib.optionalAttrs (modRoot != null) { inherit modRoot; }
+    );
 }
