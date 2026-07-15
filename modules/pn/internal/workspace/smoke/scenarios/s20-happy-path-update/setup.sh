@@ -41,10 +41,16 @@ git clone "file://${CONSUMER_BARE}" "$CONSUMER_WORK"
 git -C "$CONSUMER_WORK" config user.email "smoke@test.invalid"
 git -C "$CONSUMER_WORK" config user.name "smoke"
 # flake.nix: declare producer as input so workspace lock detects the edge
-# (producer before consumer in topo order).
+# (producer before consumer in topo order). Use git+file:// (not plain
+# file://): nix treats plain file:// as a tarball path, not a git repo, so a
+# workspace-edge relock (`nix flake update --refresh producer`, run by
+# propagateWorkspaceEdges during `workspace update`) chokes on a bare-repo
+# file:// URL. git+file:// is the git-repo form the propagate path accepts
+# (matches S23's convention). Edge detection is unaffected: canonicalURL
+# strips the git+ prefix, so this still matches producer's file:// repo URL.
 cat >"$CONSUMER_WORK/flake.nix" <<FLAKE
 {
-  inputs.producer.url = "file://${PRODUCER_BARE}";
+  inputs.producer.url = "git+file://${PRODUCER_BARE}";
   outputs = { self, producer, ... }: {};
 }
 FLAKE

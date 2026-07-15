@@ -43,9 +43,15 @@ git init --bare -b main "$CONSUMER_BARE"
 CONSUMER_WORK="$(mktemp -d)"
 git clone "file://${CONSUMER_BARE}" "$CONSUMER_WORK"
 git_id "$CONSUMER_WORK"
+# Use git+file:// (not plain file://) for the workspace-edge input: nix treats
+# plain file:// as a tarball path, not a git repo, so propagateWorkspaceEdges'
+# `nix flake update --refresh producer` (run during `workspace update`) would
+# choke on a bare-repo file:// URL. git+file:// is the git-repo form the
+# propagate path accepts. canonicalURL strips the git+ prefix, so edge
+# detection still matches producer's file:// repo URL (producer before consumer).
 cat >"$CONSUMER_WORK/flake.nix" <<FLAKE
 {
-  inputs.producer.url = "file://${PRODUCER_BARE}";
+  inputs.producer.url = "git+file://${PRODUCER_BARE}";
   outputs = { self, producer, ... }: {};
 }
 FLAKE
