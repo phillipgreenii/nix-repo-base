@@ -163,7 +163,9 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 		s.printPrunedCounts(out, prunedCounts)
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Reclaimable estimate (dead paths):")
-		fmt.Fprintf(out, "%s\n", deadPathsSize(ctx, s.runner))
+		// nonInteractive=false: deepclean is interactive/mutating, so sudo may
+		// prompt here as before (unlike read-only `audit --full`).
+		fmt.Fprintf(out, "%s\n", deadPathsSize(ctx, s.runner, false))
 		return nil
 	}
 
@@ -213,7 +215,10 @@ func (s *Store) processProfile(ctx context.Context, out io.Writer, counts map[st
 	if _, err := os.Lstat(profile); err != nil {
 		return
 	}
-	gens, err := listGenerations(ctx, s.runner, profile, sudo)
+	// nonInteractive=false: deepclean is a deliberate, mutating command that
+	// already streams `sudo nix-store --gc` live to the terminal, so sudo may
+	// prompt for a password here as expected (unlike read-only `audit`).
+	gens, err := listGenerations(ctx, s.runner, profile, sudo, false)
 	if err != nil {
 		// Intentional bash-parity: a profile whose nix-env listing fails prunes
 		// nothing and the run continues.
@@ -231,7 +236,7 @@ func (s *Store) processProfile(ctx context.Context, out io.Writer, counts map[st
 	}
 	fmt.Fprintf(out, "  %s: %d generation(s) to prune (%s)\n", label, len(nums), strings.Join(strs, " "))
 	if !dryRun {
-		_ = pruneGenerations(ctx, s.runner, profile, nums, sudo)
+		_ = pruneGenerations(ctx, s.runner, profile, nums, sudo, false)
 	}
 }
 

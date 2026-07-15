@@ -90,7 +90,7 @@ func TestListGenerations_ParsesCurrent(t *testing.T) {
 	f.AddResponse("nix-env", []string{"--profile", "/p", "--list-generations"}, exec.Result{Stdout: []byte(
 		"   1   2024-01-01 12:00:00\n   2   2099-01-01 12:00:00   (current)\n",
 	)}, nil)
-	g, err := listGenerations(context.Background(), f, "/p", false)
+	g, err := listGenerations(context.Background(), f, "/p", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,12 +99,14 @@ func TestListGenerations_ParsesCurrent(t *testing.T) {
 	}
 }
 
+// TestListGenerations_Sudo covers the interactive (deepclean) path:
+// nonInteractive=false → sudo is invoked WITHOUT -n, so it may prompt.
 func TestListGenerations_Sudo(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("sudo", []string{"nix-env", "--profile", "/p", "--list-generations"}, exec.Result{Stdout: []byte(
 		"   1   2024-01-01 12:00:00   (current)\n",
 	)}, nil)
-	g, err := listGenerations(context.Background(), f, "/p", true)
+	g, err := listGenerations(context.Background(), f, "/p", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +116,33 @@ func TestListGenerations_Sudo(t *testing.T) {
 	calls := f.Calls()
 	if len(calls) != 1 || calls[0].Name != "sudo" {
 		t.Fatalf("expected call recorded with name 'sudo', got %+v", calls)
+	}
+	if len(calls[0].Args) == 0 || calls[0].Args[0] != "nix-env" {
+		t.Fatalf("interactive path must NOT pass -n; got args %v", calls[0].Args)
+	}
+}
+
+// TestListGenerations_NonInteractiveUsesDashN covers the read-only (audit)
+// path: nonInteractive=true → sudo is invoked WITH -n so it fails fast instead
+// of blocking on a password prompt (pg2-ssp8).
+func TestListGenerations_NonInteractiveUsesDashN(t *testing.T) {
+	f := exec.NewFakeRunner()
+	f.AddResponse("sudo", []string{"-n", "nix-env", "--profile", "/p", "--list-generations"}, exec.Result{Stdout: []byte(
+		"   1   2024-01-01 12:00:00   (current)\n",
+	)}, nil)
+	g, err := listGenerations(context.Background(), f, "/p", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g) != 1 || g[0].Num != 1 || !g[0].Current {
+		t.Fatalf("parsed wrong with nonInteractive sudo: %+v", g)
+	}
+	calls := f.Calls()
+	if len(calls) != 1 || calls[0].Name != "sudo" {
+		t.Fatalf("expected one sudo call, got %+v", calls)
+	}
+	if len(calls[0].Args) < 2 || calls[0].Args[0] != "-n" || calls[0].Args[1] != "nix-env" {
+		t.Fatalf("non-interactive path must pass `-n nix-env ...`; got args %v", calls[0].Args)
 	}
 }
 
@@ -127,7 +156,7 @@ func TestListGenerations_SkipsMalformed(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("nix-env", []string{"--profile", "/p", "--list-generations"},
 		exec.Result{Stdout: []byte(stdout)}, nil)
-	g, err := listGenerations(context.Background(), f, "/p", false)
+	g, err := listGenerations(context.Background(), f, "/p", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +168,7 @@ func TestListGenerations_SkipsMalformed(t *testing.T) {
 func TestPruneGenerations_Sudo(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("sudo", []string{"nix-env", "--profile", "/p", "--delete-generations", "1", "3"}, exec.Result{}, nil)
-	if err := pruneGenerations(context.Background(), f, "/p", []int{1, 3}, true); err != nil {
+	if err := pruneGenerations(context.Background(), f, "/p", []int{1, 3}, true, false); err != nil {
 		t.Fatal(err)
 	}
 }

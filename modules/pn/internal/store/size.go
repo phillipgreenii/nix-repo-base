@@ -90,10 +90,19 @@ func profileClosureSize(ctx context.Context, r exec.Runner, profile string) stri
 	return formatSize(bytes)
 }
 
-func deadPathsSize(ctx context.Context, r exec.Runner) string {
-	res, err := r.Run(ctx, "sudo", []string{"nix-store", "--gc", "--print-dead"}, exec.RunOptions{})
+// deadPathsSize estimates reclaimable (dead) store space via
+// `sudo nix-store --gc --print-dead`. nonInteractive threads sudo's -n flag
+// (pg2-ssp8): read-only `audit --full` passes true so sudo fails fast instead
+// of prompting on /dev/tty and hanging in a non-interactive context; the
+// interactive/mutating `deepclean` dry-run passes false so sudo may still
+// prompt as before. On a sudo failure it returns "unknown" (matching
+// profileClosureSize) rather than "0 B", so the caller still renders the
+// section without falsely reporting zero reclaimable space.
+func deadPathsSize(ctx context.Context, r exec.Runner, nonInteractive bool) string {
+	name, args := sudoArgs(true, nonInteractive, "nix-store", "--gc", "--print-dead")
+	res, err := r.Run(ctx, name, args, exec.RunOptions{})
 	if err != nil {
-		return formatSize(0)
+		return "unknown"
 	}
 	paths := nonEmptyLines(res.Stdout)
 	if len(paths) == 0 {

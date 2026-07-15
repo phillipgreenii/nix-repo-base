@@ -68,7 +68,11 @@ func (s *Store) Audit(ctx context.Context, out, errOut io.Writer, opts AuditOpti
 	fmt.Fprintln(out, "=== Nix Store ===")
 	fmt.Fprintf(out, "Volume used: %s\n", storeSize(ctx, s.runner))
 	if opts.Full {
-		fmt.Fprintf(out, "Reclaimable (dead paths): %s\n", deadPathsSize(ctx, s.runner))
+		// nonInteractive=true: like the system-profile listing above, the
+		// read-only audit must never block on a sudo password prompt (pg2-ssp8).
+		// `sudo -n` fails fast; deadPathsSize then reports "unknown" and this
+		// section still renders.
+		fmt.Fprintf(out, "Reclaimable (dead paths): %s\n", deadPathsSize(ctx, s.runner, true))
 	}
 
 	return nil
@@ -89,7 +93,11 @@ func (s *Store) auditProfile(ctx context.Context, out io.Writer, category, profi
 	fmt.Fprintf(out, "  %s:\n", label)
 	fmt.Fprintf(out, "    Profile: %s\n", profile)
 
-	gens, err := listGenerations(ctx, s.runner, profile, sudo)
+	// nonInteractive=true: `audit` is read-only and must never block on a sudo
+	// password prompt (pg2-ssp8). With `sudo -n`, an absent credential fails
+	// fast; the tolerate-error path below then emits the header with no
+	// generations and the remaining sudo-free sections still render.
+	gens, err := listGenerations(ctx, s.runner, profile, sudo, true)
 	if err == nil {
 		for _, g := range gens {
 			currentWord := ""

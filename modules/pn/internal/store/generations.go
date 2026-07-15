@@ -15,15 +15,28 @@ type generation struct {
 	Current bool
 }
 
-func sudoArgs(sudo bool, name string, args ...string) (string, []string) {
-	if sudo {
-		return "sudo", append([]string{name}, args...)
+// sudoArgs prefixes name+args with "sudo" when sudo is true. When
+// nonInteractive is also true it inserts sudo's -n flag: sudo(8) then never
+// prompts for a password on /dev/tty and instead fails fast with a non-zero
+// exit if no credentials are cached. Read-only callers (the `audit` command)
+// pass nonInteractive=true so they can never block on a password prompt in a
+// non-interactive context (CI, scripted audit, an agent capturing output);
+// interactive/mutating callers (`deepclean`) pass false so sudo may still
+// prompt as expected. When sudo is false, nonInteractive has no effect.
+func sudoArgs(sudo, nonInteractive bool, name string, args ...string) (string, []string) {
+	if !sudo {
+		return name, args
 	}
-	return name, args
+	prefix := []string{}
+	if nonInteractive {
+		prefix = append(prefix, "-n")
+	}
+	prefix = append(prefix, name)
+	return "sudo", append(prefix, args...)
 }
 
-func listGenerations(ctx context.Context, r exec.Runner, profile string, sudo bool) ([]generation, error) {
-	name, args := sudoArgs(sudo, "nix-env", "--profile", profile, "--list-generations")
+func listGenerations(ctx context.Context, r exec.Runner, profile string, sudo, nonInteractive bool) ([]generation, error) {
+	name, args := sudoArgs(sudo, nonInteractive, "nix-env", "--profile", profile, "--list-generations")
 	res, err := r.Run(ctx, name, args, exec.RunOptions{})
 	if err != nil {
 		return nil, err
@@ -81,7 +94,7 @@ func generationsToPrune(gens []generation, keepDays, keepCount int, now time.Tim
 	return del
 }
 
-func pruneGenerations(ctx context.Context, r exec.Runner, profile string, nums []int, sudo bool) error {
+func pruneGenerations(ctx context.Context, r exec.Runner, profile string, nums []int, sudo, nonInteractive bool) error {
 	if len(nums) == 0 {
 		return nil
 	}
@@ -89,7 +102,7 @@ func pruneGenerations(ctx context.Context, r exec.Runner, profile string, nums [
 	for i, n := range nums {
 		strs[i] = strconv.Itoa(n)
 	}
-	name, args := sudoArgs(sudo, "nix-env", "--profile", profile, "--delete-generations")
+	name, args := sudoArgs(sudo, nonInteractive, "nix-env", "--profile", profile, "--delete-generations")
 	args = append(args, strs...)
 	_, err := r.Run(ctx, name, args, exec.RunOptions{})
 	return err

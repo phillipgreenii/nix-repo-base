@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -94,5 +95,58 @@ func TestRuntimeRootsSummary_LsofOnly(t *testing.T) {
 		"  Tip: Restarting applications and re-running may free additional space"
 	if got != want {
 		t.Fatalf("runtimeRootsSummary = %q, want %q", got, want)
+	}
+}
+
+// TestDeadPathsSize_NonInteractiveUsesDashN covers the read-only (audit --full)
+// path: nonInteractive=true → `sudo -n nix-store --gc --print-dead` so it can
+// never block on a password prompt (pg2-ssp8).
+func TestDeadPathsSize_NonInteractiveUsesDashN(t *testing.T) {
+	f := exec.NewFakeRunner()
+	deadPath := "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-dead"
+	f.AddResponse("sudo", []string{"-n", "nix-store", "--gc", "--print-dead"},
+		exec.Result{Stdout: []byte(deadPath + "\n")}, nil)
+	f.AddResponse("nix", []string{"path-info", "-S", deadPath},
+		exec.Result{Stdout: []byte(deadPath + " 1048576\n")}, nil)
+
+	if got := deadPathsSize(context.Background(), f, true); got != "1.0 MiB" {
+		t.Fatalf("deadPathsSize = %q, want 1.0 MiB", got)
+	}
+	calls := f.Calls()
+	if len(calls) == 0 || calls[0].Name != "sudo" || len(calls[0].Args) < 2 ||
+		calls[0].Args[0] != "-n" || calls[0].Args[1] != "nix-store" {
+		t.Fatalf("non-interactive path must pass `-n nix-store ...`; got %+v", calls)
+	}
+}
+
+// TestDeadPathsSize_InteractiveNoDashN covers the interactive (deepclean dry-run)
+// path: nonInteractive=false → plain `sudo nix-store --gc --print-dead` (no -n),
+// preserving the prompt-if-needed behavior.
+func TestDeadPathsSize_InteractiveNoDashN(t *testing.T) {
+	f := exec.NewFakeRunner()
+	f.AddResponse("sudo", []string{"nix-store", "--gc", "--print-dead"},
+		exec.Result{Stdout: []byte("")}, nil)
+
+	if got := deadPathsSize(context.Background(), f, false); got != "0 B" {
+		t.Fatalf("deadPathsSize = %q, want 0 B (no dead paths)", got)
+	}
+	calls := f.Calls()
+	if len(calls) == 0 || calls[0].Name != "sudo" || len(calls[0].Args) == 0 ||
+		calls[0].Args[0] != "nix-store" {
+		t.Fatalf("interactive path must NOT pass -n; got %+v", calls)
+	}
+}
+
+// TestDeadPathsSize_SudoFailureUnknown asserts graceful degradation: when
+// `sudo -n` fails fast (no cached credentials), deadPathsSize returns "unknown"
+// (not a misleading "0 B") so the caller renders the section without hanging or
+// aborting.
+func TestDeadPathsSize_SudoFailureUnknown(t *testing.T) {
+	f := exec.NewFakeRunner()
+	f.AddResponse("sudo", []string{"-n", "nix-store", "--gc", "--print-dead"},
+		exec.Result{ExitCode: 1}, errors.New("sudo: a password is required"))
+
+	if got := deadPathsSize(context.Background(), f, true); got != "unknown" {
+		t.Fatalf("deadPathsSize on sudo failure = %q, want unknown", got)
 	}
 }
