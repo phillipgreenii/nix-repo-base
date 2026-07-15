@@ -741,6 +741,17 @@ ul_finalize() {
   echo "  Failed:  ${_UL_STEPS_FAILED}"
   echo "  Skipped: ${_UL_STEPS_SKIPPED}"
 
+  # Machine-readable result line for the bash↔Go boundary (ADR 0020). pn runs
+  # update-locks.sh and, on the green path, sees only exit 0 — it has NO view of
+  # the transient count, so a step misclassified transient every run silently
+  # skips a real update while keeping `pn workspace update` green. pn parses the
+  # LAST "UL_RESULT transient=<N>" line from this script's captured stdout and
+  # warns when N>0. Emitted here (before BOTH the failure `exit 1` and the
+  # success `exit 0` below) so the count always crosses the boundary; a resource
+  # abort exits from ul_run_step earlier and never reaches this line (pn stops
+  # the whole run on that exit anyway). Stable key=value form, extensible later.
+  echo "UL_RESULT transient=${_UL_STEPS_TRANSIENT}"
+
   if [[ ${#_UL_UPGRADED_STEPS[@]} -gt 0 ]]; then
     echo ""
     echo "Upgrades applied:"

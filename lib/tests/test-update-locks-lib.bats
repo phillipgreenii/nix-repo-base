@@ -950,6 +950,47 @@ SCRIPT
   [[ "$output" == *"Failed:  0"* ]]
 }
 
+# --- ul_finalize: machine-readable UL_RESULT line (bash↔Go boundary, ADR 0020) ---
+
+@test "ul_finalize emits UL_RESULT transient=N so pn sees the transient count (green path)" {
+  # A green run with a transient step: exit 0, but the machine-readable line
+  # carries the transient count pn cannot otherwise see (see sub-bash rationale
+  # on the test above).
+  run bash -c '
+    source "'"$UL_LOCKS_LIB"'"
+    ul_setup "test-project" "'"$TEST_DIR"'" >/dev/null 2>&1
+    net_fail() { echo "dial tcp 1.2.3.4:443: i/o timeout" >&2; return 1; }
+    ul_run_step "net-step" "update: net" net_fail
+    ul_finalize
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"UL_RESULT transient=1"* ]]
+}
+
+@test "ul_finalize emits UL_RESULT transient=0 when nothing was transient" {
+  run bash -c '
+    source "'"$UL_LOCKS_LIB"'"
+    ul_setup "test-project" "'"$TEST_DIR"'" >/dev/null 2>&1
+    noop() { true; }
+    ul_run_step "s1" "msg" noop
+    ul_finalize
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"UL_RESULT transient=0"* ]]
+}
+
+@test "ul_finalize emits UL_RESULT on the failure (exit 1) path too" {
+  run bash -c '
+    source "'"$UL_LOCKS_LIB"'"
+    ul_setup "test-project" "'"$TEST_DIR"'" >/dev/null 2>&1
+    fail() { return 1; }
+    ul_run_step "bad-step" "msg" fail
+    ul_finalize
+  '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"UL_RESULT transient=0"* ]]
+}
+
 @test "ul_run_step resource failure aborts update-locks with UL_RC_ABORT (77)" {
   run bash -c '
     source "'"$UL_LOCKS_LIB"'"

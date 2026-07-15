@@ -87,10 +87,17 @@ pipeline surfaces 77 as `update-locks.sh`'s own exit code.
 - **Consumers are unaffected.** They call `ul_run_step <cmd>` + `ul_finalize`; the lib owns
   classification. `verify-provenance.sh` (nix-overlay) is a step whose genuine failures
   carry no network signature, so they correctly stay `hard`.
-- **Known gap — silent transient churn.** A step misclassified as transient every run keeps
-  the run green with only a `Transient: N` summary line; `pn` sees exit 0 and cannot see the
-  transient count across the bash↔Go boundary. Accepted for now; a future amendment may
-  surface the transient count to `pn` (e.g. a `project_result` field or a warn event).
+- **Silent transient churn — surfaced to `pn` (amended, pg2-xdnmj).** A step misclassified as
+  transient every run keeps the run green with only a `Transient: N` summary line. This was
+  originally an accepted gap: `pn` saw exit 0 and could not see the transient count across the
+  bash↔Go boundary. It is now closed by reusing the existing channels: `ul_finalize` prints a
+  machine-readable `UL_RESULT transient=<N>` line (a stable key=value contract) on every exit
+  path, and `pn` parses the last such line from update-locks.sh's captured stdout, adds a
+  `transient` field to the `project_result` event, and **escalates that event to `warn` when
+  `transient > 0`** (outcome stays `ok`). An automated `pn workspace update` watching the event
+  stream at warn level now sees a permanently-skipped update instead of a green no-op. A
+  resource-abort exits before `ul_finalize`, so no `UL_RESULT` line is emitted there — `pn`
+  stops the whole run on that exit anyway, and a missing line parses as `transient = 0`.
 - **Archived `note` may omit the ENOSPC line.** `CommandError.Error()` keeps the first 512
   bytes of stderr; ENOSPC usually appears at the end of a long build log. The live abort
   banner and streamed message carry the cause, so only the archived note degrades.

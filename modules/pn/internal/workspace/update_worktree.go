@@ -99,6 +99,7 @@ type repoOutcome struct {
 	worktree   string // left-behind worktree path when status != ok
 	branch     string // left-behind branch when status != ok
 	note       string // recovery hint / human note
+	transient  int    // steps update-locks.sh classified transient (ADR 0020); >0 warns
 }
 
 // updateViaWorktree runs the worktree-isolated update over all repos in
@@ -152,11 +153,19 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		}
 		oc := ws.updateRepoViaWorktree(ctx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name), opts.SiblingsOnly)
 		level, outcome := "info", statusOK
-		if oc.status != statusOK {
+		msg := "project " + oc.status
+		switch {
+		case oc.status != statusOK:
 			level, outcome = "error", oc.status
+		case oc.transient > 0:
+			// A green repo (integrated ok) with transient steps escalates to warn:
+			// update-locks exited 0, but a permanently-transient step keeps silently
+			// skipping an update the exit code alone would never surface (ADR 0020).
+			level = "warn"
+			msg = fmt.Sprintf("project ok, but %d transient step(s) were skipped this run — a permanently-transient step keeps the run green while an update is silently skipped (ADR 0020)", oc.transient)
 		}
-		_ = opts.Log.Emit(level, "project_result", "project "+oc.status, map[string]any{
-			"name": oc.name, "outcome": outcome, "failed_step": oc.failedStep, "note": oc.note,
+		_ = opts.Log.Emit(level, "project_result", msg, map[string]any{
+			"name": oc.name, "outcome": outcome, "failed_step": oc.failedStep, "note": oc.note, "transient": oc.transient,
 		})
 		outcomes = append(outcomes, oc)
 		// An environmental/resource abort applies to every remaining repo, so stop
@@ -265,9 +274,14 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 	case siblingsOnly:
 		fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 	case fileExists(filepath.Join(wt, "update-locks.sh")):
-		if _, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
+		res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
 			Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out,
-		}); err != nil {
+		})
+		// res.Stdout is captured on success and on a hard CommandError alike, so the
+		// transient count crosses the boundary even when the repo later fails; a
+		// resource-abort exits before ul_finalize prints UL_RESULT, leaving it 0.
+		oc.transient = parseULTransient(res.Stdout)
+		if err != nil {
 			var cmdErr *exec.CommandError
 			if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {
 				return abort("update-locks", err)
