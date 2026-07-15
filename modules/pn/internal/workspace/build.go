@@ -8,7 +8,21 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
+
+// ensureExecTrusted gates execution of config-sourced command templates
+// (build_command / apply_command) behind the same TOFU trust check as event
+// hooks (ADR-0019). These commands are arbitrary argv taken from the
+// pn-workspace.toml discovered by walking up from the cwd and executed by
+// Build/Apply, so an untrusted checkout must not run them — closing the residual
+// the hook trust gate left open (bead pg2-x2q6o). --root / PN_WORKSPACE_ROOT do
+// NOT bypass it: an untrusted dir can also plant an env var. Callers invoke this
+// as a pre-exec abort (mirroring RunEventHooks' pre-phase behavior); the
+// ShowNixCommandsOnly dry-run, which only prints and never executes, is exempt.
+func (ws *Workspace) ensureExecTrusted() error {
+	return trust.EnsureAllowed(ws.root)
+}
 
 // BuildOptions configures Build.
 type BuildOptions struct {
@@ -64,6 +78,12 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 	if opts.ShowNixCommandsOnly {
 		fmt.Fprintln(out, strings.Join(append(append([]string{}, cmdArgs...), overrides...), " "))
 		return nil
+	}
+
+	// Trust gate (bead pg2-x2q6o): abort before executing the config-sourced
+	// build_command when the workspace root is untrusted.
+	if err := ws.ensureExecTrusted(); err != nil {
+		return err
 	}
 
 	fmt.Fprintf(out, "  --== %s: building flake ==--  \n", terminal)

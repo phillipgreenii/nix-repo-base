@@ -112,11 +112,12 @@ with a **direnv-style trust-on-first-use (TOFU) allowlist**:
   — MUST run `pn workspace allow` once after the new `pn` is deployed.
 - **Residual TOCTOU:** the guard hashes the TOML, then `RunHooks` re-reads/executes; a swap
   between check and exec requires local write access to the root (already full compromise).
-- **Residual, NOT closed here (same vuln class, tracked separately):** `build_command` /
-  `apply_command` are also arbitrary commands taken from the discovered `pn-workspace.toml`,
-  executed as argv at `build.go`/`apply.go` — they do NOT pass through `RunEventHooks` and are
-  NOT covered by this gate. Their trigger bar is higher (a deliberate `pn workspace
-build`/`apply` plus a terminal repo present on disk); a follow-up bead SHOULD gate them
-  behind the same trust check.
+- **Residual, now closed (bd pg2-x2q6o):** `build_command` / `apply_command` are also arbitrary
+  commands taken from the discovered `pn-workspace.toml`, executed as argv at
+  `build.go`/`apply.go`; they do NOT pass through `RunEventHooks`. They MUST pass the same
+  `trust.EnsureAllowed(root)` check before execution: `Build` and `Apply` abort pre-exec when the
+  root is untrusted (`Apply` before even the nix-daemon probe). The `ShowNixCommandsOnly` dry-run
+  is exempt — it only prints the resolved argv and never executes. `--root` / `PN_WORKSPACE_ROOT`
+  do NOT bypass it, matching the hook gate.
 
-Reference: bd pg2-oymai (RFC 2119 language MUST/SHOULD as above).
+Reference: bd pg2-oymai; residual closed by bd pg2-x2q6o (RFC 2119 language MUST/SHOULD as above).

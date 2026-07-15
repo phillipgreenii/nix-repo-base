@@ -78,6 +78,7 @@ url = "github:owner/dep"
   },
   "edges": [{"consumer": "leaf", "alias": "dep", "target": "dep"}]
 }`)
+	trustWS(t, root) // upgrade's apply phase now gates on workspace trust (bead pg2-x2q6o)
 
 	f := exec.NewFakeRunner()
 	leaf := filepath.Join(root, "leaf")

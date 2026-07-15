@@ -74,6 +74,13 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		return nil
 	}
 
+	// Trust gate (bead pg2-x2q6o): abort before ANY execution (including the nix
+	// daemon check and rebuild probe) when the workspace root is untrusted, so
+	// the config-sourced apply_command is never run from an untrusted checkout.
+	if err := ws.ensureExecTrusted(); err != nil {
+		return err
+	}
+
 	if id := ws.config.Workspace.Id; id != "" {
 		if err := checkWsidUnique(id, ws.root); err != nil {
 			return err

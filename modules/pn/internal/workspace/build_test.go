@@ -3,11 +3,13 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
 func TestBuild_TerminalOnlyWithOverrides(t *testing.T) {
@@ -34,6 +36,7 @@ url = "github:owner/dep"
   },
   "edges": [{"consumer": "leaf", "alias": "dep-input", "target": "dep"}]
 }`)
+	trustWS(t, root) // build now gates on workspace trust (bead pg2-x2q6o)
 	leafDir := filepath.Join(root, "leaf")
 	depDir := filepath.Join(root, "dep")
 	f := exec.NewFakeRunner()
@@ -204,5 +207,36 @@ url = "github:owner/leaf"
 	}
 	if err := w.Build(context.Background(), &bytes.Buffer{}, BuildOptions{}); err == nil {
 		t.Fatal("expected error when terminal unset")
+	}
+}
+
+// TestBuild_UntrustedAborts is the regression test for bead pg2-x2q6o: build_command
+// is arbitrary argv taken from the discovered pn-workspace.toml and executed by Build,
+// so an untrusted workspace root MUST abort before the command runs — closing the
+// residual the ADR-0019 hook trust gate left open. Mirrors RunEventHooks' pre-phase
+// abort. The isolated, empty XDG_STATE_HOME trust store makes the workspace untrusted.
+func TestBuild_UntrustedAborts(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "leaf"
+build_command = "touch pwned.txt"
+
+[repos.leaf]
+url = "github:owner/leaf"
+`)
+	f := exec.NewFakeRunner()
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	err = w.Build(context.Background(), &bytes.Buffer{}, BuildOptions{Builder: "darwin-rebuild"})
+	if !errors.Is(err, trust.ErrUntrusted) {
+		t.Fatalf("Build of an untrusted workspace must abort with ErrUntrusted; got %v", err)
+	}
+	if len(f.Calls()) != 0 {
+		t.Errorf("untrusted build must not exec any command; got %d calls: %+v", len(f.Calls()), f.Calls())
 	}
 }

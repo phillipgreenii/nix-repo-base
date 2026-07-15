@@ -64,6 +64,7 @@ apply_command = "sudo darwin-rebuild switch --flake {terminal_repo_dir}#{hostnam
 [repos.leaf]
 url = "github:owner/leaf"
 `)
+	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
 	// The override checkout — a stand-in coordinated-worktree of "leaf" at a
 	// path OTHER than the canonical <root>/leaf.
 	overrideDir := t.TempDir()

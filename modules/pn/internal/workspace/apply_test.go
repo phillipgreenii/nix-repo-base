@@ -3,12 +3,14 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
 const applyTOML = `
@@ -45,6 +47,7 @@ func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
 	// Write lock so overrideInputArgsFor emits the dep-input override.
 	writeFile(t, filepath.Join(root, LockFileName), applyLock)
+	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
 	leafDir := filepath.Join(root, "leaf")
 	depDir := filepath.Join(root, "dep")
 
@@ -127,6 +130,7 @@ func TestApply_RestartsFsmonitorWhenGitVersionChanges(t *testing.T) {
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
 
 	f, _ := applyTestRunner(t, root)
 	// git --exec-path: old then new (changed store path) — FIFO consumption.
@@ -157,6 +161,7 @@ func TestApply_RestartsFsmonitorWhenGitBinaryChangesSameVersion(t *testing.T) {
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
 
 	f, _ := applyTestRunner(t, root)
 	// git --exec-path: same version 2.54.0, different store path before/after.
@@ -185,6 +190,7 @@ func TestApply_NoFsmonitorRestartWhenGitUnchanged(t *testing.T) {
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
 
 	f, _ := applyTestRunner(t, root)
 	// git --exec-path: same path both times — git binary unchanged.
@@ -210,6 +216,7 @@ func TestApply_NoFsmonitorRestartOnSkippedRebuild(t *testing.T) {
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
 	leafDir := filepath.Join(root, "leaf")
 
 	f := exec.NewFakeRunner()
@@ -256,6 +263,29 @@ url = "github:owner/leaf"
 	}
 	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{}); err == nil {
 		t.Fatal("expected error when apply_command unset")
+	}
+}
+
+// TestApply_UntrustedAborts is the regression test for bead pg2-x2q6o: apply_command
+// is arbitrary argv taken from the discovered pn-workspace.toml and executed by Apply,
+// so an untrusted workspace root MUST abort before ANY execution — not even the nix
+// daemon check runs. Closes the residual the ADR-0019 hook trust gate left open.
+func TestApply_UntrustedAborts(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // empty trust store ⇒ untrusted
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	f := exec.NewFakeRunner()
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	err = w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true})
+	if !errors.Is(err, trust.ErrUntrusted) {
+		t.Fatalf("Apply of an untrusted workspace must abort with ErrUntrusted; got %v", err)
+	}
+	if len(f.Calls()) != 0 {
+		t.Errorf("untrusted apply must not exec anything (not even the daemon check); got %d calls: %+v", len(f.Calls()), f.Calls())
 	}
 }
 
