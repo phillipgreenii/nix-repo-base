@@ -335,8 +335,15 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		if err := git(primary, "merge", "--ff-only", branch); err != nil {
 			// Not fast-forwardable (remote advanced/diverged), not a dirty-file
 			// issue. Restore the user's tree before deferring.
-			_ = git(primary, "stash", "pop")
 			oc.status, oc.failedStep = statusDeferred, "ff-merge"
+			if perr := git(primary, "stash", "pop"); perr != nil {
+				// The restore pop failed too: the autostashed changes are stranded in
+				// the stash. Don't claim they were restored — point at the stash so the
+				// user can recover them (mirrors the hard-defer autostash-pop note below).
+				oc.note = fmt.Sprintf("remote main advanced and restoring your changes failed; reset local then recover your stash: git -C %s reset --hard origin/main; your changes are in `git stash list`", primary)
+				fmt.Fprintf(out, "  ⚠ %s: ff-merge deferred (stash retained) — %s (worktree at %s)\n", name, oc.note, wt)
+				return oc
+			}
 			oc.note = fmt.Sprintf("remote main advanced; reset local: git -C %s reset --hard origin/main", primary)
 			fmt.Fprintf(out, "  ⚠ %s: ff-merge deferred (stash restored) — %s (worktree at %s)\n", name, oc.note, wt)
 			return oc

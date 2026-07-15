@@ -380,6 +380,52 @@ func TestUpdateViaWorktree_DirtyMainFfFailsAfterStash(t *testing.T) {
 	assertLeftBehind(t, f, s, foo, wt, "ff-merge")
 }
 
+// TestUpdateViaWorktree_DirtyMainFfFailsAfterStash_PopAlsoFails: first ff fails,
+// stash push OK, the RETRY ff still fails (not fast-forwardable), AND the restore
+// `stash pop` itself fails → still defer at "ff-merge", but the note MUST point
+// the user at `git stash list` to recover their stranded changes and MUST NOT
+// falsely claim the stash was restored.
+func TestUpdateViaWorktree_DirtyMainFfFailsAfterStash_PopAlsoFails(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	scriptDirtyMainProbe(f, foo)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", foo, "stash", "push", "-m", "pn-update autostash " + branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // retry ff FAILS (not fast-forwardable)
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("git", []string{"-C", foo, "stash", "pop"}, // restore pop ALSO FAILS
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+
+	w, _ := Open(root, f)
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
+		t.Fatalf("expected deferred error when the retry ff and the restore pop both fail")
+	}
+	s := out.String()
+	// The retry ff was attempted, so the restore `stash pop` must have been issued.
+	poppedStash := false
+	for _, c := range f.Calls() {
+		if c.Name == "git" && len(c.Args) >= 4 && c.Args[1] == foo && c.Args[2] == "stash" && c.Args[3] == "pop" {
+			poppedStash = true
+		}
+	}
+	if !poppedStash {
+		t.Errorf("ff-merge defer must still attempt the restore `git -C %s stash pop`; calls:\n%v", foo, f.Calls())
+	}
+	// The pop failed, so the note MUST point at the retained stash for recovery.
+	if !strings.Contains(s, "stash list") {
+		t.Errorf("restore-pop failure must surface the retained-stash recovery hint (`git stash list`); got:\n%s", s)
+	}
+	// The message MUST NOT falsely claim the stash was restored.
+	if strings.Contains(s, "stash restored") {
+		t.Errorf("restore-pop failure must not claim the stash was restored; got:\n%s", s)
+	}
+	assertLeftBehind(t, f, s, foo, wt, "ff-merge")
+}
+
 // TestUpdateViaWorktree_DirtyMainPopConflicts: first ff fails, stash push OK,
 // retry ff OK (integration landed), but `stash pop` CONFLICTS → HARD DEFER at
 // "autostash-pop". This is the silent-corruption guard: the run must NOT be OK

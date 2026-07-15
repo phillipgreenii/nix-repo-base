@@ -364,10 +364,12 @@ func TestSmoke_S33_WorktreeUpdate(t *testing.T) {
 }
 
 // TestSmoke_S33b_WorktreeUpdateDirtyMain: same topology as S33 but the primary
-// main is dirty (an uncommitted flake.nix change that does not collide with the
-// relocked path). The ff-first integration fast-forwards primary main to the
-// relock and round-trips the dirty change through autostash if needed, leaving
-// the change intact, an empty stash list, and no .pn-update residue.
+// main is dirty (an uncommitted flake.nix change that does NOT collide with the
+// relocked path). Because there is no collision, the ff-first integration
+// fast-forwards primary main to the relock on the FIRST ff — no autostash
+// round-trip is exercised here — leaving the dirty change intact, an empty stash
+// list, and no .pn-update residue. (The genuine collision/autostash branch is
+// covered by the TestUpdateViaWorktree_DirtyMainCollidesAutostashes unit test.)
 func TestSmoke_S33b_WorktreeUpdateDirtyMain(t *testing.T) {
 	runScenario(t, "s33b-worktree-update-dirty-main")
 }

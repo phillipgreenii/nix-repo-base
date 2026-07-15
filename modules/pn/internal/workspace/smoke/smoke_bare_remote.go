@@ -774,8 +774,9 @@ func assertS33WorktreeUpdate(t *testing.T, wsRoot string) {
 
 // assertS33bWorktreeUpdateDirtyMain verifies the ff-first dirty-main integration:
 // the relock reaches both primary and remote main (fast-forwarded), the dirty
-// flake.nix modification survives the autostash round-trip, the stash list is
-// empty, and no .pn-update worktree residue is left behind.
+// flake.nix modification survives the FIRST ff (no collision → no autostash
+// round-trip is exercised), the stash list is empty, and no .pn-update worktree
+// residue is left behind.
 func assertS33bWorktreeUpdateDirtyMain(t *testing.T, wsRoot string) {
 	t.Helper()
 	primary := filepath.Join(wsRoot, "solo")
@@ -801,8 +802,9 @@ func assertS33bWorktreeUpdateDirtyMain(t *testing.T, wsRoot string) {
 		t.Errorf("S33b: remote main %s != primary main %s", strings.TrimSpace(string(remoteHead)), strings.TrimSpace(string(primHead)))
 	}
 
-	// The uncommitted flake.nix change must survive (ff-direct keeps it in place;
-	// an autostash round-trip restores it).
+	// The uncommitted flake.nix change must survive: it does not collide with the
+	// relocked path, so the direct ff-first keeps it in place (no autostash
+	// round-trip happens in this scenario).
 	flakeNix := filepath.Join(primary, "flake.nix")
 	data, err := os.ReadFile(flakeNix)
 	if err != nil {

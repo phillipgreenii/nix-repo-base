@@ -3,10 +3,12 @@
 # Same topology as S33 (one bare-remote terminal repo with a committable
 # update-locks.sh) but the primary clone carries an uncommitted modification to
 # flake.nix before `workspace update`. The dirty file does NOT collide with the
-# relocked path (locked.txt), so the ff-first integration: attempts the ff,
-# falls back to autostash + retry on collision, and restores the stash — leaving
-# primary main fast-forwarded to the relock with the dirty change intact and an
-# empty stash list (autostash round-trip). Pre-cloning `solo` here mirrors S22b;
+# relocked path (locked.txt), so the ff-first integration fast-forwards on the
+# FIRST ff attempt — no autostash round-trip occurs — leaving primary main
+# fast-forwarded to the relock with the dirty change intact and an empty stash
+# list. (The collision path that DOES autostash + retry + restore is covered by
+# the TestUpdateViaWorktree_DirtyMainCollidesAutostashes unit test, not here.)
+# Pre-cloning `solo` here mirrors S22b;
 # `workspace clone` in command.txt is idempotent and skips the existing clone.
 set -euo pipefail
 
