@@ -969,7 +969,7 @@ cd /Users/phillipg/phillipg_mbp/.worktrees/pn-applied-gates-phase3/phillipgreeni
 git add docs/adr/ 2>/dev/null && git commit -m "docs(adr): note Phase-3 pb plugin ships the gate lifecycle guidance" || true
 ```
 
-- [ ] **Step 5: Update the bead and hand off the branches** — record completion on `pg2-k43p.5` (note the live `pn-workspace.toml` hand-edit + the user-only apply needed to activate `pb` + the wsid slug chosen), then proceed to the `superpowers:finishing-a-development-branch` flow to integrate the set (push/PR or local ff-merge per the pn-workspace-rules merge-back recipe). Do not delete the set until `pn workspace build` from the set root is green.
+- [ ] **Step 5: Update the bead and hand off the branches** — record completion on `pg2-k43p.5` (note the live `pn-workspace.toml` hand-edit + the user-only apply needed to activate `pb` + the wsid slug chosen), then proceed to the `integrate-branch` flow to integrate the set (push/PR or local ff-merge per the pn-workspace-rules merge-back recipe). Do not delete the set until `pn workspace build` from the set root is green.
 
 ```bash
 bd update pg2-k43p.5 --status=open   # or per the finishing-a-branch flow; add a closing comment first

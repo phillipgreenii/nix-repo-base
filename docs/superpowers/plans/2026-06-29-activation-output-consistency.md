@@ -666,7 +666,7 @@ Expected: each controlled section prints a `[tag]` header, colored `✓`/`⚠`/`
 
 - [ ] **Step 4: Integration / cleanup**
 
-Use the `superpowers:finishing-a-development-branch` skill to land the set (the spec's manual merge-back recipe: `pn workspace rebase main` in the set, `git merge --ff-only` per canonical repo, then remove the set and delete branches). Push / open PRs only if the user asks.
+Use the `integrate-branch` skill to land the set (the spec's manual merge-back recipe: `pn workspace rebase main` in the set, `git merge --ff-only` per canonical repo, then remove the set and delete branches). Push / open PRs only if the user asks.
 
 ---
 

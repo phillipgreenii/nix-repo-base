@@ -226,12 +226,14 @@ pn workspace workforest prune
 git -C <root>/<repo> branch -D pn-update/<run-ts>
 ```
 
+> Scope note: this cleanup is for `pn workspace update`'s own left-behind worktree. A canonical found off-primary/dirty _outside_ this flow is a Tier R / R-3 stop-and-report — see [Asymmetric-defer recovery](#asymmetric-defer-recovery) below.
+
 ### Asymmetric-defer recovery
 
 This is `pn workspace update`'s **own** documented recovery step for one specific, bounded
 failure mode of its worktree-isolated flow — not a general technique for handling an
 off-`main`/dirty canonical elsewhere. Outside this pn-update flow, an agent that finds the
-canonical unexpectedly off its primary branch or dirty MUST stop and report (Tier R) — not
+canonical unexpectedly off its primary branch or dirty MUST stop and report (Tier R / R-3) — not
 reset, re-checkout, stash, or otherwise work around it.
 
 If a defer occurs _after_ the push (remote `main` already advanced, local `main` still behind),

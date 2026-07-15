@@ -1009,7 +1009,7 @@ func TestCheck_OnlyEnabledDuplicatesReported(t *testing.T) {
 - [ ] **Step 5: Manual smoke (read-only):**
   - `nix run .#pn -- osx tcc-check` — if terminal has FDA, observe either the duplicate report or "No TCC duplicates found" printed to stdout. If FDA is not granted, observe the warning on stderr and exit 0.
   - Do NOT run against a real TCC.db in CI or automated contexts.
-- [ ] **Step 6:** Open PR via `superpowers:finishing-a-development-branch`.
+- [ ] **Step 6:** Open PR via `integrate-branch`.
 
 ---
 

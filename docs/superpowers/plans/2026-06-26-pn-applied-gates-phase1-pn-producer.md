@@ -755,7 +755,7 @@ git commit -m "docs(adr): 0012 applied-state store + info API; amend 0002 for [w
 - [ ] `cd modules/pn && go test ./...` green.
 - [ ] From repo root: `nix flake check` (runs `pn-go-tests`) and `prek run --all-files` pass.
 - [ ] `pn workspace info --json` emits `{wsid, root, terminal, repos:[{name,path,applied_ref,dirty}]}` on the real workspace.
-- [ ] Confirm on a feature branch (not `main`); open PR / hand to the finishing-a-development-branch flow.
+- [ ] Confirm on a feature branch (not `main`); open PR / hand to the integrate-branch flow.
 
 ---
 

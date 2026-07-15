@@ -1432,7 +1432,7 @@ Examples:
   - `nix run .#pn -- store audit` → prints sectioned report with live progress; store size shown.
   - `nix run .#pn -- store deepclean --dry-run` → prints per-section "would prune" + DRY RUN summary; **no** sudo/GC/delete invoked. Verify output streams (sections appear as they complete), not withheld.
   - Do NOT run live `deepclean` as part of the gate (it calls `sudo` + deletes). Note in the PR that live deepclean was validated by unit tests + dry-run only.
-- [ ] **Step 6: Commit** any test/doc fixups; open PR / finish branch via `superpowers:finishing-a-development-branch`.
+- [ ] **Step 6: Commit** any test/doc fixups; open PR / finish branch via `integrate-branch`.
 
 ---
 
