@@ -1,0 +1,25 @@
+# TEST FIXTURE — uv2nix drift-equality + version-stamp (bead pg2-r4cfy / ADR 0022).
+# DO NOT DELETE. The sibling uv.lock is git-tracked and INTENTIONALLY PINNED:
+# `six` is present in base nixpkgs at 1.17.0, but the lock pins 1.16.0 so a
+# lock-driven build ships 1.16.0 while a name-match build would ship 1.17.0. Do
+# NOT run `uv lock`/`uv lock --upgrade` here and do NOT add it to any
+# update-locks.sh — the drift check asserts the shipped version equals the lock,
+# and asserts it differs from nixpkgs, so an upgraded lock breaks the test.
+#
+# The project name is INTENTIONALLY non-normalized (`py_lock_pin`, underscore) so
+# this fixture also guards the PEP 503 normalization of the version-stamp overlay
+# key: if the builder indexed the pythonSet by the raw name, the stamp would
+# silently no-op and app_version would stay 0.0.0 — which the drift check catches.
+[project]
+name = "py_lock_pin"
+version = "0.0.0"
+description = "uv2nix drift-equality + version-stamp fixture"
+requires-python = ">=3.11"
+dependencies = ["six==1.16.0"]
+
+[project.scripts]
+py-lock-pin = "py_lock_pin:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

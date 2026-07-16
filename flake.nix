@@ -24,6 +24,26 @@
       url = "github:nix-community/gomod2nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # uv2nix ecosystem (ADR 0022 spike, bead pg2-r4cfy) — lock-driven Python builds.
+    pyproject-nix = {
+      url = "github:pyproject-nix/pyproject.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    uv2nix = {
+      url = "github:pyproject-nix/uv2nix";
+      inputs = {
+        pyproject-nix.follows = "pyproject-nix";
+        nixpkgs.follows = "nixpkgs";
+      };
+    };
+    pyproject-build-systems = {
+      url = "github:pyproject-nix/build-system-pkgs";
+      inputs = {
+        pyproject-nix.follows = "pyproject-nix";
+        uv2nix.follows = "uv2nix";
+        nixpkgs.follows = "nixpkgs";
+      };
+    };
   };
 
   outputs =
@@ -370,22 +390,40 @@
                   "echo 'mkGoApp silently accepted a caller-passed version (bead pg2-zvt37)' >&2; exit 1"
               );
 
-            # Per-source digest in the Python derivation version (ADR 0011): the
-            # mkPythonBuilders factory's mkPythonPackage must stamp 0.0.0-<digest>.
-            python-version-digest = import ./lib/python-package-version-tests.nix { inherit pkgs; };
+            # Python builder checks (uv2nix, ADR 0022). Each test file imports the
+            # builder DIRECTLY and so MUST receive the 3 uv2nix inputs (the outer
+            # currying stage) or `nix flake check` fails at eval.
 
-            # Fail-fast dependency resolution (bead pg2-gjwpl): an unresolved
-            # pyproject dependency must throw by default, not silently drop.
-            python-resolve-fail-fast =
-              let
-                failures = pkgs.lib.runTests (import ./lib/python-package-resolve-tests.nix { inherit pkgs; });
-              in
-              pkgs.runCommand "check-python-resolve-fail-fast" { } (
-                if failures == [ ] then
-                  "touch $out"
-                else
-                  "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
-              );
+            # AC1 (ADR 0011): the nvd-visible derivation version is 0.0.0-<digest>,
+            # stamped on the wrapper. Eval-only (does not force loadWorkspace).
+            python-version-digest = import ./lib/python-package-version-tests.nix {
+              inherit pkgs;
+              inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+            };
+
+            # D1 headline proof: the shipped closure equals uv.lock, not incidental
+            # nixpkgs versions (six pinned 1.16.0 vs nixpkgs 1.17.0). Also asserts
+            # the relocated runtime version stamp took (AC2/AC3 Tier-1 slice).
+            python-lock-version-drift = import ./lib/python-package-drift-tests.nix {
+              inherit pkgs;
+              inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+            };
+
+            # Lock-driven resolution (beads pg2-gjwpl -> pg2-r4cfy): a dep absent
+            # from nixpkgs by name (eventsourcing) resolves from uv.lock and
+            # imports. The fail-loud NEGATIVE is deferred to the Tier-2/3 follow-up
+            # (see the test file header).
+            python-resolve-lock-driven = import ./lib/python-package-resolve-tests.nix {
+              inherit pkgs;
+              inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+            };
+
+            # D2: the agent-support shape (instantiate factory, no app/lock) still
+            # evaluates after currying.
+            python-factory-currying-eval = import ./lib/python-factory-currying-tests.nix {
+              inherit pkgs;
+              inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+            };
 
             # Full Go test gate for pn: runs `go test ./...` UNSCOPED over the whole
             # module (cmd/* + internal/*). The pn *package* build pins
@@ -567,9 +605,15 @@
               mkClaudeMarketplaceBuilders
               ;
           }
-          # Python package builder factory (per-source digest versioning; ADR 0011)
+          # Python package builder factory (lock-driven via uv2nix, ADR 0022;
+          # per-source digest versioning retained, ADR 0011). The uv2nix ecosystem
+          # inputs are curried in HERE — the loader is per-package (needs each
+          # package's src) so it cannot be a global pkgs overlay like gomod2nix;
+          # the exported factory keeps its `{ pkgs; lib; mkSrcDigest; }` signature.
           // {
-            mkPythonBuilders = import ./lib/python-package.nix;
+            mkPythonBuilders = import ./lib/python-package.nix {
+              inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+            };
           }
           # Activation-script output helpers
           // (import ./lib/activation.nix { });

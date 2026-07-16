@@ -26,3 +26,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0019](0019-per-repo-event-hooks.md)                             | Event-based workspace + per-repo hooks with override-aware `{nix_run}`     | Accepted (supersedes 0002 hooks; amends 0017)         |
 | [0020](0020-update-locks-failure-classification.md)              | `update-locks` failure classification (transient / resource / hard)        | Accepted                                              |
 | [0021](0021-subpackages-check-scoping-mkgotest.md)               | `subPackages` scopes the gomod2nix check hook — gate tests with `mkGoTest` | Accepted                                              |
+| [0022](0022-adopt-uv2nix-for-python-packages.md)                 | Adopt `uv2nix` for lock-driven Python builds (`mkPythonPackage`)           | Proposed                                              |

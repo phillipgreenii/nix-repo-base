@@ -35,6 +35,31 @@ Note: raw `buildGoModule` packages that do **not** go through these helpers (e.g
 repackages) keep their own `vendorHash` — this guidance is scoped to the `mkGoApp`/`mkGoBinary`
 family.
 
+## Python packages (`mkPythonPackage`)
+
+Python apps built through `lib.mkPythonBuilders` → `mkPythonPackage` (`lib/python-package.nix`) use
+the **uv2nix engine**: the shipped closure is resolved from each package's committed **`uv.lock`**, not
+name-matched against nixpkgs. Authority: **ADR
+[0022](docs/adr/0022-adopt-uv2nix-for-python-packages.md)** (retains 0006/0011 per-source-digest
+versioning).
+
+Rules for this family:
+
+- Commit a **`uv.lock`** beside `pyproject.toml`. It is **load-bearing** — it drives the build closure,
+  not just dev/CI — and must be git-tracked (an untracked lock is invisible to flake builds, and
+  `loadWorkspace` requires one at the workspace root). Do **not** delete/gitignore it or exclude it
+  from `src`.
+- Refresh dependencies with **`uv lock`** (or `uv add`) and commit the lock. There is **no** generate
+  step and **no** second lock artifact (unlike gomod2nix) — uv2nix reads `uv.lock` directly, so
+  `update-locks.sh` needs no uv2nix-specific step.
+- Do **not** hand-package deps via `fetchPypi`/`customDeps` or add `pypiToNixNameMappings` — the lock
+  resolves everything, including deps absent from nixpkgs by name. (These args are retained as accepted
+  **no-ops** only until the support-apps consumers are cleaned up; do not rely on them.)
+- The interpreter stays `pkgs.python3`; per-source-digest versioning (ADR 0006/0011) is preserved — the
+  nvd-visible `version` (`0.0.0-<digest>`) is stamped on the wrapper and the runtime `--version`
+  (`YY.MM.DD.SSSSS+<digest>`) is stamped on the root package's build.
+- Fixture locks under `lib/fixtures/` are intentionally pinned — never `uv lock --upgrade` them.
+
 ## Pre-commit hooks (`.pre-commit-config.yaml`)
 
 `.pre-commit-config.yaml` is a git-hooks.nix-generated **symlink into `/nix/store`** and MUST NOT

@@ -1,11 +1,19 @@
+# TEST FIXTURE — uv2nix absent-from-nixpkgs lock-driven resolution (bead
+# pg2-r4cfy / ADR 0022). DO NOT DELETE and do NOT `uv lock --upgrade`.
+# `eventsourcing` is ABSENT from base nixpkgs by name (the old name-match builder
+# could only resolve it via a hand-packaged fetchPypi block); only uv.lock can
+# resolve it. The check builds this fixture and asserts `import eventsourcing`
+# succeeds — proving the build is lock-driven, not name-matched.
 [project]
 name = "py-missing-dep"
 version = "0.0.0"
-description = "Fixture: declares a dependency absent from nixpkgs (bead pg2-gjwpl fail-fast test)"
-dependencies = [
-    "this-package-is-not-in-nixpkgs-xyz>=1.0",
-]
+description = "uv2nix absent-from-nixpkgs lock-driven fixture"
+requires-python = ">=3.11"
+dependencies = ["eventsourcing==9.4.6"]
+
+[project.scripts]
+py-missing-dep = "py_missing_dep:main"
 
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"

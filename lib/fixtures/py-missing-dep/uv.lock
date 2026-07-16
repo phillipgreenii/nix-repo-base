@@ -1,0 +1,35 @@
+version = 1
+revision = 3
+requires-python = ">=3.11"
+
+[[package]]
+name = "eventsourcing"
+version = "9.4.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6e/04/a8ff940a01ce65a985b94355fff581b18456564a943f36f3f9dbd5ba7166/eventsourcing-9.4.6.tar.gz", hash = "sha256:093742d5c2e4fcbe835c4b38c8d2193e1c38810c9d27eb76516f55947b096baa", size = 87446, upload-time = "2025-05-15T20:31:20.963Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/9b/05a74c4c0d979c79aee83835e5be9cb7f5016e3844f14a148c7ec416e28f/eventsourcing-9.4.6-py3-none-any.whl", hash = "sha256:5663f940156f55133eb407bb962349a631942fddb69064ab1040c2010cd6a761", size = 93791, upload-time = "2025-05-15T20:31:19.372Z" },
+]
+
+[[package]]
+name = "py-missing-dep"
+version = "0.0.0"
+source = { editable = "." }
+dependencies = [
+    { name = "eventsourcing" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "eventsourcing", specifier = "==9.4.6" }]
+
+[[package]]
+name = "typing-extensions"
+version = "4.16.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
+]
