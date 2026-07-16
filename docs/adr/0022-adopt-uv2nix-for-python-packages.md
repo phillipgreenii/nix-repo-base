@@ -1,14 +1,18 @@
-# Adopt `uv2nix` for Python packages (`mkPythonPackage`)
+# Adopt `uv2nix` for lock-driven Python builds (`mkPythonPackage`)
 
-**Status**: Proposed (base builder + Tier-1 checks implemented and green on aarch64-darwin; flip to
-**Accepted** on owner sign-off of the 3 flake inputs. Two independent reviews (ADR review
-APPROVE-WITH-CHANGES; test-coverage review INSUFFICIENT → resolved by the Validation section) plus a
-plan review (GO-WITH-ADJUSTMENTS) were applied. The riskiest mechanism — the version-relocation under
-`mkVirtualEnv` — is **spike- and check-confirmed** on aarch64-darwin; see Spike evidence in Context and
-Decision 4.)
-**Date**: 2026-07-15
+**Status**: Accepted for the **base** builder + Tier-1 checks — landed on base `main` (commit
+`8c22b00`), green under `nix flake check` on aarch64-darwin. **Scope boundary:** the consumer cutover
+(support-apps) and Tier-2/3 validation on both target systems — plus the sdist-forcing fixture and the
+fail-loud negative check — are **deferred to bead `pg2-wun6b`**; this ADR is not "fully rolled out"
+until that lands. Base `main` is landed **locally and not yet pushed**, so support-apps cannot lock onto
+the uv2nix rev until it is. Three independent reviews were applied (ADR review APPROVE-WITH-CHANGES;
+test-coverage review INSUFFICIENT → resolved by Validation; plan review GO-WITH-ADJUSTMENTS) plus a
+post-implementation ADR-accuracy review; the version-relocation under `mkVirtualEnv` is **spike- and
+check-confirmed** on aarch64-darwin (Spike evidence in Context, Decision 4, and the landed
+`python-lock-version-drift` check).
+**Date**: 2026-07-15 (Accepted 2026-07-16)
 **Deciders**: Phillip Green II
-**Bead**: `pg2-r4cfy` (follow-up/owner-decision from `pg2-gjwpl`)
+**Bead**: `pg2-r4cfy` (follow-up/owner-decision from `pg2-gjwpl`); consumer cutover: `pg2-wun6b`
 
 ## Context
 
@@ -66,9 +70,11 @@ workforest with the three inputs wired into base, three throwaway fixtures prove
    resolved from the lock and imported at runtime — confirming the work-activity-tracker cleanup.
 
 The build used plain nixpkgs with **no consumer pkgs overlay** (`pyproject-nix.build.packages` via
-`callPackage` from the captured input), confirming Decision 1's "no consumer input/overlay" claim.
-Not yet exercised by the spike (deferred to the full Tier-3 gate): x86_64-linux, an sdist-only dep,
-and the runtimeDeps/completions wrapper over the venv.
+`callPackage` from the captured input), confirming Decision 1's "no consumer input/overlay" claim. The
+landed Tier-1 checks then went further than the spike: the `stdenvNoCC.mkDerivation` wrapper (with
+`makeWrapper` + `help2man` + completions/tldr) is built and run by the drift/resolve checks. Still
+unexercised (deferred to the Tier-3 gate under `pg2-wun6b`): x86_64-linux, an sdist-only dep, and the
+`runtimeDeps`-on-PATH branch of the wrapper (both fixtures pass no `runtimeDeps`).
 
 ## Decision
 
@@ -100,8 +106,8 @@ pyproject-build-systems; };`. Every `self.lib.mkPythonBuilders { pkgs; lib; mkSr
    is untouched — including agent-support (factory-only, no app), which MUST keep evaluating.
 
 3. **Rewrite the resolution core** to construct a lock-driven `pythonSet` and build a virtualenv from
-   it. The canonical shape (exact API MUST be confirmed against the pinned inputs — see Alternatives /
-   the "Rough edges" note on version fragility):
+   it. This is the shape that shipped (API confirmed against the pinned inputs; the version-relocation
+   seam is named `versionOverlay` in the code):
 
    ```nix
    workspace  = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = src; };
@@ -139,27 +145,32 @@ pyproject-build-systems; };`. Every `self.lib.mkPythonBuilders { pkgs; lib; mkSr
    overlay from Decision 3), with the digest still computed at eval from the original `src` so it stays
    pure/cacheable.
 
-   > **SPIKE-CONFIRMED (aarch64-darwin, 2026-07-15).** The relocation works: substituting the stamp in
-   > the root project's `preBuild` set both `__version__` (literal) and `importlib.metadata` (PEP 440
-   > normalized) to the stamped value — `uv.lock`'s recorded `0.0.0` did **not** override it. One
-   > nuance to carry into the acceptance test: `importlib.metadata` normalizes leading zeros
-   > (`26.07`→`26.7`) exactly as the current builder does, so the AC2 `--version` regex MUST match
-   > whichever surface the app reads — `^\d{2}\.\d{2}\.\d{2}\.\d{5}\+` for `__version__`, or `\d{1,2}`
-   > per segment for `importlib.metadata`. Still to prove at Tier-3: x86_64-linux (the spike was
-   > darwin-only). Botched-relocation failure mode: `--version` prints `0.0.0`.
+   > **SPIKE- AND CHECK-CONFIRMED (aarch64-darwin).** The relocation works and is now guarded at
+   > Tier-1: the landed `python-lock-version-drift` check builds `py-lock-pin` and asserts the stamp
+   > took on **both** surfaces — `__version__` (literal) and `importlib.metadata` (PEP 440 normalized) —
+   > ≠ `0.0.0`. `uv.lock`'s recorded `0.0.0` did **not** override the substitution. Nuance recorded in
+   > the check: `importlib.metadata` normalizes leading zeros (`26.07`→`26.7`) exactly as the previous
+   > builder did, so a `--version` regex must match the surface the app reads —
+   > `^\d{2}\.\d{2}\.\d{2}\.\d{5}\+` for `__version__`, or `\d{1,2}` per segment for `importlib.metadata`.
+   > Still to prove at Tier-3 (under `pg2-wun6b`): x86_64-linux (the spike + Tier-1 were darwin-only).
+   > Botched-relocation failure mode: `--version` prints `0.0.0`.
 
 5. **Update and rewrite the two base Python checks for the currying signature.** Both
    `lib/python-package-version-tests.nix` and `lib/python-package-resolve-tests.nix` import the builder
    directly and MUST receive the three inputs (in their own args and in `flake.nix`'s checks wiring) or
    `nix flake check` fails at eval. The resolve check is **rewritten, not deleted** (see Validation).
 
-6. **Retain `customDeps`, `pypiToNixNameMappings`, `allowMissingDeps` in the signature as accepted
-   no-ops** so base can land BEFORE consumer cleanup without an unknown-arg eval error (the arg set has
-   no `...`). Their removal is a separate later bead once consumer usage is gone.
+6. **Retain `customDeps`, `pypiToNixNameMappings`, `allowMissingDeps`, `extraNativeBuildInputs` in the
+   signature as accepted no-ops** so base can land BEFORE consumer cleanup without an unknown-arg eval
+   error (the arg set has no `...`). As shipped, a `lib.warnIf` emits a deprecation nudge when a consumer
+   still passes a non-default value (and keeps the four args "used" for `deadnix`). Their removal is a
+   separate later bead (tracked under `pg2-wun6b`) once consumer usage is gone.
 
-7. **Land base-first, then support-apps cleanup** (coordinated, one logical change): work-activity-tracker
-   drops its hand-packaged `eventsourcing` block + `customDeps`; pd-schedule-manager drops
-   `pypiToNixNameMappings`.
+7. **Land base-first; support-apps cleanup is a separate follow-up.** As shipped, base landed alone
+   (commit `8c22b00`); the consumer cleanup — work-activity-tracker drops its hand-packaged
+   `eventsourcing` block + `customDeps`, pd-schedule-manager drops `pypiToNixNameMappings` — is tracked
+   in `pg2-wun6b`, not this change. The retained no-op args keep both consumers evaluating against the
+   new base until they cut over.
 
 ### The pattern (canonical reference — agents MUST follow this)
 
@@ -209,39 +220,48 @@ nix build .#<name>    # ships exactly the locked closure
 
 ## Validation
 
-A build passing does **not** prove the drift is closed: `python-version-digest` (digit/hyphen check),
-an absent-dep import test, and a naive `--version` exit-0 smoke can all stay green while the builder
-silently resolves a nixpkgs-present dependency from its incidental nixpkgs version. The acceptance bar
-is therefore a **positive drift-equality proof**, plus fail-loud and version-surface coverage. Full
-per-tier checklist lives on bead `pg2-r4cfy`; the load-bearing items:
+A build passing does **not** prove the drift is closed: a digit/hyphen version check, an absent-dep
+import test, and a naive `--version` exit-0 smoke can all stay green while the builder silently resolves
+a nixpkgs-present dependency from its incidental nixpkgs version. The acceptance bar is therefore a
+**positive drift-equality proof**, plus fail-loud and version-surface coverage.
 
-- **Drift-equality (the headline proof).** A fixture `lib/fixtures/py-lock-pin/` whose `uv.lock` pins a
-  **real, nixpkgs-present, pure-Python** dep (e.g. `certifi`) to a version **different from**
-  `pkgs.python3.pkgs.<dep>.version`; the artifact MUST report the **lock** version, and the check MUST
-  also assert `pinned != nixpkgs version` so it fails loudly ("re-pin") if nixpkgs ever converges onto
-  the pin rather than silently ceasing to discriminate. RED under the old name-match builder, GREEN
-  under uv2nix — this is the single test that proves D1.
-- **Absent-from-nixpkgs, lock-driven (positive).** A fixture depending on a **real** PyPI package absent
-  from nixpkgs by name (`eventsourcing`, the actual work-activity-tracker dep) with its real committed
-  `uv.lock`; build and assert `import eventsourcing` succeeds. NB the current `py-missing-dep` fixture
-  depends on a non-existent name (`this-package-is-not-in-nixpkgs-xyz`) that `uv lock` cannot resolve —
-  it MUST be re-authored against a real package for this positive case.
-- **Unresolvable lock entry (negative / fail-loud).** A separate fixture with a `uv.lock` entry pointing
-  at a nonexistent version/source; assert `nix build` (or `tryEval` on the drvPath) **fails**. Preserves
-  the superseded `pg2-gjwpl` fail-fast intent in the uv2nix world.
-- **Both version surfaces.** Retarget `python-version-digest` to the **wrapper** derivation and assert
-  `version` has prefix `0.0.0-` with digest `== mkSrcDigest src` (AC1); at Tier-3 assert runtime
-  `--version` carries the `YY.MM.DD.SSSSS+<digest>` shape with the `+` local separator (distinct from
-  the derivation's `-`), explicitly `!= 0.0.0` and `!=` the `0.0.0-<digest>` form (AC2/AC3). Pin the
-  exact regex to the surface the app reads: `^\d{2}\.\d{2}\.\d{2}\.\d{5}\+` for a literal `__version__`,
-  or `\d{1,2}` per segment if it reads `importlib.metadata` (spike-confirmed PEP 440 leading-zero
-  normalization, identical to the current builder).
-- **Completeness invariant.** The Tier-3 import smoke MUST import each app's **real top-level package**
-  (transitively its deps), never `import sys`, so a missing transitive is actually exercised.
-- **Currying / propagation seams.** demo-py gains a git-tracked `uv.lock`; both checks updated for
-  currying; a factory-instantiate-without-build eval check for the agent-support shape (D2); extend
-  `consumer-fixture-eval` to assert the 3 inputs are present transitively and `follows`-deduped onto
-  base's `nixpkgs` (D3); grep-assert no consumer flake declares the 3 inputs.
+### Landed at Tier-1 (base `nix flake check`, green on aarch64-darwin)
+
+- **Drift-equality (the headline proof) — `python-lock-version-drift`.** Fixture
+  `lib/fixtures/py-lock-pin/` pins `six==1.16.0` in `uv.lock` while base nixpkgs carries `1.17.0`; the
+  check builds the app, asserts the shipped `six` is the **lock** version (`1.16.0`), and asserts
+  `lock != pkgs.python3.pkgs.six.version` so it fails loudly ("re-pin") if nixpkgs ever converges rather
+  than silently ceasing to discriminate. RED under the old name-match builder, GREEN under uv2nix — the
+  single test that proves D1. It also asserts the relocated runtime version stamp took on **both**
+  surfaces (`importlib.metadata` and literal `__version__`) ≠ `0.0.0` (AC2/AC3 Tier-1 slice), and the
+  fixture's `[project].name` is deliberately non-normalized (`py_lock_pin`) so it guards the PEP 503
+  overlay-key normalization.
+- **Absent-from-nixpkgs, lock-driven (positive) — `python-resolve-lock-driven`.** Fixture
+  `lib/fixtures/py-missing-dep/` depends on `eventsourcing==9.4.6` (absent from nixpkgs by name; the
+  actual work-activity-tracker dep) with a real committed `uv.lock`; the check builds it and asserts
+  `import eventsourcing` succeeds. This is the rewritten regression intent of the superseded
+  `python-resolve-fail-fast`.
+- **Version digest (AC1) — `python-version-digest`.** Reads the **wrapper** derivation's `.version`
+  (eval-only, does not force `loadWorkspace`) and asserts prefix `0.0.0-` with digest `== mkSrcDigest
+src`. `demo-py` therefore needs **no** `uv.lock`.
+- **Currying / factory shape (D2) — `python-factory-currying-eval`.** Instantiates the curried factory
+  and asserts it exposes `mkPythonPackage` without a workspace/lock — the agent-support (factory-only)
+  shape. Both this and the other three checks import the builder directly and receive the 3 inputs.
+
+### Deferred to `pg2-wun6b` (Tier-2/3, both target systems)
+
+- **Fail-loud negative.** An unresolvable / missing-lock fixture asserting the build fails — empirically
+  uv2nix surfaces these as build-time or non-`tryEval`-catchable eval errors, so this needs a
+  build-attempt harness (`pn workspace build` asserting failure), not a hermetic Tier-1 check.
+- **`--version` on both systems.** Assert runtime `--version` carries the `YY.MM.DD.SSSSS+<digest>` shape
+  (`+` local separator, distinct from the derivation's `-`), `!= 0.0.0` and `!=` the `0.0.0-<digest>`
+  form. Pin the regex to the surface the app reads (`^\d{2}\.\d{2}\.\d{2}\.\d{5}\+` for `__version__`,
+  or `\d{1,2}` per segment for `importlib.metadata`).
+- **Completeness / import smoke.** Import each real app's **top-level package** (transitively its deps),
+  never `import sys`, so a missing transitive is exercised.
+- **Propagation (D3).** Extend `consumer-fixture-eval` (or the Tier-2 `pn workspace flake-check`) to
+  assert the 3 inputs appear transitively via base only and `follows`-dedupe onto base's `nixpkgs`, and
+  grep-assert no consumer flake declares them.
 - **Wheel/sdist.** Build both consumers on `x86_64-linux` **and** `aarch64-darwin`; add an sdist-forcing
   fixture so `pyproject-build-systems` is actually exercised (the real consumers ship universal wheels).
 
@@ -315,4 +335,6 @@ per-tier checklist lives on bead `pg2-r4cfy`; the load-bearing items:
 - support-apps ADR 0013 (uv + setuptools) — records the two-resolver drift as a known negative this ADR
   closes; add a note there that the nix build now consumes `uv.lock` via base uv2nix.
 - Implements the reviewed plan on bead `pg2-gjwpl` (closed) → owner decision/implementation `pg2-r4cfy`.
+- Consumer-cutover follow-up: `pg2-wun6b` — support-apps bump + cleanup, Tier-2/3 on both systems, the
+  sdist fixture, the fail-loud negative check, and the eventual removal of the no-op args.
 - Decision brief: support-apps `docs/superpowers/specs/2026-07-15-uv2nix-lock-driven-python-builds-design.md`.
