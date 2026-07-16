@@ -101,9 +101,18 @@ jobs:
           ./update-locks.sh --ci
 
           AFTER=$(git rev-parse HEAD)
-          if [ "$BEFORE" = "$AFTER" ]; then
+          # PR-worthiness must EXCLUDE the tracked step stamps under
+          # .update-locks/steps/: ul_run_step commits a stamp even on a no-op
+          # night, so BEFORE!=AFTER alone opens a daily no-op PR of just
+          # timestamps (pg2-mpbp8). Treat "HEAD unmoved" OR "only step stamps
+          # changed" as no update; require a change to some other tracked file.
+          substantive=""
+          if [ "$BEFORE" != "$AFTER" ]; then
+            substantive=$(git diff --name-only "$BEFORE" "$AFTER" -- '.' ':(exclude).update-locks/steps')
+          fi
+          if [ -z "$substantive" ]; then
             echo "updated=false" >> "$GITHUB_OUTPUT"
-            echo "No updates available"
+            echo "No substantive updates (only step stamps changed)"
           else
             echo "updated=true" >> "$GITHUB_OUTPUT"
             {
