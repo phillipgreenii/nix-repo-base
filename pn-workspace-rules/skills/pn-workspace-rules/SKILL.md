@@ -111,6 +111,19 @@ Evaluates each cloned repo's `flake.nix` inputs, discovers workspace dependency 
 
 The `input-name` field on `[repos.*]` sections has been removed. Alias names are now derived automatically from each consumer's declared flake input aliases at lock time. If you see an error about `input-name`, remove that field from `pn-workspace.toml`.
 
+### Adopting a new hookable command (forward-compat two-step)
+
+An unknown hook `when` event (`[[hooks]] when=['<phase>-<command>']` naming a command the
+**currently deployed** `pn` doesn't know) is a **hard config-load error** by design — and config
+load runs on **every** `pn workspace` subcommand, including the `apply` that would deploy a newer
+`pn`. So you **MUST NOT** forward-declare a hook for a command only a newer `pn` will add: doing so
+bricks the current `pn` and blocks the very apply that would fix it (bd pg2-mbi5). Adopt a
+new-command hook in **two applies**: (1) land + `apply` the new `pn` **without** the new
+`when=['<phase>-<newcmd>']` entry; (2) add the entry in a second commit + `apply` again (then run
+`pn workspace allow` once, since editing the TOML re-arms the trust gate). If already wedged: remove
+the offending event, `apply` to deploy the new `pn`, then re-add + `apply`. Full rationale + why
+warn+skip was rejected: repo-base ADR-0019 §"Amendment: forward-compat of unknown hook events".
+
 ## --terminal Flag
 
 Every `pn workspace` subcommand accepts `--terminal <name>` to override `workspace.terminal` for that invocation. This is a persistent flag on the `workspace` group.
@@ -379,12 +392,20 @@ pn workspace rebase main
 #      run integrate-branch in <repo-a>; if it lands, run it in <repo-b>; then the next; …
 ```
 
-- **Ordered transaction.** Never land a repo ahead of the dependency it consumes — a
-  consumer landing first can pin a stale sibling.
-- **Stop-and-report on a blocked repo.** If `integrate-branch` reports `stopped:<reason>`
+This recipe is the **sanctioned local-landing path** for a coordinated set — `pn` grows no
+native merge verb (decided in bd pg2-fdx0; a Go binary cannot invoke the `integrate-branch`
+skill R-9 designates as the single integration entry point, and would be strategy-blind). The
+two obligations below are the only normative content the recipe adds on top of the per-repo
+handler contract (which owns FF-0 halt / rebase-before-ff / strategy resolution), because the
+handler acts on one repo and does not know about siblings:
+
+- **Ordered transaction (MUST).** You MUST land repos in dependency (topological) order, and
+  MUST NOT land a repo ahead of a dependency it consumes — a consumer landing first can pin a
+  stale sibling.
+- **Stop-and-report on a blocked repo (MUST).** If `integrate-branch` reports `stopped:<reason>`
   for a repo (e.g. an unresolved rebase conflict, or a persistent ff-race after its
-  retries), stop the run immediately — do not continue to later repos, some of which may
-  depend on the blocked one. **Keep the set** and report which repos already landed and
+  retries), you MUST stop the run immediately and MUST NOT continue to later repos, some of
+  which may depend on the blocked one. Keep the set and report which repos already landed and
   which repo is blocked.
 - **Remove the set only once every repo has landed and is clean.** Once `integrate-branch`
   has reported a landed (or otherwise resolved) outcome for every repo, validate the
@@ -397,8 +418,8 @@ pn workspace rebase main
 
   `integrate-branch`'s `ff-merge-to-main` handler already removes a landed repo's own
   worktree and branch as part of landing it; `workforest remove` clears whatever
-  scaffolding remains. A set with any repo still blocked is left in place for
-  retry/inspection — do not remove it.
+  scaffolding remains. You MUST NOT remove a set while any repo in it is still blocked; leave
+  it in place for retry/inspection.
 
 `integrate-branch` decides each repo's landing method itself (declared git config,
 inferred signals, or asking) — most `pn` repos resolve to `ff-merge-to-main` and land with

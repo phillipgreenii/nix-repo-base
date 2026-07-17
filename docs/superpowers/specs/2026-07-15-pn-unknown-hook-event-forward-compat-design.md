@@ -1,9 +1,33 @@
 # Design: unknown hook `when` events — hard-fail vs warn+skip (forward-compat)
 
 **Date:** 2026-07-15
-**Status:** Proposed — DECISION REQUIRED (human sign-off)
+**Status:** Decided: **Option B** (ratified 2026-07-17, phillipgreenii) — keep the hard-error; document the two-step adoption runbook (landed in ADR-0019 + `pn-workspace-rules` SKILL.md). See [Decision](#decision-ratified-2026-07-17). bead pg2-mbi5 closed once the runbook landed.
 **Bead:** pg2-mbi5 (P2 bug). Discovered from pg2-5yq5.
 **Touches policy in:** [ADR-0019](../../adr/0019-per-repo-event-hooks.md) §Decision, line "An unknown event MUST be a config-load error."
+
+## Decision (ratified 2026-07-17)
+
+**Option B — keep the hard-error; do not warn+skip unknown hook events.** The version deadlock is
+real, but its workaround (adopt a new-command hook in two applies) is cheap and already unavoidable
+for the current cutover, so it is documented rather than engineered around. Warn+skip (A/C) was
+rejected because it reopens a silent-gate-failure mode in the per-repo resync hooks
+(`when=['post-clone','post-rebase','post-update']`), which have **no** backstop — the pg2-5yq5 class.
+
+**CORRECTION to the Option-A "Con" and Recommendation prose below.** The flagship risk example in
+this doc — a mistyped `post-apply` **gate** hook (`pb gate check`) silently not firing — is
+**inaccurate**. That enforced gate is _self-healing_: `EnforceKeys`
+(`internal/workspace/enforce_keys.go:99-102`) re-creates a correct `post-apply`/`post-upgrade` gate
+entry on every activation whenever no matching one is found, so a typo there is a dead no-op
+_alongside_ the auto-injected correct gate, not a permanently disabled gate (worst case: a one-apply
+gap that self-corrects). The genuinely un-backstopped silent-skip risk under warn+skip is the
+**per-repo resync hooks** above (no EnforceKeys backstop; the doctor `hook-never-fires` check
+short-circuits on unknown events). This _strengthens_ Option B and further weakens C.
+
+**Landed as part of ratifying B:** the two-step "adopting a new hookable command" runbook now lives
+normatively in [ADR-0019](../../adr/0019-per-repo-event-hooks.md) §"Amendment: forward-compat of
+unknown hook events" and operationally in `pn-workspace-rules` SKILL.md §"Adopting a new hookable
+command". Warn+skip (A) / hybrid (C) remain available as a follow-up iff forward-declaration friction
+is later demonstrated. The Options/Findings below are retained as the analysis of record.
 
 ## Why this needs a decision (not a straight fix)
 

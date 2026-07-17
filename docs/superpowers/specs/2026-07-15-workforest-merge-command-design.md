@@ -1,13 +1,33 @@
 # Design: `pn workspace workforest merge` — build a native local merge verb, or ratify the integrate-branch-per-repo recipe?
 
 **Date:** 2026-07-15
-**Status:** Proposed — DECISION REQUIRED (human sign-off)
+**Status:** Decided: **Option A** (ratified 2026-07-17, phillipg) — `pn` grows no merge verb; the integrate-branch-per-repo recipe (`pn-workspace-rules` SKILL.md §"Landing a set onto `main` via `integrate-branch`") is the sanctioned local-landing path. See [Decision](#decision-ratified-2026-07-17) below. bead pg2-fdx0 closed with AC2 declined.
 **Bead:** pg2-fdx0 (P2 task). Discovered from pg2-rns7.
 **Related:** [ADR-0009](../../adr/0009-pn-workspace-update-worktree-isolation.md) (worktree-isolated landing);
 [2026-06-16 coordinated-worktrees design](2026-06-16-pn-workspace-coordinated-worktrees-design.md);
-pg2-cmni6 (OPEN, human — push-to-origin decision); pg2-qgai (worktree→workforest rename).
-**Touches:** `pn-workspace-rules` SKILL.md §"Landing a set onto `main` via `integrate-branch`" (lines 338-385);
+pg2-cmni6 (CLOSED 2026-07-16 — push-to-origin decision resolved; irrelevant to Option A, which adds no code/push surface); pg2-qgai (worktree→workforest rename).
+**Touches:** `pn-workspace-rules` SKILL.md §"Landing a set onto `main` via `integrate-branch`";
 would add `modules/pn/internal/cli/workspace.go` + `internal/workspace/`.
+
+## Decision (ratified 2026-07-17)
+
+**Option A — no merge verb.** `pn` grows no `workforest merge` verb; landing a coordinated set to
+each repo's local `main` is the SKILL.md integrate-branch-per-repo recipe. Rationale (all verified
+against `main`, and confirmed empirically by landing a real 2-repo set via the recipe — including a
+stop-and-report on a dirty canonical): R-9 makes the `integrate-branch` skill the single integration
+entry point and a Go binary cannot invoke it (a verb would be a second entry point with a
+hand-synced copy of the landing/strategy logic); `pn` is strategy-blind, so an ff-across-the-set
+verb would mis-land a `pull-request`-strategy repo; the recipe already covers strategy divergence,
+topological ordering, and stop-and-report, which AC2's blunt "ff across the set" omits. The
+`updateRepoViaWorktree` code Option B superficially resembles is **not** liftable (it advances local
+`main` while off-primary — the opposite of the FF-0 halt a verb needs), so B is more cost than its
+"building blocks exist" framing suggests. pg2-cmni6 (push decision) is **closed** and, being
+code/push-only, never bore on Option A. bead pg2-fdx0 closed with AC2 declined; the recipe's
+cross-repo obligations (topo order + stop-and-report) were promoted to RFC-2119 in SKILL.md as part
+of this ratification. A future read-only Option-C `land-plan` helper (order + strategy readout,
+agent still runs the skill) remains available if the per-repo loop proves to be real friction — it
+does not reopen this policy question. The Options/Findings below are retained as the analysis of
+record.
 
 ## Why this needs a decision (not a straight implementation)
 
@@ -52,7 +72,7 @@ The prior handoff on the bead is explicit: _"this needs a brainstorm/Plan on sco
 - **The gap AC2 targets is real and narrow.** `workforest remove` mirrors `git worktree remove`
   and **explicitly does not delete the branch or land anything** (`workforest.go:455`,
   SKILL.md:327). So after committing in a set there is no `pn` verb that advances local `main`.
-- **The "meanwhile" AC (document the recipe) is DONE and then some.** SKILL.md:338-385 documents
+- **The "meanwhile" AC (document the recipe) is DONE and then some.** the SKILL.md §"Landing a set onto `main` via `integrate-branch`" recipe documents
   landing a set as a **best-effort ordered transaction**: `pn workspace rebase main` in the set,
   then invoke `integrate-branch` per repo in **topological (dependency) order**, **stop-and-report**
   on the first blocked repo, keep the set until every repo lands, then `workforest remove`. This
@@ -74,17 +94,18 @@ The prior handoff on the bead is explicit: _"this needs a brainstorm/Plan on sco
   gate a clean-main landing; `merge --ff-only` shape at `branch_sync.go:32`; real-git TDD fixtures
   at `realgit_test.go` (`initRealRepo`, `setupLocalBareRemote`). A new verb wires at
   `cli/workspace.go:584` alongside the other workforest subcommands.
-- **Push is a separate, still-open decision (pg2-cmni6, human-labeled).** The current
-  `ff-merge-to-main` strategy lands to LOCAL `main` and pushes nothing. Any merge verb must inherit
-  that (local-only, no push) or explicitly gate a `--push` behind pg2-cmni6's resolution.
+- **Push is a separate decision (pg2-cmni6, resolved/closed 2026-07-16).** The current
+  `ff-merge-to-main` strategy lands to LOCAL `main` and pushes nothing. This only ever bore on a
+  build option (B/C, a verb that might `--push`); Option A adds no push surface, so it is moot here.
 
 ## Options
 
 ### Option A — No verb; ratify the integrate-branch-per-repo recipe (status quo in docs). RECOMMENDED
 
 Adopt the already-documented decision: `pn` grows **no** merge verb. Landing a set is the
-SKILL.md:338-385 recipe — `pn workspace rebase main`, then the agent invokes `integrate-branch`
-per repo in topological order (stop-and-report), then `workforest remove`.
+SKILL.md §"Landing a set onto `main` via `integrate-branch`" recipe — `pn workspace rebase main`,
+then the agent invokes `integrate-branch` per repo in topological order (stop-and-report), then
+`workforest remove`.
 
 - **MUST**: mark AC2 as intentionally-declined in the bead; keep the recipe as the sanctioned path.
 - **Pros:** honors R-9 (integrate-branch stays the single integration entry point; no forked
@@ -158,7 +179,7 @@ Option B; reserve Option B for an explicit decision to accept a second landing i
 `pn`, and only after pg2-cmni6 settles the push question.
 
 **Concretely, on sign-off:** if Option A → close pg2-fdx0 recording "AC2 declined: no merge verb;
-integrate-branch-per-repo recipe (SKILL.md:338-385) is the sanctioned path." If Option B/C →
+integrate-branch-per-repo recipe (the SKILL.md §"Landing a set onto `main` via `integrate-branch`" recipe) is the sanctioned path." If Option B/C →
 convert pg2-fdx0 (or a child bead) into an implementation task carrying the MUST-list above and a
 dependency on pg2-cmni6.
 

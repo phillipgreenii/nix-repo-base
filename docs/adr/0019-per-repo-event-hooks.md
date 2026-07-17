@@ -121,3 +121,46 @@ with a **direnv-style trust-on-first-use (TOFU) allowlist**:
   do NOT bypass it, matching the hook gate.
 
 Reference: bd pg2-oymai; residual closed by bd pg2-x2q6o (RFC 2119 language MUST/SHOULD as above).
+
+## Amendment: forward-compat of unknown hook events — RATIFIED hard-error (bd pg2-mbi5)
+
+`when` events are validated at config load (`validateAllHooks` → `splitEvent`,
+`internal/workspace/nix_hooks.go`; command table at `nix_hooks.go:17`), and per the Decision above
+an unknown event is a **hard config-load error**. Because `ParseConfig` runs on **every**
+`pn workspace` subcommand — including the `apply` that deploys a newer `pn` — forward-declaring
+`[[hooks]] when=['<phase>-<newcmd>']` for a command only a _newer_ `pn` will add **bricks the
+current `pn` and blocks the very apply that would upgrade it** (a version deadlock, bd pg2-mbi5).
+
+**Decision (ratified 2026-07-17): keep the hard-error; do NOT warn+skip unknown events.** The
+warn+skip alternative was rejected because it would reintroduce a **silent-gate-failure** mode in
+the per-repo resync hooks (`when=['post-clone','post-rebase','post-update']` →
+`{nix_run install-pre-commit-hooks}`): a command-name typo (e.g. `post-rebse`) would warn+skip and
+that repo's git gate would silently go stale — exactly the pg2-5yq5 class this ADR exists to fix —
+and those per-repo hooks have **no** backstop. (The enforced `post-apply` gate is _not_ the risk
+here: it **self-heals** — `EnforceKeys` re-creates a correct `post-apply`/`post-upgrade` gate entry
+whenever no matching one is found, `internal/workspace/enforce_keys.go:99-102`, on every
+activation.) Trading loud detection for one saved commit on future adoptions is a poor trade in a
+single-operator workspace whose recurring pain is silent gates. Warn+skip (Option A) / hybrid
+(Option C) remain available as a follow-up **iff** forward-declaration friction is later
+demonstrated; see `docs/superpowers/specs/2026-07-15-pn-unknown-hook-event-forward-compat-design.md`.
+
+### Runbook: adopting a new hookable command (the two-step)
+
+When a newer `pn` adds a hookable command and you want a hook for it, do it in **two applies** —
+never forward-declare against a `pn` that does not yet know the command:
+
+1. **Deploy the new `pn` first, without the new hook.** Land + `pn workspace apply` the new `pn`
+   version in a commit that does **not** add the `[[hooks]] when=['<phase>-<newcmd>']` entry. This
+   installs a `pn` whose `hookableCommands` (`nix_hooks.go`) includes `<newcmd>`.
+2. **Then add the hook.** In a second commit, add the `[[hooks]] when=['<phase>-<newcmd>']` entry
+   and `pn workspace apply` again. Editing the TOML re-arms the TOFU trust gate, so run
+   `pn workspace allow` once (see the trust-gate amendment above).
+
+**MUST NOT** forward-declare a `when` event for a command the _currently deployed_ `pn` does not
+list in `hookableCommands` — config load hard-fails on **every** subcommand, including the `apply`
+that would deploy the fix.
+
+**Recovery if already wedged:** remove the offending `when` event from `pn-workspace.toml`, run
+`pn workspace apply` to deploy the new `pn`, then re-add the event and `apply` again.
+
+Reference: bd pg2-mbi5.
