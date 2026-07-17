@@ -27,6 +27,27 @@ For concrete end-to-end user journeys (the commands a user runs, expected succes
 
 **Never modify `flake.nix` to point input URLs at local paths.** `pn workspace build/apply/flake-check` inject `--override-input <alias> git+file://<local-path>` at build/eval time — the lock file and flake.nix stay clean. Local-path URLs in `flake.nix` break every other consumer (CI, teammates, future you on another machine).
 
+## `main` Means Local Main — the Worktree Merge-Back Flow
+
+In this multi-agent workspace an **unqualified "main" — and any bare "merge", "rebase", "commit to main", or "land" — means the repo's LOCAL `main`, never `origin/main`.** When a request could mean either, ASK. Convention: the user says "remote main" or "`origin/main`" when they mean the remote; everything else is local.
+
+**Canonical-checkout invariant.** Each repo's `main` branch may only ever be checked out at its **canonical** clone (`<workspace_root>/<repo>`), and the canonical should generally always be sitting on `main`. Parallel agents integrate through local `main`; a canonical left on a feature branch (or dirty) breaks their merge-back. Therefore:
+
+- **Branch work happens in a worktree, never on the canonical.** If you are told to "create a branch", the implicit instruction is to create it in a **worktree** (`git worktree add`, or `pn workspace workforest add` for a coordinated cross-repo set) — do NOT `git checkout -b` on the canonical.
+- Finding the canonical unexpectedly off `main` or dirty is a stop-and-report (see [Asymmetric-defer recovery](#asymmetric-defer-recovery)) — do not reset, re-checkout, stash, or otherwise work around it.
+
+**The integration flow (this is NOT a pull request):**
+
+1. Work in a **worktree / workforest** off local `main`.
+2. Verify the change as much as possible in the worktree (see [Completion Gate](#completion-gate)).
+3. **Rebase the worktree FROM local `main`** (`git rebase main`, or `pn workspace rebase main` for a set) — rebase onto _local_ main, NOT `origin/main`.
+4. **ff-only merge the worktree back to local `main`** (`git -C <canonical> merge --ff-only <branch>`); for a coordinated set use the "Landing a set onto `main` locally" recipe under Coordinated Workforest Sets.
+
+**Pushing local `main` → `origin/main` is a WHOLLY SEPARATE, deliberate step.** Nothing reaches `origin/main` without first flowing through local `main`. In particular:
+
+- Do NOT rebase local `main` onto `origin/main` as part of landing work — that couples the integration point to the remote sync. Syncing local `main` with the remote (both directions) is its own process, done only when explicitly asked.
+- Do NOT push as part of "the merge". Push only per [When to Push](#when-to-push) below, and treat "land the work" and "push to the remote" as two separate requests unless the user fuses them explicitly.
+
 ## Expected (Acceptable) Warnings
 
 `pn workspace build` and `pn workspace apply` print Nix's `warning: not writing modified lock file` on the **success path**. This is **benign and expected** — do not treat it as an error and do not re-investigate it.
