@@ -593,7 +593,12 @@
           # phillipgreenii.account.* property namespace + phillipgreenii.bundles.*
           # aggregation options. Installs nothing; capability DEFINITIONS live in
           # the consuming flakes. Import alongside those capability modules.
-          capability-framework = import ./home/capability-framework/default.nix;
+          # Exported as a PATH (not `import`ed) so the module system keys it by path
+          # and DEDUPES when both nix-personal (accounts resolver threads it) and
+          # nix-agent-support (homeModules.capabilities imports it) pull it into the
+          # same home-manager eval — otherwise the shared account.* options are
+          # declared twice ("already declared"). Mirrors install-metadata above.
+          capability-framework = ./home/capability-framework/default.nix;
         };
         # repo-base's first darwin module set, exported as the aggregate
         # darwinModules.default (mirrors agent-support). Currently carries the pn
