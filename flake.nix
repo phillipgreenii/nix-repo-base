@@ -68,6 +68,37 @@
       # phillipgreenii.{src, pre-commit.src} default to inputs.self via the
       # checks and pre-commit modules; no explicit settings needed here.
 
+      # Local pre-push golangci-lint feedback (bead pg2-9xo3). repo-base ONLY:
+      # set via `extraHooks` so it (a) merges into repo-base's OWN hook set, not
+      # the shared standard set that other consumers of flake-modules/pre-commit.nix
+      # inherit, and (b) runs at the `pre-push` stage, so it is SKIPPED by the
+      # sandboxed `checks.pre-commit` derivation (which runs `pre-commit run
+      # --all-files` at the default `pre-commit` stage — git-hooks modules/
+      # pre-commit.nix) yet still fires on local `git push`, outside the sandbox.
+      # It reuses the offline gomod2nix checks (checks.<module>-golangci) that
+      # replaced the old network `-mod=mod` hook (pg2-6wly), so local feedback
+      # matches CI exactly with no drift. Function form (pkgs -> hooks) so the
+      # nix invocation follows the committing machine's system.
+      phillipgreenii.pre-commit.extraHooks = pkgs: {
+        golangci-lint-prepush = {
+          enable = true;
+          name = "golangci-lint (pre-push; offline gomod2nix checks)";
+          entry = "${pkgs.writeShellScript "golangci-lint-prepush" ''
+            set -euo pipefail
+            # Reuse the sandbox-safe offline checks (see checks.pn-golangci /
+            # checks.pjira-golangci in this flake). `.#` resolves this repo's
+            # flake against the working tree; both Go modules are linted.
+            exec nix build --no-link \
+              ".#checks.${pkgs.stdenv.hostPlatform.system}.pn-golangci" \
+              ".#checks.${pkgs.stdenv.hostPlatform.system}.pjira-golangci"
+          ''}";
+          files = "\\.go$";
+          pass_filenames = false;
+          require_serial = true;
+          stages = [ "pre-push" ];
+        };
+      };
+
       perSystem =
         {
           pkgs,
