@@ -43,6 +43,14 @@ let
       "beads"
     ];
   };
+  # A bundle whose child (golang) ALSO subscribes to development. Enabling this
+  # bundle while development is OFF must NOT crash: the subscription is additive-
+  # only (mkIf development), so only the bundle's `mkDefault true` applies. Guards
+  # the two-opposite-mkDefault regression (subscriber-in-a-bundle collision).
+  golangBundle = mkBundle {
+    name = "golang-bundle";
+    capabilities = [ "golang" ];
+  };
 
   eval =
     extra:
@@ -54,6 +62,7 @@ let
         ccLeaf
         beadsLeaf
         agentSupport
+        golangBundle
       ]
       ++ extra;
     }).config;
@@ -89,6 +98,21 @@ let
       (eval [ { phillipgreenii.account.isHumn = true; } ]).phillipgreenii.account.isHuman
     ).success;
 
+  # Subscriber-in-a-bundle with development OFF: must eval cleanly (no two-opposite-
+  # mkDefault crash) AND enable the child via the bundle.
+  cSubscriberBundleDevOff =
+    let
+      cfg = eval [
+        {
+          phillipgreenii = {
+            bundles.golang-bundle.enable = true;
+            account.isHuman = false;
+          };
+        }
+      ];
+    in
+    builtins.tryEval cfg.phillipgreenii.programs.go.enable;
+
   results = {
     dev_human_go = (progs cDevHuman).go.enable == true;
     dev_human_bat = (progs cDevHuman).bat.enable == true;
@@ -99,6 +123,9 @@ let
     veto_beads_off = ((progs cVeto).beads.enable or false) == false;
     veto_cc_still_on = (progs cVeto).claude-code.enable == true;
     typo_errors = typoSucceeds == false;
+    subscriber_bundle_dev_off_no_crash = cSubscriberBundleDevOff.success == true;
+    subscriber_bundle_dev_off_enables_child =
+      cSubscriberBundleDevOff.success && cSubscriberBundleDevOff.value == true;
   };
 in
 results // { allPass = lib.all (x: x) (lib.attrValues results); }

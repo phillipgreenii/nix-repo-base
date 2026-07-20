@@ -47,10 +47,18 @@ rec {
           (lib.mkIf cfg.enable (lib.mkMerge (map featureEnable features)))
           (lib.mkIf (cfg.enable && a.isHuman) (lib.mkMerge (map featureEnable humanFeatures)))
         ]
-        ++ lib.optional subscribesToDevelopment {
-          phillipgreenii.capabilities.${name}.enable =
-            lib.mkDefault config.phillipgreenii.bundles.development.enable;
-        }
+        ++ lib.optional subscribesToDevelopment (
+          # Additive-only subscription: contribute mkDefault true ONLY while
+          # development is on, and NOTHING when it is off. A bare
+          # `mkDefault config.…bundles.development.enable` would emit `mkDefault
+          # false` when development is off, which COLLIDES with another additive
+          # setter (e.g. a leaf that is ALSO in bundles.infra sets `mkDefault
+          # true`) — two opposite mkDefaults crash eval. mkIf keeps it purely
+          # additive so a subscriber may safely also belong to another bundle.
+          lib.mkIf config.phillipgreenii.bundles.development.enable {
+            phillipgreenii.capabilities.${name}.enable = lib.mkDefault true;
+          }
+        )
       );
     };
 
