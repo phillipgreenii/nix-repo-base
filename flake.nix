@@ -179,6 +179,7 @@
                     fileset = lib.fileset.unions [
                       ./.claude-plugin/marketplace.json
                       ./pn-workspace-rules
+                      ./capability-model
                     ];
                   };
                 };

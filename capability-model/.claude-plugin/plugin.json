@@ -1,0 +1,7 @@
+{
+  "name": "capability-model",
+  "displayName": "Capability Model",
+  "description": "The phillipgreenii Light capability model — two-layer feature/capability model, isHuman axis, additive-only bundles, the System-vs-HM placement decision procedure, and the cross-repo conflict-resolution playbook; delivered as a skill",
+  "version": "1.0.0",
+  "defaultEnabled": true
+}

@@ -9,6 +9,11 @@
       "name": "pn-workspace-rules",
       "source": "./pn-workspace-rules",
       "description": "Workspace-aware rules and context for pn-workspace commands"
+    },
+    {
+      "name": "capability-model",
+      "source": "./capability-model",
+      "description": "The Light capability model — feature/capability/bundle layering, isHuman axis, additive-only bundles, System-vs-HM placement procedure, cross-repo conflict-resolution playbook"
     }
   ]
 }
