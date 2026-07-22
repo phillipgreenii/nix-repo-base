@@ -59,6 +59,13 @@ the manifest or invent a `-<digest>` fallback.
      description. This is correct when the rules apply to a specific context rather
      than every turn — e.g. `pn-workspace-rules` ships
      `pn-workspace-rules/skills/pn-workspace-rules/SKILL.md`.
+   - **Dispatched sub-task work → an AGENT.** Ship `<plugin>/agents/<name>.md`
+     with `name` + `description` (plus optional `tools`/`model`) frontmatter; a
+     command or the main session dispatches it via the Task tool to run a
+     self-contained sub-task in its own isolated context. Correct when the work is
+     worth offloading from the caller's context — not rules applied in-line — e.g.
+     `pn-workspace-rules` ships `pn-workspace-rules/agents/pnwf-runner.md`,
+     dispatched by `/pn-workspace-sync` to run its fork/sync/validate prefix.
 
    Proof: `claude plugin details <plugin>@<mkt>` shows `Skills (1)` and a nonzero
    always-on token cost for a skill-shipping plugin vs `Skills (0)` / ~0 tokens for
