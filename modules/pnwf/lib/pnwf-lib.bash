@@ -229,3 +229,33 @@ pnwf_classify_member() {
     ;;
   esac
 }
+
+# Fetches origin then attempts to rebase repo_dir's current branch onto
+# origin/<primary>. Backs `pnwf sync-fetch` -- the one MUTATING WORK-recipe
+# helper in this file (every other function above is a read-only probe).
+#
+# Returns 0 on a clean pass (already up to date counts as clean). A nonzero
+# return is the FIRST stopping point the caller must hand off on: on a
+# rebase conflict, git itself leaves `.git/rebase-merge` (or `-apply`) in
+# place in repo_dir -- deliberately NOT cleaned up here (no `git rebase
+# --abort`), so the caller's hand-off message ("resolve here, then `git
+# rebase --continue`") points at exactly the state this function stopped
+# in. Never aborts the caller under set -e; a first-party diagnostic naming
+# which git step failed goes to stderr, while git's own chatter (e.g. the
+# conflicting paths) is left on its normal stdout/stderr for whoever
+# resolves it.
+pnwf_fetch_and_rebase() {
+  local repo_dir="$1" primary="$2" rc=0
+  git -C "$repo_dir" fetch origin || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "pnwf_fetch_and_rebase: git fetch origin failed in $repo_dir (rc=$rc)" >&2
+    return "$rc"
+  fi
+
+  rc=0
+  git -C "$repo_dir" rebase "origin/$primary" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "pnwf_fetch_and_rebase: git rebase origin/$primary failed in $repo_dir (rc=$rc)" >&2
+    return "$rc"
+  fi
+}

@@ -35,15 +35,19 @@ Subcommands (read-only, implemented):
   status <branch>    Print a per-repo table for <branch>'s set: member,
                      label (landed/not-started/blocked/kept), reason.
 
-Subcommands (not yet implemented):
-  sync-fetch        Fetch + rebase onto the remote primary branch.
+Subcommands (mutating WORK-recipe helper, not a read-only probe):
+  sync-fetch [--set]
+                     Per member (topo order): `git fetch origin`, then
+                     rebase onto the remote primary. Stops on the FIRST
+                     rebase conflict, reporting the member + worktree path;
+                     recovery is agent-owned.
 
 Options:
   -h, --help        Show this help message
   -v, --version     Show version information
 
---set (on resolve/repos/stage): guard — exit non-zero unless the resolved
-workspace is inside a coordinated workforest set (in_workforest=true).
+--set (on resolve/repos/stage/sync-fetch): guard — exit non-zero unless the
+resolved workspace is inside a coordinated workforest set (in_workforest=true).
 
 fork-preflight/land-plan/cleanup/status take <branch> explicitly and derive
 the set directory from canonical_root + workforests_dir — they work whether
@@ -58,6 +62,7 @@ Examples:
   pnwf land-plan my-branch
   pnwf cleanup my-branch
   pnwf status my-branch
+  pnwf sync-fetch --set
 HELP
 }
 
@@ -699,6 +704,80 @@ HELP
   printf '%s\n' "${report_lines[@]}"
 }
 
+# Mutating WORK-recipe helper (task 5) -- unlike resolve/repos/stage/
+# fork-preflight/land-plan/cleanup/status above, this one changes each
+# member's branch tip (git fetch + rebase), so it is deliberately NOT
+# idempotent-safe the way the read-only probes are: re-running it after a
+# stop-and-report resumes exactly where the agent left off (§5 -- WORK-time
+# conflicts are the expected case for sync).
+cmd_sync_fetch() {
+  local require_set=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --set)
+      require_set=1
+      ;;
+    -h | --help)
+      cat <<'HELP'
+Usage: pnwf sync-fetch [--set]
+
+For each member of the resolved workspace's own lock, in topo order: `git
+fetch origin`, then attempt to rebase the member's current branch onto the
+remote primary (origin/<primary>, resolved via integrate-branch-support).
+
+Stops on the FIRST rebase conflict, reporting which member and worktree path
+stopped it, then exits non-zero. Recovery is agent-owned: resolve the
+conflict in that worktree, run `git rebase --continue` there, then re-run
+`pnwf sync-fetch`. Exits 0 once every member has fetched and rebased clean.
+
+This is a MUTATING WORK-recipe helper, not a read-only probe like
+resolve/repos/stage/etc. -- it changes each member's branch tip.
+
+--set: exit non-zero unless the resolved workspace is inside a set.
+HELP
+      exit 0
+      ;;
+    *)
+      die "sync-fetch: unknown argument: $1"
+      ;;
+    esac
+    shift
+  done
+
+  local info in_workforest root canonical_root lock_file
+  info=$(_pnwf_info_json) || die "'pn workspace info --json' failed"
+  in_workforest=$(printf '%s' "$info" | jq -r '.in_workforest')
+  root=$(printf '%s' "$info" | jq -r '.root')
+  canonical_root=$(printf '%s' "$info" | jq -r '.canonical_root')
+
+  _pnwf_require_set_guard sync-fetch "$require_set" "$in_workforest" "$root"
+
+  lock_file="$root/pn-workspace.lock.json"
+  [[ -f $lock_file ]] || die "lock file not found: $lock_file"
+
+  local members=()
+  mapfile -t members < <(pnwf_topo_order "$lock_file")
+  [[ ${#members[@]} -gt 0 ]] || die "no members found in $lock_file"
+
+  local member member_setpath member_canonical primary rc
+  for member in "${members[@]}"; do
+    member_setpath="$root/$member"
+    member_canonical="$canonical_root/$member"
+
+    primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
+      die "could not resolve primary branch for member '$member'"
+
+    # Guarded (never a bare call): a rebase that stops with conflicts exits
+    # nonzero, and MUST NOT abort this loop via errexit before the hand-off
+    # message below gets a chance to print.
+    rc=0
+    pnwf_fetch_and_rebase "$member_setpath" "$primary" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath, rc=$rc) -- a rebase conflict (or fetch failure) left it mid-rebase; resolve it there, run 'git -C $member_setpath rebase --continue', then re-run 'pnwf sync-fetch'" "$rc"
+    fi
+  done
+}
+
 # --- Top-level arg parsing + dispatch --------------------------------------
 
 while [[ $# -gt 0 ]]; do
@@ -729,10 +808,9 @@ fi
 SUBCOMMAND="$1"
 shift
 
-# Dispatch table listing ALL EIGHT future pnwf subcommands (design spec
-# §4.5); resolve/repos/stage/fork-preflight/land-plan/cleanup/status are
-# implemented — only sync-fetch (a mutating WORK-recipe helper, not a
-# read-only probe — task 5) remains stubbed here.
+# Dispatch table for all eight pnwf subcommands (design spec §4.5); all are
+# now implemented. sync-fetch (task 5) is a mutating WORK-recipe helper, not
+# a read-only probe like the rest -- see cmd_sync_fetch.
 case "$SUBCOMMAND" in
 resolve) cmd_resolve "$@" ;;
 repos) cmd_repos "$@" ;;
@@ -741,10 +819,7 @@ fork-preflight) cmd_fork_preflight "$@" ;;
 land-plan) cmd_land_plan "$@" ;;
 cleanup) cmd_cleanup "$@" ;;
 status) cmd_status "$@" ;;
-sync-fetch)
-  echo "pnwf: '$SUBCOMMAND' is not yet implemented" >&2
-  exit 1
-  ;;
+sync-fetch) cmd_sync_fetch "$@" ;;
 *)
   die "unknown subcommand: $SUBCOMMAND"
   ;;

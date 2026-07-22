@@ -10,7 +10,7 @@ _pnwf_subcommands() {
     'land-plan:Print the topo-ordered member repos still needing landing'
     'cleanup:Best-effort teardown of a workforest set from the canonical clone'
     'status:Print a per-repo status table (landed/not-started/blocked/kept)'
-    'sync-fetch:(not yet implemented)'
+    'sync-fetch:Fetch + rebase every member onto the remote primary (stops on the first conflict)'
   )
   _describe 'pnwf subcommand' subcommands
 }
@@ -24,7 +24,7 @@ _arguments -C \
 case $state in
 args)
   case ${words[1]} in
-  resolve | repos | stage)
+  resolve | repos | stage | sync-fetch)
     _arguments \
       '--set[Guard: fail unless the resolved workspace is inside a set]' \
       '(-h --help)'{-h,--help}'[Show help message]'

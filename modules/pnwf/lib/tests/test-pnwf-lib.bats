@@ -367,3 +367,88 @@ MOCK
   [[ "$output" == blocked$'\t'* ]]
   [[ "$output" == *"not found in $REPO"* ]]
 }
+
+# --- pnwf_fetch_and_rebase ---------------------------------------------
+# Backs `pnwf sync-fetch`, the one MUTATING primitive in this file (every
+# other function above is a read-only probe). Real git throughout -- a real
+# bare "origin" plus a real clone -- so these assertions exercise actual
+# fetch/rebase mechanics rather than a stand-in; the CLI-level orchestration
+# (stop-on-first-conflict across several members) is covered separately in
+# test-pnwf.bats with a mocked `git`.
+
+_setup_fetch_and_rebase_origin() {
+  # A bare "origin" seeded from $REPO's own history, plus a local clone with
+  # origin configured -- mirrors a real workforest member (a worktree
+  # checked out from the canonical clone, canonical remote-tracking origin).
+  ORIGIN="$TEST_DIR/origin.git"
+  command git clone -q --bare "$REPO" "$ORIGIN"
+  export ORIGIN
+
+  CLONE="$TEST_DIR/clone"
+  command git clone -q "$ORIGIN" "$CLONE"
+  command git -C "$CLONE" config user.email "test@example.com"
+  command git -C "$CLONE" config user.name "Test"
+  export CLONE
+}
+
+@test "pnwf_fetch_and_rebase: clean fetch + rebase onto a non-conflicting advance" {
+  _setup_fetch_and_rebase_origin
+
+  command git -C "$CLONE" checkout -q -b feature
+  echo feature-work >"$CLONE/feature-file.txt"
+  command git -C "$CLONE" add feature-file.txt
+  command git -C "$CLONE" commit -q -m "feature work"
+
+  echo origin-advance >"$REPO/other-file.txt"
+  command git -C "$REPO" add other-file.txt
+  command git -C "$REPO" commit -q -m "origin advance"
+  command git -C "$REPO" push -q "$ORIGIN" main
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
+  [ "$status" -eq 0 ]
+
+  run bash -c "command git -C '$CLONE' merge-base --is-ancestor origin/main feature"
+  [ "$status" -eq 0 ]
+}
+
+@test "pnwf_fetch_and_rebase: already up to date is a clean no-op" {
+  _setup_fetch_and_rebase_origin
+  command git -C "$CLONE" checkout -q -b feature
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
+  [ "$status" -eq 0 ]
+}
+
+@test "pnwf_fetch_and_rebase: rebase conflict (non-zero) does not abort the caller and leaves the rebase in progress" {
+  _setup_fetch_and_rebase_origin
+
+  command git -C "$CLONE" checkout -q -b feature
+  echo clone-change >"$CLONE/file.txt"
+  command git -C "$CLONE" commit -q -am "clone change"
+
+  echo origin-change >"$REPO/file.txt"
+  command git -C "$REPO" commit -q -am "origin change"
+  command git -C "$REPO" push -q "$ORIGIN" main
+
+  # Bare call (not if-wrapped): the only shape that can observe an internal
+  # command actually aborting under set -e (see the non-vacuousness note at
+  # the top of this file).
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
+  [ "$status" -ne 0 ]
+
+  # git itself leaves the rebase mid-progress -- pnwf_fetch_and_rebase MUST
+  # NOT `git rebase --abort` it; the hand-off contract is `git rebase
+  # --continue` in this exact worktree.
+  [ -d "$CLONE/.git/rebase-apply" ] || [ -d "$CLONE/.git/rebase-merge" ]
+}
+
+@test "pnwf_fetch_and_rebase: git fetch failure does not abort and prints a diagnostic" {
+  _setup_fetch_and_rebase_origin
+  command git -C "$CLONE" checkout -q -b feature
+  command git -C "$CLONE" remote set-url origin "$TEST_DIR/does-not-exist.git"
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_fetch_and_rebase: git fetch origin failed in $CLONE"* ]]
+}

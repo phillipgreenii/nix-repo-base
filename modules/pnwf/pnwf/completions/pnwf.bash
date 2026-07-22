@@ -14,11 +14,11 @@ _pnwf() {
     return
   fi
 
-  # After the subcommand: resolve/repos/stage take --set; fork-preflight
-  # takes --repos; cleanup takes the two --force-… flags; every subcommand
-  # takes --help.
+  # After the subcommand: resolve/repos/stage/sync-fetch take --set;
+  # fork-preflight takes --repos; cleanup takes the two --force-… flags;
+  # every subcommand takes --help.
   case "${words[1]}" in
-  resolve | repos | stage)
+  resolve | repos | stage | sync-fetch)
     mapfile -t COMPREPLY < <(compgen -W "--set --help -h" -- "$cur")
     ;;
   fork-preflight)
