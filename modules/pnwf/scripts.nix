@@ -1,10 +1,5 @@
 # Pure script builders for the pnwf (workforest work-cycle) module.
 # Mirrors modules/ul/scripts.nix and modules/pn/scripts.nix.
-#
-# SKELETON (bead pg2-xs5cj task 2): only the shared `pnwf-lib` primitives
-# exist so far. A later task adds the `pnwf` command itself and wires its
-# mkBashScript result into `allScripts` (and `packages`/`tldr` below follow
-# automatically).
 {
   pkgs,
   bashBuilders,
@@ -15,10 +10,15 @@ let
     inherit pkgs;
   };
 
-  allScripts = [ ];
+  pnwf = pkgs.callPackage ./pnwf {
+    inherit (bashBuilders) mkBashScript;
+    inherit pkgs pnwf-lib;
+  };
+
+  allScripts = [ pnwf ];
 in
 {
-  inherit pnwf-lib;
+  inherit pnwf-lib pnwf;
 
   packages = builtins.concatLists (map (s: s.packages) allScripts);
 
@@ -26,6 +26,7 @@ in
 
   checks = {
     test-pnwf-lib = pnwf-lib.check;
+    test-pnwf = pnwf.check;
   };
 
   check = pkgs.runCommand "test-pnwf-scripts" { } ''

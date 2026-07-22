@@ -1,0 +1,34 @@
+#compdef pnwf
+
+_pnwf_subcommands() {
+  local -a subcommands
+  subcommands=(
+    'resolve:Print canonical_root/in_workforest/set_dir/pn_workspace_root as JSON'
+    'repos:Print member repo keys in topological order'
+    'stage:Print the set lifecycle stage (work/ready-to-land/resuming-land/landed)'
+    'fork-preflight:(not yet implemented)'
+    'land-plan:(not yet implemented)'
+    'cleanup:(not yet implemented)'
+    'status:(not yet implemented)'
+    'sync-fetch:(not yet implemented)'
+  )
+  _describe 'pnwf subcommand' subcommands
+}
+
+_arguments -C \
+  '(-h --help)'{-h,--help}'[Show help message]' \
+  '(-v --version)'{-v,--version}'[Show version information]' \
+  '1: :_pnwf_subcommands' \
+  '*::args:->args'
+
+case $state in
+args)
+  case ${words[1]} in
+  resolve | repos | stage)
+    _arguments \
+      '--set[Guard: fail unless the resolved workspace is inside a set]' \
+      '(-h --help)'{-h,--help}'[Show help message]'
+    ;;
+  esac
+  ;;
+esac

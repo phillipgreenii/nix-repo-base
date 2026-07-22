@@ -117,9 +117,10 @@
             inherit pkgs bashBuilders;
             inherit (self.packages.${system}) update-locks-lib;
           };
-          # pnwf (workforest work-cycle) module. SKELETON (bead pg2-xs5cj task
-          # 2): only the shared pnwf-lib primitives exist so far; a later task
-          # adds the `pnwf` command itself.
+          # pnwf (workforest work-cycle) module: the shared pnwf-lib
+          # primitives (bead pg2-xs5cj task 2) plus the `pnwf` command itself
+          # — resolve/repos/stage implemented so far (task 3); the remaining
+          # five subcommands are stubbed in pnwf's own dispatch table.
           pnwfScripts = import ./modules/pnwf/scripts.nix {
             inherit pkgs bashBuilders;
           };
@@ -157,6 +158,9 @@
 
             # Update-locks resolver
             determine-ul-lib-dir = ulScripts.determine-ul-lib-dir.script;
+
+            # pnwf: deterministic helper for the workforest work-cycle.
+            pnwf = pnwfScripts.pnwf.script;
 
             # pn Go binary (single tool replacing the former pn-* bash scripts).
             pn = pkgs.callPackage ./modules/pn { inherit self; };
