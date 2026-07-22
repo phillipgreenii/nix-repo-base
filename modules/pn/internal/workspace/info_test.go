@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -129,4 +130,152 @@ url = "github:owner/dep"
 			t.Fatalf("info must not invoke nix eval; saw %v", c.Args)
 		}
 	}
+}
+
+// TestInfo_WorkforestFields_Canonical verifies that a plain (non-set) workspace
+// root reports InWorkforest==false, CanonicalRoot==root (itself), and the
+// default WorkforestsDir name when workforests_dir is unconfigured.
+func TestInfo_WorkforestFields_Canonical(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	info, err := w.Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.InWorkforest {
+		t.Errorf("InWorkforest: got true, want false for a canonical (non-set) root")
+	}
+	if info.CanonicalRoot != root {
+		t.Errorf("CanonicalRoot: got %q, want %q", info.CanonicalRoot, root)
+	}
+	if info.WorkforestsDir != ".workforests" {
+		t.Errorf("WorkforestsDir: got %q, want %q", info.WorkforestsDir, ".workforests")
+	}
+}
+
+// TestInfo_WorkforestFields_InSet mirrors the structural setup in
+// update_worktree_test.go:762-779 — a coordinated set lives directly under the
+// configured workforests dir (<base>/.workforests/<branch>). Info must report
+// InWorkforest==true and resolve CanonicalRoot back to <base>.
+func TestInfo_WorkforestFields_InSet(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	base := t.TempDir()
+	setRoot := filepath.Join(base, ".workforests", "feature-x")
+	if err := os.MkdirAll(setRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+	w, err := Open(setRoot, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	info, err := w.Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if !info.InWorkforest {
+		t.Errorf("InWorkforest: got false, want true for a set root under .workforests")
+	}
+	if info.CanonicalRoot != base {
+		t.Errorf("CanonicalRoot: got %q, want %q", info.CanonicalRoot, base)
+	}
+	if info.WorkforestsDir != ".workforests" {
+		t.Errorf("WorkforestsDir: got %q, want %q", info.WorkforestsDir, ".workforests")
+	}
+}
+
+// TestInfo_WorkforestFields_MultiSegmentAndAbsolute asserts canonicalRoot's
+// documented M1 behavior: a multi-segment RELATIVE workforests_dir is stripped
+// correctly (both segments), while an ABSOLUTE workforests_dir makes the
+// canonical root undefined ("") — the set lives outside any canonical tree —
+// while InWorkforest still reports true (detection stays structural).
+func TestInfo_WorkforestFields_MultiSegmentAndAbsolute(t *testing.T) {
+	t.Run("multi-segment relative", func(t *testing.T) {
+		t.Setenv("XDG_DATA_HOME", t.TempDir())
+		base := t.TempDir()
+		setRoot := filepath.Join(base, "sets", "nested", "feature-x")
+		if err := os.MkdirAll(setRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "foo"
+workforests_dir = "sets/nested"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+		w, err := Open(setRoot, exec.NewFakeRunner())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		info, err := w.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+		if !info.InWorkforest {
+			t.Errorf("InWorkforest: got false, want true")
+		}
+		if info.CanonicalRoot != base {
+			t.Errorf("CanonicalRoot: got %q, want %q", info.CanonicalRoot, base)
+		}
+		if info.WorkforestsDir != "sets/nested" {
+			t.Errorf("WorkforestsDir: got %q, want %q", info.WorkforestsDir, "sets/nested")
+		}
+	})
+
+	t.Run("absolute workforests_dir", func(t *testing.T) {
+		t.Setenv("XDG_DATA_HOME", t.TempDir())
+		absWt := t.TempDir()
+		setRoot := filepath.Join(absWt, "feature-x")
+		if err := os.MkdirAll(setRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "foo"
+workforests_dir = "`+absWt+`"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+		w, err := Open(setRoot, exec.NewFakeRunner())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		info, err := w.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+		if !info.InWorkforest {
+			t.Errorf("InWorkforest: got false, want true (detection is structural, independent of canonical derivability)")
+		}
+		if info.CanonicalRoot != "" {
+			t.Errorf("CanonicalRoot: got %q, want empty (absolute workforests_dir → canonical undefined)", info.CanonicalRoot)
+		}
+		if info.WorkforestsDir != absWt {
+			t.Errorf("WorkforestsDir: got %q, want %q", info.WorkforestsDir, absWt)
+		}
+	})
 }
