@@ -37,9 +37,9 @@ Subcommands (read-only, implemented):
 
 Subcommands (mutating WORK-recipe helper, not a read-only probe):
   sync-fetch [--set]
-                     Per member (topo order): `git fetch origin`, then
-                     rebase onto the remote primary. Stops on the FIRST
-                     rebase conflict, reporting the member + worktree path;
+                     Per present member (topo order): `git fetch origin`,
+                     then rebase onto the remote primary. Stops on the
+                     FIRST failure, reporting the member + worktree path;
                      recovery is agent-owned.
 
 Options:
@@ -721,14 +721,19 @@ cmd_sync_fetch() {
       cat <<'HELP'
 Usage: pnwf sync-fetch [--set]
 
-For each member of the resolved workspace's own lock, in topo order: `git
+For each member of the resolved workspace's own lock, in topo order (an
+absent worktree -- already landed/cleaned up elsewhere -- is skipped): `git
 fetch origin`, then attempt to rebase the member's current branch onto the
 remote primary (origin/<primary>, resolved via integrate-branch-support).
 
-Stops on the FIRST rebase conflict, reporting which member and worktree path
-stopped it, then exits non-zero. Recovery is agent-owned: resolve the
-conflict in that worktree, run `git rebase --continue` there, then re-run
-`pnwf sync-fetch`. Exits 0 once every member has fetched and rebased clean.
+Stops on the FIRST failure, reporting which member and worktree path
+stopped it, then exits non-zero. Recovery is agent-owned and depends on
+which step failed:
+  fetch failed    check the remote/network/auth, then re-run `pnwf
+                   sync-fetch` -- no rebase was started.
+  rebase failed    resolve the conflict in that worktree, run `git rebase
+                   --continue` there, then re-run `pnwf sync-fetch`.
+Exits 0 once every member has fetched and rebased clean.
 
 This is a MUTATING WORK-recipe helper, not a read-only probe like
 resolve/repos/stage/etc. -- it changes each member's branch tip.
@@ -761,20 +766,33 @@ HELP
 
   local member member_setpath member_canonical primary rc
   for member in "${members[@]}"; do
+    # Skip an absent worktree, consistent with every other member-iterating
+    # subcommand (cmd_land_plan, cmd_stage, pnwf_classify_member): a re-run
+    # after some members were already landed/cleaned up elsewhere (the
+    # documented recovery path, and any other partial-set state) must skip
+    # them rather than mutate a directory that no longer exists.
+    pnwf_worktree_present "$root" "$member" || continue
+
     member_setpath="$root/$member"
     member_canonical="$canonical_root/$member"
 
     primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
       die "could not resolve primary branch for member '$member'"
 
-    # Guarded (never a bare call): a rebase that stops with conflicts exits
-    # nonzero, and MUST NOT abort this loop via errexit before the hand-off
-    # message below gets a chance to print.
+    # Guarded (never a bare call): a fetch failure or a rebase conflict
+    # exits nonzero, and MUST NOT abort this loop via errexit before the
+    # step-appropriate hand-off message below gets a chance to print.
     rc=0
     pnwf_fetch_and_rebase "$member_setpath" "$primary" || rc=$?
-    if [[ $rc -ne 0 ]]; then
-      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath, rc=$rc) -- a rebase conflict (or fetch failure) left it mid-rebase; resolve it there, run 'git -C $member_setpath rebase --continue', then re-run 'pnwf sync-fetch'" "$rc"
-    fi
+    case "$rc" in
+    0) : ;;
+    2)
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git fetch origin' failed there; check the remote/network/auth, then re-run 'pnwf sync-fetch'" "$rc"
+      ;;
+    *)
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- a rebase conflict left it mid-rebase; resolve it there, run 'git -C $member_setpath rebase --continue', then re-run 'pnwf sync-fetch'" "$rc"
+      ;;
+    esac
   done
 }
 

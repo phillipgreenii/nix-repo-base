@@ -434,7 +434,11 @@ _setup_fetch_and_rebase_origin() {
   # command actually aborting under set -e (see the non-vacuousness note at
   # the top of this file).
   run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
-  [ "$status" -ne 0 ]
+  # 3 (not just "nonzero"): the REBASE-step sentinel -- the caller
+  # (cmd_sync_fetch) switches on this to pick "git rebase --continue"
+  # wording rather than the fetch-failure wording (rc=2), so the exact
+  # code is load-bearing here, not incidental.
+  [ "$status" -eq 3 ]
 
   # git itself leaves the rebase mid-progress -- pnwf_fetch_and_rebase MUST
   # NOT `git rebase --abort` it; the hand-off contract is `git rebase
@@ -442,13 +446,16 @@ _setup_fetch_and_rebase_origin() {
   [ -d "$CLONE/.git/rebase-apply" ] || [ -d "$CLONE/.git/rebase-merge" ]
 }
 
-@test "pnwf_fetch_and_rebase: git fetch failure does not abort and prints a diagnostic" {
+@test "pnwf_fetch_and_rebase: git fetch failure does not abort, returns the FETCH-step sentinel, and prints a diagnostic" {
   _setup_fetch_and_rebase_origin
   command git -C "$CLONE" checkout -q -b feature
   command git -C "$CLONE" remote set-url origin "$TEST_DIR/does-not-exist.git"
 
   run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
-  [ "$status" -ne 0 ]
+  # 2 (not just "nonzero"): the FETCH-step sentinel, distinct from the
+  # rebase-step sentinel (3) above -- no rebase was ever started here, so
+  # the caller must NOT tell the operator to `git rebase --continue`.
+  [ "$status" -eq 2 ]
   [ -z "$output" ]
   [[ "$stderr" == *"pnwf_fetch_and_rebase: git fetch origin failed in $CLONE"* ]]
 }

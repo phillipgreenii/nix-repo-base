@@ -781,17 +781,19 @@ MOCK
 # --- sync-fetch ---------------------------------------------------------
 # The one MUTATING WORK-recipe subcommand (task 5) -- unlike every probe
 # above, `git` itself is MOCKED here rather than real (per its own test
-# brief): the orchestration under test (stop on the FIRST conflicting
-# member, do not continue, report repo+path) doesn't need real fetch/rebase
-# mechanics -- those are proven with REAL git against pnwf_fetch_and_rebase
-# directly in test-pnwf-lib.bats. Member dirs are plain directories (no
-# `.git` needed): sync-fetch's own git calls are fully mocked, and
-# pnwf_resolve_primary_branch only needs `cd` into member_canonical before
-# calling the (already-mocked) integrate-branch-support.
+# brief): the orchestration under test (stop on the FIRST failing member,
+# do not continue, report repo+path with step-appropriate wording) doesn't
+# need real fetch/rebase mechanics -- those (incl. the FETCH-step vs.
+# REBASE-step return-code distinction pnwf_fetch_and_rebase itself signals)
+# are proven with REAL git directly in test-pnwf-lib.bats. Member dirs are
+# plain directories (no `.git` needed): sync-fetch's own git calls are
+# fully mocked, and pnwf_resolve_primary_branch only needs `cd` into
+# member_canonical before calling the (already-mocked)
+# integrate-branch-support.
 #
 # The mock logs every invocation as "<dir> <subcommand>" to MOCK_GIT_LOG so
 # tests can assert both WHICH members were touched and in what order --
-# proving the loop stops at the first conflict rather than merely reporting
+# proving the loop stops at the first failure rather than merely reporting
 # it while continuing underneath.
 
 _sync_fetch_write_git_mock() {
@@ -810,6 +812,10 @@ echo "$dir ${1:-}" >>"$MOCK_GIT_LOG"
 
 case "${1:-}" in
 fetch)
+  if [[ -f "$dir/.mock-fetch-failure" ]]; then
+    echo "mock git: fatal: could not read from remote repository" >&2
+    exit 128
+  fi
   exit 0
   ;;
 rebase)
@@ -859,7 +865,7 @@ _sync_fetch_init_members() {
   [ "${lines[5]}" = "$SET_DIR/repoC rebase" ]
 }
 
-@test "sync-fetch --set: conflicting rebase stops on the FIRST conflicting repo, reports repo+worktree, exits non-zero, and does not continue" {
+@test "sync-fetch --set: conflicting rebase stops on the FIRST conflicting repo, reports repo+worktree with rebase-specific recovery, exits non-zero, and does not continue" {
   _stage_write_lock repoA repoB repoC
   _sync_fetch_init_members repoA repoB repoC
   touch "$SET_DIR/repoB/.mock-rebase-conflict"
@@ -875,6 +881,12 @@ _sync_fetch_init_members() {
   [[ "$output" == *"repoB"* ]]
   [[ "$output" == *"$SET_DIR/repoB"* ]]
 
+  # Rebase-specific recovery wording: a conflict DID leave a rebase in
+  # progress, so `git rebase --continue` is correct advice here (contrast
+  # with the fetch-failure test below, where it would be wrong advice).
+  [[ "$output" == *"rebase --continue"* ]]
+  [[ "$output" != *"'git fetch origin' failed"* ]]
+
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
   [ "${#lines[@]}" -eq 4 ]
@@ -883,6 +895,66 @@ _sync_fetch_init_members() {
   [ "${lines[2]}" = "$SET_DIR/repoB fetch" ]
   [ "${lines[3]}" = "$SET_DIR/repoB rebase" ]
   [[ "$output" != *"repoC"* ]]
+}
+
+@test "sync-fetch --set: a git fetch failure reports fetch-specific recovery (no rebase --continue), exits non-zero, and does not continue" {
+  _stage_write_lock repoA repoB repoC
+  _sync_fetch_init_members repoA repoB repoC
+  touch "$SET_DIR/repoB/.mock-fetch-failure"
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"repoB"* ]]
+  [[ "$output" == *"$SET_DIR/repoB"* ]]
+
+  # Fetch-specific recovery wording: no rebase was ever started here, so
+  # `git rebase --continue` would be actively wrong advice -- it must NOT
+  # appear.
+  [[ "$output" == *"'git fetch origin' failed"* ]]
+  [[ "$output" != *"rebase --continue"* ]]
+
+  # The rebase step is never reached for the failing member, and repoC
+  # (the later member) is never touched.
+  run cat "$MOCK_GIT_LOG"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 3 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[2]}" = "$SET_DIR/repoB fetch" ]
+  [[ "$output" != *"repoC"* ]]
+}
+
+@test "sync-fetch --set: a member with an absent worktree is skipped, and sync-fetch continues to later members" {
+  _stage_write_lock repoA repoB repoC
+  # repoB: deliberately no $SET_DIR/repoB (and no $CANONICAL_DIR/repoB
+  # either) -- mirrors an already-landed/cleaned-up member. sync-fetch must
+  # skip it via pnwf_worktree_present before ever touching git or
+  # integrate-branch-support for it, and continue on to repoC.
+  _sync_fetch_init_members repoA repoC
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  [ "$status" -eq 0 ]
+
+  run cat "$MOCK_GIT_LOG"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"repoB"* ]]
+  [ "${#lines[@]}" -eq 4 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[2]}" = "$SET_DIR/repoC fetch" ]
+  [ "${lines[3]}" = "$SET_DIR/repoC rebase" ]
 }
 
 @test "sync-fetch --set: a re-run after a member is already up to date is a clean no-op for it" {
