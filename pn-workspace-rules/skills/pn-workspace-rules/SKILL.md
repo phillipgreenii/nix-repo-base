@@ -41,7 +41,7 @@ In this multi-agent workspace an **unqualified "main" — and any bare "merge", 
 1. Work in a **worktree / workforest** off local `main`.
 2. Verify the change as much as possible in the worktree (see [Completion Gate](#completion-gate)).
 3. **Rebase the worktree FROM local `main`** (`git rebase main`, or `pn workspace rebase main` for a set) — rebase onto _local_ main, NOT `origin/main`.
-4. **ff-only merge the worktree back to local `main`** (`git -C <canonical> merge --ff-only <branch>`); for a coordinated set use the "Landing a set onto `main` locally" recipe under Coordinated Workforest Sets.
+4. **ff-only merge the worktree back to local `main`** (`git -C <canonical> merge --ff-only <branch>`); for a coordinated set use the `land-workforest` skill (see [Coordinated Workforest Sets](#coordinated-workforest-sets)).
 
 **Pushing local `main` → `origin/main` is a WHOLLY SEPARATE, deliberate step.** Nothing reaches `origin/main` without first flowing through local `main`. In particular:
 
@@ -310,7 +310,7 @@ Every config-path read in pn goes through an environment variable (with a sensib
 
 Once resolved, `pn` exports the root as both `PN_WORKSPACE_ROOT` and `WORKSPACE_ROOT` into every subprocess it spawns (hooks, `update-locks.sh`, etc.).
 
-**Caveat for coordinated workforest sets:** if `PN_WORKSPACE_ROOT` is already exported pointing at the _canonical_ workspace root, it defeats the cd-into-set model — `pn` reads it first (step 2) and resolves the primary workspace instead of the set. When working inside a set, either **unset** `PN_WORKSPACE_ROOT` (the upward search at step 3 will find the set's own `pn-workspace.toml`) or set it explicitly to the set directory. See [Coordinated Workforest Sets](#coordinated-workforest-sets) below.
+**Caveat for coordinated workforest sets:** if `PN_WORKSPACE_ROOT` is already exported pointing at the _canonical_ workspace root, it defeats the cd-into-set model — `pn` reads it first (step 2) and resolves the primary workspace instead of the set. When working inside a set, set it **explicitly** to the set directory (preferred — a bare `unset` does not survive across separate tool calls; `pnwf resolve` prints the value), or `unset` it within a single shell. See [Coordinated Workforest Sets](#coordinated-workforest-sets) below.
 
 ## Coordinated Workforest Sets
 
@@ -339,8 +339,10 @@ By default a set contains **every** repo listed in `pn-workspace.toml`. Pass `--
 # From the canonical workspace root:
 pn workspace workforest add my-feature          # create the set; all repos on my-feature
 cd .workforests/my-feature                      # enter the set
-# unset PN_WORKSPACE_ROOT if it was pointing at the canonical root
-unset PN_WORKSPACE_ROOT
+# Pin PN_WORKSPACE_ROOT explicitly to the set dir. Prefer this over `unset`: a bare
+# unset does not survive across separate tool/shell invocations, and a stale exported
+# value silently redirects pn to the canonical workspace. `pnwf resolve` prints it.
+export PN_WORKSPACE_ROOT="$PWD"
 
 # All normal pn workspace verbs now operate on the set's worktrees:
 pn workspace status
@@ -371,69 +373,37 @@ These two enhancements are the natural workflow companions for a fresh set:
 - **`pn workspace rebase <branch>`** — rebase each repo's current branch onto the given local ref. No fetch. Any git ref works (`main`, `origin/main`, another worktree's branch). Repos where the ref does not resolve are skipped with a notice. Use `pn workspace rebase main` to sync a set's feature branches onto local `main`.
 - **`pn workspace push --set-upstream`** (or `-u`) — for repos that have no upstream yet, runs `git push -u origin <current-branch>`. Without the flag, repos with no upstream are silently skipped. This is the explicit one-time step to publish a fresh set's branches; afterwards plain `push`/`rebase`/`update` track normally.
 
-### Landing a set onto `main` via `integrate-branch`
+### Landing a set onto `main` — use the `land-workforest` skill
 
-`pn workspace` has **no** local merge/integrate verb (pg2-fdx0), and landing a set does not
-add one: **`integrate-branch` is a skill**, invoked per repo — it is not a `pn workspace`
-verb and does not belong in the [Command Surface Cheat-Sheet](#command-surface-cheat-sheet)
-above. Landing a set is a **best-effort ordered transaction**: local ff-merges can't be
-rolled back, so repos land one at a time, in dependency (topological) order, and a repo
-that can't land **stops the run** rather than being skipped past.
+To land a coordinated set, use the **`land-workforest` skill** (the LAND stage of the
+workforest work-cycle). It is the single, sanctioned local-landing path — a thin cross-repo
+orchestrator that runs `pnwf land-plan`, then invokes the **`integrate-branch` skill** per
+repo in dependency (topological) order, stopping at the first blocked repo. Invoke it (via
+the Skill tool) from inside the set; do **not** hand-run a `pn workspace rebase main` +
+per-repo `integrate-branch` loop here (that logic now lives once, in `land-workforest`).
 
-```bash
-# 1. In the set: rebase every repo's feature branch onto local main (fast-forward-able).
-cd .workforests/my-feature && unset PN_WORKSPACE_ROOT
-pn workspace rebase main
+`pn workspace` has **no** local merge/integrate verb (pg2-fdx0) and grows none: a Go binary
+cannot invoke the `integrate-branch` skill R-9 designates as the single integration entry
+point, and would be strategy-blind. `integrate-branch` decides each repo's method itself
+(declared git config, inferred signals, or asking) — most `pn` repos resolve to
+`ff-merge-to-main` and land with nothing pushed; a repo that resolves to `pull-request`
+instead pushes and opens/updates a PR (its worktree/branch stay), which `land-workforest`
+surfaces as a stop-and-report before any consumer.
 
-# 2. In dependency (topological) order — see `pn workspace tree`, or the order recorded
-#    in `pn-workspace.lock.json` — invoke the `integrate-branch` SKILL (an agent action
-#    via the Skill tool, NOT a shell command) from each repo's worktree, one repo at a
-#    time, stopping at the first blocked repo:
-#      run integrate-branch in <repo-a>; if it lands, run it in <repo-b>; then the next; …
-```
+The cross-repo obligations `land-workforest` enforces (and this skill therefore does not
+restate): land in topo order and never land a repo ahead of a dependency it consumes;
+stop-and-report immediately on a blocked repo and do not continue to later repos; and remove
+the set only once every repo has landed and is clean. After landing, tear the set down with
+the **`cleanup-workforest` skill** (`integrate-branch`'s `ff-merge-to-main` handler already
+removes each landed repo's own worktree + branch; cleanup clears whatever scaffolding
+remains and preserves any un-landed / `pull-request` repo).
 
-This recipe is the **sanctioned local-landing path** for a coordinated set — `pn` grows no
-native merge verb (decided in bd pg2-fdx0; a Go binary cannot invoke the `integrate-branch`
-skill R-9 designates as the single integration entry point, and would be strategy-blind). The
-two obligations below are the only normative content the recipe adds on top of the per-repo
-handler contract (which owns FF-0 halt / rebase-before-ff / strategy resolution), because the
-handler acts on one repo and does not know about siblings:
-
-- **Ordered transaction (MUST).** You MUST land repos in dependency (topological) order, and
-  MUST NOT land a repo ahead of a dependency it consumes — a consumer landing first can pin a
-  stale sibling.
-- **Stop-and-report on a blocked repo (MUST).** If `integrate-branch` reports `stopped:<reason>`
-  for a repo (e.g. an unresolved rebase conflict, or a persistent ff-race after its
-  retries), you MUST stop the run immediately and MUST NOT continue to later repos, some of
-  which may depend on the blocked one. Keep the set and report which repos already landed and
-  which repo is blocked.
-- **Remove the set only once every repo has landed and is clean.** Once `integrate-branch`
-  has reported a landed (or otherwise resolved) outcome for every repo, validate the
-  result — e.g. `pn workspace build` (or the matching Completion Gate tier) — then remove:
-
-  ```bash
-  cd <canonical_root>
-  pn workspace workforest remove my-feature
-  ```
-
-  `integrate-branch`'s `ff-merge-to-main` handler already removes a landed repo's own
-  worktree and branch as part of landing it; `workforest remove` clears whatever
-  scaffolding remains. You MUST NOT remove a set while any repo in it is still blocked; leave
-  it in place for retry/inspection.
-
-`integrate-branch` decides each repo's landing method itself (declared git config,
-inferred signals, or asking) — most `pn` repos resolve to `ff-merge-to-main` and land with
-nothing pushed, but a repo that resolves to `pull-request` instead pushes and
-opens/updates a PR (its worktree/branch stay). See the `integrate-branch` skill for the
-full decision logic; this recipe only fixes the **order** and the **transaction
-semantics** across a set's repos.
-
-### `PN_WORKSPACE_ROOT` must be unset (or point at the set)
+### `PN_WORKSPACE_ROOT` must point at the set (prefer the explicit form)
 
 Because `PN_WORKSPACE_ROOT` is checked before the upward walk, a shell session that already has it pointing at the canonical root will silently operate on the primary workspace rather than the set. Rule:
 
-- **Unset it** (preferred): `unset PN_WORKSPACE_ROOT` — the upward walk from `{set}` finds the set's own `pn-workspace.toml`.
-- **Or set it to the set directory**: `export PN_WORKSPACE_ROOT=/path/to/.workforests/my-feature`.
+- **Set it explicitly to the set directory** (preferred): `export PN_WORKSPACE_ROOT=/path/to/.workforests/my-feature`. A bare `unset` does **not** survive across separate tool/shell invocations, so the explicit export is the durable choice; `pnwf resolve` prints the exact value (`pn_workspace_root`) to use.
+- **Or unset it** (single-shell only): `unset PN_WORKSPACE_ROOT` — the upward walk from `{set}` then finds the set's own `pn-workspace.toml`, but only within that one shell.
 
 Never run `pn workspace` verbs from inside a set while `PN_WORKSPACE_ROOT` points at the canonical root.
 
