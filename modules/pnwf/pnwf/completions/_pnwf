@@ -6,10 +6,10 @@ _pnwf_subcommands() {
     'resolve:Print canonical_root/in_workforest/set_dir/pn_workspace_root as JSON'
     'repos:Print member repo keys in topological order'
     'stage:Print the set lifecycle stage (work/ready-to-land/resuming-land/landed)'
-    'fork-preflight:(not yet implemented)'
-    'land-plan:(not yet implemented)'
-    'cleanup:(not yet implemented)'
-    'status:(not yet implemented)'
+    'fork-preflight:Pre-flight checks before forking a workforest set (proceed/resume/stop)'
+    'land-plan:Print the topo-ordered member repos still needing landing'
+    'cleanup:Best-effort teardown of a workforest set from the canonical clone'
+    'status:Print a per-repo status table (landed/not-started/blocked/kept)'
     'sync-fetch:(not yet implemented)'
   )
   _describe 'pnwf subcommand' subcommands
@@ -28,6 +28,24 @@ args)
     _arguments \
       '--set[Guard: fail unless the resolved workspace is inside a set]' \
       '(-h --help)'{-h,--help}'[Show help message]'
+    ;;
+  fork-preflight)
+    _arguments \
+      '--repos[Comma-separated subset of repos to check]:repos' \
+      '(-h --help)'{-h,--help}'[Show help message]' \
+      '1:branch'
+    ;;
+  land-plan | status)
+    _arguments \
+      '(-h --help)'{-h,--help}'[Show help message]' \
+      '1:branch'
+    ;;
+  cleanup)
+    _arguments \
+      '--force-dirty-worktree-removal[Force git worktree remove on a dirty worktree]' \
+      '--force-unlanded-branch-removal[Remove worktree + git branch -D for a not-landed member]' \
+      '(-h --help)'{-h,--help}'[Show help message]' \
+      '1:branch'
     ;;
   esac
   ;;

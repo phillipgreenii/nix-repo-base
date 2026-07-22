@@ -119,8 +119,9 @@
           };
           # pnwf (workforest work-cycle) module: the shared pnwf-lib
           # primitives (bead pg2-xs5cj task 2) plus the `pnwf` command itself
-          # — resolve/repos/stage implemented so far (task 3); the remaining
-          # five subcommands are stubbed in pnwf's own dispatch table.
+          # — resolve/repos/stage (task 3) and fork-preflight/land-plan/
+          # cleanup/status (task 4) are implemented; only sync-fetch (task 5)
+          # remains stubbed in pnwf's own dispatch table.
           pnwfScripts = import ./modules/pnwf/scripts.nix {
             inherit pkgs bashBuilders;
           };

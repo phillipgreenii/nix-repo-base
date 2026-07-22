@@ -288,3 +288,82 @@ MOCK
   [ -z "$output" ]
   [[ "$stderr" == *"pnwf_topo_order: failed to read .order from $TEST_DIR/does-not-exist-lock.json (rc=2)"* ]]
 }
+
+# --- pnwf_classify_member ---------------------------------------------------
+# Prints "<label>\t<reason>" (one line): landed | not-started | blocked | kept.
+# Backs `pnwf status`; every branch is exercised via the guarded primitives
+# above, so this is itself a guarded relay (never aborts under set -e).
+#
+# Design note (why "landed" comes ONLY from worktree-absence here): ahead==0
+# is logically EQUIVALENT to is-ancestor==true (rev-list --count primary..branch
+# is zero iff branch's tip is reachable from primary) -- there is no git state
+# where a PRESENT worktree is simultaneously "not landed" and "zero ahead". So
+# a present worktree with zero-ahead is, by convention, "not-started" (the
+# operator-facing signal that no work has been recorded yet in this repo);
+# "landed" is reserved for the one unambiguous signal -- the worktree is gone
+# (FF-4 completed, or a prior cleanup pass already removed it).
+
+@test "pnwf_classify_member: absent worktree classifies as landed (FF-4 removed it)" {
+  run bash -euo pipefail -c "
+    source '$LIB_PATH'
+    pnwf_classify_member '$TEST_DIR/set' member-a '$REPO' feature main
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'landed\tworktree removed (landed)')" ]
+}
+
+@test "pnwf_classify_member: worktree present, clean, zero ahead -> not-started" {
+  command git -C "$REPO" branch feature
+  # A REAL worktree at the member path -- pnwf_working_tree_dirty runs `git
+  # status` there, so a bare mkdir (not a git checkout) would misreport a
+  # guarded git-status FAILURE (rc=128, "not a git repo") as if it were the
+  # member's own dirty/blocked state.
+  command git -C "$REPO" worktree add -q "$TEST_DIR/set/member-a" feature
+  run bash -euo pipefail -c "
+    source '$LIB_PATH'
+    pnwf_classify_member '$TEST_DIR/set' member-a '$REPO' feature main
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'not-started\tno commits ahead of main')" ]
+}
+
+@test "pnwf_classify_member: worktree present, clean, ahead>0 -> kept" {
+  command git -C "$REPO" checkout -q -b feature
+  echo two >"$REPO/file.txt"
+  command git -C "$REPO" commit -q -am second
+  command git -C "$REPO" checkout -q main
+  command git -C "$REPO" worktree add -q "$TEST_DIR/set/member-a" feature
+  run bash -euo pipefail -c "
+    source '$LIB_PATH'
+    pnwf_classify_member '$TEST_DIR/set' member-a '$REPO' feature main
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'kept\t1 commit(s) ahead of main, not yet landed')" ]
+}
+
+@test "pnwf_classify_member: worktree present, dirty -> blocked (dirty wins over ahead)" {
+  command git -C "$REPO" branch feature
+  command git -C "$REPO" worktree add -q "$TEST_DIR/set/member-a" feature
+  echo untracked >"$TEST_DIR/set/member-a/extra.txt"
+  run bash -euo pipefail -c "
+    source '$LIB_PATH'
+    pnwf_classify_member '$TEST_DIR/set' member-a '$REPO' feature main
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == blocked$'\t'* ]]
+  [[ "$output" == *"uncommitted changes"* ]]
+}
+
+@test "pnwf_classify_member: worktree present, branch ref absent (128) does not abort -> blocked" {
+  # The member worktree is present, but on an UNRELATED branch -- the
+  # member branch being tested ("does-not-exist") is absent from $REPO
+  # entirely, which is the scenario under test (128, guarded).
+  command git -C "$REPO" worktree add -q "$TEST_DIR/set/member-a" -b member-a-unrelated
+  run bash -euo pipefail -c "
+    source '$LIB_PATH'
+    pnwf_classify_member '$TEST_DIR/set' member-a '$REPO' does-not-exist main
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == blocked$'\t'* ]]
+  [[ "$output" == *"not found in $REPO"* ]]
+}

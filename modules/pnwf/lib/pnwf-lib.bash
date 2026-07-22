@@ -161,3 +161,71 @@ pnwf_topo_order() {
     return "$rc"
   fi
 }
+
+# Classifies one workforest member's landing status from git state alone
+# (never aborts under set -e; backs `pnwf status`). Prints ONE line:
+# "<label>\t<reason>", label one of: landed | not-started | blocked | kept.
+#
+# Args: setdir member canonical_dir branch primary
+#
+# Design note: ahead==0 (git rev-list --count primary..branch) is logically
+# EQUIVALENT to is-ancestor(branch, primary)==true, so a PRESENT worktree can
+# never simultaneously be "not landed" and "zero ahead" -- that combination
+# does not occur in real git state. "landed" is therefore derived ONLY from
+# worktree-absence (the one unambiguous signal: FF-4 completed, or a prior
+# cleanup pass already removed it); a present worktree with zero-ahead is
+# "not-started" (no work recorded yet in this repo). This also means the
+# merge-base ancestor check is unnecessary here: `pnwf_ahead_of_primary`
+# alone gives the same absent-ref (128) signal as `merge-base --is-ancestor`
+# (both fail identically on an unresolvable ref), one guarded git call
+# instead of two.
+pnwf_classify_member() {
+  local setdir="$1" member="$2" canonical_dir="$3" branch="$4" primary="$5"
+  local setpath="$setdir/$member"
+
+  if ! pnwf_worktree_present "$setdir" "$member"; then
+    printf '%s\t%s\n' "landed" "worktree removed (landed)"
+    return 0
+  fi
+
+  local dirty_rc=0
+  pnwf_working_tree_dirty "$setpath" || dirty_rc=$?
+  case "$dirty_rc" in
+  0)
+    printf '%s\t%s\n' "blocked" "working tree has uncommitted changes"
+    return 0
+    ;;
+  1) : ;;
+  *)
+    echo "pnwf_classify_member: dirty check failed unexpectedly (rc=$dirty_rc)" >&2
+    return "$dirty_rc"
+    ;;
+  esac
+
+  # stderr discarded on this call: 128 (absent ref) is an EXPECTED case here
+  # (reported below as "blocked", not a genuine error), so
+  # pnwf_ahead_of_primary's own "failed unexpectedly" diagnostic for that rc
+  # would otherwise leak into a caller capturing combined stdout+stderr
+  # (e.g. bats' `run`) ahead of the clean "blocked\t…" line this function
+  # promises — same rationale as pnwf_is_ancestor_of_primary discarding raw
+  # git stderr on its own 128 path. A truly unexpected rc still gets an
+  # explicit diagnostic via the `*)` branch below.
+  local ahead ahead_rc=0
+  ahead=$(pnwf_ahead_of_primary "$canonical_dir" "$branch" "$primary" 2>/dev/null) || ahead_rc=$?
+  case "$ahead_rc" in
+  0)
+    if [ "$ahead" -eq 0 ]; then
+      printf '%s\t%s\n' "not-started" "no commits ahead of $primary"
+    else
+      printf '%s\t%s\n' "kept" "$ahead commit(s) ahead of $primary, not yet landed"
+    fi
+    ;;
+  128)
+    printf '%s\t%s\n' "blocked" "member branch '$branch' not found in $canonical_dir although its worktree is present"
+    ;;
+  *)
+    echo "pnwf_classify_member: ahead-of-primary check failed unexpectedly (rc=$ahead_rc)" >&2
+    return "$ahead_rc"
+    ;;
+  esac
+}

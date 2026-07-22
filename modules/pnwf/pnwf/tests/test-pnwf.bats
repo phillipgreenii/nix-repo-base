@@ -87,6 +87,23 @@ if [[ "${1:-}" == "workspace" && "${2:-}" == "info" ]]; then
   exit 1
 fi
 
+# `pn workspace workforest remove <branch>`: mirrors the real Go
+# implementation closely enough for cleanup's tests -- requires
+# PN_WORKSPACE_ROOT (the real WorkforestRemove resolves paths off the
+# workspace ROOT, which must be canonical), and unconditionally deletes the
+# now-emptied set dir.
+if [[ "${1:-}" == "workspace" && "${2:-}" == "workforest" && "${3:-}" == "remove" ]]; then
+  : "${PN_WORKSPACE_ROOT:?mock pn: workspace workforest remove requires PN_WORKSPACE_ROOT (must be pinned to canonical)}"
+  branch="${4:-}"
+  set_dir="$PN_WORKSPACE_ROOT/.workforests/$branch"
+  if [[ ! -d "$set_dir" ]]; then
+    echo "mock pn: workforest remove: set directory does not exist: $set_dir" >&2
+    exit 1
+  fi
+  rm -rf "$set_dir"
+  exit 0
+fi
+
 echo "mock pn: unsupported invocation: $*" >&2
 exit 1
 MOCK
@@ -245,13 +262,10 @@ _stage_init_member() {
   [[ "$output" == *"unknown subcommand"* ]]
 }
 
-@test "the five deferred subcommands exit non-zero as not yet implemented" {
-  local sub
-  for sub in fork-preflight land-plan cleanup status sync-fetch; do
-    run "$SCRIPT_UNDER_TEST" "$sub"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"not yet implemented"* ]]
-  done
+@test "the one remaining deferred subcommand exits non-zero as not yet implemented" {
+  run "$SCRIPT_UNDER_TEST" sync-fetch
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not yet implemented"* ]]
 }
 
 # --- repos -------------------------------------------------------------------
@@ -358,4 +372,414 @@ _stage_init_member() {
   run "$SCRIPT_UNDER_TEST" stage --set
   [ "$status" -ne 0 ]
   [[ "$output" == *"not in_workforest"* ]]
+}
+
+# --- fork-preflight fixture helpers -----------------------------------------
+
+# A real canonical-only repo (no worktree, no workforest branch) -- for
+# fork-preflight, which runs BEFORE any set exists.
+_fp_init_canonical_repo() {
+  local name="$1"
+  local dir="$CANONICAL_DIR/$name"
+  mkdir -p "$dir"
+  command git -C "$dir" init -q -b main
+  command git -C "$dir" config user.email "test@example.com"
+  command git -C "$dir" config user.name "Test"
+  echo one >"$dir/file.txt"
+  command git -C "$dir" add file.txt
+  command git -C "$dir" commit -q -m initial
+}
+
+# Overwrites CANONICAL_DIR's info fixture with a populated `.repos[]` for the
+# given repo names (name/path only matter to fork-preflight; applied_ref and
+# dirty are unused filler matching the real RepoInfo shape).
+_fp_write_canonical_info() {
+  local repos_json="[]" name
+  for name in "$@"; do
+    repos_json=$(printf '%s' "$repos_json" | jq --arg name "$name" --arg path "$CANONICAL_DIR/$name" \
+      '. + [{name: $name, path: $path, applied_ref: "", dirty: false}]')
+  done
+  jq -n --arg root "$CANONICAL_DIR" --argjson repos "$repos_json" '{
+    wsid: "test-ws",
+    root: $root,
+    terminal: "repoA",
+    workforests_dir: ".workforests",
+    in_workforest: false,
+    canonical_root: $root,
+    repos: $repos
+  }' >"$CANONICAL_DIR/.mock-pn-info.json"
+}
+
+# --- fork-preflight ----------------------------------------------------------
+
+@test "fork-preflight: cwd already inside a set -> stop" {
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" == *"already inside a workforest set"* ]]
+}
+
+@test "fork-preflight: canonical repo off-primary -> stop" {
+  _fp_init_canonical_repo repoA
+  command git -C "$CANONICAL_DIR/repoA" checkout -q -b other
+  _fp_write_canonical_info repoA
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" == *"repoA"* ]]
+}
+
+@test "fork-preflight: canonical repo dirty -> stop" {
+  _fp_init_canonical_repo repoA
+  echo dirty >"$CANONICAL_DIR/repoA/untracked.txt"
+  _fp_write_canonical_info repoA
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" == *"repoA"* ]]
+}
+
+@test "fork-preflight: existing set dir -> resume" {
+  _fp_init_canonical_repo repoA
+  _fp_write_canonical_info repoA
+  mkdir -p "$CANONICAL_DIR/.workforests/new-feature"
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "resume" ]
+  [[ "$output" == *"set directory already exists"* ]]
+}
+
+@test "fork-preflight: existing branch in a member repo -> resume" {
+  _fp_init_canonical_repo repoA
+  command git -C "$CANONICAL_DIR/repoA" branch new-feature
+  _fp_write_canonical_info repoA
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "resume" ]
+  [[ "$output" == *"repoA"* ]]
+}
+
+@test "fork-preflight: clean canonical, no set, no branch -> proceed" {
+  _fp_init_canonical_repo repoA
+  _fp_write_canonical_info repoA
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "proceed" ]
+}
+
+@test "fork-preflight: --repos filters which repos are checked" {
+  _fp_init_canonical_repo repoA
+  _fp_init_canonical_repo repoB
+  command git -C "$CANONICAL_DIR/repoB" checkout -q -b other
+  _fp_write_canonical_info repoA repoB
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature --repos repoA
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "proceed" ]
+}
+
+@test "fork-preflight: without --repos, an off-primary sibling still stops" {
+  _fp_init_canonical_repo repoA
+  _fp_init_canonical_repo repoB
+  command git -C "$CANONICAL_DIR/repoB" checkout -q -b other
+  _fp_write_canonical_info repoA repoB
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" == *"repoB"* ]]
+}
+
+# --- land-plan ---------------------------------------------------------------
+
+@test "land-plan: absent worktree is skipped even though its branch is not landed" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  _stage_write_lock repoA repoB
+  echo two >"$SET_DIR/repoB/file.txt"
+  command git -C "$SET_DIR/repoB" commit -q -am second
+  rm -rf "$SET_DIR/repoB"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "land-plan: present not-landed member is included" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "repoA" ]
+}
+
+@test "land-plan: a present pull-request-strategy member (not landed) is included" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+
+  cat >"$MOCK_BIN/integrate-branch-support" <<MOCK
+#!/usr/bin/env bash
+if [[ "\$PWD" == "$CANONICAL_DIR/repoA" ]]; then
+  echo '{"primary_branch":"main","strategy":"pull-request"}'
+else
+  echo '{"primary_branch":"main","strategy":null}'
+fi
+MOCK
+  chmod +x "$MOCK_BIN/integrate-branch-support"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "repoA" ]
+}
+
+@test "land-plan: landed member is excluded" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "land-plan: present worktree with an absent member branch (128) does not abort" {
+  mkdir -p "$SET_DIR/repoC"
+  mkdir -p "$CANONICAL_DIR/repoC"
+  command git -C "$CANONICAL_DIR/repoC" init -q -b main
+  command git -C "$CANONICAL_DIR/repoC" config user.email "test@example.com"
+  command git -C "$CANONICAL_DIR/repoC" config user.name "Test"
+  echo one >"$CANONICAL_DIR/repoC/file.txt"
+  command git -C "$CANONICAL_DIR/repoC" add file.txt
+  command git -C "$CANONICAL_DIR/repoC" commit -q -m initial
+
+  _stage_write_lock repoC
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "repoC" ]
+}
+
+@test "land-plan: subset lock excludes a physically-present member not in the lock" {
+  _stage_init_member repoA
+  _stage_init_member repoD
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoD/file.txt"
+  command git -C "$SET_DIR/repoD" commit -q -am second
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- status --------------------------------------------------------------
+
+@test "status: absent worktree classifies as landed" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  rm -rf "$SET_DIR/repoA"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "repoA"$'\t'"landed"$'\t'* ]]
+}
+
+@test "status: present clean zero-ahead member is not-started" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "repoA"$'\t'"not-started"$'\t'* ]]
+}
+
+@test "status: present clean ahead member is kept" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "repoA"$'\t'"kept"$'\t'* ]]
+  [[ "$output" == *"1 commit(s) ahead"* ]]
+}
+
+@test "status: present dirty member is blocked" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo untracked >"$SET_DIR/repoA/extra.txt"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "repoA"$'\t'"blocked"$'\t'* ]]
+}
+
+@test "status: multi-member table lists each member's own state" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  _stage_write_lock repoA repoB
+  echo two >"$SET_DIR/repoB/file.txt"
+  command git -C "$SET_DIR/repoB" commit -q -am second
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [[ "${lines[0]}" == "repoA"$'\t'"not-started"* ]]
+  [[ "${lines[1]}" == "repoB"$'\t'"kept"* ]]
+}
+
+# --- cleanup -----------------------------------------------------------------
+
+@test "REVIEW-CRITICAL: cleanup processes landed+not-landed+absent-ref members without aborting, exit 0" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  # repoC: a real canonical repo, but the workforest branch was never
+  # created in it -- and it never got a worktree in the set either (mirrors
+  # a member already fully cleaned up elsewhere, or never forked into).
+  mkdir -p "$CANONICAL_DIR/repoC"
+  command git -C "$CANONICAL_DIR/repoC" init -q -b main
+  command git -C "$CANONICAL_DIR/repoC" config user.email "test@example.com"
+  command git -C "$CANONICAL_DIR/repoC" config user.name "Test"
+  echo one >"$CANONICAL_DIR/repoC/file.txt"
+  command git -C "$CANONICAL_DIR/repoC" add file.txt
+  command git -C "$CANONICAL_DIR/repoC" commit -q -m initial
+
+  _stage_write_lock repoA repoB repoC
+
+  # repoA: landed -- merge into canonical main; worktree + branch are still
+  # present (exactly the state `pnwf cleanup` exists to finish tearing down).
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+
+  # repoB: not landed (ahead of main, never merged).
+  echo two >"$SET_DIR/repoB/file.txt"
+  command git -C "$SET_DIR/repoB" commit -q -am second
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+
+  # THE review-critical assertion: exit 0 despite B (exit 1) and C (exit 128).
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"repoA"$'\t'"removed"* ]]
+  [[ "$output" == *"repoB"$'\t'"kept"* ]]
+  [[ "$output" == *"repoC"$'\t'"landed"* ]]
+  [[ "$output" == *"(set)"$'\t'"kept"* ]]
+
+  # B's report names BOTH force flags.
+  b_line=$(printf '%s\n' "$output" | grep '^repoB')
+  [[ "$b_line" == *"--force-unlanded-branch-removal"* ]]
+  [[ "$b_line" == *"--force-dirty-worktree-removal"* ]]
+
+  # A was actually removed on disk; B and C were left alone.
+  [ ! -e "$SET_DIR/repoA" ]
+  run bash -c "command git -C '$CANONICAL_DIR/repoA' rev-parse --verify --quiet refs/heads/$BRANCH"
+  [ "$status" -ne 0 ]
+
+  [ -e "$SET_DIR/repoB" ]
+  run bash -c "command git -C '$CANONICAL_DIR/repoB' rev-parse --verify --quiet refs/heads/$BRANCH"
+  [ "$status" -eq 0 ]
+
+  # The set dir is left in place -- B is still kept.
+  [ -e "$SET_DIR" ]
+}
+
+@test "cleanup: removes the set directory via 'pn workspace workforest remove' when nothing is kept" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(set)"$'\t'"removed"* ]]
+  [ ! -e "$SET_DIR" ]
+}
+
+@test "cleanup --force-dirty-worktree-removal removes a landed but dirty worktree" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+  echo untracked >"$SET_DIR/repoA/extra.txt"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"* ]]
+  [[ "$output" == *"--force-dirty-worktree-removal"* ]]
+  [ -e "$SET_DIR/repoA" ]
+
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH" --force-dirty-worktree-removal
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"removed"* ]]
+  [ ! -e "$SET_DIR/repoA" ]
+}
+
+@test "cleanup --force-unlanded-branch-removal force-removes a not-landed member" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"* ]]
+  [ -e "$SET_DIR/repoA" ]
+
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH" --force-unlanded-branch-removal
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"removed"* ]]
+  [[ "$output" == *"forcibly removed"* ]]
+  [ ! -e "$SET_DIR/repoA" ]
+  run bash -c "command git -C '$CANONICAL_DIR/repoA' rev-parse --verify --quiet refs/heads/$BRANCH"
+  [ "$status" -ne 0 ]
+}
+
+@test "cleanup: subset lock excludes a physically-present member from processing" {
+  _stage_init_member repoA
+  _stage_init_member repoX
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  echo two >"$SET_DIR/repoX/file.txt"
+  command git -C "$SET_DIR/repoX" commit -q -am second
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"* ]]
+  [[ "$output" != *"repoX"* ]]
+  [ -e "$SET_DIR/repoX" ]
+  run bash -c "command git -C '$CANONICAL_DIR/repoX' rev-parse --verify --quiet refs/heads/$BRANCH"
+  [ "$status" -eq 0 ]
+  [ -e "$SET_DIR" ]
 }

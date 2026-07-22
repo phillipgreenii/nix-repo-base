@@ -14,11 +14,18 @@ _pnwf() {
     return
   fi
 
-  # After the subcommand: resolve/repos/stage take --set; every subcommand
+  # After the subcommand: resolve/repos/stage take --set; fork-preflight
+  # takes --repos; cleanup takes the two --force-… flags; every subcommand
   # takes --help.
   case "${words[1]}" in
   resolve | repos | stage)
     mapfile -t COMPREPLY < <(compgen -W "--set --help -h" -- "$cur")
+    ;;
+  fork-preflight)
+    mapfile -t COMPREPLY < <(compgen -W "--repos --help -h" -- "$cur")
+    ;;
+  cleanup)
+    mapfile -t COMPREPLY < <(compgen -W "--force-dirty-worktree-removal --force-unlanded-branch-removal --help -h" -- "$cur")
     ;;
   *)
     mapfile -t COMPREPLY < <(compgen -W "--help -h" -- "$cur")
