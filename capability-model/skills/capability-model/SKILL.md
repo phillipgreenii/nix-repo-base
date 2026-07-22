@@ -186,60 +186,21 @@ runtime version-guard to bridge two revs.
 
 ## 7. System (NixOS/darwin) vs HM (capability) — the placement decision procedure
 
-**Design premise:** HM is the default for **every** tool. There are essentially no
-host-level "exceptions", because every account a human or agent actually WORKS AS
-gets an HM profile (`home-manager.users.<name>` manages any user, including
-`isSystemUser` service/CI users). "This host has no HM user" is a **fixable gap**,
-never a justification for parking a tool in `environment.systemPackages`.
+The placement decision procedure has its **own dedicated skill** — see
+`system-vs-hm-placement` (a sibling skill in this plugin). It is the single source of
+truth for "does tool/config X live in the NixOS/darwin system layer or in an HM
+capability?" and it triggers on its own whenever you add, move, or review the
+placement of anything in these repos.
 
-**Root is the one deliberate non-exception:** root stays a NixOS/darwin-defined
-system identity with **NO HM profile**. You do not do tooling as root — you use a
-named `sudo` user. Root's only tools are the recovery floor (Q2).
-
-When asked to "add tool/config X", answer these in order — **first YES wins**:
-
-- **Q1 — Is X OS/machine config or a service definition, not a runnable user
-  tool?** (users/groups, networking, firewall, boot, kernel, filesystems,
-  `services.*`; darwin system defaults, homebrew, dock, launchd _daemon
-  definitions_.) → **NixOS/darwin config.** (Not an "exception" — X isn't a tool.)
-- **Q2 — Must the BINARY exist before any user's HM activates, or is it exec'd by a
-  system service?**
-  - _Exec'd by a system service_ → vendor it into the **service's own closure**:
-    `${pkgs.X}` in the `ExecStart`, `runtimeInputs`, or
-    `systemd.services.<x>.path` (darwin: `phillipgreenii.system.launchdServices`).
-    **NOT** root `environment.systemPackages`.
-  - _Needed before HM activates (root recovery / bootstrap)_ → the ONE legitimate
-    `environment.systemPackages` tool case: a MINIMAL, `lib.lowPrio` recovery floor
-    (shell, vim, curl, git-minimal, openssh — the existing `core/base.nix`). Kept
-    deliberately tiny; HM versions win via `lowPrio`.
-- **Q3 — Otherwise** (any tool a human/agent/service-user invokes: interactively,
-  in their scripts, in pre-commit, in "developing tool X", as a CI job step) →
-  **HM capability**, in that account's HM profile. If the account has no HM profile
-  yet, **add one** — do NOT fall back to `environment.systemPackages`.
-
-**Supporting rules:**
-
-- **Dependency rule:** a tool pulled in only because another needs it rides with
-  that capability (`gcc` → `golang`); never blanket-installed.
-- **CI / build-runner:** the runner MUST be a dedicated non-root least-privilege
-  user WITH its own HM profile carrying the CI toolchain. Copies of dev tools in
-  the runner host's `environment.systemPackages` are **violations to remove**;
-  anything the runner _service_ itself execs goes to the scoped
-  `systemd.services.<x>.path`, not root's env.
-- **No `/nix/store` duplication either way.** System vs HM is a difference of PATH
-  visibility + activation context, **not** disk. "Same tool, two homes" means the
-  same package in two accounts' HM profiles (e.g. `promtool` in a dev human's HM
-  AND the CI user's HM) — NOT one-in-system-one-in-HM.
-- **Daemon/HM split pattern (validated — reuse it):** a tool with both a daemon and
-  an interactive form (ollama, ccpool, pa-monitor) embeds `${pkgs.<tool>}` in its
-  service unit so the SERVICE closure is self-contained; the on-PATH copy is the HM
-  capability. Toggling the HM capability off never breaks the daemon.
-- **`sudo` nuance:** an HM-only tool for user `alice` is NOT on PATH under
-  `sudo <tool>` (sudo switches to root's env). Handle by escalating the **step**,
-  not the toolchain — the workspace deploy pattern
-  `nixos-rebuild switch --flake …#{hostname} --sudo` builds/evaluates as the
-  invoking user (HM tools resolve) and escalates only activation. Do **NOT** give
-  root a toolchain to work around this.
+In one line: **HM is the default for every runnable tool** (there are essentially no
+host-level tool exceptions — only the minimal root/recovery floor is system), decided
+by the first-YES-wins procedure Q1 (OS/machine config or service → NixOS/darwin) → Q2
+(pre-HM/recovery → the recovery floor; service-exec'd → the service's own closure) →
+Q3 (anything a human/agent/service-user invokes → an HM capability; add an HM profile
+if the account lacks one). Root has no HM profile. Read `system-vs-hm-placement` for
+the full procedure, the single-definition (DRY) rationale, the supporting rules
+(dependency rule, CI-runner least-privilege, no `/nix/store` duplication, daemon/HM
+split, `sudo` nuance, the `isHuman` axis), and a worked example.
 
 ## 8. Cross-references
 
