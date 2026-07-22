@@ -117,6 +117,12 @@
             inherit pkgs bashBuilders;
             inherit (self.packages.${system}) update-locks-lib;
           };
+          # pnwf (workforest work-cycle) module. SKELETON (bead pg2-xs5cj task
+          # 2): only the shared pnwf-lib primitives exist so far; a later task
+          # adds the `pnwf` command itself.
+          pnwfScripts = import ./modules/pnwf/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
           # Go builders (mkGoApp / mkGoBinary / mkGoLint) over the gomod2nix engine.
           goBuilders = import ./lib/go-builders.nix { inherit pkgs self; };
           # Pattern-B (local `replace => ../sibling`) fixture source shared by the
@@ -598,6 +604,7 @@
                 '';
           }
           // ulScripts.checks
+          // pnwfScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
           # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
           # never imported by any .nix (bead pg2-fqar3 / prior deep-dive T1).
