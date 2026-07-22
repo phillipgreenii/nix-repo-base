@@ -118,10 +118,9 @@
             inherit (self.packages.${system}) update-locks-lib;
           };
           # pnwf (workforest work-cycle) module: the shared pnwf-lib
-          # primitives (bead pg2-xs5cj task 2) plus the `pnwf` command itself
-          # — resolve/repos/stage (task 3) and fork-preflight/land-plan/
-          # cleanup/status (task 4) are implemented; only sync-fetch (task 5)
-          # remains stubbed in pnwf's own dispatch table.
+          # primitives plus the `pnwf` command itself — all subcommands
+          # (resolve/repos/stage/fork-preflight/land-plan/cleanup/status/
+          # sync-fetch) are implemented (bead pg2-xs5cj).
           pnwfScripts = import ./modules/pnwf/scripts.nix {
             inherit pkgs bashBuilders;
           };
