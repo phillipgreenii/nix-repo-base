@@ -1,11 +1,31 @@
 #!/usr/bin/env bats
 
+bats_require_minimum_version 1.5.0
+
 # Test suite for pnwf-lib: guarded git/pn primitives shared by every pnwf
 # subcommand. The review-critical property under test is that every
 # exit-code-as-boolean git probe survives a REAL `set -euo pipefail` caller —
 # see the H1 harness tests below, which run the probe inside a fresh
 # `bash -euo pipefail -c '...'` subprocess rather than bats' own (non -e)
 # shell. Merely sourcing the lib into bats' shell would prove nothing.
+#
+# Non-vacuousness note: a BARE call (not wrapped in `if`/`&&`/`||`) is the
+# only harness shape that can actually observe an internal command aborting
+# under set -e — wrapping a call in `if`/`&&`/`||` suspends errexit for that
+# call's *entire* execution (bash semantics), so an if-wrapped "does not
+# abort" assertion can catch a guard-dependent LOGIC bug (rc never gets
+# captured, so a stale check is wrong) but can never catch an internal
+# command actually aborting the function. And even a bare call is
+# externally indistinguishable from an internal abort when the guarded
+# error path does nothing but silently `return "$rc"` — bash treats an
+# errexit-triggered early return and an explicit `return` with the same
+# code identically to the caller. Where that applies (pnwf_working_tree_dirty,
+# pnwf_ahead_of_primary, pnwf_resolve_primary_branch, pnwf_strategy,
+# pnwf_topo_order), the guarded implementation also writes a first-party
+# diagnostic to stderr before returning; the failure-path tests below use
+# `run --separate-stderr` to assert that diagnostic is present (proving the
+# guard's own error-handling code executed, not an early abort) while stdout
+# stays exactly empty (proving no bogus value was printed).
 
 setup() {
   if [[ -z ${LIB_PATH:-} ]]; then
@@ -85,17 +105,19 @@ teardown() {
 }
 
 # --- pnwf_worktree_present ----------------------------------------------
+# Plain `[ -e <setdir>/<member> ]` — no git call, so no rc-capture guard to
+# strip in the first place (deliberately NOT `git worktree list`: its admin
+# entries in .git/worktrees linger until an explicit prune).
 
-@test "pnwf_worktree_present: true when a worktree is checked out for the branch" {
-  command git -C "$REPO" branch feature
-  command git -C "$REPO" worktree add -q "$TEST_DIR/feature-wt" feature
-  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_present '$REPO' feature"
+@test "pnwf_worktree_present: true when the member directory exists" {
+  mkdir -p "$TEST_DIR/set/member-a"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_present '$TEST_DIR/set' member-a"
   [ "$status" -eq 0 ]
 }
 
-@test "pnwf_worktree_present: false (non-zero) for a branch with no worktree does not abort" {
-  command git -C "$REPO" branch feature
-  run bash -euo pipefail -c "source '$LIB_PATH'; if pnwf_worktree_present '$REPO' feature; then echo yes; else echo no; fi"
+@test "pnwf_worktree_present: false (non-zero) for a missing member does not abort" {
+  mkdir -p "$TEST_DIR/set"
+  run bash -euo pipefail -c "source '$LIB_PATH'; if pnwf_worktree_present '$TEST_DIR/set' missing-member; then echo yes; else echo no; fi"
   [ "$status" -eq 0 ]
   [ "$output" = "no" ]
 }
@@ -120,21 +142,40 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
-# --- pnwf_ahead_of_primary ------------------------------------------------
+@test "pnwf_working_tree_dirty: git status failure (non-git dir) does not abort" {
+  mkdir -p "$TEST_DIR/not-a-repo"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_working_tree_dirty '$TEST_DIR/not-a-repo'"
+  [ "$status" -eq 128 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_working_tree_dirty: git status failed (rc=128)"* ]]
+}
 
-@test "pnwf_ahead_of_primary: branch with extra commits is ahead" {
+# --- pnwf_ahead_of_primary ------------------------------------------------
+# Contract: PRINTS the integer count (git rev-list --count <primary>..<branch>).
+# Callers compare the printed value themselves. On a guarded rev-list
+# failure (bad ref), nothing is printed and the captured rc is returned.
+
+@test "pnwf_ahead_of_primary: prints the count of commits ahead" {
   command git -C "$REPO" checkout -q -b feature
   echo two >"$REPO/file.txt"
   command git -C "$REPO" commit -q -am "second"
   run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_ahead_of_primary '$REPO' feature main"
   [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
 }
 
-@test "pnwf_ahead_of_primary: branch identical to primary is not ahead (does not abort)" {
+@test "pnwf_ahead_of_primary: prints zero when identical to primary" {
   command git -C "$REPO" branch feature
-  run bash -euo pipefail -c "source '$LIB_PATH'; if pnwf_ahead_of_primary '$REPO' feature main; then echo yes; else echo no; fi"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_ahead_of_primary '$REPO' feature main"
   [ "$status" -eq 0 ]
-  [ "$output" = "no" ]
+  [ "$output" = "0" ]
+}
+
+@test "pnwf_ahead_of_primary: bad ref (rev-list failure) does not abort and prints nothing" {
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_ahead_of_primary '$REPO' does-not-exist main"
+  [ "$status" -eq 128 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_ahead_of_primary: git rev-list failed unexpectedly (rc=128)"* ]]
 }
 
 # --- pnwf_canonical_on_primary_and_clean ----------------------------------
@@ -146,16 +187,23 @@ teardown() {
 
 @test "pnwf_canonical_on_primary_and_clean: false on a different branch does not abort" {
   command git -C "$REPO" checkout -q -b feature
-  run bash -euo pipefail -c "source '$LIB_PATH'; if pnwf_canonical_on_primary_and_clean '$REPO' main; then echo yes; else echo no; fi"
-  [ "$status" -eq 0 ]
-  [ "$output" = "no" ]
+  # Bare call (not if-wrapped): a bare call is the only shape that can
+  # observe an internal command actually aborting under set -e (see the
+  # non-vacuousness note at the top of this file).
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_on_primary_and_clean '$REPO' main"
+  [ "$status" -eq 1 ]
 }
 
 @test "pnwf_canonical_on_primary_and_clean: false when dirty does not abort" {
   echo extra >"$REPO/untracked.txt"
-  run bash -euo pipefail -c "source '$LIB_PATH'; if pnwf_canonical_on_primary_and_clean '$REPO' main; then echo yes; else echo no; fi"
-  [ "$status" -eq 0 ]
-  [ "$output" = "no" ]
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_on_primary_and_clean '$REPO' main"
+  [ "$status" -eq 1 ]
+}
+
+@test "pnwf_canonical_on_primary_and_clean: detached HEAD (symbolic-ref rc=1) does not abort" {
+  command git -C "$REPO" checkout -q --detach HEAD
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_on_primary_and_clean '$REPO' main"
+  [ "$status" -eq 1 ]
 }
 
 # --- pnwf_resolve_primary_branch ------------------------------------------
@@ -177,6 +225,19 @@ MOCK
   [ "$output" = "main" ]
 }
 
+@test "pnwf_resolve_primary_branch: integrate-branch-support failure does not abort" {
+  cat >"$MOCK_DIR/integrate-branch-support" <<'MOCK'
+#!/usr/bin/env bash
+echo "integrate-branch-support: mock failure" >&2
+exit 3
+MOCK
+  chmod +x "$MOCK_DIR/integrate-branch-support"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_resolve_primary_branch '$REPO'"
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_resolve_primary_branch: integrate-branch-support failed (rc=3)"* ]]
+}
+
 # --- pnwf_strategy ---------------------------------------------------------
 
 @test "pnwf_strategy: relays a declared strategy" {
@@ -196,6 +257,19 @@ MOCK
   [ "$output" = "null" ]
 }
 
+@test "pnwf_strategy: integrate-branch-support failure does not abort" {
+  cat >"$MOCK_DIR/integrate-branch-support" <<'MOCK'
+#!/usr/bin/env bash
+echo "integrate-branch-support: mock failure" >&2
+exit 3
+MOCK
+  chmod +x "$MOCK_DIR/integrate-branch-support"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_strategy '$REPO'"
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_strategy: integrate-branch-support failed (rc=3)"* ]]
+}
+
 # --- pnwf_topo_order -------------------------------------------------------
 
 @test "pnwf_topo_order: reads order from a fixture set lock" {
@@ -206,4 +280,11 @@ MOCK
   [ "${lines[0]}" = "repoA" ]
   [ "${lines[1]}" = "repoB" ]
   [ "${lines[2]}" = "repoC" ]
+}
+
+@test "pnwf_topo_order: missing lock file does not abort" {
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_topo_order '$TEST_DIR/does-not-exist-lock.json'"
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_topo_order: failed to read .order from $TEST_DIR/does-not-exist-lock.json (rc=2)"* ]]
 }

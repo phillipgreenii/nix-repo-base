@@ -47,12 +47,15 @@ pnwf_branch_exists() {
   [ "$rc" -eq 0 ]
 }
 
-# Boolean: is there a worktree (main or linked) checked out for <branch>?
-# (never aborts under set -e)
+# Boolean: does a member checkout exist at <setdir>/<member>? Plain path
+# existence — deliberately NOT `git worktree list` (never aborts under
+# set -e either way, but `git worktree list`'s admin entries in
+# .git/worktrees linger until an explicit `git worktree prune`, so
+# list-based detection can report a stale "present" for a directory that
+# was already removed on disk).
 pnwf_worktree_present() {
-  local repo_dir="$1" branch="$2" rc=0
-  git -C "$repo_dir" worktree list --porcelain | grep -qx "branch refs/heads/${branch}" || rc=$?
-  [ "$rc" -eq 0 ]
+  local setdir="$1" member="$2"
+  [ -e "$setdir/$member" ]
 }
 
 # Boolean: does repo_dir have uncommitted changes (staged, unstaged, or
@@ -68,19 +71,28 @@ pnwf_working_tree_dirty() {
   [ -n "$status_output" ]
 }
 
-# Boolean: does <branch> have at least one commit not on <primary>?
-# (never aborts under set -e; a genuine rev-list failure, e.g. an absent
-# ref, propagates its own rc)
+# Prints the integer count of commits <branch> has that are not on
+# <primary> (git rev-list --count <primary>..<branch>). Callers compare the
+# printed value themselves (e.g. `[ "$(pnwf_ahead_of_primary ...)" -gt 0 ]`).
+# On a guarded rev-list failure (e.g. an absent ref), nothing is printed to
+# STDOUT (no bogus count) and the captured rc is returned without aborting
+# under set -e; a diagnostic goes to stderr, matching every other guarded
+# relay in this file (pnwf_working_tree_dirty, pnwf_resolve_primary_branch,
+# pnwf_strategy, pnwf_topo_order) — needed so a caller/test can tell "the
+# guard caught this and returned cleanly" apart from "the git call aborted
+# the function via errexit before this point," which are NOT otherwise
+# distinguishable: a bare `count=$(cmd)` failing without `|| rc=$?` also
+# propagates that same rc as the function's own return value under set -e.
+# git's own raw diagnostic is discarded (2>/dev/null on the git call) so
+# stderr carries exactly one, first-party message.
 pnwf_ahead_of_primary() {
   local repo_dir="$1" branch="$2" primary="$3" rc=0 count
-  count=$(git -C "$repo_dir" rev-list --count "${primary}..${branch}") || rc=$?
-  case "$rc" in
-  0) [ "$count" -gt 0 ] ;;
-  *)
+  count=$(git -C "$repo_dir" rev-list --count "${primary}..${branch}" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
     echo "pnwf_ahead_of_primary: git rev-list failed unexpectedly (rc=$rc)" >&2
     return "$rc"
-    ;;
-  esac
+  fi
+  echo "$count"
 }
 
 # Boolean: is repo_dir currently on <primary> AND clean? This is the R-3
