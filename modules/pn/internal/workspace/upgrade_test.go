@@ -101,7 +101,7 @@ url = "github:owner/dep"
 	// Pre-write the applied-hash files with matching hashes so rebuild is skipped,
 	// OR mark repos dirty so we skip the hash check and force a rebuild.
 	// Simplest: make dep dirty so needsRebuild returns true immediately.
-	f.AddResponse("git", []string{"-C", dep, "status", "--porcelain"}, exec.Result{Stdout: []byte("M file\n")}, nil)
+	f.AddResponse("git", []string{"-C", dep, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("M file\n")}, nil)
 
 	// Apply command runs because dep is dirty.
 	f.AddResponse("sudo", []string{
@@ -112,8 +112,8 @@ url = "github:owner/dep"
 	// markApplied: git rev-parse HEAD for dep and leaf, then git status --porcelain for each.
 	f.AddResponse("git", []string{"-C", dep, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
 	f.AddResponse("git", []string{"-C", leaf, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("def\n")}, nil)
-	f.AddResponse("git", []string{"-C", dep, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", leaf, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", dep, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", leaf, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {

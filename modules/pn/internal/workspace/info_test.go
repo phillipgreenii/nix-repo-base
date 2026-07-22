@@ -77,7 +77,7 @@ url = "github:owner/leaf"
 	}, exec.Result{}, nil)
 	// markApplied runs git against the OVERRIDE dir (the applied checkout).
 	f.AddResponse("git", []string{"-C", overrideDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("feedface\n")}, nil)
-	f.AddResponse("git", []string{"-C", overrideDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", overrideDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {

@@ -26,14 +26,14 @@ func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []repoDir, force
 		return true, nil
 	}
 	for _, rd := range repoDirs {
-		res, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "status", "--porcelain"}, exec.RunOptions{})
+		porcelain, err := ws.gitStatusPorcelain(ctx, rd.gitDir)
 		if err != nil {
 			return false, fmt.Errorf("git status in %s: %w", rd.gitDir, err)
 		}
-		if strings.TrimSpace(string(res.Stdout)) != "" {
+		if porcelain != "" {
 			return true, nil
 		}
-		res, err = ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "rev-parse", "HEAD"}, exec.RunOptions{})
+		res, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "rev-parse", "HEAD"}, exec.RunOptions{})
 		if err != nil {
 			return false, fmt.Errorf("git rev-parse in %s: %w", rd.gitDir, err)
 		}
@@ -52,6 +52,36 @@ func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []repoDir, force
 	return false, nil
 }
 
+// gitStatusProbeTimeout bounds apply's `git status` dirtiness probes. Disabling
+// the filesystem monitor (see gitStatusPorcelain) already removes the wedged
+// `git fsmonitor--daemon` hang that motivated bead pg2-0sa8p; this timeout is
+// defense-in-depth against any OTHER stall (e.g. a slow or contended index),
+// turning an unbounded hang into a clear, actionable error. It is deliberately
+// generous: an fsmonitor-off `git status` on these repos completes well under a
+// second, so this leaves large headroom and will not false-trip on a cold cache
+// or a loaded machine.
+const gitStatusProbeTimeout = 60 * time.Second
+
+// gitStatusPorcelain runs `git status --porcelain` in dir for apply's dirtiness
+// probes (needsRebuild, markApplied) and returns the trimmed output. It disables
+// the filesystem monitor PER-INVOCATION (`-c core.fsmonitor=false`) so the probe
+// never queries a `git fsmonitor--daemon` — a wedged daemon would otherwise block
+// the status read forever on `.git/fsmonitor--daemon.ipc` and hang apply
+// (bead pg2-0sa8p). Per-command config is used deliberately over the update-locks
+// approach of writing core.fsmonitor=false into shared .git/config with an
+// EXIT-trap restore: it mutates no shared state (safe under concurrent worktrees,
+// per ADR 0009) and cannot leave fsmonitor disabled if apply dies mid-run. A
+// bounded context guards against non-fsmonitor stalls (gitStatusProbeTimeout).
+func (ws *Workspace) gitStatusPorcelain(ctx context.Context, dir string) (string, error) {
+	tctx, cancel := context.WithTimeout(ctx, gitStatusProbeTimeout)
+	defer cancel()
+	res, err := ws.runner.Run(tctx, "git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.RunOptions{})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(res.Stdout)), nil
+}
+
 // markApplied records each repo's current HEAD (and dirty flag) into the
 // authoritative applied-state store. Written only after a successful apply.
 // git reads HEAD/dirtiness from the applied checkout (gitDir), but the store is
@@ -65,11 +95,11 @@ func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir) error 
 			return fmt.Errorf("git rev-parse in %s: %w", rd.gitDir, err)
 		}
 		head := strings.TrimSpace(string(res.Stdout))
-		st, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "status", "--porcelain"}, exec.RunOptions{})
+		porcelain, err := ws.gitStatusPorcelain(ctx, rd.gitDir)
 		if err != nil {
 			return fmt.Errorf("git status in %s: %w", rd.gitDir, err)
 		}
-		dirty := strings.TrimSpace(string(st.Stdout)) != ""
+		dirty := porcelain != ""
 		if err := writeAppliedState(rd.keyPath, AppliedState{AppliedRef: head, Dirty: dirty, AppliedAt: now}); err != nil {
 			return err
 		}

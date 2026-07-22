@@ -59,8 +59,8 @@ func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 	}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", depDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("d\n")}, nil)
 	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
-	f.AddResponse("git", []string{"-C", depDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", depDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -108,7 +108,7 @@ func applyTestRunner(t *testing.T, root string) (*exec.FakeRunner, string) {
 		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
 	}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	return f, leafDir
 }
 
@@ -222,7 +222,7 @@ func TestApply_NoFsmonitorRestartOnSkippedRebuild(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
 	// needsRebuild: clean tree + HEAD matches the recorded applied hash → no rebuild.
-	f.AddResponse("git", []string{"-C", leafDir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
 	// Pre-seed the new applied-state store so HEAD ("abc") matches and the rebuild is skipped.
 	if err := writeAppliedState(leafDir, AppliedState{AppliedRef: "abc"}); err != nil {
@@ -354,5 +354,82 @@ url = "github:owner/leaf"
 	want := []repoDir{{keyPath: filepath.Join(root, "leaf"), gitDir: override}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("override must keep the canonical store key while pointing git at the override: got %#v want %#v", got, want)
+	}
+}
+
+// argsHaveConsecutive reports whether args contains a, immediately followed by b.
+func argsHaveConsecutive(args []string, a, b string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == a && args[i+1] == b {
+			return true
+		}
+	}
+	return false
+}
+
+// statusPorcelainCallStats counts, across recorded calls, how many were
+// `git ... status --porcelain` (all) and how many of those disabled the
+// filesystem monitor via `-c core.fsmonitor=false` (fsmonitorOff).
+func statusPorcelainCallStats(calls []exec.Call) (all, fsmonitorOff int) {
+	for _, c := range calls {
+		if c.Name != "git" || !argsHaveConsecutive(c.Args, "status", "--porcelain") {
+			continue
+		}
+		all++
+		if argsHaveConsecutive(c.Args, "-c", "core.fsmonitor=false") {
+			fsmonitorOff++
+		}
+	}
+	return all, fsmonitorOff
+}
+
+// TestApply_StatusProbesDisableFsmonitor is the regression test for bead
+// pg2-0sa8p: apply's state probes (needsRebuild + markApplied) must run
+// `git status --porcelain` with the filesystem monitor disabled
+// (`-c core.fsmonitor=false`), so a wedged `git fsmonitor--daemon` can never
+// hang apply on the `.git/fsmonitor--daemon.ipc` socket. Every status probe
+// apply issues must carry the flag.
+//
+// The runner scripts only the fsmonitor-off arg form; the pre-fix code issues
+// the bare form, which the FakeRunner has no response for, so Apply fails —
+// the RED reason is precisely "the probe did not disable fsmonitor".
+func TestApply_StatusProbesDisableFsmonitor(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
+	leafDir := filepath.Join(root, "leaf")
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
+	// git --exec-path identical before/after ⇒ no fsmonitor daemon restart.
+	execPath := "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.54.0/libexec/git-core\n"
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(execPath)}, nil)
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(execPath)}, nil)
+	f.AddResponse("sudo", []string{
+		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
+	}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
+	// Only the fsmonitor-off form is scripted. needsRebuild consumes the first
+	// (dirty ⇒ rebuild), markApplied the second — exercising BOTH probe sites.
+	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("M file\n")}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	all, off := statusPorcelainCallStats(f.Calls())
+	if all == 0 {
+		t.Fatalf("expected apply to issue git status --porcelain probes; calls:\n%+v", f.Calls())
+	}
+	if off != all {
+		t.Errorf("all %d git status --porcelain probes must disable fsmonitor (-c core.fsmonitor=false); only %d did; calls:\n%+v", all, off, f.Calls())
 	}
 }

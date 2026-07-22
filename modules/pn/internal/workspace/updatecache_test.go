@@ -21,7 +21,7 @@ func TestNeedsRebuild_Force(t *testing.T) {
 func TestNeedsRebuild_DirtyTree(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", "/repo", "status", "--porcelain"}, exec.Result{Stdout: []byte(" M file\n")}, nil)
+	f.AddResponse("git", []string{"-C", "/repo", "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte(" M file\n")}, nil)
 	w := &Workspace{runner: f}
 	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/repo", gitDir: "/repo"}}, false, &bytes.Buffer{})
 	if err != nil || !got {
@@ -34,7 +34,7 @@ func TestNeedsRebuild_ReadsNewStore(t *testing.T) {
 	const dir = "/repo" // a fake repo dir; the runner is faked, so it need not exist
 	f := exec.NewFakeRunner()
 	// clean working tree; HEAD == the applied_ref we seed below
-	f.AddResponse("git", []string{"-C", dir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	f.AddResponse("git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc123\n")}, nil)
 	w := &Workspace{runner: f}
 	// seed the new store so HEAD matches -> should SKIP
@@ -67,7 +67,7 @@ func TestMarkApplied_WriteFailIsReturned(t *testing.T) {
 	const dir = "/repo"
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
-	f.AddResponse("git", []string{"-C", dir, "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	w := &Workspace{runner: f}
 	if err := w.markApplied(context.Background(), []repoDir{{keyPath: dir, gitDir: dir}}); err == nil {
 		t.Fatal("markApplied must return the store-write error (fail-closed)")
