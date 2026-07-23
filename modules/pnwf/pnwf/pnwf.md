@@ -47,6 +47,10 @@
 
 `pnwf sync-fetch --set`
 
+- Relock every member of the current set in place via `pn workspace update --in-place` (refuses any member with an upstream or a dirty tree, and refuses a relock that skipped repos):
+
+`pnwf update-relock --set`
+
 - Show usage:
 
 `pnwf --help`

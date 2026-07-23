@@ -30,6 +30,21 @@ setup() {
   TEST_DIR="$(mktemp -d)"
   export TEST_DIR
 
+  # Hermetic + fast git. A developer's global `core.fsmonitor=true` makes every
+  # throwaway repo these tests `git init` spawn its own fsmonitor daemon that
+  # blocks each working-tree op (commit/worktree/status) for 2-3s -- pushing the
+  # full suite to ~20min locally (the nix-check sandbox is immune: clean HOME).
+  # Inject core.fsmonitor/untrackedcache=false into EVERY git invocation in this
+  # test process (GIT_CONFIG_COUNT works like a `-c` flag, so it wins over the
+  # inherited global and is surgical -- it does not replace the rest of git
+  # config), making the suite fast (~35s) AND deterministic regardless of whose
+  # ~/.gitconfig runs it. Same class of fix as pg2-0sa8p (pn disabling fsmonitor
+  # on its own git status probes). Applies to real-git tests; git-mock tests are
+  # unaffected.
+  export GIT_CONFIG_COUNT=2
+  export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+  export GIT_CONFIG_KEY_1=core.untrackedcache GIT_CONFIG_VALUE_1=false
+
   if [[ -z ${SCRIPT_UNDER_TEST:-} ]]; then
     # Local dev: assemble a wrapper replicating the builder's composition
     # (library sourced before the command's .sh) — see bash-scripting
@@ -102,6 +117,19 @@ if [[ "${1:-}" == "workspace" && "${2:-}" == "workforest" && "${3:-}" == "remove
   fi
   rm -rf "$set_dir"
   exit 0
+fi
+
+# `pn workspace update [--in-place]`: the relock step driven by `pnwf
+# update-relock`. Prints MOCK_PN_UPDATE_OUTPUT (if set) as combined output and
+# exits MOCK_PN_UPDATE_RC (default 0), so a test can drive a clean relock, a
+# non-zero relock, and a "skipped a repo but still exited 0" relock without
+# touching the real pn. (Its PN_WORKSPACE_ROOT env is already recorded above,
+# proving update-relock cleared it via `env -u`.)
+if [[ "${1:-}" == "workspace" && "${2:-}" == "update" ]]; then
+  if [[ -n "${MOCK_PN_UPDATE_OUTPUT:-}" ]]; then
+    printf '%s\n' "$MOCK_PN_UPDATE_OUTPUT"
+  fi
+  exit "${MOCK_PN_UPDATE_RC:-0}"
 fi
 
 echo "mock pn: unsupported invocation: $*" >&2
@@ -988,4 +1016,174 @@ _sync_fetch_init_members() {
   run "$SCRIPT_UNDER_TEST" sync-fetch --set
   [ "$status" -ne 0 ]
   [[ "$output" == *"not in_workforest"* ]]
+}
+
+# --- update-relock -------------------------------------------------------
+# The second MUTATING WORK-recipe subcommand (the /pn-workspace-update recipe,
+# parallel to sync-fetch for /pn-workspace-sync). REAL git throughout (its
+# pre-flight -- upstream detection + tracked-change cleanliness -- is exactly
+# the git state under test, so mocking git would defeat the point); only `pn`
+# is mocked. `pn workspace update --in-place` is driven via MOCK_PN_UPDATE_*
+# (see the base pn mock in setup()) so a test controls the relock's output +
+# exit code without the real pn ever running.
+
+# Gives $member's $BRANCH worktree a real upstream via a local bare remote, so
+# `git rev-parse --abbrev-ref --symbolic-full-name @{u}` succeeds (the
+# no-remote-write guard's has-upstream signal). Members are made by
+# _stage_init_member (real canonical repo + real worktree on $BRANCH).
+_ur_set_upstream() {
+  local member="$1"
+  local wt="$SET_DIR/$member"
+  local remote="$TEST_DIR/remotes/$member.git"
+  command git init -q --bare "$remote"
+  command git -C "$wt" remote add origin "$remote"
+  command git -C "$wt" push -q -u origin "$BRANCH"
+}
+
+@test "update-relock --set exits non-zero on a guard violation" {
+  _stage_write_lock repoA
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not in_workforest"* ]]
+}
+
+@test "update-relock --set: a member whose branch has an upstream is refused (no remote write)" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _ur_set_upstream repoA
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"upstream"* ]]
+  [[ "$output" == *"refusing"* ]]
+  # The relock step must never have run: `pn workspace update` is refused at
+  # pre-flight, so a member with an upstream is never pushed.
+  [[ "$output" != *"update repoA"* ]]
+}
+
+@test "update-relock --set: a member with a tracked change is refused as dirty" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  # Modify a TRACKED file (file.txt is committed by _stage_init_member) so it
+  # trips `git diff --quiet`; an UNTRACKED file would be allowed (matches pn's
+  # isDirty), so this deliberately edits the tracked file.
+  echo two >"$SET_DIR/repoA/file.txt"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"dirty"* ]]
+}
+
+@test "update-relock --set: an untracked-only member is NOT dirty (matches pn's isDirty)" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo scratch >"$SET_DIR/repoA/untracked.txt"
+  export MOCK_PN_UPDATE_RC=0
+  export MOCK_PN_UPDATE_OUTPUT="  --== update repoA ==--"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+}
+
+@test "update-relock --set: a relock that SKIPS a repo but exits 0 is reported INCOMPLETE (non-zero)" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_RC=0
+  export MOCK_PN_UPDATE_OUTPUT="  --== update repoA ==--
+  ⊘ skipping repoA — working tree has uncommitted changes"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"INCOMPLETE"* ]]
+  [[ "$output" == *"repoA"* ]]
+}
+
+@test "update-relock --set: a relock that SKIPS a repo via 'could not check working tree' but exits 0 is reported INCOMPLETE (non-zero)" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_RC=0
+  # The SECOND alternation of the backstop regex (pn's other skip line,
+  # update.go: "⊘ skipping <name> — could not check working tree: <err>"). Pins
+  # both branches of the regex, not just the "uncommitted changes" one above.
+  export MOCK_PN_UPDATE_OUTPUT="  --== update repoA ==--
+  ⊘ skipping repoA — could not check working tree: permission denied"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"INCOMPLETE"* ]]
+  [[ "$output" == *"repoA"* ]]
+}
+
+@test "update-relock --set: a benign 'skipping update-locks.sh' banner does NOT trip the backstop (exit 0)" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_RC=0
+  # Mirrors update.go's benign banner (⊘ <name>: no update-locks.sh —
+  # skipping): it contains "skipping" but not "⊘ skipping" + a dirty reason,
+  # so it must NOT be mistaken for an incomplete relock.
+  export MOCK_PN_UPDATE_OUTPUT="  --== update repoA ==--
+  ⊘ repoA: no update-locks.sh — skipping (workspace inputs already propagated)"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+}
+
+@test "update-relock --set: a non-zero relock exit stops with a tail of the output (non-zero)" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_RC=1
+  export MOCK_PN_UPDATE_OUTPUT="  --== update repoA ==--
+  ✗ repoA: propagate-edges failed: boom"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed"* ]]
+  [[ "$output" == *"re-run"* ]]
+  # The tail carries the relock's own last output line.
+  [[ "$output" == *"propagate-edges failed: boom"* ]]
+}
+
+@test "update-relock --set: clean set, no upstream, no skips relocks each member and exits 0" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  _stage_write_lock repoA repoB
+  export MOCK_PN_UPDATE_RC=0
+  export MOCK_PN_UPDATE_OUTPUT="  --== update repoA ==--
+  --== update repoB ==--
+  ✓ workspace update finished"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"workspace update finished"* ]]
+}
+
+# CRUX: update-relock MUST clear PN_WORKSPACE_ROOT (env -u) for BOTH the info
+# lookup and the relock itself, so a stale value pointing at the canonical
+# clones cannot redirect the in-place relock onto them (where the primary
+# branch HAS an upstream and would be pushed). Verified via the mock's own
+# recorded env: every pn invocation saw PN_WORKSPACE_ROOT unset.
+@test "CRUX: update-relock runs pn with PN_WORKSPACE_ROOT unset even when exported to canonical" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_RC=0
+  export MOCK_PN_UPDATE_OUTPUT="  --== update repoA ==--"
+  export PN_WORKSPACE_ROOT="$CANONICAL_DIR"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+
+  run cat "$MOCK_PN_ENV_LOG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PN_WORKSPACE_ROOT=<unset>"* ]]
+  [[ "$output" != *"PN_WORKSPACE_ROOT=$CANONICAL_DIR"* ]]
 }

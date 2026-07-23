@@ -35,19 +35,28 @@ Subcommands (read-only, implemented):
   status <branch>    Print a per-repo table for <branch>'s set: member,
                      label (landed/not-started/blocked/kept), reason.
 
-Subcommands (mutating WORK-recipe helper, not a read-only probe):
+Subcommands (mutating WORK-recipe helpers, not read-only probes):
   sync-fetch [--set]
                      Per present member (topo order): `git fetch origin`,
                      then rebase onto the remote primary. Stops on the
                      FIRST failure, reporting the member + worktree path;
                      recovery is agent-owned.
+  update-relock [--set]
+                     Relock every present member's flake inputs (nixpkgs +
+                     third-party + workspace siblings) IN PLACE, by shelling
+                     `pn workspace update --in-place` for the whole set.
+                     Pre-flight refuses any member with an upstream (an
+                     in-place relock would push it) or a dirty tree; on
+                     success it also refuses to report done if the relock
+                     skipped any member (incomplete relock).
 
 Options:
   -h, --help        Show this help message
   -v, --version     Show version information
 
---set (on resolve/repos/stage/sync-fetch): guard — exit non-zero unless the
-resolved workspace is inside a coordinated workforest set (in_workforest=true).
+--set (on resolve/repos/stage/sync-fetch/update-relock): guard — exit
+non-zero unless the resolved workspace is inside a coordinated workforest set
+(in_workforest=true).
 
 fork-preflight/land-plan/cleanup/status take <branch> explicitly and derive
 the set directory from canonical_root + workforests_dir — they work whether
@@ -63,6 +72,7 @@ Examples:
   pnwf cleanup my-branch
   pnwf status my-branch
   pnwf sync-fetch --set
+  pnwf update-relock --set
 HELP
 }
 
@@ -796,6 +806,159 @@ HELP
   done
 }
 
+# Mutating WORK-recipe helper (the /pn-workspace-update recipe) -- like
+# cmd_sync_fetch above (and unlike the read-only probes), this one MUTATES
+# each member in place: it shells `pn workspace update --in-place`, which
+# relocks every member's flake inputs (nixpkgs + third-party + workspace
+# siblings). Where sync-fetch fetches+rebases each member, update-relock
+# relocks each member in place. Like sync-fetch it is deliberately NOT
+# idempotent-safe the way the read-only probes are: re-running it after a
+# stop-and-report resumes the relock where it left off (a partially-relocked
+# set is the expected re-entry case).
+cmd_update_relock() {
+  local require_set=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --set)
+      require_set=1
+      ;;
+    -h | --help)
+      cat <<'HELP'
+Usage: pnwf update-relock [--set]
+
+Relock every member of the resolved workspace's own lock IN PLACE, by
+shelling `pn workspace update --in-place` once for the whole set (relocks
+each member's nixpkgs + third-party + workspace-sibling flake inputs). This
+is the MUTATING WORK-recipe for /pn-workspace-update, parallel to `sync-fetch`
+for /pn-workspace-sync.
+
+Pre-flight, per present member (an absent worktree -- already landed/cleaned
+up elsewhere -- is skipped):
+  no-remote-write  the member branch MUST NOT have an upstream. `pn workspace
+                   update --in-place` `git push`es any member that has one; a
+                   /pn-workspace-update set branch must be unpushed, so a
+                   configured upstream is refused (non-zero) rather than
+                   pushed to origin. This invariant is what guarantees the
+                   relock performs NO remote write.
+  clean            the member worktree MUST have no tracked changes (staged
+                   or unstaged; untracked are ignored, matching pn's own
+                   isDirty). A dirty tree (e.g. left by a prior failed
+                   relock) is refused so it is inspected, not relocked over.
+
+Then runs `env -u PN_WORKSPACE_ROOT pn workspace update --in-place` from the
+set (PN_WORKSPACE_ROOT is cleared so a stale inherited value cannot redirect
+the relock onto the canonical clones, where the primary branch HAS an
+upstream and would be pushed). On a non-zero exit it prints a tail of the
+relock output and stops; re-run `pnwf update-relock` after resolving the
+reported problem.
+
+As a backstop, even on a zero exit it refuses to report success if the relock
+output shows any member was skipped (dirty / working-tree-check failure): a
+skipped member means the relock is INCOMPLETE, and a landed+published
+incomplete relock defeats the atomic-update purpose.
+
+This is a MUTATING WORK-recipe helper, not a read-only probe like
+resolve/repos/stage/etc. -- it relocks each member in place.
+
+--set: exit non-zero unless the resolved workspace is inside a set.
+HELP
+      exit 0
+      ;;
+    *)
+      die "update-relock: unknown argument: $1"
+      ;;
+    esac
+    shift
+  done
+
+  local info in_workforest root lock_file
+  info=$(_pnwf_info_json) || die "'pn workspace info --json' failed"
+  in_workforest=$(printf '%s' "$info" | jq -r '.in_workforest')
+  root=$(printf '%s' "$info" | jq -r '.root')
+
+  _pnwf_require_set_guard update-relock "$require_set" "$in_workforest" "$root"
+
+  lock_file="$root/pn-workspace.lock.json"
+  [[ -f $lock_file ]] || die "lock file not found: $lock_file"
+
+  local members=()
+  mapfile -t members < <(pnwf_topo_order "$lock_file")
+  [[ ${#members[@]} -gt 0 ]] || die "no members found in $lock_file"
+
+  # PRE-FLIGHT: BEFORE any mutation, guarantee the relock performs NO remote
+  # write and starts from a clean tree in every present member. An absent
+  # worktree is skipped, consistent with sync-fetch / every other member-
+  # iterating subcommand.
+  local member member_setpath upstream upstream_rc unstaged_rc staged_rc
+  for member in "${members[@]}"; do
+    pnwf_worktree_present "$root" "$member" || continue
+    member_setpath="$root/$member"
+
+    # No-remote-write guard: an upstream means `pn workspace update
+    # --in-place` would `git push` this member to origin (see pn's
+    # updateInPlace hasUpstream->push path). A /pn-workspace-update set branch
+    # must be unpushed; refuse rather than push. The rev-parse is guarded (its
+    # rc IS the has-upstream signal): rc=0 with the upstream name means one is
+    # configured; a non-zero rc (typically 128) means none, which is the
+    # required state.
+    upstream_rc=0
+    upstream=$(git -C "$member_setpath" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || upstream_rc=$?
+    if [[ $upstream_rc -eq 0 ]]; then
+      die "update-relock: member '$member' has an upstream ('$upstream'); an in-place relock would 'git push' it to origin -- refusing (a /pn-workspace-update set branch must be unpushed). Worktree: $member_setpath"
+    fi
+
+    # Cleanliness guard: tracked changes only (unstaged or staged), ignoring
+    # untracked -- matching pn's own isDirty, so pnwf refuses exactly what pn
+    # would otherwise silently SKIP (leaving the relock incomplete). Each git
+    # diff is guarded: rc!=0 (1 == a diff exists, or a probe failure) is the
+    # dirty/indeterminate signal and must not abort via errexit.
+    unstaged_rc=0
+    staged_rc=0
+    git -C "$member_setpath" diff --quiet || unstaged_rc=$?
+    git -C "$member_setpath" diff --cached --quiet || staged_rc=$?
+    if [[ $unstaged_rc -ne 0 || $staged_rc -ne 0 ]]; then
+      die "update-relock: member '$member' worktree is dirty ($member_setpath); a prior failed relock may have left it -- inspect/reset it, then re-run 'pnwf update-relock'"
+    fi
+  done
+
+  # RELOCK: one `pn workspace update --in-place` for the whole set. cwd is the
+  # set; PN_WORKSPACE_ROOT is UNSET (env -u) so pn resolves the set from cwd
+  # rather than a stale inherited value that could point at the canonical
+  # clones (where the primary branch HAS an upstream and would be pushed --
+  # the exact remote write this recipe must never do). Do NOT cd elsewhere.
+  #
+  # Guarded (never bare): a non-zero exit MUST NOT abort via errexit before
+  # the diagnostic below prints. Combined stdout+stderr is captured to a
+  # variable AND echoed to the user (so the relock output is visible and
+  # available for the tail + skip-backstop scan).
+  local relock_out relock_rc=0
+  relock_out=$(env -u PN_WORKSPACE_ROOT pn workspace update --in-place 2>&1) || relock_rc=$?
+  printf '%s\n' "$relock_out"
+
+  if [[ $relock_rc -ne 0 ]]; then
+    die "update-relock: 'pn workspace update --in-place' failed (rc=$relock_rc) in set $root; inspect the set and re-run 'pnwf update-relock'. Last output:
+$(printf '%s\n' "$relock_out" | tail -n 15)" "$relock_rc"
+  fi
+
+  # SKIP BACKSTOP (defense-in-depth): pn SKIPS a dirty / unprobeable member
+  # (a non-fatal `continue` -- see update.go's updateInPlace) and STILL exits
+  # 0, so a zero exit alone does NOT prove a COMPLETE relock. The pre-flight
+  # above should already prevent this, but a landed+published incomplete
+  # relock defeats the atomic-update purpose -- so scan the output for skip
+  # markers and refuse success if any appear. Matches pn's two skip lines:
+  # "⊘ skipping <name> — working tree has uncommitted changes" and
+  # "⊘ skipping <name> — could not check working tree: …". The benign
+  # "⊘ … — skipping update-locks.sh" banners do NOT match (they lack both
+  # "⊘ skipping" and a dirty reason on the line).
+  local skipped
+  skipped=$(printf '%s\n' "$relock_out" |
+    grep -E '⊘ skipping .*(uncommitted changes|could not check working tree)' || true)
+  if [[ -n $skipped ]]; then
+    die "update-relock: 'pn workspace update --in-place' skipped one or more repos, so the relock is INCOMPLETE -- refusing to report success:
+$skipped"
+  fi
+}
+
 # --- Top-level arg parsing + dispatch --------------------------------------
 
 while [[ $# -gt 0 ]]; do
@@ -826,9 +989,10 @@ fi
 SUBCOMMAND="$1"
 shift
 
-# Dispatch table for all eight pnwf subcommands (design spec §4.5); all are
-# now implemented. sync-fetch (task 5) is a mutating WORK-recipe helper, not
-# a read-only probe like the rest -- see cmd_sync_fetch.
+# Dispatch table for all nine pnwf subcommands (design spec §4.5); all are
+# now implemented. sync-fetch and update-relock are mutating WORK-recipe
+# helpers, not read-only probes like the rest -- see cmd_sync_fetch /
+# cmd_update_relock.
 case "$SUBCOMMAND" in
 resolve) cmd_resolve "$@" ;;
 repos) cmd_repos "$@" ;;
@@ -838,6 +1002,7 @@ land-plan) cmd_land_plan "$@" ;;
 cleanup) cmd_cleanup "$@" ;;
 status) cmd_status "$@" ;;
 sync-fetch) cmd_sync_fetch "$@" ;;
+update-relock) cmd_update_relock "$@" ;;
 *)
   die "unknown subcommand: $SUBCOMMAND"
   ;;

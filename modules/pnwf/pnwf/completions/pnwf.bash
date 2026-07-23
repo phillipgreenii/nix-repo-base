@@ -2,7 +2,7 @@ _pnwf() {
   local cur words cword
   _init_completion || return
 
-  local subcommands="resolve repos stage fork-preflight land-plan cleanup status sync-fetch"
+  local subcommands="resolve repos stage fork-preflight land-plan cleanup status sync-fetch update-relock"
 
   # First positional arg: complete a subcommand name (or a top-level flag).
   if [[ $cword -eq 1 ]]; then
@@ -14,11 +14,11 @@ _pnwf() {
     return
   fi
 
-  # After the subcommand: resolve/repos/stage/sync-fetch take --set;
-  # fork-preflight takes --repos; cleanup takes the two --force-… flags;
-  # every subcommand takes --help.
+  # After the subcommand: resolve/repos/stage/sync-fetch/update-relock take
+  # --set; fork-preflight takes --repos; cleanup takes the two --force-…
+  # flags; every subcommand takes --help.
   case "${words[1]}" in
-  resolve | repos | stage | sync-fetch)
+  resolve | repos | stage | sync-fetch | update-relock)
     mapfile -t COMPREPLY < <(compgen -W "--set --help -h" -- "$cur")
     ;;
   fork-preflight)
