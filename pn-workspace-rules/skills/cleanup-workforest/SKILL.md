@@ -4,7 +4,7 @@ description: >-
   Use to TEAR DOWN a coordinated workforest set after landing — best-effort
   removal of the landed repos' worktrees and branches, preserving anything not
   yet landed. Fires on: "clean up the workforest", "remove the set", "tear down
-  the workforest after landing", the cleanup step of `/pn-workspace-sync`, and
+  the workforest after landing", the cleanup step of `/pn-workspace-sync` or `/pn-workspace-update`, and
   the final step of the ad-hoc bead work-cycle. This is the CLEANUP stage of the
   workforest work-cycle (fork → WORK+validate → land → cleanup). It removes only
   what has actually landed and keeps un-landed / pull-request repos with a

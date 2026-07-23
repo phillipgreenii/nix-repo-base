@@ -5,7 +5,7 @@ description: >-
   branch in the set back onto its local primary branch, in dependency order,
   stopping at the first blocked repo. Fires on: "land the workforest", "land the
   set", "integrate this coordinated set back to main", the land step of
-  `/pn-workspace-sync`, and the land point of the ad-hoc bead work-cycle. This is
+  `/pn-workspace-sync` or `/pn-workspace-update`, and the land point of the ad-hoc bead work-cycle. This is
   the LAND stage of the workforest work-cycle (fork → WORK+validate → land →
   cleanup); it is a thin cross-repo ORCHESTRATOR over the `integrate-branch`
   skill, invoked once per repo. Use it ONLY for a whole coordinated set spanning

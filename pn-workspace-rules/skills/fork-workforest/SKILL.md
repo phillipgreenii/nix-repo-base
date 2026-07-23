@@ -5,7 +5,7 @@ description: >-
   branch spanning the repos of a `pn-workspace.toml` workspace — from the
   canonical checkouts, so work happens off the primary branches. Fires on:
   "fork a workforest", "start a workforest for <bead/feature>", "set up an
-  isolated coordinated set to work X", or the fork stage of `/pn-workspace-sync`
+  isolated coordinated set to work X", or the fork stage of `/pn-workspace-sync` or `/pn-workspace-update`
   and the ad-hoc bead work-cycle. This is the FORK stage of the workforest
   work-cycle (fork → WORK+validate → land → cleanup). Do NOT use to create a
   single-repo git worktree (use `git worktree add` / plain worktree flow), to

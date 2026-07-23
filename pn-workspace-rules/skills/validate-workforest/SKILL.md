@@ -4,7 +4,7 @@ description: >-
   Use to VALIDATE a coordinated workforest set before landing it — confirm the
   isolated cross-repo workspace still builds/checks cleanly after the WORK, so
   landing is safe. Fires on: "validate the workforest", "is this set good to
-  land?", the validate step of `/pn-workspace-sync`, and the check-before-land
+  land?", the validate step of `/pn-workspace-sync` or `/pn-workspace-update`, and the check-before-land
   point of the ad-hoc bead work-cycle. This is the VALIDATE stage of the
   workforest work-cycle (fork → WORK+validate → land → cleanup). It checks the
   WORKSPACE (does the assembled system still build), NOT whether the WORK
