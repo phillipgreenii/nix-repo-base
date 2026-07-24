@@ -42,17 +42,18 @@ the manifest or invent a `-<digest>` fallback.
    from ADR-0003 does nothing.
 
    **Pick the delivery vehicle by when the content must apply:**
-   - **Always-on rules → a SessionStart HOOK plugin.** Ship
-     `<plugin>/hooks/hooks.json` declaring a `SessionStart` hook whose command
-     prints the rules to stdout as `additionalContext`
-     (`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`,
-     exit 0). The hook fires on **every** session — interactive and headless
-     `claude -p` alike — so the rules are unconditionally in context. This is the
-     only plugin vehicle that is genuinely always-on: a skill body is on-invoke,
-     and a plugin-root `CLAUDE.md` is inert. Reference the hook command by **bare
-     name** (resolved on `PATH`), not an absolute store path; the plugin's
-     home-manager module installs that binary on `PATH`. Example: agent-support's
-     `agent-rules` plugin (`agent-rules/hooks/hooks.json` → `agent-rules-session-start`).
+   - **Always-on rules → a SessionStart HOOK plugin.** A SessionStart-hook plugin is the
+     only plugin vehicle that is genuinely always-on (a skill body is on-invoke; a
+     plugin-root `CLAUDE.md` is inert). Reference the hook command by **bare name**. Real
+     example in this estate: agent-support's `ccpool-plugin`, whose `hooks/hooks.json`
+     declares a `SessionStart` hook running `ccpool hook start`.
+
+     > Personal always-on _rules_ are NOT delivered this way — they are written to the
+     > user-level `~/.claude/CLAUDE.md` (see agent-support
+     > `docs/superpowers/specs/2026-06-25-agent-rules-delivery-design.md`). A SessionStart
+     > hook that re-injects them double-injects (user `CLAUDE.md` already loads in headless
+     > `-p` mode); that anti-pattern was removed in bead `pg2-qewh`. Do not reintroduce it.
+
    - **Context-specific / on-invoke rules → a SKILL.** Ship
      `<plugin>/skills/<name>/SKILL.md` with `name` + `description` frontmatter; the
      body loads only when its `description` triggers, so write a strong triggering
@@ -144,7 +145,7 @@ only **produces** the artifact; the agent-support `claude-marketplaces` module
 for this doc; the surface below is the contract.)
 
 1. **Register** — add the marketplace drv to
-   `phillipgreenii.programs.claude.marketplaces.nixProvided`. repo-base's is
+   `phillipgreenii.programs.claude-code.marketplaces.nixProvided`. repo-base's is
    auto-added by agent-support's `homeModules.default`; other repos' are added
    explicitly.
 
@@ -152,13 +153,13 @@ for this doc; the surface below is the contract.)
    symlink):
 
    ```nix
-   phillipgreenii.programs.claude.marketplaces.enabled."<repo>-marketplace-local" = false;
+   phillipgreenii.programs.claude-code.marketplaces.enabled."<repo>-marketplace-local" = false;
    ```
 
 3. **Per-plugin enable/disable** — override an individual plugin:
 
    ```nix
-   phillipgreenii.programs.claude.marketplaces.overrides."<plugin>@<repo>-marketplace-local" = false;  # or true
+   phillipgreenii.programs.claude-code.marketplaces.overrides."<plugin>@<repo>-marketplace-local" = false;  # or true
    ```
 
    Resolution per plugin: **override → plugin `defaultEnabled` → false**. Overrides
@@ -177,7 +178,7 @@ A machine/consumer flake (e.g. the `home/ziprecruiter/packages/default.nix` bloc
 showing both a per-plugin override and a per-marketplace disable:
 
 ```nix
-phillipgreenii.programs.claude.marketplaces = {
+phillipgreenii.programs.claude-code.marketplaces = {
   # Disable an upstream-provided marketplace entirely for this consumer.
   enabled."some-other-repo-marketplace-local" = false;
 
