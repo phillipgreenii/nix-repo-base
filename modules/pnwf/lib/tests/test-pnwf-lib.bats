@@ -27,28 +27,58 @@ bats_require_minimum_version 1.5.0
 # guard's own error-handling code executed, not an early abort) while stdout
 # stays exactly empty (proving no bogus value was printed).
 
-setup() {
+# IMMUTABLE, path-stable fixtures are built ONCE per file here (bead pg2-nh1t3):
+# LIB_PATH resolution, the fsmonitor guard, and the default
+# integrate-branch-support mock TEMPLATE. The per-test MUTABLE state (TEST_DIR
+# and the real git REPO that many tests branch/commit into) stays in setup().
+setup_file() {
   if [[ -z ${LIB_PATH:-} ]]; then
     # Local dev: source from source directory
-    LIB_PATH="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)/pnwf-lib.bash"
+    LIB_PATH="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)/pnwf-lib.bash"
   fi
+  export LIB_PATH
 
+  # Hermetic + fast git (same guard as test-pnwf.bats). This suite ALSO
+  # `git init`s a real repo per test, so on a machine with global
+  # core.fsmonitor=true each throwaway repo spawns its own fsmonitor daemon that
+  # blocks every working-tree op for 2-3s -- pushing the suite to ~20min locally
+  # (and, under `bats --jobs`, many daemons at once). GIT_CONFIG_COUNT works like
+  # a `-c` flag, so it wins over the inherited global and is surgical; injected
+  # once here (immutable across tests) so both the real-git tests and the
+  # `bash -euo pipefail -c` probe subprocesses inherit it. fsmonitor/
+  # untrackedcache are performance-only, so this is behavior-neutral -- the
+  # nix-check sandbox (clean HOME) already ran fast without it.
+  export GIT_CONFIG_COUNT=2
+  export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+  export GIT_CONFIG_KEY_1=core.untrackedcache GIT_CONFIG_VALUE_1=false
+
+  # Immutable mock TEMPLATE: the default integrate-branch-support mock, called
+  # bare (no --json flag), emits JSON unconditionally, mirroring the real tool.
+  # setup() copies it into each test's own MOCK_DIR so a test may override it in
+  # isolation (required for `bats --jobs` safety).
+  MOCK_TEMPLATE="$BATS_FILE_TMPDIR/mock-template"
+  mkdir -p "$MOCK_TEMPLATE"
+  export MOCK_TEMPLATE
+  cat >"$MOCK_TEMPLATE/integrate-branch-support" <<'MOCK'
+#!/usr/bin/env bash
+echo '{"primary_branch":"main","strategy":null}'
+MOCK
+  chmod +x "$MOCK_TEMPLATE/integrate-branch-support"
+}
+
+setup() {
   TEST_DIR="$(mktemp -d)"
   export TEST_DIR
 
   # Mocks live OUTSIDE the repo working tree (sibling dir), never inside it.
+  # Seeded from the immutable per-file template (setup_file); copying rather than
+  # rebuilding keeps each test able to override integrate-branch-support in
+  # isolation under `bats --jobs`.
   MOCK_DIR="$TEST_DIR/mock-bin"
   mkdir -p "$MOCK_DIR"
+  cp -p "$MOCK_TEMPLATE/integrate-branch-support" "$MOCK_DIR/"
   PATH="$MOCK_DIR:$PATH"
   export PATH MOCK_DIR
-
-  # Default integrate-branch-support mock: called bare (no --json flag), it
-  # emits JSON unconditionally, mirroring the real tool.
-  cat >"$MOCK_DIR/integrate-branch-support" <<'MOCK'
-#!/usr/bin/env bash
-echo '{"primary_branch":"main","strategy":null}'
-MOCK
-  chmod +x "$MOCK_DIR/integrate-branch-support"
 
   REPO="$TEST_DIR/repo"
   mkdir -p "$REPO"

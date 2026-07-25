@@ -147,6 +147,15 @@
             overlays = [ self.overlays.gomod2nix ];
           };
 
+          # Pinned bats + parallel in the devShell so the local bats test-loop
+          # (e.g. the pnwf suites, `bats --jobs 8 tests/`) runs from these pinned
+          # deps instead of a cold `nix run nixpkgs#bats` re-eval on every run, and
+          # so `bats --jobs` has the GNU parallel it requires (bead pg2-nh1t3).
+          phillipgreenii.devshell.extraInputs = [
+            pkgs.bats
+            pkgs.parallel
+          ];
+
           packages = {
             # Packaged shared bash lib. Consumed by determine-ul-lib-dir and
             # referenced via flake input by external consumers of update-locks tooling.

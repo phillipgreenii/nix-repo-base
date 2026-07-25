@@ -19,16 +19,24 @@ bats_require_minimum_version 1.5.0
 # closely enough to prove the H2/CRUX guard below either way: via the
 # recorded env line, AND via which canned payload comes back.
 
-setup() {
+# IMMUTABLE, path-stable fixtures are built ONCE per file here (bead pg2-nh1t3):
+# the local-dev wrapper and the mock TEMPLATE (the `pn` + default
+# integrate-branch-support mocks). Rebuilding them in per-test setup() was pure
+# repetition -- their contents never vary across tests, and both mocks resolve
+# every per-test path from runtime env (MOCK_PN_ENV_LOG / PN_WORKSPACE_ROOT /
+# PWD), never from a value baked in at build time -- so a single shared copy is
+# correct even under `bats --jobs`. The per-test MUTABLE state (TEST_DIR, the
+# real git repos, and the canned pn-info that embeds those per-test paths) stays
+# in setup() so each test remains fully isolated.
+setup_file() {
   if [[ -z ${SCRIPTS_DIR:-} ]]; then
-    SCRIPTS_DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
+    SCRIPTS_DIR="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
   fi
+  export SCRIPTS_DIR
   if [[ -z ${LIB_PATH:-} ]]; then
-    LIB_PATH="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../../lib" && pwd)/pnwf-lib.bash"
+    LIB_PATH="$(cd "${BATS_TEST_DIRNAME}/../../lib" && pwd)/pnwf-lib.bash"
   fi
-
-  TEST_DIR="$(mktemp -d)"
-  export TEST_DIR
+  export LIB_PATH
 
   # Hermetic + fast git. A developer's global `core.fsmonitor=true` makes every
   # throwaway repo these tests `git init` spawn its own fsmonitor daemon that
@@ -37,48 +45,22 @@ setup() {
   # Inject core.fsmonitor/untrackedcache=false into EVERY git invocation in this
   # test process (GIT_CONFIG_COUNT works like a `-c` flag, so it wins over the
   # inherited global and is surgical -- it does not replace the rest of git
-  # config), making the suite fast (~35s) AND deterministic regardless of whose
+  # config), making the suite fast AND deterministic regardless of whose
   # ~/.gitconfig runs it. Same class of fix as pg2-0sa8p (pn disabling fsmonitor
   # on its own git status probes). Applies to real-git tests; git-mock tests are
-  # unaffected.
+  # unaffected. Immutable across tests, so exported once here.
   export GIT_CONFIG_COUNT=2
   export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
   export GIT_CONFIG_KEY_1=core.untrackedcache GIT_CONFIG_VALUE_1=false
 
-  if [[ -z ${SCRIPT_UNDER_TEST:-} ]]; then
-    # Local dev: assemble a wrapper replicating the builder's composition
-    # (library sourced before the command's .sh) — see bash-scripting
-    # skill's "Library wrapper pattern".
-    local resolved_lib
-    if [[ -d ${LIB_PATH} ]]; then
-      resolved_lib="${LIB_PATH}/pnwf-lib.bash"
-    else
-      resolved_lib="${LIB_PATH%%:*}"
-    fi
-    cat >"$TEST_DIR/pnwf-wrapper" <<WRAPPER
-#!/usr/bin/env bash
-set -euo pipefail
-source "${resolved_lib}"
-source "${SCRIPTS_DIR}/pnwf.sh"
-WRAPPER
-    chmod +x "$TEST_DIR/pnwf-wrapper"
-    SCRIPT_UNDER_TEST="$TEST_DIR/pnwf-wrapper"
-  fi
-  export SCRIPT_UNDER_TEST
+  # Immutable mock TEMPLATE, seeded once. setup() copies these into each test's
+  # own MOCK_BIN, so a test may still overwrite its own integrate-branch-support
+  # (or drop in a `git` shim) without leaking into sibling tests.
+  MOCK_TEMPLATE="$BATS_FILE_TMPDIR/mock-template"
+  mkdir -p "$MOCK_TEMPLATE"
+  export MOCK_TEMPLATE
 
-  # Mocks live OUTSIDE any git working tree a test creates (pnwf itself
-  # never `git clean`s, but this keeps the pattern consistent with the rest
-  # of the module — see testing-advanced.md's mock-isolation gotcha).
-  MOCK_BIN="$TEST_DIR/mock-bin"
-  mkdir -p "$MOCK_BIN"
-  PATH="$MOCK_BIN:$PATH"
-  export PATH MOCK_BIN
-
-  MOCK_PN_ENV_LOG="$TEST_DIR/pn-env.log"
-  : >"$MOCK_PN_ENV_LOG"
-  export MOCK_PN_ENV_LOG
-
-  cat >"$MOCK_BIN/pn" <<'MOCK'
+  cat >"$MOCK_TEMPLATE/pn" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -135,16 +117,63 @@ fi
 echo "mock pn: unsupported invocation: $*" >&2
 exit 1
 MOCK
-  chmod +x "$MOCK_BIN/pn"
+  chmod +x "$MOCK_TEMPLATE/pn"
 
   # Default integrate-branch-support mock (needed by `stage`, via
   # pnwf_resolve_primary_branch): called bare, emits JSON unconditionally.
-  cat >"$MOCK_BIN/integrate-branch-support" <<'MOCK'
+  cat >"$MOCK_TEMPLATE/integrate-branch-support" <<'MOCK'
 #!/usr/bin/env bash
 echo '{"primary_branch":"main","strategy":null}'
 MOCK
-  chmod +x "$MOCK_BIN/integrate-branch-support"
+  chmod +x "$MOCK_TEMPLATE/integrate-branch-support"
 
+  # Local dev (no nix-provided SCRIPT_UNDER_TEST): assemble a wrapper replicating
+  # the builder's composition (library sourced before the command's .sh) -- see
+  # the bash-scripting skill's "Library wrapper pattern". Immutable +
+  # read-only-executed, so one per-file wrapper is shared across all tests.
+  if [[ -z ${SCRIPT_UNDER_TEST:-} ]]; then
+    local resolved_lib
+    if [[ -d ${LIB_PATH} ]]; then
+      resolved_lib="${LIB_PATH}/pnwf-lib.bash"
+    else
+      resolved_lib="${LIB_PATH%%:*}"
+    fi
+    cat >"$BATS_FILE_TMPDIR/pnwf-wrapper" <<WRAPPER
+#!/usr/bin/env bash
+set -euo pipefail
+source "${resolved_lib}"
+source "${SCRIPTS_DIR}/pnwf.sh"
+WRAPPER
+    chmod +x "$BATS_FILE_TMPDIR/pnwf-wrapper"
+    export SCRIPT_UNDER_TEST="$BATS_FILE_TMPDIR/pnwf-wrapper"
+  fi
+}
+
+setup() {
+  TEST_DIR="$(mktemp -d)"
+  export TEST_DIR
+
+  # Per-test MOCK_BIN seeded from the immutable per-file template (setup_file).
+  # Copying rather than rebuilding keeps each test able to overwrite its own
+  # mocks without disturbing siblings -- required for `bats --jobs` safety.
+  # Mocks live OUTSIDE any git working tree a test creates (pnwf itself never
+  # `git clean`s, but this keeps the pattern consistent with the rest of the
+  # module -- see testing-advanced.md's mock-isolation gotcha).
+  MOCK_BIN="$TEST_DIR/mock-bin"
+  mkdir -p "$MOCK_BIN"
+  cp -p "$MOCK_TEMPLATE/pn" "$MOCK_TEMPLATE/integrate-branch-support" "$MOCK_BIN/"
+  PATH="$MOCK_BIN:$PATH"
+  export PATH MOCK_BIN
+
+  MOCK_PN_ENV_LOG="$TEST_DIR/pn-env.log"
+  : >"$MOCK_PN_ENV_LOG"
+  export MOCK_PN_ENV_LOG
+
+  # Canned pn workspace info. Deliberately NOT hoisted to setup_file: it embeds
+  # the per-test TEST_DIR paths (root/canonical_root, which tests assert equal
+  # to $CANONICAL_DIR/$SET_DIR) and so must be regenerated per test -- hoisting
+  # it to a shared per-file file would break the mktemp isolation that makes
+  # this suite parallel-safe.
   CANONICAL_DIR="$TEST_DIR/canonical"
   mkdir -p "$CANONICAL_DIR"
   jq -n --arg root "$CANONICAL_DIR" '{

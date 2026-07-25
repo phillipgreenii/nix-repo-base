@@ -23,6 +23,11 @@ let
   #   libraries   — list of mkBashLibrary results whose .lib will be sourced first
   #   testSupport — optional path to a bats test support directory
   #   testDeps    — additional packages needed at test time
+  #   batsJobs    — bats parallelism for the check's `bats` run (default 1 = serial,
+  #                 preserving prior behavior). When > 1 the check runs `bats --jobs N`
+  #                 and pulls in pkgs.parallel (which `bats --jobs` requires). Opt-in
+  #                 per suite; only tests with per-test isolation (own mktemp TEST_DIR
+  #                 + own MOCK_BIN) are parallel-safe.
   #
   # Returns: { lib, check, description }
   mkBashLibrary =
@@ -33,8 +38,12 @@ let
       libraries ? [ ],
       testSupport ? null,
       testDeps ? [ ],
+      batsJobs ? 1,
     }:
     let
+      # `bats --jobs N ` prefix (trailing space intentional) — empty when serial so
+      # the serial invocation is byte-for-byte the historical `bats ${testDir}`.
+      batsJobsFlag = lib.optionalString (batsJobs > 1) "--jobs ${toString batsJobs} ";
       # Read the source .bash file
       sourceFile = src + "/${name}.bash";
       sourceContent = builtins.readFile sourceFile;
@@ -63,6 +72,7 @@ let
               pkgs.bats
               pkgs.shellcheck
             ]
+            ++ lib.optional (batsJobs > 1) pkgs.parallel
             ++ testDeps;
           }
           ''
@@ -75,7 +85,7 @@ let
             ''}
             ${
               if hasTests then
-                "bats ${testDir}"
+                "bats ${batsJobsFlag}${testDir}"
               else
                 ''echo "check-${name}: no tests/ directory; skipping bats (shellcheck passed)" >&2''
             }
@@ -102,6 +112,11 @@ let
   #   exportedConfig — attrset of exported variables
   #   testSupport    — optional path to a bats test support directory
   #   testDeps       — additional packages needed at test time
+  #   batsJobs       — bats parallelism for the check's `bats` run (default 1 = serial,
+  #                    preserving prior behavior). When > 1 the check runs
+  #                    `bats --jobs N` and pulls in pkgs.parallel (required by
+  #                    `bats --jobs`). Opt-in per suite; only tests with per-test
+  #                    isolation (own mktemp TEST_DIR + own MOCK_BIN) are parallel-safe.
   #
   # Reserved conventions (bead pg2-38ava): the assembled header injected below is
   # NOT invisible — it is documented here and self-labelled in the emitted script.
@@ -132,10 +147,15 @@ let
       exportedConfig ? { },
       testSupport ? null,
       testDeps ? [ ],
+      batsJobs ? 1,
       baseVersion ? "0.0.0",
       manPage ? true,
     }:
     let
+      # `bats --jobs N ` prefix (trailing space intentional) — empty when serial so
+      # the serial invocation is byte-for-byte the historical `bats $TMPDIR/`.
+      batsJobsFlag = lib.optionalString (batsJobs > 1) "--jobs ${toString batsJobs} ";
+
       # Check for optional files
       hasTldr = builtins.pathExists (src + "/${name}.md");
       hasBashCompletion = builtins.pathExists (src + "/completions/${name}.bash");
@@ -352,6 +372,7 @@ let
               pkgs.bats
               pkgs.bash
             ]
+            ++ lib.optional (batsJobs > 1) pkgs.parallel
             ++ testDeps;
           }
           ''
@@ -397,7 +418,7 @@ let
 
             ${
               if hasTests then
-                "bats $TMPDIR/"
+                "bats ${batsJobsFlag}$TMPDIR/"
               else
                 ''echo "check-${name}: no tests/ directory; only the assembled-artifact floor smoke ran" >&2''
             }
