@@ -665,14 +665,18 @@ func TestWorkforestList_ListsSets(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	// Create two fake set dirs under workforests_dir.
+	// Create two fake set dirs under workforests_dir. A real set carries its
+	// marker (LockFileName) at the set root — WorkforestAdd always writes it —
+	// which is how WorkforestList recognises a set dir.
 	wtDir := w.WorkforestsDir()
 	if err := os.MkdirAll(filepath.Join(wtDir, "feature-a"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(wtDir, "feature-a", LockFileName), "{}\n")
 	if err := os.MkdirAll(filepath.Join(wtDir, "feature-b"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(wtDir, "feature-b", LockFileName), "{}\n")
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestList(context.Background(), &out, &errOut, WorkforestListOptions{}); err != nil {
@@ -702,6 +706,8 @@ func TestWorkforestList_SkipsDotEntries(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(wtDir, "my-feature"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A real set carries its marker (LockFileName) at the set root.
+	writeFile(t, filepath.Join(wtDir, "my-feature", LockFileName), "{}\n")
 	if err := os.MkdirAll(filepath.Join(wtDir, ".pn-update"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -740,5 +746,67 @@ func TestWorkforestList_NoWorkforestsDir(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Errorf("expected empty output when workforests_dir missing; got: %q", out.String())
+	}
+}
+
+// TestWorkforestList_SlashedAndSingleSegment is the regression test for pg2-8ev31.
+// A REAL workforest set is marked by its LockFileName (pn-workspace.lock.json) at
+// the set root — WorkforestAdd always writes it there. A single-segment set lives
+// at <workforests_dir>/<name>; a SLASHED set (the design's wf/<id>-<slug> naming,
+// whose nested-dir DETECTION landed in pg2-u1ubb) lives NESTED at
+// <workforests_dir>/wf/<slug>, so its marker sits one level down and the
+// intermediate "wf" segment has no marker of its own. The old list read only
+// top-level entries, so a slashed set surfaced as the bare "wf" instead of the
+// full "wf/<slug>". List must recognise real set dirs by the marker, print the
+// FULL set name (path relative to the workforests dir, forward-slash form),
+// descend ONE level for a slashed intermediate, and still skip dot dirs.
+func TestWorkforestList_SlashedAndSingleSegment(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.foo]\nurl = \"github:o/foo\"\n")
+	wtDir := filepath.Join(root, ".workforests")
+
+	// (a) single-segment set: <wf>/single-seg/<LockFileName>
+	mustMkdir(t, filepath.Join(wtDir, "single-seg"))
+	writeFile(t, filepath.Join(wtDir, "single-seg", LockFileName), "{}\n")
+
+	// (b) slashed set: <wf>/wf/<slug>/<LockFileName> — marker one level down; the
+	//     intermediate "wf" dir has NO marker of its own.
+	mustMkdir(t, filepath.Join(wtDir, "wf", "pg2-xs5cj-slug"))
+	writeFile(t, filepath.Join(wtDir, "wf", "pg2-xs5cj-slug", LockFileName), "{}\n")
+
+	// (c) dot dir: never a set (the ephemeral .pn-update update-worktree area).
+	mustMkdir(t, filepath.Join(wtDir, ".pn-update"))
+
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out bytes.Buffer
+	if err := w.WorkforestList(context.Background(), &out, &bytes.Buffer{}, WorkforestListOptions{}); err != nil {
+		t.Fatalf("WorkforestList: %v", err)
+	}
+
+	got := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	slices.Sort(got)
+	want := []string{"single-seg", "wf/pg2-xs5cj-slug"}
+	if !slices.Equal(got, want) {
+		t.Errorf("WorkforestList output: got %v, want %v", got, want)
+	}
+	// The full slashed set name must be present, not the bare intermediate.
+	if !slices.Contains(got, "wf/pg2-xs5cj-slug") {
+		t.Errorf("expected full slashed set name %q listed; got %v", "wf/pg2-xs5cj-slug", got)
+	}
+	if slices.Contains(got, "wf") {
+		t.Errorf("bare intermediate segment %q must not be listed as a set; got %v", "wf", got)
+	}
+	// The single-segment set is unchanged (printed by its plain name).
+	if !slices.Contains(got, "single-seg") {
+		t.Errorf("expected single-segment set %q listed; got %v", "single-seg", got)
+	}
+	// The dot dir is skipped.
+	for _, l := range got {
+		if strings.Contains(l, "pn-update") {
+			t.Errorf("dot dir .pn-update must not be listed; got %v", got)
+		}
 	}
 }

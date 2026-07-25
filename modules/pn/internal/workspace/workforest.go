@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -426,6 +427,17 @@ func (w *Workspace) rewriteSetMembership(errOut io.Writer, setDir string, member
 
 // WorkforestList lists the workforest sets under w.WorkforestsDir(), one per line.
 // If the workforests directory does not exist, nothing is printed (not an error).
+//
+// A REAL set dir is identified by its set marker — the LockFileName file that
+// WorkforestAdd writes at the set root (both full-set and subset paths write it).
+// The set name IS its branch by construction, and a branch may be SLASHED (the
+// design's wf/<id>-<slug> convention), so the set dir is NESTED one level below
+// the workforests dir at <workforests_dir>/wf/<slug>. The printed name is the set
+// dir's path RELATIVE to the workforests dir (forward-slash form, matching the
+// branch): a single-segment set prints as its plain name; a one-level-slashed set
+// prints as <intermediate>/<sub>. Detection descends at most one level — enough
+// for the single wf/ prefix segment that branch names carry — so the intermediate
+// "wf" segment (which has no marker of its own) is never surfaced as a set.
 func (w *Workspace) WorkforestList(ctx context.Context, out io.Writer, errOut io.Writer, opts WorkforestListOptions) error {
 	wtDir := w.WorkforestsDir()
 	entries, err := os.ReadDir(wtDir)
@@ -439,15 +451,39 @@ func (w *Workspace) WorkforestList(ctx context.Context, out io.Writer, errOut io
 		if !e.IsDir() {
 			continue
 		}
-		setName := e.Name()
+		name := e.Name()
 		// Dot-prefixed dirs (e.g. .pn-update, the ephemeral update-worktree area)
 		// are not coordinated workforest sets — skip them.
-		if strings.HasPrefix(setName, ".") {
+		if strings.HasPrefix(name, ".") {
 			continue
 		}
+		// A real single-segment set carries the marker at its root — print it and
+		// do NOT descend (its subdirs are the member repo worktrees, not sets).
 		// The set dir name IS the branch by construction, so a second branch
 		// column would just duplicate it — print the name once.
-		fmt.Fprintln(out, setName)
+		if fileExists(filepath.Join(wtDir, name, LockFileName)) {
+			fmt.Fprintln(out, name)
+			continue
+		}
+		// Otherwise this may be a SLASHED intermediate (e.g. "wf"): it holds no
+		// marker of its own, but each real nested set below it does. Descend ONE
+		// level and print <name>/<sub> for every marked subdir. If none is found
+		// the entry is not a set (empty/leftover intermediate) and is skipped.
+		subEntries, err := os.ReadDir(filepath.Join(wtDir, name))
+		if err != nil {
+			return fmt.Errorf("workforest list: read %s: %w", filepath.Join(wtDir, name), err)
+		}
+		for _, se := range subEntries {
+			if !se.IsDir() {
+				continue
+			}
+			sub := se.Name()
+			if fileExists(filepath.Join(wtDir, name, sub, LockFileName)) {
+				// Use forward slashes for the printed set name to match the branch
+				// form (path.Join, not filepath.Join, so it is OS-independent).
+				fmt.Fprintln(out, path.Join(name, sub))
+			}
+		}
 	}
 	return nil
 }
