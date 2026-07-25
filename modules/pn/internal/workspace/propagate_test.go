@@ -472,18 +472,30 @@ url = "github:owner/foo"
 
 // --- small git/file helpers (kept local to avoid touching shared helpers) ---
 
+// hermeticGitCmd builds a `git -C dir args...` command whose env ignores the
+// developer's global/system git config (see realgit_test.go's TestMain and
+// gitConfigIsolationEnv) so these local propagate helpers stay hermetic — e.g.
+// a global core.fsmonitor=true never leaks into the temp repo (pg2-39rz2).
+func hermeticGitCmd(dir string, args ...string) *osexec.Cmd {
+	full := append([]string{"-C", dir}, args...)
+	cmd := osexec.Command("git", full...)
+	cmd.Env = os.Environ()
+	for k, v := range gitConfigIsolationEnv() {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	return cmd
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	full := append([]string{"-C", dir}, args...)
-	if out, err := osexec.Command("git", full...).CombinedOutput(); err != nil {
+	if out, err := hermeticGitCmd(dir, args...).CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 }
 
 func gitOut(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	full := append([]string{"-C", dir}, args...)
-	out, err := osexec.Command("git", full...).Output()
+	out, err := hermeticGitCmd(dir, args...).Output()
 	if err != nil {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}

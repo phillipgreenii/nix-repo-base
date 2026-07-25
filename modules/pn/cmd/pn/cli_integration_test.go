@@ -19,6 +19,24 @@ func TestMain(m *testing.M) {
 }
 
 func runIntegrationTests(m *testing.M) int {
+	// Make git hermetic for the whole integration suite: redirect global and
+	// system git config to /dev/null so neither the harness `git init` below nor
+	// the pn binary's own git invocations (e.g. `git status` from
+	// `pn workspace status`) inherit the developer's ~/.gitconfig / XDG global
+	// config. On a machine with core.fsmonitor=true in global config, that temp
+	// repo would otherwise enable the built-in fsmonitor and `git status` would
+	// spawn/contend for `git fsmonitor--daemon`; a wedged daemon blocks the IPC
+	// socket and hangs the suite to go's panic timeout (bead pg2-39rz2). Setenv
+	// (not a per-command env) so the pn subprocess inherits it via os.Environ().
+	for k, v := range map[string]string{
+		"GIT_CONFIG_GLOBAL": "/dev/null",
+		"GIT_CONFIG_SYSTEM": "/dev/null",
+	} {
+		if err := os.Setenv(k, v); err != nil {
+			panic("cli_integration_test: os.Setenv " + k + ": " + err.Error())
+		}
+	}
+
 	// Build the pn binary once for all integration tests.
 	tmp, err := os.MkdirTemp("", "pn-binary-")
 	if err != nil {
