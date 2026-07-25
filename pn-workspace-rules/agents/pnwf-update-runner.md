@@ -84,9 +84,8 @@ Define `SETDIR` as `<CANONICAL_ROOT>/.workforests/<BRANCH>`.
   ```
 
   (`$PWD` is the set — you just `cd`'d into it — so this is self-contained in the
-  one call; do not rely on a `$SETDIR` shell var, which is not assigned.) This is
-  a deliberate hardening over `pnwf-runner`, whose read-only build/doctor calls
-  omit it: `pn` (unlike `pnwf`) honors an exported `PN_WORKSPACE_ROOT` **over**
+  one call; do not rely on a `$SETDIR` shell var, which is not assigned.) `pn`
+  (unlike `pnwf`) honors an exported `PN_WORKSPACE_ROOT` **over**
   cwd, so a stale inherited value could otherwise redirect a set-scoped
   `pn workspace` call onto the canonical clones. `pnwf` calls (`fork-preflight`,
   `update-relock`, `resolve`) do NOT need the export — `pnwf` clears

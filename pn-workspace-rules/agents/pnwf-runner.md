@@ -70,15 +70,26 @@ Define `SETDIR` as `<CANONICAL_ROOT>/.workforests/<BRANCH>`.
   cd <CANONICAL_ROOT> && pnwf <verb> <BRANCH>
   ```
 
-- Set-scoped calls MUST `cd` into the set first:
+- Set-scoped `pnwf` calls MUST `cd` into the set first:
 
   ```bash
   cd <SETDIR> && pnwf <verb> --set
   ```
 
+- Set-scoped `pn workspace` calls MUST `cd` into the set **and** export
+  `PN_WORKSPACE_ROOT` to the set in the SAME Bash call:
+
   ```bash
-  cd <SETDIR> && pn workspace <verb>
+  cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace <verb>
   ```
+
+  (`$PWD` is the set — you just `cd`'d into it — so this is self-contained in the
+  one call; do not rely on a `$SETDIR` shell var, which is not assigned.) `pn`
+  (unlike `pnwf`) honors an exported `PN_WORKSPACE_ROOT` **over** cwd, so a stale
+  inherited value could otherwise redirect a set-scoped `pn workspace` call onto
+  the canonical clones. `pnwf` calls (`fork-preflight`, `sync-fetch`, `resolve`)
+  do NOT need the export — `pnwf` clears `PN_WORKSPACE_ROOT` itself and resolves
+  from cwd.
 
 - You MUST NOT issue a bare `pnwf`/`pn` that relies on an inherited cwd, and you
   MUST NOT use `PN_WORKSPACE_ROOT=… pnwf …` — `pnwf` clears `PN_WORKSPACE_ROOT`
@@ -147,14 +158,15 @@ failure in its stderr:
 
 ## 6. Stage 3 — VALIDATE (in set)
 
-Default to the full Tier 3 workspace check:
+Default to the full Tier 3 workspace check. Each call MUST chain the
+`PN_WORKSPACE_ROOT` export per the [self-locate rule](#3-self-locate-rule-must):
 
 ```bash
-cd <SETDIR> && pn workspace build
+cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace build
 ```
 
 ```bash
-cd <SETDIR> && pn workspace doctor
+cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace doctor
 ```
 
 - **both clean** → you MUST return `done`.
