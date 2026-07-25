@@ -279,3 +279,110 @@ url = "github:owner/foo"
 		}
 	})
 }
+
+// TestInfo_WorkforestFields_SlashedBranch is the regression test for pg2-u1ubb.
+// A workforest set created from a SLASHED branch name (the design's intended
+// `wf/<bead-id>-<slug>` convention) lives NESTED under the workforests dir —
+// <workforests_dir>/wf/<slug>, i.e. MORE than one path segment below it. Old
+// detection assumed exactly one segment between the set root and the workforests
+// dir (filepath.Base(filepath.Dir(root))), so it mis-classified a nested set as
+// NOT in a workforest and mis-derived canonicalRoot. Detection must now report
+// InWorkforest==true and resolve CanonicalRoot back past BOTH the branch segments
+// AND the (possibly multi-segment) workforests dir — for the default,
+// multi-segment-relative, and absolute workforests_dir layouts.
+func TestInfo_WorkforestFields_SlashedBranch(t *testing.T) {
+	t.Run("default workforests_dir", func(t *testing.T) {
+		t.Setenv("XDG_DATA_HOME", t.TempDir())
+		base := t.TempDir()
+		setRoot := filepath.Join(base, ".workforests", "wf", "pg2-xs5cj-slug")
+		if err := os.MkdirAll(setRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+		w, err := Open(setRoot, exec.NewFakeRunner())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		info, err := w.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+		if !info.InWorkforest {
+			t.Errorf("InWorkforest: got false, want true for a nested set root <base>/.workforests/wf/<slug>")
+		}
+		if info.CanonicalRoot != base {
+			t.Errorf("CanonicalRoot: got %q, want %q", info.CanonicalRoot, base)
+		}
+	})
+
+	t.Run("multi-segment relative workforests_dir", func(t *testing.T) {
+		t.Setenv("XDG_DATA_HOME", t.TempDir())
+		base := t.TempDir()
+		setRoot := filepath.Join(base, "sets", "nested", "wf", "pg2-xs5cj-slug")
+		if err := os.MkdirAll(setRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "foo"
+workforests_dir = "sets/nested"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+		w, err := Open(setRoot, exec.NewFakeRunner())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		info, err := w.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+		if !info.InWorkforest {
+			t.Errorf("InWorkforest: got false, want true for a nested set under a multi-segment workforests_dir")
+		}
+		if info.CanonicalRoot != base {
+			t.Errorf("CanonicalRoot: got %q, want %q", info.CanonicalRoot, base)
+		}
+	})
+
+	t.Run("absolute workforests_dir", func(t *testing.T) {
+		t.Setenv("XDG_DATA_HOME", t.TempDir())
+		absWt := t.TempDir()
+		setRoot := filepath.Join(absWt, "wf", "pg2-xs5cj-slug")
+		if err := os.MkdirAll(setRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(setRoot, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "foo"
+workforests_dir = "`+absWt+`"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+		w, err := Open(setRoot, exec.NewFakeRunner())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		info, err := w.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+		if !info.InWorkforest {
+			t.Errorf("InWorkforest: got false, want true for a nested set under an absolute workforests_dir")
+		}
+		if info.CanonicalRoot != "" {
+			t.Errorf("CanonicalRoot: got %q, want empty (absolute workforests_dir → canonical undefined)", info.CanonicalRoot)
+		}
+	})
+}

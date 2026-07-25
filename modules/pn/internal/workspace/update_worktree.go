@@ -35,14 +35,16 @@ var updateRunStampFn = func() string {
 }
 
 // inWorkforest reports whether ws.root is a coordinated workforest set created
-// by `pn workspace workforest add` — i.e. it lives directly under the configured
+// by `pn workspace workforest add` — i.e. it lives under the configured
 // workforests dir (<workforests_dir>/<branch>). The worktree-isolation update flow is
 // invalid inside a set: the set's repos are worktrees on a shared feature branch
 // with `main` checked out in the canonical clones, so a nested worktree-add +
 // push-to-main + ff-main would violate the set's P1 invariant. Detection is
-// structural — a set always lives directly under the workforests dir.
+// structural and tolerant of a slashed branch that nests the set dir more than
+// one segment below the workforests dir — see Workspace.workforestLocation.
 func (ws *Workspace) inWorkforest() bool {
-	return filepath.Base(filepath.Dir(ws.root)) == filepath.Base(ws.config.WorkforestsDirName())
+	_, in := ws.workforestLocation()
+	return in
 }
 
 // primaryMainState probes the primary checkout's branch + cleanliness to decide
