@@ -200,6 +200,54 @@ func TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir(t *testing.T
 	}
 }
 
+// TestUpdateViaWorktree_PushToleratesMissingPreCommitConfig is the pg2-m75sq
+// regression. The worktree-isolated update publishes by pushing from an ephemeral
+// worktree under .workforests/.pn-update/. That worktree lacks the gitignored,
+// dev-shell-generated .pre-commit-config.yaml symlink (ADR 0016), so the repo's
+// prek pre-PUSH hook — installed in the CANONICAL gitdir and shared into the
+// worktree — aborts the push with "config file not found: .pre-commit-config.yaml".
+// This bites a workspace member with NO workspace-sibling inputs the hardest: its
+// --siblings-only run is a pure no-op relock that still reaches the push and fails
+// there (the canonical clone, which has the symlink, pushes fine). The bump-commit
+// already sets PREK_ALLOW_NO_CONFIG in the same worktree (tc-1zbpk); the push MUST
+// do the same so prek no-ops on the absent config and the publish succeeds. We
+// assert the step-7 push carries PREK_ALLOW_NO_CONFIG=1; before the fix its env is
+// empty and the push fails on the missing config in the field.
+func TestUpdateViaWorktree_PushToleratesMissingPreCommitConfig(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "branch", "-D", branch}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/x/lib/scripts"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	var pushCall *exec.Call
+	for _, c := range f.Calls() {
+		if c.Name == "git" && slices.Equal(c.Args, []string{"-C", wt, "push", "origin", "HEAD:main"}) {
+			cc := c
+			pushCall = &cc
+		}
+	}
+	if pushCall == nil {
+		t.Fatalf("expected a `git -C %s push origin HEAD:main`; calls=%v", wt, f.Calls())
+	}
+	if got := pushCall.Opts.Env["PREK_ALLOW_NO_CONFIG"]; got != "1" {
+		t.Fatalf("push must set PREK_ALLOW_NO_CONFIG=1 so the worktree's prek pre-push hook tolerates the absent .pre-commit-config.yaml (ADR 0016 / tc-1zbpk); got Env=%v", pushCall.Opts.Env)
+	}
+}
+
 func TestUpdateViaWorktree_PushSucceedsFfDefers(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"

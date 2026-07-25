@@ -308,7 +308,23 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 	}
 
 	// Step 7: publish — push branch to remote main from the worktree.
-	if err := git(wt, "push", "origin", "HEAD:main"); err != nil {
+	// PREK_ALLOW_NO_CONFIG mirrors the propagate-edges bump commit (tc-1zbpk): the
+	// repo's prek pre-push hook is installed in the CANONICAL gitdir and shared into
+	// this ephemeral worktree, but the worktree has no .pre-commit-config.yaml — a
+	// gitignored, dev-shell-generated store-symlink present only in the canonical
+	// checkout (ADR 0016) — so prek would abort the push with "config file not
+	// found". A member with no workspace-sibling inputs feels this hardest: its
+	// --siblings-only run is a pure no-op relock that still reaches this push and
+	// fails there while the canonical clone (which has the symlink) pushes fine
+	// (pg2-m75sq). The env var no-ops prek ONLY when no config is present — a real
+	// config still enforces — so this does not disable enforcement (unlike
+	// --no-verify), and it matches the commit already made in this same worktree.
+	// Stdout/Stderr stay wired so a genuine push failure still surfaces in the log.
+	if _, err := ws.runner.Run(ctx, "git", []string{"-C", wt, "push", "origin", "HEAD:main"}, exec.RunOptions{
+		Env:    map[string]string{"PREK_ALLOW_NO_CONFIG": "1"},
+		Stdout: out,
+		Stderr: out,
+	}); err != nil {
 		return fail("push", err, "remote main may have advanced; resolve manually and re-run")
 	}
 
