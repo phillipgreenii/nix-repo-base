@@ -150,13 +150,54 @@ in
           throw "phillipgreenii.pre-commit: .gitignore MUST contain a line '.pre-commit-config.yaml'. The git-hooks.nix config is a generated /nix/store symlink and must not be committed (ADR 0016 in phillipg-nix-repo-base)."
         else
           pkgs.runCommand "pre-commit-config-gitignored" { } "touch $out";
+
+      # pg2-vqyw3: harden the generated pre-push hook against a MISSING config.
+      # git-hooks.nix's installer (the `preCommit.shellHook` above) hardcodes
+      # `prek install -c .pre-commit-config.yaml -t pre-push` with NO
+      # `--allow-missing-config`, so the shim it writes runs
+      # `prek hook-impl … --config=.pre-commit-config.yaml` and ABORTS every push
+      # with "config file not found" whenever that config is absent — which is
+      # ALWAYS true in a fresh checkout/worktree, because the config is the
+      # gitignored, nix-generated /nix/store symlink (ADR 0016) that no commit
+      # carries. That breaks pushes from pn's temp worktrees (pg2-x42j3).
+      #
+      # The framework exposes no option to thread install flags, so AFTER its
+      # installer runs we RE-INSTALL just the pre-push shim with
+      # `--allow-missing-config`, which bakes `--skip-on-missing-config` into it.
+      # That flag ONLY no-ops the config-ABSENT branch; with a config present the
+      # shim still runs every hook exactly as before (enforcement intact) —
+      # unlike `--no-verify`. Defense-in-depth complementing pg2-m75sq.
+      #
+      # Regeneration-safe: it WRAPS the framework's opaque shellHook instead of
+      # editing it, keys off the observable shim file (not the framework's
+      # command text), and is idempotent — the grep guard skips the re-install
+      # (and its filesystem churn under lorri/direnv) once the shim is already
+      # tolerant, and the whole block no-ops when hook install is disabled or
+      # pre-push is not a configured stage (no shim exists to harden).
+      hardenPrePushHook = ''
+        if ${lib.getExe' pkgs.git "git"} rev-parse --git-dir >/dev/null 2>&1; then
+          _pgii_prepush="$(${lib.getExe' pkgs.git "git"} rev-parse --path-format=absolute --git-path hooks/pre-push 2>/dev/null || true)"
+          if [ -n "$_pgii_prepush" ] && [ -e "$_pgii_prepush" ] \
+            && ! grep -q -- '--skip-on-missing-config' "$_pgii_prepush"; then
+            ${lib.getExe pkgs.prek} install -c .pre-commit-config.yaml --allow-missing-config -t pre-push -f
+          fi
+          unset _pgii_prepush
+        fi
+      '';
+      # Single source of truth consumed by BOTH the devShell (via
+      # `_module.args.preCommitShellHook`) and `install-pre-commit-hooks`, so the
+      # tolerant pre-push shim is installed on either entry point.
+      preCommitShellHook = ''
+        ${preCommit.shellHook}
+        ${hardenPrePushHook}
+      '';
     in
     {
-      _module.args.preCommitShellHook = preCommit.shellHook;
+      _module.args.preCommitShellHook = preCommitShellHook;
       checks.pre-commit = preCommit;
       checks.pre-commit-config-gitignored = preCommitConfigGitignoredCheck;
       packages.install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
-        ${preCommit.shellHook}
+        ${preCommitShellHook}
         echo "Pre-commit hooks installed successfully!"
         echo "Run 'pre-commit run --all-files' to test them."
       '';
