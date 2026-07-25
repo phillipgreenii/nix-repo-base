@@ -372,6 +372,9 @@ func (w *Workspace) WorkforestRemoveRepo(ctx context.Context, out io.Writer, err
 	setRepo := filepath.Join(setDir, repo)
 	if dirExists(setRepo) {
 		fmt.Fprintf(out, "  --== worktree remove %s ==--  \n", repo)
+		// Stop the worktree's fsmonitor daemon before removing it (best-effort;
+		// keyed by worktree path, so `worktree remove` would orphan it).
+		w.stopFsmonitorDaemon(ctx, setRepo)
 		gitArgs := []string{"-C", canonical, "worktree", "remove", setRepo}
 		if opts.Force {
 			gitArgs = append(gitArgs, "--force")
@@ -473,6 +476,9 @@ func (w *Workspace) WorkforestRemove(ctx context.Context, out io.Writer, errOut 
 		}
 
 		fmt.Fprintf(out, "  --== worktree remove %s ==--  \n", repo)
+		// Stop this member worktree's fsmonitor daemon before removing it
+		// (best-effort; keyed by worktree path, so `worktree remove` would orphan it).
+		w.stopFsmonitorDaemon(ctx, setRepo)
 		gitArgs := []string{"-C", canonical, "worktree", "remove", setRepo}
 		if opts.Force {
 			gitArgs = append(gitArgs, "--force")

@@ -102,6 +102,34 @@ func TestUpdateViaWorktree_HappyPath_CleanMain(t *testing.T) {
 	}
 }
 
+// TestUpdateViaWorktree_StopsFsmonitorBeforeWorktreeRemove asserts the update
+// worktree's per-worktree fsmonitor daemon is stopped immediately before the
+// worktree is removed (bead pg2-fnjfs).
+func TestUpdateViaWorktree_StopsFsmonitorBeforeWorktreeRemove(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	scriptThroughPush(f, foo, wt, branch)
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil)
+	// Best-effort fsmonitor stop (scripted so the FakeRunner has a response).
+	f.AddResponse("git", []string{"-C", wt, "fsmonitor--daemon", "stop"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "branch", "-d", branch}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/x/lib/scripts"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	assertFsmonitorStoppedBeforeRemove(t, f.Calls(), wt)
+}
+
 // TestUpdateViaWorktree_AbortsRunOnResourceExit77: when a repo's update-locks.sh
 // exits ulExitAbort (77 = environmental/resource failure, e.g. ENOSPC), the run
 // must STOP — the later repo is never attempted — and the error must say so.

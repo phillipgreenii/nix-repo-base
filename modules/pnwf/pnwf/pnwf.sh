@@ -561,6 +561,12 @@ _pnwf_cleanup_remove_member() {
 
     local wt_flags=() wt_rc=0 wt_out
     [[ $dirty_rc -eq 0 ]] && wt_flags=(--force)
+    # Stop this worktree's fsmonitor daemon before removing the worktree
+    # (best-effort). The daemon is keyed by worktree path and is NOT torn down
+    # by `git worktree remove`, so skipping this orphans it (it lingers until
+    # killed). It may be absent (fsmonitor off / never started), so ignore any
+    # failure. Same idea as the pn Go teardown sites (bead pg2-fnjfs).
+    git -C "$member_setpath" fsmonitor--daemon stop >/dev/null 2>&1 || true
     wt_out=$(git -C "$canonical_dir" worktree remove "${wt_flags[@]}" "$member_setpath" 2>&1) || wt_rc=$?
     if [[ $wt_rc -ne 0 ]]; then
       printf '%s\t%s\n' "0" "git worktree remove failed (rc=$wt_rc): $wt_out"

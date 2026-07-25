@@ -153,6 +153,18 @@ func (ws *Workspace) restartFsmonitorDaemon(ctx context.Context, out io.Writer) 
 	_, _ = ws.runner.Run(ctx, "pkill", []string{"-f", "git fsmonitor--daemon"}, exec.RunOptions{})
 }
 
+// stopFsmonitorDaemon best-effort stops the per-worktree `git fsmonitor--daemon`
+// for the worktree at dir. Unlike restartFsmonitorDaemon (a blunt pkill of ALL
+// daemons after a git-binary swap), this is targeted at one worktree. The daemon
+// is keyed by worktree path and is NOT torn down by `git worktree remove`, so
+// without this stop each removed worktree orphans a lingering daemon. Call it
+// immediately before removing the worktree at dir. Best-effort:
+// `fsmonitor--daemon stop` exits non-zero when no daemon is running (or fsmonitor
+// is off), which is not an error here.
+func (ws *Workspace) stopFsmonitorDaemon(ctx context.Context, dir string) {
+	_, _ = ws.runner.Run(ctx, "git", []string{"-C", dir, "fsmonitor--daemon", "stop"}, exec.RunOptions{})
+}
+
 // repoDir pairs a repo's canonical applied-state store key (keyPath) with the
 // checkout git actually operates on (gitDir). They differ only under an
 // override-path apply (coordinated-worktree flow): git reads HEAD/dirtiness

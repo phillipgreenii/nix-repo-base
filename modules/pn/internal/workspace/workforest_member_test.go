@@ -169,6 +169,29 @@ func TestWorkforestRemoveRepo_HappyPath(t *testing.T) {
 	}
 }
 
+func TestWorkforestRemoveRepo_StopsFsmonitorBeforeRemove(t *testing.T) {
+	root, f := makeThreeRepoWorkspace(t)
+	makeFakeCanonicalRepos(t, root, "app", "lib", "other")
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	setDir := seedSubsetSet(t, w, "feature", "app", "lib")
+	libCanonical := filepath.Join(root, "lib")
+	libSet := filepath.Join(setDir, "lib")
+
+	// Best-effort fsmonitor stop (scripted so the FakeRunner has a response).
+	f.AddResponse("git", []string{"-C", libSet, "fsmonitor--daemon", "stop"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", libCanonical, "worktree", "remove", libSet}, exec.Result{}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := w.WorkforestRemoveRepo(context.Background(), &out, &errOut, WorkforestRemoveRepoOptions{Branch: "feature", Repo: "lib"}); err != nil {
+		t.Fatalf("WorkforestRemoveRepo: %v", err)
+	}
+
+	assertFsmonitorStoppedBeforeRemove(t, f.Calls(), libSet)
+}
+
 func TestWorkforestRemoveRepo_ForceFlag(t *testing.T) {
 	root, f := makeThreeRepoWorkspace(t)
 	makeFakeCanonicalRepos(t, root, "app", "lib", "other")

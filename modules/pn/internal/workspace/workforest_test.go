@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,6 +13,36 @@ import (
 )
 
 // ---- helpers ----
+
+// assertFsmonitorStoppedBeforeRemove asserts the recorded calls contain a
+// best-effort `git -C <wt> fsmonitor--daemon stop` IMMEDIATELY BEFORE the
+// `git ... worktree remove <wt>` for the worktree path wt. The per-worktree
+// fsmonitor daemon is keyed by worktree path and is NOT torn down by
+// `git worktree remove`, so it must be stopped first or it orphans and lingers
+// (bead pg2-fnjfs).
+func assertFsmonitorStoppedBeforeRemove(t *testing.T, calls []exec.Call, wt string) {
+	t.Helper()
+	removeIdx := -1
+	for i, c := range calls {
+		if c.Name == "git" && slices.Contains(c.Args, "worktree") &&
+			slices.Contains(c.Args, "remove") && slices.Contains(c.Args, wt) {
+			removeIdx = i
+			break
+		}
+	}
+	if removeIdx < 0 {
+		t.Fatalf("no `git worktree remove %s` call recorded; calls:\n%v", wt, calls)
+	}
+	if removeIdx == 0 {
+		t.Fatalf("`worktree remove %s` has no preceding call (expected fsmonitor stop); calls:\n%v", wt, calls)
+	}
+	prev := calls[removeIdx-1]
+	want := []string{"-C", wt, "fsmonitor--daemon", "stop"}
+	if prev.Name != "git" || !slices.Equal(prev.Args, want) {
+		t.Errorf("expected `git -C %s fsmonitor--daemon stop` IMMEDIATELY before `worktree remove %s`; got prev call: %s %v\nall calls:\n%v",
+			wt, wt, prev.Name, prev.Args, calls)
+	}
+}
 
 // makeTwoRepoWorkspace sets up a temp workspace with two repos (bar, foo) and
 // a fake runner. Returns the root, setDir, and the fake runner.
@@ -415,6 +446,48 @@ func TestWorkforestRemove_HappyPath(t *testing.T) {
 			t.Errorf("WorkforestRemove must NOT delete branches; got call: %v", c.Args)
 		}
 	}
+}
+
+// ============================================================
+// WorkforestRemove — stops each member's fsmonitor daemon before removing it
+// ============================================================
+
+func TestWorkforestRemove_StopsFsmonitorBeforeRemove(t *testing.T) {
+	root, f := makeTwoRepoWorkspace(t)
+	makeFakeCanonicalRepos(t, root, "bar", "foo")
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
+	barSet := filepath.Join(setDir, "bar")
+	fooSet := filepath.Join(setDir, "foo")
+	if err := os.MkdirAll(barSet, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fooSet, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	barCanonical := filepath.Join(root, "bar")
+	fooCanonical := filepath.Join(root, "foo")
+
+	// Best-effort fsmonitor stops (scripted so the FakeRunner has a response).
+	f.AddResponse("git", []string{"-C", barSet, "fsmonitor--daemon", "stop"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", fooSet, "fsmonitor--daemon", "stop"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "remove", barSet}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "remove", fooSet}, exec.Result{}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := w.WorkforestRemove(context.Background(), &out, &errOut, WorkforestRemoveOptions{Branch: "feature"}); err != nil {
+		t.Fatalf("WorkforestRemove: %v", err)
+	}
+
+	// Every member worktree must have its daemon stopped immediately before removal.
+	assertFsmonitorStoppedBeforeRemove(t, f.Calls(), barSet)
+	assertFsmonitorStoppedBeforeRemove(t, f.Calls(), fooSet)
 }
 
 // ============================================================

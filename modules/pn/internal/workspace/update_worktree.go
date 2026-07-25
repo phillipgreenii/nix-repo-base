@@ -390,7 +390,10 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		// success → fall through to step 9 cleanup
 	}
 
-	// Step 9: success — remove worktree, then branch.
+	// Step 9: success — stop the worktree's fsmonitor daemon (best-effort; it is
+	// keyed by worktree path and is NOT torn down by `worktree remove`, so it
+	// would orphan and linger), then remove the worktree, then the branch.
+	ws.stopFsmonitorDaemon(ctx, wt)
 	if err := git(primary, "worktree", "remove", wt); err != nil {
 		oc.status, oc.note = statusOK, "integrated, but worktree remove failed — run `pn workspace workforest prune`"
 		fmt.Fprintf(out, "  ⚠ %s: integrated, but worktree remove failed\n", name)

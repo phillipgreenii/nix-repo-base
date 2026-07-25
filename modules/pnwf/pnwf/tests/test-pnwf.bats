@@ -744,6 +744,46 @@ MOCK
   [ ! -e "$SET_DIR" ]
 }
 
+@test "cleanup: stops a landed member's fsmonitor daemon immediately before removing its worktree (pg2-fnjfs)" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+
+  # Install a git shim that logs each invocation's args (one line per call)
+  # then delegates to the real git by absolute path, so we can assert pnwf
+  # issues a best-effort `fsmonitor--daemon stop` on the worktree IMMEDIATELY
+  # BEFORE removing it. The per-worktree fsmonitor daemon is keyed by worktree
+  # path and is NOT torn down by `git worktree remove`, so skipping the stop
+  # orphans it (bead pg2-fnjfs). real_git is resolved before the shim exists,
+  # so it points at the real binary (MOCK_BIN has no git yet).
+  local real_git
+  real_git="$(command -v git)"
+  cat >"$MOCK_BIN/git" <<SHIM
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$TEST_DIR/git-calls.log"
+exec "$real_git" "\$@"
+SHIM
+  chmod +x "$MOCK_BIN/git"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"removed"* ]]
+
+  # Only one member, so exactly one stop and one remove line are logged.
+  local stop_line remove_line
+  stop_line=$(grep -nF -- "fsmonitor--daemon stop" "$TEST_DIR/git-calls.log" | head -1 | cut -d: -f1)
+  remove_line=$(grep -nF -- "worktree remove" "$TEST_DIR/git-calls.log" | head -1 | cut -d: -f1)
+  [ -n "$stop_line" ]
+  [ -n "$remove_line" ]
+  # The stop must target repoA's set worktree, and be issued IMMEDIATELY before
+  # (no git call between) the worktree remove.
+  grep -qF -- "-C $SET_DIR/repoA fsmonitor--daemon stop" "$TEST_DIR/git-calls.log"
+  [ "$remove_line" -eq $((stop_line + 1)) ]
+}
+
 @test "cleanup --force-dirty-worktree-removal removes a landed but dirty worktree" {
   _stage_init_member repoA
   _stage_write_lock repoA
