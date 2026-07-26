@@ -1,0 +1,32 @@
+# TEST FIXTURE — uv2nix sdist build-path + pyproject-build-systems overlay (ADR
+# 0022, bead pg2-abgyl). DO NOT DELETE and do NOT `uv lock`/`uv lock --upgrade`.
+# `termcolor==1.1.0` is INTENTIONALLY PINNED because that release ships ONLY an
+# sdist on PyPI (no wheel). The builder resolves with `sourcePreference = "wheel"`,
+# so the existing fixtures (six/eventsourcing, which ship universal wheels) always
+# take the WHEEL path and never exercise the sdist build. A wheel-less dep forces
+# uv2nix through the sdist build + the `pyproject-build-systems` (setuptools)
+# overlay — the previously-unexercised path this fixture guards. If `termcolor`
+# 1.1.0 ever gains a wheel, uv2nix would silently take the wheel path again and
+# this fixture would stop discriminating; the check asserts the shipped source is
+# an sdist build so it would fail loudly (re-pin to another wheel-less release).
+[project]
+name = "py-sdist-only"
+version = "0.0.0"
+description = "uv2nix sdist-only build-path fixture"
+requires-python = ">=3.11"
+dependencies = ["termcolor==1.1.0"]
+
+[project.scripts]
+py-sdist-only = "py_sdist_only:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# termcolor 1.1.0 is a legacy setup.py sdist that does NOT declare setuptools as
+# a PEP 517 build backend, so pyproject-build-systems has nothing to key off and
+# the sdist build fails with `No module named 'setuptools'`. This is the
+# idiomatic uv fix: declare the missing build dependency so the (wheel-less) dep
+# builds from its sdist through the build-systems overlay.
+[tool.uv.extra-build-dependencies]
+termcolor = ["setuptools"]

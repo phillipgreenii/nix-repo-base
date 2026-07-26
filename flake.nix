@@ -476,6 +476,15 @@
               inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
             };
 
+            # sdist build-path (ADR 0022, bead pg2-abgyl): a wheel-less dep
+            # (termcolor==1.1.0) forces uv2nix through the sdist build +
+            # pyproject-build-systems overlay — the path the wheel-shipping
+            # fixtures (six/eventsourcing) never exercise. Builds + imports it.
+            python-sdist-build-path = import ./lib/python-package-sdist-tests.nix {
+              inherit pkgs;
+              inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+            };
+
             # Full Go test gate for pn: runs `go test ./...` UNSCOPED over the whole
             # module (cmd/* + internal/*). The pn *package* build pins
             # subPackages=[cmd/pn], which scopes gomod2nix's check hook and would
