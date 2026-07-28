@@ -622,6 +622,142 @@ SCRIPT
   [ "$val" = "true" ]
 }
 
+# --- fsmonitor disable/restore scoping ---
+#
+# These tests pin the SCOPE of the dance. Two different values matter and must
+# not be conflated: the EFFECTIVE (merged) value decides WHETHER the dance is
+# needed, while the repo-LOCAL value decides HOW to undo it. Conflating them
+# converts a user's GLOBAL setting into a permanent per-repo pin (bead
+# pg2-znsmo; the split state recorded in pg2-pi5u1 is the symptom).
+#
+# They drive _ul_disable_fsmonitor / _ul_restore_fsmonitor directly rather than
+# through ul_setup, deliberately: ul_setup's clean-tree gate refreshes the index,
+# and an index refresh with fsmonitor live spawns git's native daemon — which is
+# wedged on some setups (bead pg2-mgcv5), hanging the run outright. These tests
+# only ever invoke `git config`, so they are safe and fast everywhere.
+#
+# GIT_CONFIG_GLOBAL is set explicitly in every test: the shared setup() does not
+# isolate it, so otherwise the developer's own ~/.gitconfig decides the outcome.
+
+@test "_ul_restore_fsmonitor unsets the local key when the value came from global config" {
+  local global_cfg="$STATE_DIR/gitconfig"
+  printf '[core]\n\tfsmonitor = true\n' > "$global_cfg"
+  export GIT_CONFIG_GLOBAL="$global_cfg"
+
+  # Precondition: enabled via global only, with no repo-local key at all.
+  [ "$(git config --type=bool --get core.fsmonitor)" = "true" ]
+  run git config --local --get core.fsmonitor
+  [ "$status" -ne 0 ]
+
+  source "$UL_LOCKS_LIB"
+  _ul_disable_fsmonitor
+
+  # The dance ran: locally disabled for the duration of the run.
+  [ "$(git config --local --get core.fsmonitor)" = "false" ]
+
+  _ul_restore_fsmonitor
+
+  # The local key must be GONE, not pinned to true. The `true` was inherited, so
+  # writing it back locally would pin a global setting into this repo forever.
+  run git config --local --get core.fsmonitor
+  [ "$status" -ne 0 ]
+  # ...and the outer scope governs again.
+  [ "$(git config --type=bool --get core.fsmonitor)" = "true" ]
+}
+
+@test "_ul_restore_fsmonitor restores a pre-existing repo-local value verbatim" {
+  export GIT_CONFIG_GLOBAL=/dev/null
+  git config core.fsmonitor true
+
+  source "$UL_LOCKS_LIB"
+  _ul_disable_fsmonitor
+  [ "$(git config --local --get core.fsmonitor)" = "false" ]
+
+  _ul_restore_fsmonitor
+
+  # A genuinely local value is the repo's own state — put it back.
+  [ "$(git config --local --get core.fsmonitor)" = "true" ]
+}
+
+@test "_ul_disable_fsmonitor handles a non-canonical boolean value" {
+  export GIT_CONFIG_GLOBAL=/dev/null
+  # git accepts yes/on/1 as boolean true and spawns the native daemon for them
+  # exactly as for `true`, so a string compare against "true" would skip the
+  # dance and leave a live .ipc socket to break flake evaluation.
+  git config core.fsmonitor yes
+
+  source "$UL_LOCKS_LIB"
+  _ul_disable_fsmonitor
+  [ "$(git config --local --get core.fsmonitor)" = "false" ]
+
+  _ul_restore_fsmonitor
+
+  # Restored verbatim, not normalised to "true".
+  [ "$(git config --local --get core.fsmonitor)" = "yes" ]
+}
+
+@test "_ul_disable_fsmonitor is a no-op when fsmonitor is disabled" {
+  export GIT_CONFIG_GLOBAL=/dev/null
+
+  source "$UL_LOCKS_LIB"
+  _ul_disable_fsmonitor
+
+  # No local key invented for a repo that never had fsmonitor on.
+  run git config --local --get core.fsmonitor
+  [ "$status" -ne 0 ]
+
+  _ul_restore_fsmonitor
+  run git config --local --get core.fsmonitor
+  [ "$status" -ne 0 ]
+}
+
+@test "_ul_disable_fsmonitor leaves a hook-path fsmonitor untouched" {
+  export GIT_CONFIG_GLOBAL=/dev/null
+  # A hook-based fsmonitor (what the WS1 design on pg2-mgcv5 plans for the ZR
+  # monorepo) runs no native daemon and creates no .ipc socket, so it needs no
+  # dance — and rewriting the value would destroy the hook path.
+  local hook="/path/to/fsmonitor-watchman.sample"
+  git config core.fsmonitor "$hook"
+
+  source "$UL_LOCKS_LIB"
+  _ul_disable_fsmonitor
+  [ "$(git config --local --get core.fsmonitor)" = "$hook" ]
+
+  _ul_restore_fsmonitor
+  [ "$(git config --local --get core.fsmonitor)" = "$hook" ]
+}
+
+@test "_ul_disable_fsmonitor removes a stale socket even when fsmonitor is disabled" {
+  export GIT_CONFIG_GLOBAL=/dev/null
+  # A socket left behind by an earlier crashed run makes `nix flake` import fail
+  # with "unsupported type" regardless of the current config, so its removal must
+  # NOT be gated on the dance.
+  touch "$TEST_DIR/.git/fsmonitor--daemon.ipc"
+
+  source "$UL_LOCKS_LIB"
+  _ul_disable_fsmonitor
+
+  [ ! -e "$TEST_DIR/.git/fsmonitor--daemon.ipc" ]
+}
+
+@test "ul_setup performs the fsmonitor disable" {
+  local global_cfg="$STATE_DIR/gitconfig"
+  printf '[core]\n\tfsmonitor = true\n' > "$global_cfg"
+  export GIT_CONFIG_GLOBAL="$global_cfg"
+
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  # Wiring check: ul_setup disabled fsmonitor before reaching its clean-tree gate.
+  [ "$(git config --local --get core.fsmonitor)" = "false" ]
+
+  # Disarm the armed cleanup trap and leave fsmonitor OFF. _ul_cleanup runs
+  # `git status`; letting the trap restore fsmonitor first would refresh the index
+  # with the native daemon live and hang teardown (bead pg2-mgcv5).
+  trap - EXIT INT TERM
+  export GIT_CONFIG_GLOBAL=/dev/null
+}
+
 # --- ul_reexec_in_dev_shell ---
 
 @test "ul_reexec_in_dev_shell returns 0 without exec when IN_NIX_SHELL is set" {
