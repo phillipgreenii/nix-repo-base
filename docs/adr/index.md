@@ -13,7 +13,7 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0006](0006-source-content-digest-versioning.md)                 | Per-source content-digest versioning for custom artifacts                  | Accepted (amended by 0011)                            |
 | [0007](0007-local-replace-go-modules-overlay.md)                 | Keep first-party local-replace Go modules "live" via `mkGoApp` overlay     | Superseded by 0008                                    |
 | [0008](0008-adopt-gomod2nix-for-go-packages.md)                  | Adopt `gomod2nix` for Go packages (`mkGoApp`/`mkGoBinary`)                 | Accepted                                              |
-| [0009](0009-pn-workspace-update-worktree-isolation.md)           | `pn workspace update` isolates per-repo work in ephemeral git worktrees    | Proposed                                              |
+| [0009](0009-pn-workspace-update-worktree-isolation.md)           | `pn workspace update` isolates per-repo work in ephemeral git worktrees    | Proposed (push/propagation amended by 0023)           |
 | [0010](0010-claude-marketplace-builder-and-identity.md)          | `mkClaudeMarketplace` builder + local-marketplace identity convention      | Accepted                                              |
 | [0011](0011-source-digest-in-derivation-version.md)              | Per-source digest in the derivation `version` for bash & python            | Accepted                                              |
 | [0012](0012-pn-applied-state-store-and-info-api.md)              | `pn` applied-state store, workspace info API, and wsid registry            | Accepted                                              |
@@ -27,3 +27,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0020](0020-update-locks-failure-classification.md)              | `update-locks` failure classification (transient / resource / hard)        | Accepted                                              |
 | [0021](0021-subpackages-check-scoping-mkgotest.md)               | `subPackages` scopes the gomod2nix check hook — gate tests with `mkGoTest` | Accepted                                              |
 | [0022](0022-adopt-uv2nix-for-python-packages.md)                 | Adopt `uv2nix` for lock-driven Python builds (`mkPythonPackage`)           | Accepted (base; consumers → `pg2-wun6b`)              |
+| [0023](0023-workspace-push-owns-sibling-propagation.md)          | `pn workspace push` owns sibling propagation; `update` never pushes        | Accepted (amends 0009)                                |

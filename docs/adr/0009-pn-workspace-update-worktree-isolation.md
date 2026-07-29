@@ -1,6 +1,6 @@
 # `pn workspace update` isolates per-repo work in ephemeral git worktrees
 
-**Status**: Proposed
+**Status**: Proposed (push + sibling propagation amended by [ADR-0023](0023-workspace-push-owns-sibling-propagation.md): both move out of `update` to `pn workspace push`; worktree isolation and `--in-place` unchanged)
 **Date**: 2026-06-24
 **Deciders**: Phillip Green II
 
