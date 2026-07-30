@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: land-workforest
 description: >-
   Use to LAND a coordinated workforest SET — integrate every repo's feature

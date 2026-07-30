@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: fork-workforest
 description: >-
   Use to CREATE a coordinated workforest set — an isolated cross-repo feature

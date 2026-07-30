@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 description: >-
   Update every repo in this pn-workspace by relocking its flake inputs (nixpkgs +
   third-party + workspace siblings) in an isolated coordinated workforest,

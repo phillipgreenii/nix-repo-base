@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: validate-workforest
 description: >-
   Use to VALIDATE a coordinated workforest set before landing it — confirm the

@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 description: >-
   Sync every repo in this pn-workspace with its remote by doing the fetch +
   rebase in an isolated coordinated workforest, landing it, then pushing. ON

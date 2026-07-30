@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: cleanup-workforest
 description: >-
   Use to TEAR DOWN a coordinated workforest set after landing — best-effort
