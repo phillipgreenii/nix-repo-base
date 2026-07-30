@@ -1,5 +1,4 @@
 ---
-disable-model-invocation: true
 name: cleanup-workforest
 description: >-
   Use to TEAR DOWN a coordinated workforest set after landing — best-effort
@@ -78,3 +77,19 @@ If every repo landed, the set directory is gone. Validate the final result with
 a `pn workspace build` (or the matching Completion-Gate tier) on the canonical
 primary. If any repo was kept, the set remains for retry/inspection — report
 which repos are kept and why.
+
+## Frontmatter constraint: never set `disable-model-invocation`
+
+This stage MUST NOT carry `disable-model-invocation` in its frontmatter. The flag
+is enforced against the `Skill` tool and also drops the entry from the
+model-visible skill listing, so setting it makes this stage unreachable by the
+two things that actually reach it: the `Fires on:` prose triggers declared in its
+own `description` above, and the orchestrators that dispatch it as a pipeline
+stage (`/pn-workspace-sync` and `/pn-workspace-update` steps 3-4, and
+`/drain-beads` for the fork stage).
+
+It was set here once as an always-on-listing token saving and reverted for
+exactly this reason (bd `pg2-dytfv`; the sibling case in `integrate-branch`'s two
+landing handlers is bd `pg2-okzl0`). A stage skill earns its listing cost by
+being auto-triggerable; if that cost is ever revisited, cut the `description`
+down rather than blocking invocation.
