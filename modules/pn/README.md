@@ -31,6 +31,18 @@
 
 The `flake-lock-fresh` fix delegates to `pn workspace update`, which is the only fix that pushes. It relocks affected repos, commits the new lock, and pushes to remote — the one auto-fix that modifies remote state. It is always gated behind `--fix` and shown in `--dry-run`.
 
+### Important Note: ruff-pin (single-ruff-version invariant)
+
+A uv Python package's `ruff` dependency and the nixpkgs `ruff` that the generated `.pre-commit-config.yaml` hooks execute format the SAME files. They are pinned independently — the uv one by `pyproject.toml`, the nixpkgs one by the flake's `nixpkgs` input — so unless they name the same version they can disagree, and a mutating pre-commit formatter then trips pre-commit's "files were modified by this hook" rule mid-commit.
+
+The `ruff-pin` check asserts they agree:
+
+- `ruff-pin-drift` (ERROR) — the package is exact-pinned, but to a different version than the hooks run. This is what a nixpkgs ruff bump produces, and surfacing it is the point: the pin must be bumped in the same change.
+- `ruff-pin-floating` (WARN) — the package's spec is not an exact pin (`>=`, `~=`, `==x.y.*`, a range, or unbounded), so a `uv lock` can float it across a formatter-behaviour boundary.
+- `ruff-pin` (SKIP) — `.pre-commit-config.yaml` is generated and gitignored (ADR 0016), so it is absent in a fresh clone or worktree. The nixpkgs side is then unknown and nothing is asserted; run `nix run .#install-pre-commit-hooks` and re-run doctor.
+
+The check is read-only and **not** auto-fixable: the remedy is a pin edit plus a `uv lock` relock plus, across a formatter boundary, a reformat of the affected sources. Each finding carries that sequence as its `Manual` hint. Repos that declare no `ruff` dependency, or whose generated config runs no nixpkgs ruff hook, produce no findings.
+
 ### Example: Clean Run
 
 ```
