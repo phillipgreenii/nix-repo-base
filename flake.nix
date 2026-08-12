@@ -315,6 +315,77 @@
                   "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
               );
 
+            # Regression guard for the pnwf runner agents' turn-boundary contract
+            # (bead pg2-es5nn). `pnwf-update-runner` once started the long
+            # `pnwf update-relock --set` step with `run_in_background` and then
+            # ENDED ITS TURN "waiting for the notification" — but only the MAIN
+            # session survives to receive one, so the job was torn down mid-relock:
+            # no strict-JSON status line, and a half-relocked set whose own
+            # cleanliness pre-flight then REFUSED the re-run. Both runner
+            # definitions therefore carry the "One Turn, Foreground Only" rule
+            # (R1-R4), the `600000` ms foreground ceiling, and an incomplete-*
+            # halt reason. Nothing else validates these markdown definitions
+            # (treefmt only formats them), so assert the load-bearing text is
+            # present AND that no path re-permits backgrounding: every
+            # `run_in_background` mention MUST sit on a prohibition line.
+            pnwf-runner-turn-boundary-rule = pkgs.runCommand "check-pnwf-runner-turn-boundary-rule" { } ''
+              set -euo pipefail
+              update_runner=${./pn-workspace-rules/agents/pnwf-update-runner.md}
+              sync_runner=${./pn-workspace-rules/agents/pnwf-runner.md}
+              update_cmd=${./pn-workspace-rules/commands/pn-workspace-update.md}
+              sync_cmd=${./pn-workspace-rules/commands/pn-workspace-sync.md}
+
+              for f in "$update_runner" "$sync_runner"; do
+                for needle in \
+                  'Constraint: One Turn, Foreground Only' \
+                  '**R1**' '**R2**' '**R3**' '**R4**' \
+                  '600000'; do
+                  grep -qF -- "$needle" "$f" || {
+                    echo "$f: missing required text: $needle" >&2
+                    exit 1
+                  }
+                done
+
+                # Every run_in_background mention in a RUNNER must be a
+                # prohibition. Judged over a 3-line window (the mention plus the
+                # two lines above it) so a reflow cannot fail this spuriously
+                # while a genuinely permissive sentence still trips it.
+                awk -v file="$f" '
+                  /run_in_background/ {
+                    if ((prev2 " " prev1 " " $0) !~ /MUST NOT/) {
+                      printf "%s:%d: %s\n", file, FNR, $0 > "/dev/stderr"
+                      bad = 1
+                    }
+                  }
+                  { prev2 = prev1; prev1 = $0 }
+                  END { exit bad ? 1 : 0 }
+                ' "$f" || {
+                  echo "$f: run_in_background named outside a MUST NOT prohibition (see above) — a subagent cannot await its own background job across the end of its turn" >&2
+                  exit 1
+                }
+              done
+
+              grep -qF -- 'incomplete-update' "$update_runner" || {
+                echo "pnwf-update-runner.md: missing the incomplete-update halt reason" >&2
+                exit 1
+              }
+              grep -qF -- 'incomplete-sync' "$sync_runner" || {
+                echo "pnwf-runner.md: missing the incomplete-sync halt reason" >&2
+                exit 1
+              }
+
+              # The dispatch brief is a named contributing factor: each command
+              # must WITHHOLD the background option from its runner.
+              for f in "$update_cmd" "$sync_cmd"; do
+                grep -qF -- 'MUST NOT offer the runner `run_in_background`' "$f" || {
+                  echo "$f: dispatch step no longer withholds run_in_background from the runner" >&2
+                  exit 1
+                }
+              done
+
+              touch $out
+            '';
+
             activation-lib =
               let
                 failures = pkgs.lib.runTests (import ./lib/activation-tests.nix { inherit (pkgs) lib; });

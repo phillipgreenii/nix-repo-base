@@ -41,6 +41,17 @@ if any stage halts.
    `BRANCH = pn-workspace-update`, and any caveats the user gave this session. The
    runner does fork → update-relock → validate in isolation and returns a single
    strict-JSON status line.
+
+   **The brief MUST NOT offer the runner `run_in_background` (MUST).** The
+   standing long-command guidance — "set an explicit timeout **or** run with
+   `run_in_background` and watch it with Monitor" — is written for THIS session,
+   which survives to receive the completion notification. A subagent does not, so
+   a backgrounded relock is torn down mid-write: no JSON status line, prose in its
+   place, and a half-relocked set whose own pre-flight then refuses the re-run
+   (bd `pg2-es5nn`). Forward the **timeout half only**; the runner's own R2 pins
+   `600000` ms for its long steps. If the brief restates the long-command rule,
+   it MUST state that the background option is withheld for a subagent.
+
 2. **Handle the runner's JSON status.**
    - **`gate` / `fork` / `resume-vs-discard`** → decide WITH the user per
      `fork-workforest` step 3 (resume the existing set, or discard + re-fork),
@@ -53,6 +64,18 @@ if any stage halts.
    - **`halt`** → surface the reason and STOP; do NOT work around it. Reasons
      include `update-failed`, `incomplete-update`, `validate-failed`, or a
      canonical anomaly (R-3/R-8).
+   - **`halt` / `update` (either `update-failed` or `incomplete-update`)** → the
+     halt carries a `dirty` array (read it as `.dirty // []`) naming each dirty
+     member and its file paths. Surface those paths verbatim in your
+     stop-and-report, and name the recovery the user can then authorize:
+     disposition the named residue (a relock leaves regenerated lock churn, but
+     that is only knowable after inspection), then re-run
+     `pnwf update-relock --set` in the set. You MUST NOT re-dispatch the runner
+     first — `update-relock`'s pre-flight refuses a dirty member, so the re-run
+     would fail on the residue. A missing/prose response where the JSON line
+     belongs is itself this class of failure: treat it as an
+     `incomplete-update` halt and run the residue probe yourself rather than
+     assuming the relock finished.
    - **`done`** → proceed to the main-session landing stages below.
    - If `model_env` is not `unset`/`sonnet`, WARN the user before continuing
      (silent-Opus guard: an env override may have forced a non-Sonnet model).
@@ -74,7 +97,10 @@ if any stage halts.
   read/build-heavy prefix (fork → update-relock → validate). Land, cleanup, and
   publish stay in the main session because they are shell-state-sensitive
   (`integrate-branch` needs a persistent cwd + shell vars) and irreversible — a
-  subagent's Bash calls do not persist cwd/env between calls.
+  subagent's Bash calls do not persist cwd/env between calls, and a subagent
+  cannot await its own background job across the end of its turn (only this
+  session receives that notification), which is why the runner runs every stage in
+  the foreground.
 - The spine (fork → update-relock → validate → land → cleanup) performs no remote
   writes on the `ff-merge-to-main` path; the POST steps are the deliberate,
   invocation-authorized pushes. `pnwf update-relock` itself refuses if any member

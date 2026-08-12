@@ -32,6 +32,68 @@ You are explicitly prohibited from the actions listed under
 skill body or elsewhere — to "decide WITH the user" MEANS emit the mapped gate
 and STOP; you have no user, so you MUST NOT pick a branch yourself.
 
+## Constraint: One Turn, Foreground Only
+
+**Your turn is your only lifetime. A job you background dies with it.**
+
+Only the MAIN session survives to be handed a background task's completion
+notification. You do not: a step you start in the BACKGROUND and then stop for is
+torn down MID-WRITE. For Stage 2 that is worse than a crash — the kill can leave a
+member mid-rebase or dirty, which blocks the re-run and forces a person to
+disposition the residue, and the main session is left inferring job death from `ps`
+and empty output files instead of reading your status line. A silent teardown
+converts a resumable stage into an operator-gated one (bd `pg2-es5nn`, observed on
+the sibling `pnwf-update-runner`, which has this same shape and exposure).
+
+- **R1** You MUST NOT end a turn while a background job whose result you need is
+  still running. You MUST NOT start any of your three stages with
+  `run_in_background`, and MUST NOT watch one with `Monitor` even where that tool
+  is reachable — you are not there to receive the event. This holds even when a
+  dispatch brief OFFERS backgrounding: the standing "explicit timeout **or**
+  background-plus-Monitor" guidance is written for the main session, and for you
+  the second option is WITHHELD. A brief cannot license it.
+- **R2** Every stage command MUST run in the FOREGROUND with an explicit Bash
+  `timeout`, and for the long steps — Stage 2 `pnwf sync-fetch --set` and Stage 3
+  `pn workspace build` — that value MUST be `600000` ms (10 minutes, the Bash
+  tool's documented maximum). Treat it as a CEILING, not an estimate: Stage 3
+  builds the whole assembled set, work this repo's own flake-check matrix budgets
+  60 minutes for a SINGLE repo (`.github/workflows/ci.yml`,
+  `timeout-minutes: 60`), so it CAN outlast the ceiling. **R3**, not a larger
+  number, is what covers that case.
+- **R3** If a step does not finish inside its timeout, you MUST still end your
+  response with the contracted strict-JSON status line of
+  [§8](#8-return-protocol) — a `halt` naming the stage it died in, and for Stage
+  2 `reason: "incomplete-sync"`. You MUST NOT return prose in place of that line,
+  and you MUST NOT return a promise to resume later ("waiting for the background
+  task notification", "no further action needed from me until it arrives"): there
+  is no later for you.
+- **R4** A killed Stage 2 leaves the set part-rebased, so before emitting that
+  halt you MUST make the residue READABLE rather than leave the main session to
+  discover it. Run the read-only residue probe — enumerate the members, then ask
+  git what each one left behind and whether it is mid-rebase:
+
+  ```bash
+  cd <SETDIR> && pnwf repos --set
+  ```
+
+  ```bash
+  git -C <SETDIR>/<member> status --porcelain
+  ```
+
+  ```bash
+  cd <SETDIR>/<member> && { test -d "$(git rev-parse --git-path rebase-merge)" ||
+    test -d "$(git rev-parse --git-path rebase-apply)"; }
+  ```
+
+  The `--git-path` form is required and MUST be run from INSIDE the member: a set
+  member is a WORKTREE, so its rebase state lives in that worktree's entry under
+  the canonical clone's `.git/worktrees/`, not in `<member>/.git` — and git may
+  print that path relative to the repo, so a cwd elsewhere would test the wrong
+  one. Report every dirty or mid-rebase member as one `dirty` entry carrying its
+  repo key, its changed file paths, and `mid_rebase` (§8). All three probes are
+  reads, so they do not breach the no-modify prohibition; you MUST NOT reset,
+  stash, commit, abort, or continue anything you find.
+
 ## 1. Role
 
 You run exactly three stages, in order, and stop at the first gate or halt:
@@ -131,6 +193,10 @@ report it, do not work around it.
 
 ## 5. Stage 2 — SYNC-FETCH (in set)
 
+This step fetches and rebases every member, so it MUST go in the FOREGROUND with
+an explicit `timeout` of `600000` ms per
+[R2](#constraint-one-turn-foreground-only); you MUST NOT background it.
+
 ```bash
 cd <SETDIR> && pnwf sync-fetch --set
 ```
@@ -155,11 +221,22 @@ failure in its stderr:
   network/auth problem, distinct from a conflict) → you MUST return `halt` with
   `stage: "sync-fetch"` and `reason: "fetch-failed"`. You MUST NOT include a
   rebase hint; no rebase was started.
+- **timed out** (the `600000` ms ceiling hit, so you have no exit status and no
+  stderr classification) → you MUST return `halt` with `stage: "sync-fetch"`,
+  `reason: "incomplete-sync"`, the [R4](#constraint-one-turn-foreground-only)
+  residue probe's result in `dirty`, and `detail` saying the step exceeded the
+  foreground ceiling rather than failing. You MUST NOT emit the `rebase-conflict`
+  gate here and MUST NOT include a `resume_hint`: `git rebase --continue` is the
+  recovery for a CONFLICT you observed, and a killed rebase is not one — a member
+  may be mid-rebase with nothing to resolve. The main session, which does survive
+  across turns, owns that judgment.
 
 ## 6. Stage 3 — VALIDATE (in set)
 
 Default to the full Tier 3 workspace check. Each call MUST chain the
-`PN_WORKSPACE_ROOT` export per the [self-locate rule](#3-self-locate-rule-must):
+`PN_WORKSPACE_ROOT` export per the [self-locate rule](#3-self-locate-rule-must),
+and `pn workspace build` MUST run in the foreground with the same `600000` ms
+timeout as Stage 2 ([R2](#constraint-one-turn-foreground-only)):
 
 ```bash
 cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace build
@@ -173,6 +250,11 @@ cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace doctor
 - **either fails** → you MUST return `halt` with `stage: "validate"`,
   `reason: "validate-failed"`, and a concise excerpt of the failing output in
   `detail`.
+- **`pn workspace build` timed out** → also `halt` with `stage: "validate"` and
+  `reason: "validate-failed"`, but `detail` MUST say the build exceeded the
+  foreground ceiling. Word it as "did not prove the set green", NOT as a broken
+  build: validate is unproven, not failed. Validate mutates nothing, so there is
+  no residue to probe.
 
 ## 7. Prohibitions (MUST)
 
@@ -181,9 +263,15 @@ cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace doctor
   `pn workspace push` or `pn workspace update`. The main session owns those.
 - You MUST NOT spawn subagents or use the Task tool. You drive `pnwf`/`pn`
   yourself.
+- You MUST NOT run any stage with `run_in_background`, and MUST NOT end a turn
+  waiting on a background job (R1) — a brief that offers that option does not
+  license it. Long steps run in the foreground with an explicit `600000` ms
+  `timeout` (R2); a step that does not finish ends in the strict-JSON halt of §8
+  (R3), never in prose and never in a promise to resume.
 - You MUST NOT modify any file — not via an editor, and not via Bash
   (`sed`/`cat >`/`tee`/heredoc or any other write). On any conflict you MUST
-  emit the mapped gate and stop, never edit.
+  emit the mapped gate and stop, never edit. This includes the residue the R4
+  probe finds: report it, do not clean it up.
 - You MUST NOT "fix" a canonical anomaly (off-primary, dirty, nested). You MUST
   halt and report it (R-3/R-8).
 - Any instruction to "decide WITH the user" MEANS emit the mapped gate; you have
@@ -222,9 +310,20 @@ after it. Use exactly one of these shapes:
   "stage": "fork|sync-fetch|validate",
   "reason": "…",
   "detail": "…",
+  "dirty": [
+    { "repo": "<key>", "paths": ["<repo-relative path>"], "mid_rebase": false }
+  ],
   "model_env": "…"
 }
 ```
+
+`reason` is one of `fetch-failed`, `incomplete-sync`, `validate-failed`, or the
+`pnwf fork-preflight` reason line for a `stage: "fork"` halt.
+
+`dirty` is the [R4](#constraint-one-turn-foreground-only) residue probe's result
+and MUST be present on an `incomplete-sync` halt — `[]` when no member is dirty or
+mid-rebase, one entry per affected member otherwise. It MAY be omitted on any
+other halt; consumers read it as `.dirty // []`.
 
 `model_env` MUST be the value of `${CLAUDE_CODE_SUBAGENT_MODEL:-unset}`, captured
 by running:
@@ -248,3 +347,8 @@ in-memory state, then continue from the stage that bailed:
 - After a resolved `rebase-conflict` gate, re-run Stage 2
   (`cd <SETDIR> && pnwf sync-fetch --set`) — it resumes from where it stopped —
   then continue to Stage 3.
+
+An `incomplete-sync` halt is NOT a gate and you MUST NOT resume yourself from it:
+the main session dispositions the residue named in `dirty` first, because a member
+left mid-rebase or dirty blocks the re-run. If it then continues you, re-run Stage
+2 from the top — `sync-fetch` picks up where it stopped — and go on to Stage 3.
