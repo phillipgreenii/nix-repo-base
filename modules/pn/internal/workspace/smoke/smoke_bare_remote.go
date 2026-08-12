@@ -738,32 +738,59 @@ func assertS32EventsJSONL(t *testing.T, wsRoot string, env []string) {
 	}
 }
 
-// --- S33 extra: worktree update integrated to primary + remote; no leftover ---
+// --- S33 extra: worktree update integrated to primary ONLY; no leftover ---
+
+// assertRelockLandedLocallyOnly is the end-to-end form of the ADR 0023 contract,
+// against a real bare remote: `pn workspace update` must land the relock on the
+// PRIMARY and leave the REMOTE untouched. The three assertions are deliberately
+// stronger than "the revs differ" — that alone would also hold if update had
+// pushed something else, or had diverged the primary:
+//
+//  1. the primary's main carries the relock commit (the update did land), and
+//  2. the remote's main does NOT carry it (nothing was published), and
+//  3. the remote's main is still an ANCESTOR of the primary's main — so the
+//     relock is ordinary unpushed landing debt, not a divergence, and a later
+//     `pn workspace push` fast-forwards the remote to it.
+//
+// Before ADR 0023 the flow pushed here, so (2) is the assertion that fails if the
+// push ever comes back.
+func assertRelockLandedLocallyOnly(t *testing.T, tag, primary, bare string) {
+	t.Helper()
+	const relockSubject = "update-locks: bump locked.txt"
+
+	primLog, err := exec.Command("git", "-C", primary, "log", "--oneline", "-n", "5").Output()
+	if err != nil {
+		t.Fatalf("%s: git log primary: %v", tag, err)
+	}
+	if !strings.Contains(string(primLog), relockSubject) {
+		t.Errorf("%s: primary main missing relock commit; log:\n%s", tag, primLog)
+	}
+
+	bareLog, err := exec.Command("git", "-C", bare, "log", "--oneline", "-n", "5", "main").Output()
+	if err != nil {
+		t.Fatalf("%s: git log remote: %v", tag, err)
+	}
+	if strings.Contains(string(bareLog), relockSubject) {
+		t.Errorf("%s: relock commit reached the REMOTE — update must not push (ADR 0023); remote log:\n%s", tag, bareLog)
+	}
+
+	remoteHead, err := exec.Command("git", "-C", bare, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("%s: git rev-parse remote: %v", tag, err)
+	}
+	if err := exec.Command("git", "-C", primary, "merge-base", "--is-ancestor",
+		strings.TrimSpace(string(remoteHead)), "main").Run(); err != nil {
+		t.Errorf("%s: remote main %s is not an ancestor of primary main — the relock should be plain unpushed landing debt: %v",
+			tag, strings.TrimSpace(string(remoteHead)), err)
+	}
+}
 
 func assertS33WorktreeUpdate(t *testing.T, wsRoot string) {
 	t.Helper()
 	primary := filepath.Join(wsRoot, "solo")
 	bare := filepath.Join(wsRoot, "remotes", "solo.git")
 
-	logOut, err := exec.Command("git", "-C", primary, "log", "--oneline", "-n", "5").Output()
-	if err != nil {
-		t.Fatalf("S33: git log primary: %v", err)
-	}
-	if !strings.Contains(string(logOut), "update-locks: bump locked.txt") {
-		t.Errorf("S33: primary main missing relock commit; log:\n%s", logOut)
-	}
-
-	remoteHead, err := exec.Command("git", "-C", bare, "rev-parse", "main").Output()
-	if err != nil {
-		t.Fatalf("S33: git rev-parse remote: %v", err)
-	}
-	primHead, err := exec.Command("git", "-C", primary, "rev-parse", "main").Output()
-	if err != nil {
-		t.Fatalf("S33: git rev-parse primary: %v", err)
-	}
-	if strings.TrimSpace(string(remoteHead)) != strings.TrimSpace(string(primHead)) {
-		t.Errorf("S33: remote main %s != primary main %s", strings.TrimSpace(string(remoteHead)), strings.TrimSpace(string(primHead)))
-	}
+	assertRelockLandedLocallyOnly(t, "S33", primary, bare)
 
 	if entries, err := os.ReadDir(filepath.Join(wsRoot, ".workforests", ".pn-update")); err == nil && len(entries) > 0 {
 		t.Errorf("S33: .pn-update worktree left behind: %v", entries)
@@ -773,34 +800,16 @@ func assertS33WorktreeUpdate(t *testing.T, wsRoot string) {
 // --- S33b extra: dirty primary main fast-forwards via ff-first/autostash ---
 
 // assertS33bWorktreeUpdateDirtyMain verifies the ff-first dirty-main integration:
-// the relock reaches both primary and remote main (fast-forwarded), the dirty
-// flake.nix modification survives the FIRST ff (no collision → no autostash
-// round-trip is exercised), the stash list is empty, and no .pn-update worktree
-// residue is left behind.
+// the relock lands on the primary main (fast-forwarded) and NOT on the remote
+// (update never pushes — ADR 0023), the dirty flake.nix modification survives the
+// FIRST ff (no collision → no autostash round-trip is exercised), the stash list
+// is empty, and no .pn-update worktree residue is left behind.
 func assertS33bWorktreeUpdateDirtyMain(t *testing.T, wsRoot string) {
 	t.Helper()
 	primary := filepath.Join(wsRoot, "solo")
 	bare := filepath.Join(wsRoot, "remotes", "solo.git")
 
-	logOut, err := exec.Command("git", "-C", primary, "log", "--oneline", "-n", "5").Output()
-	if err != nil {
-		t.Fatalf("S33b: git log primary: %v", err)
-	}
-	if !strings.Contains(string(logOut), "update-locks: bump locked.txt") {
-		t.Errorf("S33b: primary main missing relock commit (dirty main should still ff); log:\n%s", logOut)
-	}
-
-	remoteHead, err := exec.Command("git", "-C", bare, "rev-parse", "main").Output()
-	if err != nil {
-		t.Fatalf("S33b: git rev-parse remote: %v", err)
-	}
-	primHead, err := exec.Command("git", "-C", primary, "rev-parse", "main").Output()
-	if err != nil {
-		t.Fatalf("S33b: git rev-parse primary: %v", err)
-	}
-	if strings.TrimSpace(string(remoteHead)) != strings.TrimSpace(string(primHead)) {
-		t.Errorf("S33b: remote main %s != primary main %s", strings.TrimSpace(string(remoteHead)), strings.TrimSpace(string(primHead)))
-	}
+	assertRelockLandedLocallyOnly(t, "S33b", primary, bare)
 
 	// The uncommitted flake.nix change must survive: it does not collide with the
 	// relocked path, so the direct ff-first keeps it in place (no autostash

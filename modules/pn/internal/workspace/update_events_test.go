@@ -74,13 +74,12 @@ url = "github:owner/bar"
 	foo := filepath.Join(root, "foo")
 	bar := filepath.Join(root, "bar")
 
-	// foo: clean, has upstream, pull/locks/push all succeed.
+	// foo: clean, has upstream, pull + locks succeed (update never pushes — ADR 0023).
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", foo, "push"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("deadbeef0000000000000000000000000000000\n")}, nil)
 
 	// bar: clean, has upstream, but pull fails → outcome failed (failed_step pull).

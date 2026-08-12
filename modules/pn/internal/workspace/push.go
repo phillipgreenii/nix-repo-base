@@ -22,6 +22,12 @@ type PushOptions struct {
 	// Remote, when non-empty, overrides remote resolution for every repo when
 	// SetUpstream is true. Equivalent to passing --remote <name> on the CLI.
 	Remote string
+	// NoSiblings opts OUT of the workspace-sibling relock that Push performs
+	// between pushes (ADR 0023 item 3, `--no-siblings`): a plain publish with no
+	// lock propagation. The zero value therefore PROPAGATES, matching the CLI
+	// default — a programmatic caller that wants the documented `push` behavior
+	// need not set anything.
+	NoSiblings bool
 }
 
 // hasUpstream checks whether the branch at repoDir has a configured upstream.
@@ -132,12 +138,75 @@ func resolvePushRemote(
 	)
 }
 
-// Push runs `git push` in each workspace repo that has a configured upstream,
-// streaming push output to out. Warning output goes to errOut (stderr). Repos
-// without an upstream branch are skipped unless SetUpstream is true, in which
-// case they get `git push -u <remote> <current-branch>` where <remote> is
-// resolved via the convention-based chain (see resolvePushRemote). Repos are
-// processed in topological order (dependencies before consumers).
+// relockSiblingsBeforePush relocks repoDir's workspace-sibling flake inputs to
+// their upstreams' current REMOTE revs and commits the bump, immediately before
+// this repo is pushed. It is the per-repo half of the interleaved
+// push-then-propagate loop Push owns (ADR 0023 item 2).
+//
+// Ordering: Push walks repos in TOPOLOGICAL order, so by the time a consumer is
+// reached every workspace dependency of it has already been pushed in this same
+// run. Relocking the consumer here therefore resolves its upstreams' *new*
+// remote tips — which is the same sequence as "push A, then relock A's
+// consumers, then push them", expressed as one pass instead of two. C1 is why
+// the order cannot be inverted: propagateWorkspaceEdges resolves each alias
+// against its DECLARED flake URL (`nix flake update --refresh <alias>`), so a
+// consumer can only ever relock to a rev that is ALREADY on the remote.
+//
+// A repo with no workspace-sibling inputs returns before any subprocess runs, so
+// propagation adds zero cost (and zero calls) to an edgeless workspace.
+//
+// The dirty-tree refusal is deliberate: the relock ends in a `git commit`, and
+// the canonical clone — unlike update's throwaway worktree — is a place a person
+// keeps work. Committing a lock bump on top of someone's staged changes would
+// sweep them into a "chore(deps): bump" commit. Failing loudly (naming
+// --no-siblings) is preferred over silently skipping the relock, which would
+// reproduce the very failure mode ADR 0023 exists to prevent: publishing that
+// looks like it converged the locks but did not.
+func (ws *Workspace) relockSiblingsBeforePush(ctx context.Context, out io.Writer, name, repoDir string, aliases []string) error {
+	if len(aliases) == 0 {
+		return nil
+	}
+	// A configured repo that is not cloned yet has nothing to relock. Return
+	// before the dirty probe: `git -C <missing> diff --quiet` exits 128, which
+	// isDirty correctly reports as an indeterminate probe and would turn a repo
+	// `push` has always simply skipped (no upstream) into a hard failure.
+	if !isGitRepo(repoDir) {
+		return nil
+	}
+	dirty, err := ws.isDirty(ctx, repoDir)
+	if err != nil {
+		return fmt.Errorf("push: %s: could not determine whether the working tree is clean: %w "+
+			"(re-run with --no-siblings to publish without relocking workspace siblings)", name, err)
+	}
+	if dirty {
+		return fmt.Errorf("push: %s has uncommitted changes; the workspace-sibling relock ends in a commit and "+
+			"will not run on a dirty tree — commit or stash them, or re-run with --no-siblings to publish "+
+			"without relocking siblings", name)
+	}
+	if _, err := ws.propagateWorkspaceEdges(ctx, out, name, repoDir, ws.resolveFlakePath(name), aliases); err != nil {
+		return fmt.Errorf("push: %s: relock workspace siblings: %w", name, err)
+	}
+	return nil
+}
+
+// Push publishes the workspace: for each repo in topological order it relocks
+// that repo's workspace-sibling flake inputs against their upstreams' current
+// remote tips (committing any bump), then runs `git push`. Push OWNS this
+// interleaved propagation — `pn workspace update` does neither half (ADR 0023).
+// Pass NoSiblings to publish without the relock.
+//
+// Push output streams to out; warnings go to errOut (stderr). Repos without an
+// upstream branch are skipped for the push itself unless SetUpstream is true, in
+// which case they get `git push -u <remote> <current-branch>` where <remote> is
+// resolved via the convention-based chain (see resolvePushRemote). A skipped
+// push does NOT skip the relock: the bump commit is valid local work that a
+// later push publishes, and a consumer relocking against an unpushed
+// dependency's remote simply sees no change (C1).
+//
+// Everything runs in the CANONICAL clone — no `git worktree add` is on this
+// path, so the generated `.pre-commit-config.yaml` symlink is present and the
+// prek pre-push hook finds its config (ADR 0023 item 4).
+//
 // Push is a terminal-optional command: if no terminal is configured it emits
 // a warning to errOut and continues.
 func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, opts PushOptions) error {
@@ -145,8 +214,37 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 		fmt.Fprintln(errOut, terminalWarningMessage)
 	}
 	names := ws.topoAlpha(ctx)
+
+	// Resolve whether this run propagates, once. Inside a coordinated workforest
+	// set, push publishes the set's shared feature branch; relocking siblings
+	// there would commit remote-resolved lock bumps onto that branch while the
+	// set deliberately validates through `--override-input`, and a subset set has
+	// its excluded edges dropped from the lock outright. Propagation is a
+	// canonical-clone operation (ADR 0023 item 4), so it is skipped in a set —
+	// audibly, since a silent skip is indistinguishable from a converged run.
+	propagate := !opts.NoSiblings
+	if propagate && ws.inWorkforest() {
+		fmt.Fprintln(errOut, "pn: push: inside a coordinated workforest set — publishing branches only, "+
+			"no workspace-sibling relock (run `pn workspace push` from the canonical root to propagate)")
+		propagate = false
+	}
+	// Derive the edge lock once, and only when it will be read: effectiveLock
+	// falls back to a nix eval per repo when the disk lock is absent or stale, so
+	// --no-siblings stays a pure git command. ws.lock is deliberately NOT used
+	// directly — it is empty on a fresh/stale checkout and would silently skip
+	// every repo (the C3 hazard propagate.go documents).
+	var edgeLock *Lock
+	if propagate {
+		edgeLock, _, _ = ws.effectiveLock(ctx)
+	}
+
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
+		if propagate {
+			if err := ws.relockSiblingsBeforePush(ctx, out, name, repoDir, workspaceAliasesFromLock(edgeLock, name)); err != nil {
+				return err
+			}
+		}
 		if ws.hasUpstream(ctx, repoDir) {
 			fmt.Fprintf(out, "  --== push %s ==--  \n", name)
 			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {

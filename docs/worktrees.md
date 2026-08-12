@@ -17,11 +17,11 @@ For each repo in topological order:
 1. Create a worktree at `<root>/.workforests/.pn-update/<repo>-<run-ts>` on branch
    `pn-update/<run-ts>`, branched off local `main`.
 2. Run `./update-locks.sh` in that worktree (the same script as before — nothing changes about
-   what gets locked or how).
+   what gets locked or how). With `--siblings-only`, relock just the workspace-sibling inputs
+   instead and skip the script.
 3. Rebase the result onto local `main` (catching any unpushed local commits), then onto
    `origin/main` (catching any remote advances). Local-before-remote order is deliberate.
-4. Push the branch to remote `main` from the worktree.
-5. Fast-forward the primary `main` — smart integration based on the primary's state:
+4. Fast-forward the primary `main` — smart integration based on the primary's state:
    - **Clean `main` checkout** → `git merge --ff-only`
    - **Another branch checked out** (main not checked out) → ref-only fast-forward
      (`git fetch . pn-update/<run-ts>:main`), leaving in-progress work on the other branch
@@ -29,7 +29,14 @@ For each repo in topological order:
    - **Dirty `main` checkout** → defer: leave the worktree + branch, report, continue to next
      repo
 
-6. Remove the worktree and branch on success.
+5. Remove the worktree and branch on success.
+
+**`update` never pushes.** It is local-only: it fetches and rebases, but every commit it makes
+stays on the local `main`. Publishing — and the workspace-sibling lock propagation that has to be
+interleaved with publishing — belongs to `pn workspace push`. See
+[ADR 0023](adr/0023-workspace-push-owns-sibling-propagation.md), which amends ADR 0009 on exactly
+this point. Anything that relied on `update` (including `update --siblings-only`) to publish must
+call `pn workspace push`.
 
 ### Leave-on-failure and resuming a left-behind worktree
 
@@ -62,7 +69,7 @@ pn workspace workforest prune
 git -C <root>/<repo> branch -D pn-update/<run-ts>
 ```
 
-### Asymmetric-defer recovery
+### Integration-defer recovery
 
 This is `pn workspace update`'s own documented recovery step for one specific, bounded failure
 mode of its worktree-isolated flow — not a general technique for handling an off-`main`/dirty
@@ -70,23 +77,30 @@ canonical elsewhere. Outside this pn-update flow, an agent that finds the canoni
 off its primary branch or dirty MUST stop and report (Tier R / R-3) — not reset, re-checkout,
 stash, or otherwise work around it.
 
-If a repo's defer happens _after_ the push (step 4 succeeded, step 5 failed), remote `main` is
-already ahead of local `main`. The run summary will say so and tell you to _reset_ local main to
-the remote, **not** to merge:
+If the final fast-forward fails (step 4), local `main` is not fast-forwardable to the relocked
+branch — typically because `origin/main` advanced mid-run, so the branch (which was rebased onto
+`origin/main`) is no longer a descendant of local `main`. The worktree and branch are left in
+place and the run summary names the recovery, which targets **the relocked branch**:
 
 ```bash
 # When main IS checked out in the primary:
-git -C <root>/<repo> reset --hard origin/main
+git -C <root>/<repo> reset --hard pn-update/<run-ts>
 
 # When main is NOT checked out (on another branch):
-git -C <root>/<repo> branch -f main origin/main
+git -C <root>/<repo> branch -f main pn-update/<run-ts>
 ```
 
-Do not use `git merge origin/main` here — the remote `main` already contains the pushed update
-commits; a merge would create duplicates.
+Recover to the **branch**, not to `origin/main`. The branch carries this run's relock plus any
+unpushed local commits it replayed; resetting to `origin/main` would discard both.
+
+> **ADR 0009's "asymmetric defer state" no longer arises here.** That hazard was remote `main`
+> advancing (via update's own push) while local `main` stayed behind. Since `update` no longer
+> pushes ([ADR 0023](adr/0023-workspace-push-owns-sibling-propagation.md)), nothing update does can
+> put the remote ahead — so a defer can only leave local `main` behind its own worktree branch,
+> which the commands above fast-forward.
 
 Run the matching command above only in response to the run summary reporting this specific
-state — it is `pn workspace update`'s prescribed recovery for its own asymmetric-defer failure
+state — it is `pn workspace update`'s prescribed recovery for its own integration-defer failure
 mode, not a general fix for an off-branch/dirty canonical.
 
 ### `--in-place` escape hatch
@@ -106,14 +120,28 @@ integration.
 `pn workspace update --siblings-only` relocks ONLY the `phillipgreenii-*` workspace-sibling flake
 inputs — the `propagateWorkspaceEdges` pass (`nix flake update --refresh <sibling-alias>`) — and
 **skips each repo's `update-locks.sh`**. The result: `nixpkgs` and other third-party inputs are
-left untouched (each repo's `flake.lock` diff shows only sibling inputs moved), while topological
-order and the push-between-repos handoff are unchanged, so a consumer still picks up a sibling's
-freshly-pushed tip. It is the surgical way to clear `pn workspace doctor`'s `flake-lock-fresh`
-findings without a full `nix flake update`, and is exactly what `doctor --fix` runs for those
-findings. It composes with `--in-place`, and — because `update-locks.sh` never runs — it does
-**not** resolve or require `UL_LIB_DIR`, so it succeeds headless (no nix resolver). It converges
-only branch-tracking inputs; a sibling pinned to an explicit `?rev=`/non-default branch will not
-move, and a repo with no upstream cannot publish its tip for downstream consumers.
+left untouched (each repo's `flake.lock` diff shows only sibling inputs moved). It is the surgical
+way to clear `pn workspace doctor`'s `flake-lock-fresh` findings without a full
+`nix flake update`, and is exactly what `doctor --fix` runs for those findings. It composes with
+`--in-place`, and — because `update-locks.sh` never runs — it does **not** resolve or require
+`UL_LIB_DIR`, so it succeeds headless (no nix resolver).
+
+Like plain `update`, it is **local-only**: each sibling is resolved against that sibling's
+**declared remote URL** and the bump is committed locally, with no push. It therefore converges to
+whatever is already published — which is exactly what `flake-lock-fresh` compares against (that
+check reads the target's remote head via `git ls-remote`), so the fix is complete without touching
+a remote.
+
+What it CANNOT do is converge onto a sibling rev that exists only locally — a lock can only pin a
+published rev. Cross-repo convergence after a local land is therefore `pn workspace push`'s job
+(ADR 0023). It also converges only branch-tracking inputs: a sibling pinned to an explicit
+`?rev=`/non-default branch will not move.
+
+Note the difference from plain `update`: plain `update` has **no** sibling pass at all. A repo that
+happens to be checked out in the workspace is treated exactly like one that is not —
+`update-locks.sh`'s `nix flake update` relocks every input, sibling or otherwise, from its declared
+remote. `--siblings-only` is the caller explicitly asking for that narrow subset, not a special
+case `update` applies on its own.
 
 ### `update` inside a coordinated workforest set requires `--in-place`
 
@@ -133,9 +161,9 @@ would conflict with the set's own invariants.
 
 Running two `pn workspace update` invocations simultaneously in the same workspace is **not
 coordinated**. Each gets a **distinct** branch name (the `pn-update/<run-ts>` stamp is a sub-second
-timestamp + PID), so they do not collide at `git worktree add`; but both push to remote `main`, so
-the second run to reach a given repo's push has it rejected (non-fast-forward) and that repo fails.
-Run updates serially.
+timestamp + PID), so they do not collide at `git worktree add`; but both fast-forward the same local
+`main`, so the second run to reach a given repo's integration finds `main` already advanced, is not
+fast-forwardable, and defers that repo. Run updates serially.
 
 ---
 

@@ -147,6 +147,7 @@ Commands that need a topological order (rebase, push, status, flake-check, pre-c
 | Pre-commit checks across all repos         | `pn workspace pre-commit-check`        | per-repo `pre-commit run --all-files`                                                |
 | Update flake locks across all repos        | `pn workspace update`                  | per-repo `nix flake update`                                                          |
 | Relock only workspace-sibling inputs       | `pn workspace update --siblings-only`  | full `pn workspace update` (bumps nixpkgs/third-party too)                           |
+| Publish, converging sibling locks          | `pn workspace push`                    | `pn workspace update` (local-only — it never pushes; ADR 0023)                       |
 
 ## When to Push
 
@@ -156,6 +157,23 @@ You don't need to push branches for builds to work. `pn workspace build/flake-ch
 - The work is ready for review/merge.
 
 A failing remote build is **not** a reason to push agent-only branches.
+
+**`pn workspace push` is the ONLY thing in this workspace that pushes.** `pn workspace update`
+(including `--siblings-only`) is local-only — it fetches and relocks, and never writes to a remote
+(ADR 0023). `push` is also the only thing that CONVERGES workspace-sibling flake locks across
+repos: per repo in topological order it relocks that repo's sibling inputs onto their upstreams'
+current remote tips, commits the bump, then pushes — so a consumer picks up the tip its dependency
+published moments earlier in the same run. The two halves cannot be separated: a flake.lock can only
+pin a rev that is already on a remote, so the relock has to sit between the pushes.
+
+Consequences worth knowing before you run it:
+
+- It is no longer a pure git command — it evaluates nix per repo that has sibling inputs. Use
+  `pn workspace push --no-siblings` for a plain publish with no lock propagation.
+- It refuses to relock a repo with uncommitted changes (the relock ends in a commit) and stops,
+  naming the repo. Commit/stash, or use `--no-siblings`.
+- Inside a coordinated workforest set it skips the relock and just publishes the set's branches;
+  propagation is a canonical-clone operation.
 
 ## Command Surface Cheat-Sheet
 
@@ -170,15 +188,16 @@ pn workspace apply                       Activate (USER ONLY)
 pn workspace pre-commit-check            Run pre-commit checks across all repos
 pn workspace flake-check                 Run `nix flake check` across all repos
 pn workspace doctor                      Audit workspace against build-equality invariant; optionally repair safe drifts
-pn workspace update                      Refresh flake locks across all repos, worktree-isolated by default (terminal required)
+pn workspace update                      Relock flake locks across all repos, worktree-isolated by default; LOCAL-ONLY, never pushes (terminal required)
 pn workspace update --in-place           Same, but directly on primary main (old behavior; required inside a workforest set)
-pn workspace update --siblings-only      Relock ONLY the workspace-sibling flake inputs (skip update-locks.sh; nixpkgs/third-party untouched)
+pn workspace update --siblings-only      Relock ONLY the workspace-sibling flake inputs, from their remotes (skip update-locks.sh); local-only
 pn workspace upgrade                     Update + apply (USER ONLY for the apply step)
 pn workspace upgrade --in-place          Update phase runs directly on primary main instead of in an isolated worktree
 pn workspace rebase                      Rebase each repo onto its remote tracking branch
 pn workspace rebase <branch>             Rebase each repo onto a local ref (no fetch)
 pn workspace format                      Run `nix fmt` in each workspace repo
-pn workspace push                        Push each repo (USER-INITIATED ONLY)
+pn workspace push                        Publish each repo: relock its sibling inputs, then push, in topo order (USER-INITIATED ONLY)
+pn workspace push --no-siblings          Same, but skip the sibling relock — plain publish, no lock propagation
 pn workspace push --set-upstream         Push and set upstream for repos with no remote branch yet; remote resolved via convention chain
 pn workspace push -u                     Same as --set-upstream (short flag)
 pn workspace push -u --remote <name>     Same, but override the remote for all repos (skip repo if remote absent)
@@ -198,13 +217,20 @@ pn workspace workforest prune              Prune stale git worktree admin entrie
 
 All subcommands accept `--terminal <name>` to override `workspace.terminal`.
 
-## `pn workspace update` / `upgrade` — worktree-isolated default
+## `pn workspace update` / `upgrade` — worktree-isolated default, local-only
 
 `pn workspace update` (and the update phase of `upgrade`) **runs in worktree isolation by
 default**. For each repo in topological order it creates an ephemeral worktree + branch off local
-`main`, runs `./update-locks.sh` there, rebases + pushes, fast-forwards the primary `main`, and
-removes the worktree on success. The canonical clones and their `main` branches stay free during
-the long relock; `main` is only touched by a fast fast-forward at the end.
+`main`, runs `./update-locks.sh` there, rebases (onto local `main`, then onto `origin/main`),
+fast-forwards the primary `main`, and removes the worktree on success. The canonical clones and
+their `main` branches stay free during the long relock; `main` is only touched by a fast
+fast-forward at the end.
+
+**It does not push, and it does no workspace-sibling propagation.** Both moved to
+`pn workspace push` (ADR 0023, which amends ADR 0009 on this point). A repo that happens to be
+checked out in the workspace is treated exactly like one that is not: every input, sibling or
+otherwise, is relocked from its declared remote. If you need the published state to change, or
+sibling locks to converge across repos, run `pn workspace push` — `update` alone cannot do either.
 
 Key points for agents:
 
@@ -225,14 +251,16 @@ Key points for agents:
   `phillipgreenii-*` workspace-sibling flake inputs (the `nix flake update --refresh <sibling-alias>`
   propagation pass) and **skips each repo's `update-locks.sh`**, so `nixpkgs` and other third-party
   inputs are left untouched — a diff of each repo's `flake.lock` shows only sibling inputs moved.
-  Everything else (topological order, worktree isolation, rebase/push/integrate) is unchanged; push
-  between repos is what lets a consumer pick up a sibling's freshly-pushed
-  tip. This is the command to clear `pn workspace doctor`'s `flake-lock-fresh` findings without a full
-  `nix flake update` (it is also exactly what `doctor --fix` now runs for those findings). Composes
-  with `--in-place`. Because it never runs `update-locks.sh`, it does **not** require `UL_LIB_DIR` (no
-  nix resolver), so it works headless. Caveat: it can only converge inputs that **track a branch**;
-  a sibling input pinned to an explicit `?rev=` (or a non-default branch) will not move, and a
-  repo with no upstream cannot publish its tip for downstream consumers.
+  Like plain `update` it is **local-only**: each sibling resolves against that sibling's declared
+  REMOTE url and the bump is committed locally, with no push. That is enough to clear
+  `pn workspace doctor`'s `flake-lock-fresh` findings without a full `nix flake update` — that check
+  compares against the target's remote head — and it is exactly what `doctor --fix` runs for those
+  findings (no doctor fix writes to a remote any more). Composes with `--in-place`. Because it never
+  runs `update-locks.sh`, it does **not** require `UL_LIB_DIR` (no nix resolver), so it works
+  headless. Caveats: it can only converge inputs that **track a branch** — a sibling pinned to an
+  explicit `?rev=` (or a non-default branch) will not move — and it cannot converge onto a sibling
+  rev that exists only locally, because a lock can only pin a published rev. For that, run
+  `pn workspace push`.
 
 - **Inside a coordinated workforest set, `update` requires `--in-place`.** Running bare
   `pn workspace update` from inside a set is an error. Use `pn workspace update --in-place`,
@@ -241,8 +269,8 @@ Key points for agents:
 - **Concurrent runs are not coordinated.** Two simultaneous `pn workspace update` invocations in
   the same workspace get **distinct** branch names (the `pn-update/<run-ts>` stamp is a sub-second
   timestamp + PID), so they do not collide at `git worktree add`. They are still unsafe to run
-  together: both push to remote `main`, so the second run to reach a given repo's push has it
-  rejected (non-fast-forward) and that repo fails. Run updates serially.
+  together: both fast-forward the same local `main`, so the second run to reach a given repo finds
+  `main` already advanced, is not fast-forwardable, and defers that repo. Run updates serially.
 
 ### Resuming a left-behind worktree
 

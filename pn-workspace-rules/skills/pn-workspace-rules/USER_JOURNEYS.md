@@ -175,13 +175,18 @@ pn workspace upgrade     # update + apply in one shot (USER ONLY for apply)
 **How the default worktree flow works:** for each repo in topo order, `pn workspace update`
 creates an ephemeral worktree + branch off local `main` at
 `.workforests/.pn-update/<repo>-<run-ts>` on branch `pn-update/<run-ts>`, runs
-`./update-locks.sh` there, rebases + pushes, then fast-forwards the primary `main`. The
-canonical clones stay free during the long relock; `main` is only touched by a fast fast-forward
-at the end.
+`./update-locks.sh` there, rebases (onto local `main`, then `origin/main`), then fast-forwards the
+primary `main`. The canonical clones stay free during the long relock; `main` is only touched by a
+fast fast-forward at the end.
+
+**`update` never pushes** and does no workspace-sibling propagation — both belong to
+`pn workspace push` (ADR 0023). Everything `update` produces is local; publish with
+`pn workspace push`, which is also the only step that converges sibling flake locks across repos.
 
 **Smart integration:** on a clean `main` checkout → `merge --ff-only`; when `main` is not
 checked out (working on another branch) → ref-only fast-forward leaving in-progress work
-untouched; when `main` is checked out and dirty → defer (worktree + branch left, run continues).
+untouched; when `main` is checked out and dirty → autostash around the ff, deferring only if that
+fails (worktree + branch left, run continues).
 
 **`--in-place` flag:** runs the original direct-on-`main` flow (including the upfront dirty-repo
 skip). Required when calling `update` from inside a coordinated workforest set.
@@ -194,10 +199,12 @@ pn workspace upgrade --in-place     # update phase direct-on-main
 **`--siblings-only` flag:** relocks ONLY the `phillipgreenii-*` workspace-sibling flake inputs
 (the `nix flake update --refresh <sibling-alias>` propagation pass) and **skips each repo's
 `update-locks.sh`**, so `nixpkgs`/third-party inputs are untouched — each repo's `flake.lock` diff
-shows only sibling inputs moved. Topo order + push between repos still hold (a consumer picks up a
-sibling's freshly-pushed tip). Use it to clear `pn workspace doctor`'s `flake-lock-fresh` findings
-without a full `nix flake update`; `doctor --fix` runs exactly this for those findings. Composes
-with `--in-place`; requires no `UL_LIB_DIR` (never runs `update-locks.sh`), so it works headless.
+shows only sibling inputs moved. It is **local-only** like plain `update`: each sibling resolves
+against that sibling's declared REMOTE url and the bump is committed locally, never pushed. Use it
+to clear `pn workspace doctor`'s `flake-lock-fresh` findings without a full `nix flake update` (that
+check compares against the target's remote head, so a local relock clears it); `doctor --fix` runs
+exactly this for those findings. Composes with `--in-place`; requires no `UL_LIB_DIR` (never runs
+`update-locks.sh`), so it works headless.
 
 ```
 pn workspace update --siblings-only              # surgical relock, worktree-isolated
@@ -205,7 +212,8 @@ pn workspace update --siblings-only --in-place   # surgical relock, direct-on-ma
 ```
 
 Caveat: converges only branch-tracking inputs — a sibling pinned to an explicit `?rev=`/non-default
-branch will not move, and a repo with no upstream cannot publish its tip for downstream consumers.
+branch will not move. It also cannot converge onto a sibling rev that exists only locally (a lock
+pins published revs only); that is `pn workspace push`'s job.
 
 **Outcomes:**
 
@@ -215,11 +223,13 @@ branch will not move, and a repo with no upstream cannot publish its tip for dow
   repo. End-of-run summary names each repo's outcome, the step that failed, the git error, and a
   recovery hint.
 - Deferred (dirty `main` checkout): worktree + branch left; integration skipped for that repo.
-- Asymmetric defer (push succeeded but fast-forward failed — remote `main` now ahead of local):
-  **reset** local main to the pushed remote, do NOT merge:
+- Integration defer (the final fast-forward failed — local `main` is not fast-forwardable to the
+  relocked branch, typically because `origin/main` advanced mid-run). Recover to the **branch**, not
+  to `origin/main`: the branch carries this run's relock plus any local commits it replayed. Since
+  `update` no longer pushes, ADR 0009's asymmetric-defer state (remote ahead of local) cannot arise.
   ```
-  git -C <root>/<repo> reset --hard origin/main       # when on main
-  git -C <root>/<repo> branch -f main origin/main     # when on another branch
+  git -C <root>/<repo> reset --hard pn-update/<run-ts>       # when on main
+  git -C <root>/<repo> branch -f main pn-update/<run-ts>     # when on another branch
   ```
 - Error: a flake input no longer resolves; a build fails on the new lock.
 - Side effect: `update` appends JSONL events
@@ -244,9 +254,9 @@ git -C <repo> branch -D pn-update/<run-ts>
 
 **Concurrent runs:** not coordinated. Two simultaneous `pn workspace update` calls in the same
 workspace get **distinct** branch names (the `pn-update/<run-ts>` stamp is a sub-second timestamp +
-PID), so they do not collide at `git worktree add`; but both push to remote `main`, so the second
-to reach a given repo's push has it rejected (non-fast-forward) and that repo fails. Run updates
-serially.
+PID), so they do not collide at `git worktree add`; but both fast-forward the same local `main`, so
+the second to reach a given repo finds `main` already advanced, is not fast-forwardable, and defers
+that repo. Run updates serially.
 
 **Inside a coordinated workforest set:** bare `pn workspace update` errors — use
 `pn workspace update --in-place`, which relocks the set's worktrees in place.
@@ -298,15 +308,17 @@ warns if no terminal but continues.
 
 ---
 
-### J10. Push committed changes per-repo
+### J10. Publish committed changes per-repo
 
 **Trigger:** user has commits across multiple repos and wants them on
-their respective remotes.
+their respective remotes — and wants the workspace's sibling flake locks
+to converge onto what was just published.
 
 **Commands:**
 
 ```
-pn workspace push                        # push repos whose current branch already tracks an upstream
+pn workspace push                        # relock sibling inputs + push, per repo in topo order
+pn workspace push --no-siblings          # plain publish: skip the sibling relock entirely
 pn workspace push --set-upstream         # also publish branches with no upstream yet
 pn workspace push -u                     # short alias for --set-upstream
 pn workspace push -u --remote <name>     # same, but override the push remote for all repos
@@ -314,10 +326,23 @@ pn workspace push -u --remote <name>     # same, but override the push remote fo
 
 **Outcomes:**
 
-- Success (plain `push`): each repo whose current branch has an upstream
-  is pushed to its tracked remote in topo order. Repos with no upstream
-  (e.g. a freshly created feature branch inside a coordinated workforest
-  set — see **J29**) are silently skipped.
+- Success (plain `push`): for each repo in topo order, pn relocks that repo's
+  workspace-sibling flake inputs against their upstreams' current remote tips,
+  commits any bump, then pushes if the current branch has an upstream. Because
+  dependencies are pushed first, a consumer relocks onto the tip its dependency
+  published moments earlier in the same run — the interleaving is required, since a
+  flake.lock can only pin a rev that is already on a remote (ADR 0023). Repos with
+  no upstream (e.g. a freshly created feature branch inside a coordinated workforest
+  set — see **J29**) are skipped for the push but still relocked; the bump commit is
+  ordinary local work a later push publishes.
+- Refusal: a repo with uncommitted changes stops the run before that repo is
+  pushed — the relock ends in a commit, so it will not run on a dirty tree. Commit
+  or stash, or use `--no-siblings`.
+- Inside a coordinated workforest set the relock is skipped (announced on stderr)
+  and `push` just publishes the set's branches; propagation is a canonical-clone
+  operation.
+- `pn workspace push` is the ONLY command in this workspace that writes to a
+  remote. `pn workspace update` (including `--siblings-only`) is local-only.
 - Success (`--set-upstream`/`-u`): for any repo whose current branch has
   no upstream, pn resolves the push remote via this convention chain
   (highest priority first) and runs `git push -u <remote> <current-branch>`:

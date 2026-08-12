@@ -355,10 +355,11 @@ func TestSmoke_S32_UpdateEventsJSONL(t *testing.T) {
 }
 
 // TestSmoke_S33_WorktreeUpdate: single bare-remote repo; the default
-// (worktree-isolated) update relocks in an ephemeral worktree, pushes the
-// branch to remote main, fast-forwards the primary main, and removes the
-// worktree. Asserts the relock commit reached both the primary and the remote
-// and that no .pn-update worktree remains.
+// (worktree-isolated) update relocks in an ephemeral worktree, fast-forwards the
+// primary main, and removes the worktree. Asserts the relock commit reached the
+// primary but NOT the remote (update never pushes — ADR 0023), that the remote is
+// still an ancestor of the primary (plain unpushed landing debt), and that no
+// .pn-update worktree remains.
 func TestSmoke_S33_WorktreeUpdate(t *testing.T) {
 	runScenario(t, "s33-worktree-update")
 }
@@ -368,7 +369,7 @@ func TestSmoke_S33_WorktreeUpdate(t *testing.T) {
 // relocked path). Because there is no collision, the ff-first integration
 // fast-forwards primary main to the relock on the FIRST ff — no autostash
 // round-trip is exercised here — leaving the dirty change intact, an empty stash
-// list, and no .pn-update residue. (The genuine collision/autostash branch is
+// list, no push to the remote (ADR 0023), and no .pn-update residue. (The genuine collision/autostash branch is
 // covered by the TestUpdateViaWorktree_DirtyMainCollidesAutostashes unit test.)
 func TestSmoke_S33b_WorktreeUpdateDirtyMain(t *testing.T) {
 	runScenario(t, "s33b-worktree-update-dirty-main")

@@ -86,10 +86,19 @@ if any stage halts.
    it specifies).
 4. **`cleanup-workforest`** — invoke the Skill in the main session.
 5. **POST — publish (main session):**
-   - `pn workspace update --siblings-only` — relocks the workspace-sibling flake
-     inputs (this **pushes** each repo's `HEAD:main`; a sibling must be pushed
-     before consumers relock — tracked: pg2-j2f8f).
-   - `pn workspace push` — the catch-all publish.
+   - `pn workspace push` — the ONE publish step. It walks the repos in topological
+     order and, per repo, relocks that repo's workspace-sibling flake inputs
+     against their upstreams' current remote tips (committing any bump), then
+     pushes. Because dependencies are pushed first, a consumer relocks onto the
+     tips just published in this same run — which is why publishing and relocking
+     are interleaved in one command rather than split across two (ADR 0023).
+   - There is **no** `pn workspace update --siblings-only` step here any more.
+     `update` is local-only and does not push, so it can no longer publish
+     anything (ADR 0023, beads pg2-j2f8f / pg2-x42j3). Do not re-add it.
+   - If a repo has uncommitted changes, `push` refuses to relock it and STOPS
+     (the relock ends in a commit). Report the named repo; the user then commits or
+     stashes, or authorizes `pn workspace push --no-siblings` to publish without
+     propagating locks.
 
 ## Notes
 
@@ -102,8 +111,8 @@ if any stage halts.
   session receives that notification), which is why the runner runs every stage in
   the foreground.
 - The spine (fork → update-relock → validate → land → cleanup) performs no remote
-  writes on the `ff-merge-to-main` path; the POST steps are the deliberate,
-  invocation-authorized pushes. `pnwf update-relock` itself refuses if any member
+  writes on the `ff-merge-to-main` path; the POST step is the deliberate,
+  invocation-authorized push. `pnwf update-relock` itself refuses if any member
   branch has an upstream, so the in-set relock cannot write to a remote. Your
   invocation of `/pn-workspace-update` is itself the authorization — do NOT re-ask
   before publishing.
@@ -117,13 +126,14 @@ if any stage halts.
   STOP AND REPORT: the relock has already landed on local `main` but publish is
   deferred; recovery is to run `/pn-workspace-sync`, then re-publish. You MUST NOT
   force-push.
-- **Why the POST `--siblings-only` pass is still needed.** The in-set relock could
-  not converge sibling flake inputs to pushed tips — nothing is pushed in-set (the
-  set validates via `--override-input`), so no sibling has a published tip to
-  relock against. The POST `pn workspace update --siblings-only` pass is what
-  actually relocks siblings to the freshly-pushed local-`main` tips. It inherits
-  sync's dependence on the (tracked, pg2-j2f8f) push-between-repos behavior of
-  `--siblings-only`.
+- **Why sibling convergence only happens in the POST step.** The in-set relock
+  cannot converge sibling flake inputs to pushed tips — nothing is pushed in-set
+  (the set validates via `--override-input`), so no sibling has a published tip to
+  relock against. Nor can the post-land `pn workspace update` do it: a lock can
+  only pin a rev that is already on the remote, and update no longer pushes. So
+  `pn workspace push` is the only step that can converge them, and it does —
+  push a repo, relock its consumers onto that new tip, push those, in topological
+  order (ADR 0023, beads pg2-j2f8f / pg2-x42j3).
 - **In-set update-phase hooks.** `pn workspace update --in-place` (which
   `pnwf update-relock` runs inside the set) fires each repo's `post-update` hooks
   (e.g. install-pre-commit-hooks). These warn-but-do-not-abort and only touch a

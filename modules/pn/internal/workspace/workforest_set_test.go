@@ -101,7 +101,7 @@ url = "github:owner/app"
 	f := exec.NewFakeRunner()
 	appDir := filepath.Join(setRoot, "app")
 
-	// Standard per-repo Update sequence (no upstream so pull/push are skipped).
+	// Standard per-repo Update sequence (no upstream so the pull is skipped; update never pushes).
 	f.AddResponse("git", []string{"-C", appDir, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", appDir, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", appDir, "rev-parse", "--abbrev-ref", "@{u}"},

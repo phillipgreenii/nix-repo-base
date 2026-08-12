@@ -81,11 +81,19 @@ type UpdateOptions struct {
 	// SiblingsOnly relocks ONLY the phillipgreenii-* workspace-sibling flake
 	// inputs (the propagateWorkspaceEdges pass) and SKIPS each repo's
 	// update-locks.sh, so nixpkgs and other third-party inputs are left
-	// untouched. Everything else — topological order, worktree isolation vs
-	// InPlace, pull/rebase, push (so a consumer picks up a sibling's
-	// freshly-pushed tip) — is unchanged. It is orthogonal to InPlace (composes
-	// with either flow). Upgrade never sets it; Recreate (an Upgrade-only
-	// marker) and SiblingsOnly are not combined.
+	// untouched. Like plain Update it is LOCAL-ONLY: it resolves each sibling
+	// against that sibling's DECLARED REMOTE URL and commits the bump, and it
+	// never pushes (ADR 0023). It is therefore the narrow, explicitly-requested
+	// subset of what update-locks.sh's `nix flake update` would relock — not a
+	// special case update applies on its own. Everything else — topological
+	// order, worktree isolation vs InPlace, pull/rebase, local integration — is
+	// unchanged. It is orthogonal to InPlace (composes with either flow). Upgrade
+	// never sets it; Recreate (an Upgrade-only marker) and SiblingsOnly are not
+	// combined.
+	//
+	// Convergence to a rev that is only LOCAL is impossible by construction (C1),
+	// so cross-repo convergence after a local land is `pn workspace push`'s job,
+	// not this flag's.
 	SiblingsOnly bool
 	// ULLibDir, when set, is exported as UL_LIB_DIR to each update-locks.sh so
 	// it skips its own determine-ul-lib-dir resolution. Resolve it once per run
@@ -133,30 +141,41 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 	return ws.updateViaWorktree(ctx, out, opts)
 }
 
-// updateInPlace pulls each workspace repo, runs its ./update-locks.sh, and pushes.
-// Repos without an upstream skip pull/push but still attempt update-locks.
-// Repos with a dirty working tree are skipped (non-fatal).
+// updateInPlace pulls each workspace repo and runs its ./update-locks.sh (or, with
+// SiblingsOnly, relocks just the workspace-sibling inputs). It is LOCAL-ONLY: it
+// pulls, but it does NOT push — publishing is `pn workspace push` (ADR 0023).
+// Repos without an upstream skip the pull but still attempt the relock. Repos
+// with a dirty working tree are skipped (non-fatal).
 //
 // Per-repo failures are aggregated rather than aborting the whole sweep on the
 // first error: every repo is attempted and the failing repos are named in the
 // returned error at the end (like FlakeCheck). Within a single repo, a failed
-// pull marks it failed and skips update-locks and push (the working tree is
-// suspect); a failed update-locks still lets push run, since pull succeeded.
+// pull marks it failed and skips the relock (the working tree is suspect).
 //
 // The provided context is checked between repos and between sub-steps; a
 // cancelled context aborts cleanly with the next ctx.Err() observed.
 //
-// Repos are processed in topological order (dependencies before consumers) so
-// that downstream repos re-lock against already-updated upstreams.
+// Repos are processed in topological order (dependencies before consumers). Note
+// that order no longer buys cross-repo convergence here: with no push, an
+// upstream's fresh commits are not on its remote, and a consumer can only relock
+// to a rev that IS on the remote (C1). The order is kept because it is the
+// workspace's canonical iteration order and because `pn workspace push` — which
+// does converge — relies on the same ordering.
 // updateInPlace is a required-terminal command: it errors when no terminal is configured.
 func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts UpdateOptions) error {
 	if _, err := ws.requireTerminal(ctx, opts.Terminal); err != nil {
 		return err
 	}
 	names := ws.topoAlpha(ctx)
-	// Derive the lock once for workspace-edge propagation; effectiveLock (not the
-	// possibly-empty ws.lock) is the source topoAlpha trusts (C3).
-	edgeLock, _, _ := ws.effectiveLock(ctx)
+	// Only --siblings-only reads the sibling aliases; plain update relocks every
+	// input through update-locks.sh with no sibling special-casing (ADR 0023 item
+	// 1), so deriving the lock for it would cost a nix eval per repo and be unused.
+	// When derived, effectiveLock (not the possibly-empty ws.lock) is the source
+	// topoAlpha trusts (C3).
+	var edgeLock *Lock
+	if opts.SiblingsOnly {
+		edgeLock, _, _ = ws.effectiveLock(ctx)
+	}
 	_ = opts.Log.Emit("info", "run_start", "workspace update started", map[string]any{
 		"terminal": opts.Terminal,
 		"projects": len(names),
@@ -190,7 +209,6 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		fmt.Fprintf(out, "  --== update %s ==--  \n", name)
 		hasUp := ws.hasUpstream(ctx, repoDir)
 		pullFailed := false
-		propagateFailed := false
 		relocked := false
 		projectFailed := false
 		transient := 0
@@ -204,30 +222,27 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 				projectFailed = true
 			}
 		}
-		// Propagate workspace-edge inputs (ungated) before update-locks. Skip if
-		// pull failed: the working tree is suspect.
+		// Relock. Exactly ONE mechanism runs, and neither pushes (ADR 0023):
+		// --siblings-only relocks just the workspace-sibling inputs from their
+		// declared remote URLs; otherwise update-locks.sh's `nix flake update`
+		// relocks every input, siblings included, with no special handling. A repo
+		// without the script is skipped (not failed). Skipped entirely if the pull
+		// failed: the working tree is suspect.
+		relockFailed := false
 		if !pullFailed {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("update interrupted: %w", err)
-			}
-			did, err := ws.propagateWorkspaceEdges(ctx, out, name, repoDir, ws.resolveFlakePath(name), workspaceAliasesFromLock(edgeLock, name))
-			if err != nil {
-				fmt.Fprintf(out, "  ✗ %s: propagate-edges failed: %v\n", name, err)
-				propagateFailed = true
-				projectFailed = true
-			}
-			relocked = did
-		}
-		// Run update-locks (when present) only if pull and propagation succeeded:
-		// a propagation error may have left a dirty tree. A repo without
-		// ./update-locks.sh is skipped (not failed) — propagation already
-		// maintained its workspace locks.
-		if !pullFailed && !propagateFailed {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("update interrupted: %w", err)
 			}
 			switch {
 			case opts.SiblingsOnly:
+				did, err := ws.propagateWorkspaceEdges(ctx, out, name, repoDir, ws.resolveFlakePath(name), workspaceAliasesFromLock(edgeLock, name))
+				if err != nil {
+					fmt.Fprintf(out, "  ✗ %s: relock-siblings failed: %v\n", name, err)
+					relockFailed = true
+					projectFailed = true
+					break
+				}
+				relocked = did
 				fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 			case fileExists(filepath.Join(repoDir, "update-locks.sh")):
 				res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out})
@@ -242,15 +257,14 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 						fmt.Fprintf(out, "  ⛔ %s: environmental/resource failure — aborting run\n", name)
 					} else {
 						projectFailed = true
-						// Keep going to push whatever update-locks committed.
 					}
 				}
 			default:
-				fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (workspace inputs already propagated)\n", name)
+				fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (nothing to relock; `pn workspace push` maintains its workspace-sibling locks)\n", name)
 			}
 		}
 		// An environmental/resource abort applies to every remaining repo: record
-		// it and stop before the push block and the rest of the loop.
+		// it and stop the rest of the loop.
 		if aborted {
 			failed = append(failed, name)
 			_ = opts.Log.Emit("error", "project_result", "project aborted", map[string]any{
@@ -258,24 +272,16 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			})
 			break
 		}
-		// Push only when pull and propagation succeeded (even on partial
-		// update-locks failure).
-		if hasUp && !pullFailed && !propagateFailed {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("update interrupted: %w", err)
-			}
-			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
-				projectFailed = true
-			}
-		}
+		// NO PUSH. update leaves every commit local; `pn workspace push` publishes
+		// and is the only thing that propagates sibling locks (ADR 0023).
 
 		if projectFailed {
 			failed = append(failed, name)
-			step := "push"
+			step := "update-locks"
 			if pullFailed {
 				step = "pull"
-			} else if propagateFailed {
-				step = "propagate-edges"
+			} else if relockFailed {
+				step = "relock-siblings"
 			}
 			_ = opts.Log.Emit("error", "project_result", "project failed", map[string]any{
 				"name": name, "outcome": "failed", "failed_step": step, "transient": transient,

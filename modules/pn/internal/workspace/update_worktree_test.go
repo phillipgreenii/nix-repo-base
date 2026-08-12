@@ -69,8 +69,10 @@ url = "github:owner/foo"
 	return root, foo, wt, f
 }
 
-// scriptThroughPush scripts steps 1–6 for repo "foo" (worktree add → … → push).
-func scriptThroughPush(f *exec.FakeRunner, foo, wt, branch string) {
+// scriptThroughRebase scripts steps 1-5 for repo "foo" (worktree add → sync →
+// relock → rebase local main → re-fetch + rebase origin/main). There is no push
+// step: update is local-only (ADR 0023).
+func scriptThroughRebase(f *exec.FakeRunner, foo, wt, branch string) {
 	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
@@ -78,14 +80,13 @@ func scriptThroughPush(f *exec.FakeRunner, foo, wt, branch string) {
 	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "push", "origin", "HEAD:main"}, exec.Result{}, nil)
 }
 
 func TestUpdateViaWorktree_HappyPath_CleanMain(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -109,7 +110,7 @@ func TestUpdateViaWorktree_StopsFsmonitorBeforeWorktreeRemove(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -185,11 +186,11 @@ url = "github:owner/zzz"
 }
 
 // TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir: with
-// SiblingsOnly the worktree flow MUST skip step-4 update-locks.sh (even though
+// SiblingsOnly the worktree flow MUST skip the step-3 update-locks.sh (even though
 // the script exists on disk) AND MUST NOT resolve/require UL_LIB_DIR (the
 // resolver is never called and an empty env is not fatal), since update-locks
-// never runs. Everything else — worktree isolate → propagate → rebase → push →
-// ff-integrate → cleanup — runs unchanged.
+// never runs. Everything else — worktree isolate → relock siblings → rebase →
+// ff-integrate → cleanup — runs unchanged. (No push: ADR 0023.)
 func TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir(t *testing.T) {
 	t.Setenv("UL_LIB_DIR", "") // empty would be fatal in normal mode; SiblingsOnly must not care
 	updateRunStampFn = func() string { return "TEST" }
@@ -228,24 +229,81 @@ func TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir(t *testing.T
 	}
 }
 
-// TestUpdateViaWorktree_PushToleratesMissingPreCommitConfig is the pg2-m75sq
-// regression. The worktree-isolated update publishes by pushing from an ephemeral
-// worktree under .workforests/.pn-update/. That worktree lacks the gitignored,
-// dev-shell-generated .pre-commit-config.yaml symlink (ADR 0016), so the repo's
-// prek pre-PUSH hook — installed in the CANONICAL gitdir and shared into the
-// worktree — aborts the push with "config file not found: .pre-commit-config.yaml".
-// This bites a workspace member with NO workspace-sibling inputs the hardest: its
-// --siblings-only run is a pure no-op relock that still reaches the push and fails
-// there (the canonical clone, which has the symlink, pushes fine). The bump-commit
-// already sets PREK_ALLOW_NO_CONFIG in the same worktree (tc-1zbpk); the push MUST
-// do the same so prek no-ops on the absent config and the publish succeeds. We
-// assert the step-7 push carries PREK_ALLOW_NO_CONFIG=1; before the fix its env is
-// empty and the push fails on the missing config in the field.
-func TestUpdateViaWorktree_PushToleratesMissingPreCommitConfig(t *testing.T) {
+// assertNoPushNoPropagate is the NEGATIVE assertion both pg2-x42j3 and pg2-j2f8f
+// turn on: update must issue no push and no sibling propagation. It asserts on
+// the CALL LOG rather than on the absence of a scripted response, because a
+// FakeRunner with no matching response would also "pass" a test that merely
+// stopped scripting the push — the run would just fail for the wrong reason.
+//
+//   - no `git push` in ANY form (`push origin HEAD:main`, plain `push`, `push -u`).
+//     `git stash push` is not a push and is excluded by matching argv position.
+//   - no `nix flake update` (propagateWorkspaceEdges' only subprocess).
+func assertNoPushNoPropagate(t *testing.T, calls []exec.Call) {
+	t.Helper()
+	for _, c := range calls {
+		if c.Name == "git" {
+			for i, a := range c.Args {
+				// git -C <dir> push …  → "push" is the verb at index 2. `stash push`
+				// puts "push" at index 3, so position is what separates them.
+				if a == "push" && i == 2 {
+					t.Errorf("update must NOT push (ADR 0023); got git %v", c.Args)
+				}
+			}
+		}
+		if c.Name == "nix" && len(c.Args) >= 2 && c.Args[0] == "flake" && c.Args[1] == "update" {
+			t.Errorf("update must NOT propagate workspace-sibling locks (ADR 0023); got nix %v", c.Args)
+		}
+	}
+}
+
+// wtEdgeFixture is wtUpdateFixture plus a workspace EDGE and an on-disk
+// flake.lock, so propagateWorkspaceEdges would actually run `nix flake update`
+// if it were still called. Without both, a "no propagation" assertion is vacuous:
+// propagate returns early on an empty alias list or a missing lock, so the test
+// would pass even with the call restored.
+func wtEdgeFixture(t *testing.T) (root, foo, wt string, f *exec.FakeRunner) {
+	t.Helper()
+	root = t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+
+[repos.sib]
+url = "github:owner/sib"
+`)
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["sib", "foo"],
+  "repos": {
+    "sib": {"flake_path": "flake.nix", "remote_url": "github:owner/sib"},
+    "foo": {"flake_path": "flake.nix", "remote_url": "github:owner/foo"}
+  },
+  "edges": [{"consumer": "foo", "alias": "sib", "target": "sib"}]
+}`)
+	foo = filepath.Join(root, "foo")
+	wt = filepath.Join(root, ".workforests", updateWorktreesSubdir, "foo-TEST")
+	mkUpdateLocks(t, wt)
+	writeFile(t, filepath.Join(wt, "flake.lock"), `{"nodes":{"root":{"inputs":{"sib":"sib"}},"sib":{"locked":{"rev":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}},"root":"root"}`)
+	f = exec.NewFakeRunner()
+	return root, foo, wt, f
+}
+
+// TestUpdateViaWorktree_NeverPushesNorPropagates is the pg2-x42j3 + pg2-j2f8f
+// regression, and it supersedes the old pg2-m75sq PREK_ALLOW_NO_CONFIG-on-push
+// guard: update no longer pushes from the ephemeral worktree, so the missing
+// .pre-commit-config.yaml (ADR 0016) can no longer abort a pre-push hook there at
+// all. The repo has a workspace edge AND a flake.lock, so propagation would fire
+// if it were still wired in.
+func TestUpdateViaWorktree_NeverPushesNorPropagates(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
-	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	root, foo, wt, f := wtEdgeFixture(t)
+	// Only "foo" has a checkout in this fixture; script its full flow. "sib" has no
+	// worktree fixture, so it fails at worktree-add — which is fine: the assertion
+	// is about what is ABSENT from the whole run.
+	scriptThroughRebase(f, foo, wt, branch)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -257,30 +315,65 @@ func TestUpdateViaWorktree_PushToleratesMissingPreCommitConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/x/lib/scripts"}); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	_ = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/x/lib/scripts"})
+	assertNoPushNoPropagate(t, f.Calls())
+}
 
-	var pushCall *exec.Call
+// TestUpdateViaWorktree_SiblingsOnlyRelocksFromRemoteButNeverPushes: with
+// --siblings-only the worktree flow DOES relock the sibling input — from the
+// sibling's declared REMOTE url, which is why `--refresh` is mandatory (C1) — and
+// still never pushes. This is the pg2-j2f8f contract: relock locally, publish
+// separately.
+func TestUpdateViaWorktree_SiblingsOnlyRelocksFromRemoteButNeverPushes(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtEdgeFixture(t)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	// The relock itself, then the C2 clean-tree probe (nix wrote nothing here, so
+	// propagate reports "no relock" and leaves the tree alone).
+	f.AddResponse("nix", []string{"flake", "update", "--refresh", "sib"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "diff", "--quiet", "--", "flake.lock"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "branch", "-D", branch}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_ = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{SiblingsOnly: true})
+
+	relocked := false
 	for _, c := range f.Calls() {
-		if c.Name == "git" && slices.Equal(c.Args, []string{"-C", wt, "push", "origin", "HEAD:main"}) {
-			cc := c
-			pushCall = &cc
+		if c.Name == "git" {
+			for i, a := range c.Args {
+				if a == "push" && i == 2 {
+					t.Errorf("--siblings-only must NOT push (ADR 0023); got git %v", c.Args)
+				}
+			}
+		}
+		if c.Name == "nix" && slices.Equal(c.Args, []string{"flake", "update", "--refresh", "sib"}) {
+			relocked = true
 		}
 	}
-	if pushCall == nil {
-		t.Fatalf("expected a `git -C %s push origin HEAD:main`; calls=%v", wt, f.Calls())
-	}
-	if got := pushCall.Opts.Env["PREK_ALLOW_NO_CONFIG"]; got != "1" {
-		t.Fatalf("push must set PREK_ALLOW_NO_CONFIG=1 so the worktree's prek pre-push hook tolerates the absent .pre-commit-config.yaml (ADR 0016 / tc-1zbpk); got Env=%v", pushCall.Opts.Env)
+	if !relocked {
+		t.Fatalf("--siblings-only must relock the sibling input with `nix flake update --refresh sib`; calls=%v", f.Calls())
 	}
 }
 
-func TestUpdateViaWorktree_PushSucceedsFfDefers(t *testing.T) {
+func TestUpdateViaWorktree_FfDefersAndPointsAtTheBranch(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -297,22 +390,28 @@ func TestUpdateViaWorktree_PushSucceedsFfDefers(t *testing.T) {
 			t.Fatalf("must not remove worktree on defer")
 		}
 	}
-	// The asymmetric-defer recovery is a RESET to the pushed remote, not a merge
-	// (ADR 0009 N1). The run must surface that hint so the user doesn't re-merge.
+	// ADR 0009's asymmetric-defer state cannot arise now that update does not push
+	// (ADR 0023), so the recovery target is the RELOCKED BRANCH, never origin/main:
+	// the branch carries this run's relock plus any local commits it replayed, and
+	// resetting to origin/main would discard both.
 	s := out.String()
 	if !strings.Contains(s, "deferred") {
 		t.Errorf("summary should mark foo deferred; got:\n%s", s)
 	}
-	if !strings.Contains(s, "reset --hard origin/main") {
-		t.Errorf("defer must print the reset-not-merge recovery hint; got:\n%s", s)
+	if !strings.Contains(s, "reset --hard "+branch) {
+		t.Errorf("defer must point recovery at the relocked branch; got:\n%s", s)
 	}
+	if strings.Contains(s, "reset --hard origin/main") {
+		t.Errorf("defer must NOT tell the user to reset to origin/main — nothing was pushed, so that would discard this run's relock; got:\n%s", s)
+	}
+	assertNoPushNoPropagate(t, f.Calls())
 }
 
 func TestUpdateViaWorktree_OtherBranchRefFf(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("feature-x\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "fetch", ".", branch + ":main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
@@ -324,7 +423,7 @@ func TestUpdateViaWorktree_OtherBranchRefFf(t *testing.T) {
 	}
 }
 
-// scriptDirtyMainProbe scripts the step-8 state probe for a dirty primary main:
+// scriptDirtyMainProbe scripts the step-6 state probe for a dirty primary main:
 // HEAD==main and `diff --quiet` reports dirty (exit 1), classifying as
 // primaryOnDirtyMain. (The `diff --cached --quiet` probe is short-circuited by
 // the dirty modified tree, so it is not issued.)
@@ -341,7 +440,7 @@ func TestUpdateViaWorktree_DirtyMainFfFirstSucceeds(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	scriptDirtyMainProbe(f, foo)
 	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
@@ -367,7 +466,7 @@ func TestUpdateViaWorktree_DirtyMainCollidesAutostashes(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	scriptDirtyMainProbe(f, foo)
 	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS (collision)
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
@@ -400,7 +499,7 @@ func TestUpdateViaWorktree_DirtyMainStashFails(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	scriptDirtyMainProbe(f, foo)
 	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
@@ -423,7 +522,7 @@ func TestUpdateViaWorktree_DirtyMainFfFailsAfterStash(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	scriptDirtyMainProbe(f, foo)
 	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
@@ -438,8 +537,8 @@ func TestUpdateViaWorktree_DirtyMainFfFailsAfterStash(t *testing.T) {
 		t.Fatalf("expected deferred error when the retry ff is not fast-forwardable")
 	}
 	s := out.String()
-	if !strings.Contains(s, "reset --hard origin/main") {
-		t.Errorf("ff-merge defer must print the reset-not-merge recovery hint; got:\n%s", s)
+	if !strings.Contains(s, "reset --hard "+branch) {
+		t.Errorf("ff-merge defer must point recovery at the relocked branch (nothing was pushed); got:\n%s", s)
 	}
 	// The user's autostashed tree MUST be restored before deferring: assert the
 	// restore `stash pop` was actually issued (guards against dropping the pop and
@@ -465,7 +564,7 @@ func TestUpdateViaWorktree_DirtyMainFfFailsAfterStash_PopAlsoFails(t *testing.T)
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	scriptDirtyMainProbe(f, foo)
 	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
@@ -511,7 +610,7 @@ func TestUpdateViaWorktree_DirtyMainPopConflicts(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	scriptDirtyMainProbe(f, foo)
 	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, // first ff FAILS
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
@@ -616,46 +715,49 @@ func TestUpdateViaWorktree_WorktreeAddFails(t *testing.T) {
 	}
 }
 
-// TestUpdateViaWorktree_PushFails: a failed step-7 push errors the run and never
-// reaches the integration steps (merge --ff-only / worktree remove).
-func TestUpdateViaWorktree_PushFails(t *testing.T) {
+// TestUpdateViaWorktree_SiblingsOnlyRelockFailStopsBeforeIntegration: a failed
+// --siblings-only relock errors the repo at "relock-siblings" and never reaches
+// the integration steps (merge --ff-only / worktree remove), leaving the worktree
+// for inspection. This replaces the old push-failure test — there is no push step
+// left to fail (ADR 0023) — and keeps coverage of "a failed relock does not
+// integrate".
+func TestUpdateViaWorktree_SiblingsOnlyRelockFailStopsBeforeIntegration(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
-	root, foo, wt, f := wtUpdateFixture(t)
-	// Steps 1–6 succeed; push fails.
+	root, foo, wt, f := wtEdgeFixture(t)
 	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "push", "origin", "HEAD:main"},
-		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("nix", []string{"flake", "update", "--refresh", "sib"},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "nix", Result: exec.Result{ExitCode: 1}})
 
 	w, _ := Open(root, f)
-	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/x"}); err == nil {
-		t.Fatalf("expected error when push fails")
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{SiblingsOnly: true}); err == nil {
+		t.Fatalf("expected error when the sibling relock fails")
 	}
 	for _, c := range f.Calls() {
 		if c.Name == "git" && slices.Contains(c.Args, "merge") {
-			t.Errorf("merge --ff-only must not run after push failure; got %v", c.Args)
+			t.Errorf("merge --ff-only must not run after a relock failure; got %v", c.Args)
 		}
 		if c.Name == "git" && len(c.Args) >= 3 && c.Args[2] == "worktree" && slices.Contains(c.Args, "remove") {
-			t.Errorf("worktree remove must not run after push failure; got %v", c.Args)
+			t.Errorf("worktree remove must not run after a relock failure; got %v", c.Args)
 		}
+	}
+	if !strings.Contains(out.String(), "relock-siblings") {
+		t.Errorf("summary must name the failed step as relock-siblings; got:\n%s", out.String())
 	}
 }
 
 // TestUpdateViaWorktree_WorktreeRemoveFailIsOkWithResidue: integration succeeds
-// (merge --ff-only) but step-8 `worktree remove` fails. The outcome is "ok"
+// (merge --ff-only) but step-7 `worktree remove` fails. The outcome is "ok"
 // (integration landed) yet the summary must surface the cleanup hint so the
 // left-behind worktree is discoverable. `branch -d` is not reached on this path.
 func TestUpdateViaWorktree_WorktreeRemoveFailIsOkWithResidue(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -813,16 +915,16 @@ func TestUpdateViaWorktree_RebaseOriginMain2ConflictAborts(t *testing.T) {
 	assertLeftBehind(t, f, out.String(), foo, wt, "rebase-origin-main-2")
 }
 
-// TestUpdateViaWorktree_OtherBranchRefFfDefers: the step-8 ref-only ff
+// TestUpdateViaWorktree_OtherBranchRefFfDefers: the step-6 ref-only ff
 // (`git -C <primary> fetch . <branch>:main`, taken when main is not checked out)
-// fails → the run defers (errors). Because push (step 7) already advanced remote
-// main, the worktree + branch are left for manual recovery. (The SUCCESS of this
+// fails → the run defers (errors). The worktree + branch are left for manual
+// recovery (nothing was pushed — ADR 0023). (The SUCCESS of this
 // path is covered by TestUpdateViaWorktree_OtherBranchRefFf.)
 func TestUpdateViaWorktree_OtherBranchRefFfDefers(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	scriptThroughPush(f, foo, wt, branch)
+	scriptThroughRebase(f, foo, wt, branch)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("feature-x\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "fetch", ".", branch + ":main"},
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
@@ -830,7 +932,7 @@ func TestUpdateViaWorktree_OtherBranchRefFfDefers(t *testing.T) {
 	w, _ := Open(root, f)
 	var out bytes.Buffer
 	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/x"}); err == nil {
-		t.Fatalf("expected deferred error when step-8 ref-ff fails on a feature branch")
+		t.Fatalf("expected deferred error when the step-6 ref-ff fails on a feature branch")
 	}
 	assertLeftBehind(t, f, out.String(), foo, wt, "ff-ref")
 }

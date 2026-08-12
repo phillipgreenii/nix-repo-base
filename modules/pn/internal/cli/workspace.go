@@ -264,10 +264,25 @@ func workspacePreCommitCheckCmd(terminal *string) *cobra.Command {
 func workspacePushCmd(terminal *string) *cobra.Command {
 	var setUpstream bool
 	var remoteFlag string
+	var noSiblings bool
 	cmd := &cobra.Command{
 		Use:   "push",
-		Short: "Git push each workspace repo",
-		Long: `Git push each workspace repo.
+		Short: "Publish each workspace repo: relock its workspace-sibling inputs, then git push",
+		Long: `Publish each workspace repo.
+
+For each repo in topological order (dependencies before consumers), pn relocks
+that repo's workspace-sibling flake inputs against their upstreams' current
+remote tips, commits any bump, and then pushes. Because dependencies are pushed
+first, a consumer's relock resolves its upstreams' NEW tips — which is why the
+push and the relock are interleaved rather than run as two passes: a consumer
+can only ever lock a rev that is already on the remote. 'pn workspace update'
+does neither half; it is local-only (ADR 0023).
+
+Pass --no-siblings for a plain publish with no lock propagation. The relock ends
+in a commit, so it refuses to run on a repo with uncommitted changes; commit or
+stash them, or use --no-siblings. Inside a coordinated workforest set the relock
+is skipped altogether (it is a canonical-clone operation) and push just publishes
+the set's branches.
 
 For repos that already have a configured upstream, runs plain 'git push'.
 For repos with no upstream, the --set-upstream/-u flag is required; pn then
@@ -296,12 +311,14 @@ To configure a default push remote for a multi-remote repo:
 					Terminal:    *terminal,
 					SetUpstream: setUpstream,
 					Remote:      remoteFlag,
+					NoSiblings:  noSiblings,
 				})
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&setUpstream, "set-upstream", "u", false, "push with -u <remote> <branch> for repos that have no upstream yet; remote is resolved via convention chain")
 	cmd.Flags().StringVar(&remoteFlag, "remote", "", "override remote name for all repos when --set-upstream is set (skip repo if remote absent)")
+	cmd.Flags().BoolVar(&noSiblings, "no-siblings", false, "push only: skip the workspace-sibling relock, publishing without propagating flake locks")
 	return cmd
 }
 
@@ -378,7 +395,7 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 	var siblingsOnly bool
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update each workspace repo (worktree-isolated; --in-place for direct-on-main, --siblings-only to relock just sibling inputs)",
+		Short: "Relock each workspace repo, local-only — never pushes (worktree-isolated; --in-place for direct-on-main, --siblings-only to relock just sibling inputs)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -400,7 +417,7 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "update each repo directly on its primary main instead of in an isolated worktree")
-	cmd.Flags().BoolVar(&siblingsOnly, "siblings-only", false, "relock only the workspace-sibling flake inputs (skip update-locks.sh; leaves nixpkgs and other third-party inputs untouched)")
+	cmd.Flags().BoolVar(&siblingsOnly, "siblings-only", false, "relock only the workspace-sibling flake inputs, from their remotes (skip update-locks.sh; leaves nixpkgs and other third-party inputs untouched); local-only, like plain update")
 	return cmd
 }
 

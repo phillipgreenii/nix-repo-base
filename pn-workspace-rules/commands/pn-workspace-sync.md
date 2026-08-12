@@ -84,10 +84,19 @@ if any stage halts.
    it specifies).
 4. **`cleanup-workforest`** — invoke the Skill in the main session.
 5. **POST — publish (main session):**
-   - `pn workspace update --siblings-only` — relocks the workspace-sibling flake
-     inputs (this **pushes** each repo's `HEAD:main`; a sibling must be pushed
-     before consumers relock — tracked: pg2-j2f8f).
-   - `pn workspace push` — the catch-all publish.
+   - `pn workspace push` — the ONE publish step. It walks the repos in topological
+     order and, per repo, relocks that repo's workspace-sibling flake inputs
+     against their upstreams' current remote tips (committing any bump), then
+     pushes. Because dependencies are pushed first, a consumer relocks onto the
+     tips just published in this same run — which is why publishing and relocking
+     are interleaved in one command rather than split across two (ADR 0023).
+   - There is **no** `pn workspace update --siblings-only` step here any more.
+     `update` is local-only and does not push, so it can no longer publish
+     anything (ADR 0023, beads pg2-j2f8f / pg2-x42j3). Do not re-add it.
+   - If a repo has uncommitted changes, `push` refuses to relock it and STOPS
+     (the relock ends in a commit). Report the named repo; the user then commits or
+     stashes, or authorizes `pn workspace push --no-siblings` to publish without
+     propagating locks.
 
 ## Notes
 
@@ -100,8 +109,8 @@ if any stage halts.
   session receives that notification), which is why the runner runs every stage in
   the foreground.
 - The spine (fork → sync-fetch → validate → land → cleanup) performs no remote
-  writes on the `ff-merge-to-main` path; the POST steps are the deliberate,
-  invocation-authorized pushes. Your invocation of `/pn-workspace-sync` is itself
+  writes on the `ff-merge-to-main` path; the POST step is the deliberate,
+  invocation-authorized push. Your invocation of `/pn-workspace-sync` is itself
   the authorization — do NOT re-ask before publishing.
 - If any stage stops (e.g. a `pull-request` repo, an unresolved conflict, or a
   canonical anomaly), stop the whole run and report per that stage's guidance —

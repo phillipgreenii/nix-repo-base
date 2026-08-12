@@ -10,7 +10,7 @@ import (
 // checkFlakeLockFresh verifies each consumer's flake.lock pins every workspace
 // edge to refRev(target). The per-alias rev read is nix-free; the edge set comes
 // from env.lock (effective — may have been derived via nix when the disk lock
-// was stale). The fix delegates to `pn workspace update` (relock→commit→push).
+// was stale). The fix delegates to `pn workspace update` (relock→commit, no push).
 func (ws *Workspace) checkFlakeLockFresh(ctx context.Context, env *doctorEnv) []Finding {
 	if env.lock == nil {
 		return nil
@@ -78,12 +78,20 @@ func (ws *Workspace) edgeTarget(lock *Lock, consumer, alias string) string {
 }
 
 // attachFlakeLockFix marks the first flake-lock-fresh finding fixable; the fix
-// runs `pn workspace update --siblings-only` (the proven relock→commit→push,
-// topo-ordered flow, but SKIPPING update-locks.sh). The finding is specifically
-// about stale workspace-sibling pins, so the remedy relocks ONLY those inputs —
-// nixpkgs and other third-party inputs are left untouched. SiblingsOnly also
-// drops the UL_LIB_DIR requirement, so this fix works headless (no nix
-// resolver). This is the ONLY fix that pushes — acceptable per spec decision 9.
+// runs `pn workspace update --siblings-only` (the topo-ordered relock→commit
+// flow, SKIPPING update-locks.sh). The finding is specifically about stale
+// workspace-sibling pins, so the remedy relocks ONLY those inputs — nixpkgs and
+// other third-party inputs are left untouched. SiblingsOnly also drops the
+// UL_LIB_DIR requirement, so this fix works headless (no nix resolver).
+//
+// The fix is LOCAL-ONLY and needs to be: this check compares the consumer's
+// locked rev against refRev[target], which in primary mode is the target's
+// REMOTE default-branch head (`git ls-remote`, see resolveRefRevs). The rev to
+// converge on is therefore already published, so `nix flake update --refresh`
+// reaches it with no push. Since ADR 0023 removed update's push, NO doctor fix
+// writes to a remote (it previously did — the one exception under spec decision
+// 9). What the fix does leave behind is one unpushed bump commit, which the
+// branch-synced check reports as ordinary landing debt.
 func attachFlakeLockFix(ws *Workspace, env *doctorEnv, fs []Finding, stale map[string]bool) {
 	term := env.terminal
 	done := map[string]bool{}

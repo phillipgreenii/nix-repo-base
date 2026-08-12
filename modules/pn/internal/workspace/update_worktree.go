@@ -13,7 +13,7 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-// primaryState classifies a primary checkout for smart integration (step 7).
+// primaryState classifies a primary checkout for smart integration (step 6).
 type primaryState int
 
 const (
@@ -39,7 +39,8 @@ var updateRunStampFn = func() string {
 // workforests dir (<workforests_dir>/<branch>). The worktree-isolation update flow is
 // invalid inside a set: the set's repos are worktrees on a shared feature branch
 // with `main` checked out in the canonical clones, so a nested worktree-add +
-// push-to-main + ff-main would violate the set's P1 invariant. Detection is
+// ff-main would violate the set's P1 invariant. It is also consulted by Push,
+// which skips its canonical-clone sibling relock inside a set. Detection is
 // structural and tolerant of a slashed branch that nests the set dir more than
 // one segment below the workforests dir — see Workspace.workforestLocation.
 func (ws *Workspace) inWorkforest() bool {
@@ -48,7 +49,7 @@ func (ws *Workspace) inWorkforest() bool {
 }
 
 // primaryMainState probes the primary checkout's branch + cleanliness to decide
-// how step 7 advances main. A non-"main" current branch (or a probe error) is
+// how step 6 advances main. A non-"main" current branch (or a probe error) is
 // treated as primaryOnOtherBranch: main is not checked out, so its ref can be
 // fast-forwarded without touching the working tree.
 func (ws *Workspace) primaryMainState(ctx context.Context, primary string) primaryState {
@@ -58,7 +59,7 @@ func (ws *Workspace) primaryMainState(ctx context.Context, primary string) prima
 		cur = strings.TrimSpace(string(res.Stdout))
 	}
 	// A detached HEAD (rev-parse --abbrev-ref HEAD prints "HEAD") and a probe
-	// error both intentionally fall into primaryOnOtherBranch: step 7 then
+	// error both intentionally fall into primaryOnOtherBranch: step 6 then
 	// advances main via `fetch . branch:main`, a ref-only ff that never touches
 	// the non-main working tree.
 	if cur != "main" {
@@ -139,10 +140,17 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	runTS := updateRunStampFn()
 	branch := "pn-update/" + runTS
 	names := ws.topoAlpha(ctx)
-	// Derive the lock once for workspace-edge propagation. Use effectiveLock (the
-	// same source topoAlpha trusts) rather than ws.lock, which is empty on a
-	// fresh/stale checkout and would silently skip every repo (C3).
-	edgeLock, _, _ := ws.effectiveLock(ctx)
+	// The sibling-alias set is needed ONLY by --siblings-only, which relocks just
+	// those inputs. Plain update no longer touches them as a special case at all
+	// (ADR 0023 item 1) — update-locks.sh's `nix flake update` relocks every
+	// input, sibling or not, from its declared remote — so deriving the lock for
+	// it would buy a nix eval per repo and use nothing. When it IS derived, use
+	// effectiveLock (the same source topoAlpha trusts) rather than ws.lock, which
+	// is empty on a fresh/stale checkout and would silently skip every repo (C3).
+	var edgeLock *Lock
+	if opts.SiblingsOnly {
+		edgeLock, _, _ = ws.effectiveLock(ctx)
+	}
 
 	_ = opts.Log.Emit("info", "run_start", "workspace update (worktree) started", map[string]any{
 		"terminal": opts.Terminal, "projects": len(names), "branch": branch,
@@ -204,10 +212,12 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 }
 
 // updateRepoViaWorktree runs the per-repo worktree flow (worktree-add → sync →
-// propagate workspace edges → update-locks → rebase → push → integrate). It never returns an
-// error: every failure is captured in the returned repoOutcome and the worktree
-// + branch are left in place (leave-on-failure). Only a fully successful
-// integration removes them.
+// relock → rebase → integrate). It is LOCAL-ONLY: it fetches, but it never
+// pushes and never propagates workspace-sibling locks — both moved to
+// `pn workspace push` (ADR 0023). It never returns an error either: every
+// failure is captured in the returned repoOutcome and the worktree + branch are
+// left in place (leave-on-failure). Only a fully successful integration removes
+// them.
 func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, name, branch, runTS, ulLibDir string, aliases []string, siblingsOnly bool) repoOutcome {
 	primary := filepath.Join(ws.root, name)
 	wt := filepath.Join(ws.WorkforestsDir(), updateWorktreesSubdir, name+"-"+runTS)
@@ -261,19 +271,22 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		return fail("rebase-origin-main", err, "rebase conflict aborted")
 	}
 
-	// Step 3: propagate workspace-edge inputs (ungated) — relock this repo's
-	// workspace-sibling flake inputs to their upstreams' just-integrated revs.
-	relocked, err := ws.propagateWorkspaceEdges(ctx, out, name, wt, ws.resolveFlakePath(name), aliases)
-	if err != nil {
-		return fail("propagate-edges", err, "")
-	}
-
-	// Step 4: run the existing update-locks in the worktree, when present. A repo
-	// without ./update-locks.sh is skipped (not failed): the propagation pass
-	// above already maintains its workspace locks. --siblings-only skips it
-	// unconditionally so nixpkgs/third-party inputs are left untouched.
+	// Step 3: relock. Exactly ONE of the two relock mechanisms runs, and neither
+	// pushes (ADR 0023 item 1):
+	//
+	//   - --siblings-only: relock ONLY the workspace-sibling inputs, from their
+	//     declared remote URLs, and skip update-locks.sh so nixpkgs/third-party
+	//     inputs are left untouched. This is the explicitly-requested narrow
+	//     subset, not a special case applied behind the caller's back.
+	//   - otherwise: ./update-locks.sh, whose `nix flake update` relocks EVERY
+	//     input from its declared remote — siblings included, with no special
+	//     handling. A repo without the script is skipped (not failed).
 	switch {
 	case siblingsOnly:
+		relocked, err := ws.propagateWorkspaceEdges(ctx, out, name, wt, ws.resolveFlakePath(name), aliases)
+		if err != nil {
+			return fail("relock-siblings", err, "")
+		}
 		fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 	case fileExists(filepath.Join(wt, "update-locks.sh")):
 		res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
@@ -291,16 +304,16 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 			return fail("update-locks", err, "")
 		}
 	default:
-		fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (workspace inputs already propagated)\n", name)
+		fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (nothing to relock; `pn workspace push` maintains its workspace-sibling locks)\n", name)
 	}
 
-	// Step 5: rebase onto local main FIRST (catch unpushed local commits).
+	// Step 4: rebase onto local main FIRST (catch unpushed local commits).
 	if err := git(wt, "rebase", "main"); err != nil {
 		_ = git(wt, "rebase", "--abort")
 		return fail("rebase-local-main", err, "rebase conflict aborted")
 	}
 
-	// Step 6: re-fetch + rebase onto origin/main (catch remote drift).
+	// Step 5: re-fetch + rebase onto origin/main (catch remote drift).
 	if err := git(wt, "fetch", "origin"); err != nil {
 		return fail("refetch-origin", err, "")
 	}
@@ -309,40 +322,34 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		return fail("rebase-origin-main-2", err, "rebase conflict aborted")
 	}
 
-	// Step 7: publish — push branch to remote main from the worktree.
-	// PREK_ALLOW_NO_CONFIG mirrors the propagate-edges bump commit (tc-1zbpk): the
-	// repo's prek pre-push hook is installed in the CANONICAL gitdir and shared into
-	// this ephemeral worktree, but the worktree has no .pre-commit-config.yaml — a
-	// gitignored, dev-shell-generated store-symlink present only in the canonical
-	// checkout (ADR 0016) — so prek would abort the push with "config file not
-	// found". A member with no workspace-sibling inputs feels this hardest: its
-	// --siblings-only run is a pure no-op relock that still reaches this push and
-	// fails there while the canonical clone (which has the symlink) pushes fine
-	// (pg2-m75sq). The env var no-ops prek ONLY when no config is present — a real
-	// config still enforces — so this does not disable enforcement (unlike
-	// --no-verify), and it matches the commit already made in this same worktree.
-	// Stdout/Stderr stay wired so a genuine push failure still surfaces in the log.
-	if _, err := ws.runner.Run(ctx, "git", []string{"-C", wt, "push", "origin", "HEAD:main"}, exec.RunOptions{
-		Env:    map[string]string{"PREK_ALLOW_NO_CONFIG": "1"},
-		Stdout: out,
-		Stderr: out,
-	}); err != nil {
-		return fail("push", err, "remote main may have advanced; resolve manually and re-run")
-	}
-
-	// Step 8: advance local primary main (smart).
+	// There is NO push step. Update integrates onto the LOCAL primary main and
+	// stops; publishing is `pn workspace push`, which pushes from the canonical
+	// clone (ADR 0023 items 1 and 4). Removing it also removes ADR 0009's
+	// "asymmetric defer state" from update entirely: nothing can advance remote
+	// main ahead of local main here, so a deferred integration can only ever leave
+	// local main BEHIND its own worktree branch — recoverable with a plain
+	// fast-forward, never a reset.
+	//
+	// Step 6: advance local primary main (smart).
 	switch ws.primaryMainState(ctx, primary) {
 	case primaryOnCleanMain:
 		if err := git(primary, "merge", "--ff-only", branch); err != nil {
 			oc.status, oc.failedStep = statusDeferred, "ff-merge"
-			oc.note = fmt.Sprintf("remote main advanced; reset local: git -C %s reset --hard origin/main", primary)
+			// NOTHING WAS PUSHED (ADR 0023), so the recovery target is the relocked
+			// BRANCH, not origin/main. The branch was rebased onto local main and then
+			// onto origin/main, so it already contains both — resetting main to
+			// origin/main instead would discard this run's relock and any unpushed
+			// local commits it replayed. This is also why ADR 0009's asymmetric-defer
+			// state no longer arises here: remote main cannot be ahead of local main
+			// because of anything update did.
+			oc.note = fmt.Sprintf("local main is not fast-forwardable to the relocked branch (origin/main advanced mid-run); nothing was pushed — inspect, then advance: git -C %s reset --hard %s", primary, branch)
 			fmt.Fprintf(out, "  ⚠ %s: ff-merge deferred — %s (worktree at %s)\n", name, oc.note, wt)
 			return oc
 		}
 	case primaryOnOtherBranch:
 		if err := git(primary, "fetch", ".", branch+":main"); err != nil {
 			oc.status, oc.failedStep = statusDeferred, "ff-ref"
-			oc.note = fmt.Sprintf("local main diverged; reset: git -C %s branch -f main origin/main", primary)
+			oc.note = fmt.Sprintf("local main diverged from the relocked branch; nothing was pushed — inspect, then advance: git -C %s branch -f main %s", primary, branch)
 			fmt.Fprintf(out, "  ⚠ %s: main ff deferred — %s (worktree at %s)\n", name, oc.note, wt)
 			return oc
 		}
@@ -352,7 +359,7 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		// autostash + retry when the direct ff is genuinely blocked. (Chosen over
 		// always-autostash, which risks silently leaving main mid-merge.)
 		if err := git(primary, "merge", "--ff-only", branch); err == nil {
-			break // success → fall through to step 9 cleanup, status stays OK
+			break // success → fall through to step 7 cleanup, status stays OK
 		}
 		// ff blocked by the dirty tree. Autostash the tracked changes and retry.
 		// Bare `stash push` is tracked-only by default (untracked stay put).
@@ -372,11 +379,11 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 				// The restore pop failed too: the autostashed changes are stranded in
 				// the stash. Don't claim they were restored — point at the stash so the
 				// user can recover them (mirrors the hard-defer autostash-pop note below).
-				oc.note = fmt.Sprintf("remote main advanced and restoring your changes failed; reset local then recover your stash: git -C %s reset --hard origin/main; your changes are in `git stash list`", primary)
+				oc.note = fmt.Sprintf("local main is not fast-forwardable to the relocked branch and restoring your changes failed; nothing was pushed — advance main then recover your stash: git -C %s reset --hard %s; your changes are in `git stash list`", primary, branch)
 				fmt.Fprintf(out, "  ⚠ %s: ff-merge deferred (stash retained) — %s (worktree at %s)\n", name, oc.note, wt)
 				return oc
 			}
-			oc.note = fmt.Sprintf("remote main advanced; reset local: git -C %s reset --hard origin/main", primary)
+			oc.note = fmt.Sprintf("local main is not fast-forwardable to the relocked branch (origin/main advanced mid-run); nothing was pushed — inspect, then advance: git -C %s reset --hard %s", primary, branch)
 			fmt.Fprintf(out, "  ⚠ %s: ff-merge deferred (stash restored) — %s (worktree at %s)\n", name, oc.note, wt)
 			return oc
 		}
@@ -389,10 +396,10 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 			fmt.Fprintf(out, "  ⚠ %s: integrated but autostash pop conflicted — %s\n", name, oc.note)
 			return oc
 		}
-		// success → fall through to step 9 cleanup
+		// success → fall through to step 7 cleanup
 	}
 
-	// Step 9: success — stop the worktree's fsmonitor daemon (best-effort; it is
+	// Step 7: success — stop the worktree's fsmonitor daemon (best-effort; it is
 	// keyed by worktree path and is NOT torn down by `worktree remove`, so it
 	// would orphan and linger), then remove the worktree, then the branch.
 	ws.stopFsmonitorDaemon(ctx, wt)
@@ -401,8 +408,8 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		fmt.Fprintf(out, "  ⚠ %s: integrated, but worktree remove failed\n", name)
 		return oc
 	}
-	// Force-delete (-D, not -d): integration already pushed HEAD to remote main and
-	// advanced local main, so the ephemeral branch is disposable. A repo whose
+	// Force-delete (-D, not -d): integration already advanced local main to this
+	// branch, so the ephemeral branch is disposable. A repo whose
 	// worktree branch is not a strict ancestor of main (e.g. a no-op skip where the
 	// branch tip never merged) makes `-d` refuse with "not fully merged", leaking a
 	// pn-update/<ts> branch every run (tc-1zbpk W2). -D is always safe here.

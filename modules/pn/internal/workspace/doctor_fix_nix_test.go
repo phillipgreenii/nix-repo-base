@@ -40,7 +40,8 @@ func TestDoctorFix_FlakeLockFreshRelocksViaNix(t *testing.T) {
 	const newRev = "2222222222222222222222222222222222222222"
 
 	// Two real repos: consumer (terminal) depends on dep. Neither has an
-	// upstream, so Update skips pull/push and only propagate touches nix.
+	// upstream, so Update skips the pull — and it never pushes (ADR 0023) — leaving the
+	// sibling relock as the only step that touches nix.
 	consumer := filepath.Join(root, "consumer")
 	dep := filepath.Join(root, "dep")
 	initRealRepo(t, consumer)

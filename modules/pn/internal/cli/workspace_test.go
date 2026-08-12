@@ -603,6 +603,20 @@ func TestWorkspacePush_SetUpstreamShortFlagAccepted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// push --no-siblings flag (ADR 0023 item 3; beads pg2-x42j3 / pg2-j2f8f)
+// ---------------------------------------------------------------------------
+
+func TestWorkspacePush_NoSiblingsFlagAccepted(t *testing.T) {
+	// --no-siblings (the opt-out from push's workspace-sibling relock) must be
+	// accepted without an "unknown flag" error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"push", "--no-siblings"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("push --no-siblings: flag not wired: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // push --remote flag (tc-perh.16)
 // ---------------------------------------------------------------------------
 

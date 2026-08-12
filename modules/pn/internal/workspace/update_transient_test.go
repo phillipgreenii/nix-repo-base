@@ -46,19 +46,18 @@ func TestUpdateViaWorktree_TransientWarnEvent(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
-	// Steps 1–3.
+	// Steps 1–2.
 	f.AddResponse("git", []string{"-C", foo, "worktree", "add", "-b", branch, wt, "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	// Step 4: update-locks.sh succeeds but reports 2 transient steps.
+	// Step 3: update-locks.sh succeeds but reports 2 transient steps.
 	f.AddResponse("./update-locks.sh", nil,
 		exec.Result{Stdout: []byte("=== Update Summary ===\n  Transient: 2\nUL_RESULT transient=2\n✓ done\n")}, nil)
-	// Steps 5–7.
+	// Steps 4–5 (rebase local main, re-fetch + rebase origin/main). No push step.
 	f.AddResponse("git", []string{"-C", wt, "rebase", "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "fetch", "origin"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", wt, "rebase", "origin/main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", wt, "push", "origin", "HEAD:main"}, exec.Result{}, nil)
-	// Step 8–9: clean main → ff-merge, remove worktree, delete branch.
+	// Steps 6–7: clean main → ff-merge, remove worktree, delete branch.
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -114,7 +113,6 @@ url = "github:owner/foo"
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	f.AddResponse("./update-locks.sh", nil, exec.Result{Stdout: []byte("UL_RESULT transient=3\n")}, nil)
-	f.AddResponse("git", []string{"-C", foo, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {

@@ -261,10 +261,8 @@ url = "github:owner/bar"
 		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", d, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 		f.AddResponse("git", []string{"-C", d, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", d, "push"}, exec.Result{}, nil)
 	}
-	// update-locks: bar (runs first, alphabetical) fails; foo succeeds. Pull
-	// succeeded for bar, so its push still runs (matches bash).
+	// update-locks: bar (runs first, alphabetical) fails; foo succeeds.
 	f.AddResponse("./update-locks.sh", nil, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "./update-locks.sh", Result: exec.Result{ExitCode: 1}})
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 
@@ -282,11 +280,11 @@ url = "github:owner/bar"
 	if strings.Contains(err.Error(), "foo") {
 		t.Errorf("error should not name the passing repo (foo); got %q", err.Error())
 	}
-	// Both repos fully processed: 6 calls each (diff, cached, rev-parse @{u},
-	// pull, update-locks, push) = 12 total. (The rev-lock HEAD capture was
-	// removed with RevLock in pg2-f1k1.)
-	if len(f.Calls()) != 12 {
-		t.Errorf("expected both repos fully attempted (12 calls); got %d", len(f.Calls()))
+	// Both repos fully processed: 5 calls each (diff, cached, rev-parse @{u},
+	// pull, update-locks) = 10 total. (The rev-lock HEAD capture was removed with
+	// RevLock in pg2-f1k1; the per-repo push was removed by ADR 0023.)
+	if len(f.Calls()) != 10 {
+		t.Errorf("expected both repos fully attempted (10 calls); got %d", len(f.Calls()))
 	}
 }
 
@@ -393,7 +391,122 @@ url = "github:owner/foo"
 	}
 }
 
-func TestUpdate_PullLocksPushPerRepo(t *testing.T) {
+// TestUpdate_InPlace_NeverPushesNorPropagates is the pg2-j2f8f regression for the
+// --in-place flow, asserted on the CALL LOG (a test that merely stopped scripting
+// the push would pass even with the push restored). The fixture gives the repo a
+// workspace EDGE and an on-disk flake.lock, so propagateWorkspaceEdges would run
+// `nix flake update` if it were still wired into update.
+func TestUpdate_InPlace_NeverPushesNorPropagates(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+
+[repos.sib]
+url = "github:owner/sib"
+`)
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["sib", "foo"],
+  "repos": {
+    "sib": {"flake_path": "flake.nix", "remote_url": "github:owner/sib"},
+    "foo": {"flake_path": "flake.nix", "remote_url": "github:owner/foo"}
+  },
+  "edges": [{"consumer": "foo", "alias": "sib", "target": "sib"}]
+}`)
+	f := exec.NewFakeRunner()
+	for _, name := range []string{"sib", "foo"} {
+		d := filepath.Join(root, name)
+		mkUpdateLocks(t, d)
+		writeFile(t, filepath.Join(d, "flake.lock"), `{"nodes":{"root":{"inputs":{"sib":"sib"}},"sib":{"locked":{"rev":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}},"root":"root"}`)
+		f.AddResponse("git", []string{"-C", d, "diff", "--quiet"}, exec.Result{}, nil)
+		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+		f.AddResponse("git", []string{"-C", d, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+		f.AddResponse("git", []string{"-C", d, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
+		f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+	}
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	assertNoPushNoPropagate(t, f.Calls())
+}
+
+// TestUpdate_InPlace_SiblingsOnlyRelocksFromRemoteButNeverPushes: --siblings-only
+// DOES relock the sibling input in place — from the sibling's declared REMOTE url
+// (`--refresh`, C1) — and still never pushes. Together with the test above this
+// pins both halves of pg2-j2f8f: relocking is local, publishing is a separate step.
+func TestUpdate_InPlace_SiblingsOnlyRelocksFromRemoteButNeverPushes(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+
+[repos.sib]
+url = "github:owner/sib"
+`)
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["sib", "foo"],
+  "repos": {
+    "sib": {"flake_path": "flake.nix", "remote_url": "github:owner/sib"},
+    "foo": {"flake_path": "flake.nix", "remote_url": "github:owner/foo"}
+  },
+  "edges": [{"consumer": "foo", "alias": "sib", "target": "sib"}]
+}`)
+	foo := filepath.Join(root, "foo")
+	sib := filepath.Join(root, "sib")
+	f := exec.NewFakeRunner()
+	for _, d := range []string{sib, foo} {
+		mkRepoDir(t, root, filepath.Base(d))
+		f.AddResponse("git", []string{"-C", d, "diff", "--quiet"}, exec.Result{}, nil)
+		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+		f.AddResponse("git", []string{"-C", d, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+		f.AddResponse("git", []string{"-C", d, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
+	}
+	// Only foo has a workspace edge, so only foo relocks.
+	writeFile(t, filepath.Join(foo, "flake.lock"), `{"nodes":{"root":{"inputs":{"sib":"sib"}},"sib":{"locked":{"rev":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}},"root":"root"}`)
+	f.AddResponse("nix", []string{"flake", "update", "--refresh", "sib"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet", "--", "flake.lock"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true, SiblingsOnly: true}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	relocked := false
+	for _, c := range f.Calls() {
+		if c.Name == "git" {
+			for i, a := range c.Args {
+				if a == "push" && i == 2 {
+					t.Errorf("--siblings-only must NOT push (ADR 0023); got git %v", c.Args)
+				}
+			}
+		}
+		if c.Name == "nix" && len(c.Args) == 4 && c.Args[3] == "sib" {
+			relocked = true
+		}
+	}
+	if !relocked {
+		t.Fatalf("--siblings-only must relock the sibling input with `nix flake update --refresh sib`; calls=%v", f.Calls())
+	}
+}
+
+// TestUpdate_PullLocksNoPushPerRepo pins the exact in-place per-repo call
+// sequence: dirty probes, upstream probe, pull, update-locks — and nothing else.
+// The call COUNT is the guard that no push (and no propagation) crept back in.
+func TestUpdate_PullLocksNoPushPerRepo(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
@@ -413,10 +526,9 @@ url = "github:owner/foo"
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	// pull rebase autostash.
 	f.AddResponse("git", []string{"-C", foo, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
-	// update-locks.
+	// update-locks. There is deliberately NO push response: update is local-only
+	// (ADR 0023), and the call-count assertion below would catch a restored push.
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
-	// push.
-	f.AddResponse("git", []string{"-C", foo, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -427,16 +539,18 @@ url = "github:owner/foo"
 		t.Fatalf("Update: %v", err)
 	}
 	calls := f.Calls()
-	// diff --quiet, diff --cached --quiet, rev-parse @{u}, pull, update-locks.sh,
-	// push — the rev-lock HEAD capture was removed with RevLock (pg2-f1k1).
-	if len(calls) != 6 {
-		t.Errorf("expected 6 calls, got %d (%+v)", len(calls), calls)
+	// diff --quiet, diff --cached --quiet, rev-parse @{u}, pull, update-locks.sh —
+	// the rev-lock HEAD capture was removed with RevLock (pg2-f1k1), and the push
+	// with ADR 0023.
+	if len(calls) != 5 {
+		t.Errorf("expected 5 calls, got %d (%+v)", len(calls), calls)
 	}
+	assertNoPushNoPropagate(t, calls)
 
 	// Long-running steps stream; the silent --quiet probes stay captured.
 	for _, c := range calls {
 		switch {
-		case lastArg(c.Args) == "--autostash", c.Name == "./update-locks.sh", lastArg(c.Args) == "push":
+		case lastArg(c.Args) == "--autostash", c.Name == "./update-locks.sh":
 			if c.Opts.Stdout == nil {
 				t.Errorf("%s %v should stream (Opts.Stdout set)", c.Name, c.Args)
 			}
