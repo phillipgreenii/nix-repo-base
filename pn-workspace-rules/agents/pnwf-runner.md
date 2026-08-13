@@ -256,6 +256,50 @@ cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace doctor
   build: validate is unproven, not failed. Validate mutates nothing, so there is
   no residue to probe.
 
+### The one doctor exemption: a sibling THIS run will land (MUST)
+
+Stage 2 advances member HEADs, and in a set doctor runs in `worktree` mode, where
+each repo's reference rev is that member's own committed HEAD. So every consumer
+that pins an advanced sibling by rev reports a `flake-lock-fresh` ERROR — drift
+Stage 2 itself caused. Nothing you can do in-set clears it (`pn workspace push`
+skips relocking inside a set, and a `flake.lock` can only pin an already-published
+rev); the main session's land + publish steps are what converge it. So a
+`flake-lock-fresh` ERROR whose TARGET is a set member with un-landed commits is a
+**warning**, not a `validate-failed` halt — `validate-workforest` step 5 owns this
+rule and this is its runner-side application.
+
+Doctor knows nothing of the exemption and still exits `1`, so **its exit status is
+NOT the verdict.** Classify the findings instead of reading `$?`:
+
+```bash
+cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" \
+  && landing=$(pnwf land-plan <BRANCH>) \
+  && pn workspace doctor --json | jq -r --arg landing "$landing" '
+    ($landing | split("\n") | map(select(length > 0))) as $L
+    | (.mode == "worktree") as $inset
+    | "mode=\(.mode)",
+      ( .findings[]
+        | select(.severity == "error" and (.skipped | not))
+        | (.message | capture("\\(→ \"(?<t>[^\"]+)\"\\)") | .t) // "" as $target
+        | if $inset and .check == "flake-lock-fresh" and ($L | index($target))
+          then "EXEMPT   \(.repo)\t\(.message)"
+          else "BLOCKING \(.repo)\t\(.check)\t\(.message)"
+          end )'
+```
+
+- **No `BLOCKING` line, and `pn workspace build` clean** → doctor's gate is CLEAR;
+  you MUST return `done`. List any `EXEMPT` lines in your human-readable report so
+  the main session sees what the publish step still has to converge.
+- **Any `BLOCKING` line** → `halt` with `reason: "validate-failed"`, quoting those
+  lines in `detail`.
+- `mode` MUST print `worktree`. If it prints `primary` you are not in the set —
+  halt per the [self-locate rule](#3-self-locate-rule-must); you MUST NOT apply the
+  exemption to canonical checkouts, where this check is a hard error.
+- You MUST NOT widen this: not to `flake-lock-fresh` findings whose target is absent
+  from `pnwf land-plan` (that drift is genuinely stale and nothing here will fix
+  it), not to any other check, and not by passing `--strict` or `--offline` to
+  narrow the report.
+
 ## 7. Prohibitions (MUST)
 
 - You MUST NOT land, clean up, or publish: never invoke the `land-workforest`,

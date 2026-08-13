@@ -54,11 +54,58 @@ flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
 4. **Dirty tree → WARN, do not fail (MUST).** If the set has uncommitted changes,
    validate MUST NOT fail on that alone — it **warns** (the WORK may be
    mid-flight). Landing has its own no-uncommitted-changes precondition.
+5. **In-set `flake-lock-fresh` on a sibling this run will land → WARN, do not fail
+   (MUST).** Inside a set, `pn workspace doctor` runs in `worktree` mode, where each
+   repo's reference rev is that member's own committed HEAD rather than its remote
+   head. So the moment the WORK advances a sibling, every consumer that pins it by
+   rev reports a `flake-lock-fresh` ERROR — drift the pipeline itself caused.
+   Validate MUST downgrade such a finding to a **warning** when the stale pin's
+   TARGET is a member of THIS set with un-landed commits, and MUST leave every other
+   `flake-lock-fresh` finding an ERROR. Nothing in-set can clear the exempt case:
+   `pn workspace push` skips relocking inside a set, and a `flake.lock` can only pin
+   an already-published rev, which the target's in-set HEAD is not — landing, then
+   publishing, is what converges it.
+   - **Classify; do not assume.** `pn workspace doctor --json` names the CONSUMER in
+     `.findings[].repo` and the TARGET inside `.findings[].message`
+     (`… input "<alias>" (→ "<target>") pins <a> but "<target>" is at <b>`).
+     `pnwf land-plan <branch>` lists exactly the set members with un-landed commits
+     ("present worktree, not an ancestor of primary"). Target in that list →
+     warning. Target absent → the drift is NOT this run's to clear, so it stays an
+     ERROR and validate FAILS.
+   - **Doctor's exit status is NOT the verdict here.** Doctor knows nothing of this
+     carve-out and still exits `1` on a downgraded-only report, so read the
+     findings. Validate MUST NOT pass `--strict` in-set — it re-promotes warnings to
+     errors and re-creates the very failure this step removes.
+   - The exemption is gated on `.mode == "worktree"`, so it can never reach a
+     canonical checkout. This classifier applies it:
+
+     ```bash
+     landing=$(pnwf land-plan "$BRANCH")
+     pn workspace doctor --json | jq -r --arg landing "$landing" '
+       ($landing | split("\n") | map(select(length > 0))) as $L
+       | (.mode == "worktree") as $inset
+       | "mode=\(.mode)",
+         ( .findings[]
+           | select(.severity == "error" and (.skipped | not))
+           | (.message | capture("\\(→ \"(?<t>[^\"]+)\"\\)") | .t) // "" as $target
+           | if $inset and .check == "flake-lock-fresh" and ($L | index($target))
+             then "EXEMPT   \(.repo)\t\(.message)"
+             else "BLOCKING \(.repo)\t\(.check)\t\(.message)"
+             end )'
+     ```
+
+     Validate clears the doctor gate when that prints **no `BLOCKING` line**. A
+     finding whose message yields no target falls through to `BLOCKING`, so a
+     message-format change fails the gate CLOSED rather than exempting silently.
 
 ## Policies
 
 - MUST guarantee validity on success.
 - MUST NOT fail solely because the working tree is dirty — warn instead.
+- MUST NOT fail solely because an in-set `flake.lock` still pins a sibling this run
+  is about to land — warn instead (step 5). This is a NARROWING, not a removal:
+  every other `flake-lock-fresh` finding, and every finding of every other check,
+  keeps its severity.
 - This is the single Facade for validating a set; consumers (the sync command,
   the bead work-cycle) call it rather than re-deriving check commands.
 
@@ -68,6 +115,15 @@ flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
 each repo onto the _current_ primary at land time, so validate SHOULD
 immediately precede land. The post-land recheck is a `pn workspace build` on the
 canonical primary (the set is dismantled during landing).
+
+**The post-land gate is NOT relaxed (MUST).** Step 5's carve-out is gated on
+doctor's `worktree` mode, so it cannot reach a canonical checkout: there doctor
+runs in `primary` mode, where `flake-lock-fresh` compares each consumer against the
+target's **remote** head. That comparison is what actually protects published lock
+freshness, so on the canonical primary `flake-lock-fresh` MUST remain a **hard
+error** — satisfied by `pn workspace push`, never waived. Step 5 exempts only drift
+against a rev that is not published yet _because this run has not landed it yet_;
+once the run lands and publishes, the same drift is back under the hard gate.
 
 ## Frontmatter constraint: never set `disable-model-invocation`
 

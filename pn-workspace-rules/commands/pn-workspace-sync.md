@@ -97,6 +97,14 @@ if any stage halts.
      (the relock ends in a commit). Report the named repo; the user then commits or
      stashes, or authorizes `pn workspace push --no-siblings` to publish without
      propagating locks.
+   - **This step is what discharges validate's `flake-lock-fresh` warnings.**
+     `sync-fetch` advances sibling HEADs, so consumer locks go stale by
+     construction; validate warns rather than halting on exactly that drift
+     (`validate-workforest` step 5, bd `pg2-1i1ev`) because only a published rev can
+     be pinned and nothing in-set can converge it. The relaxation is therefore
+     CONDITIONAL on this step running: if publishing is ever removed, reordered
+     before validate, or routinely run as `--no-siblings`, that carve-out becomes a
+     silent hole and MUST be revisited with it.
 
 ## Notes
 
