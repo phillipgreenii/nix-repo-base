@@ -1,0 +1,28 @@
+#compdef wsplan
+
+_wsplan_subcommands() {
+  local -a subcommands
+  subcommands=(
+    'land-plan:Emit the typed JSON land plan for the shape under --root'
+  )
+  _describe 'wsplan subcommand' subcommands
+}
+
+_arguments -C \
+  '(-h --help)'{-h,--help}'[Show help message]' \
+  '(-v --version)'{-v,--version}'[Show version information]' \
+  '1: :_wsplan_subcommands' \
+  '*::args:->args'
+
+case $state in
+args)
+  case ${words[1]} in
+  land-plan)
+    _arguments \
+      '--root[REQUIRED: absolute path to an existing directory to plan for]:root:_directories' \
+      '--set-branch[Select the coordinated workforest set shape for this branch]:branch' \
+      '(-h --help)'{-h,--help}'[Show help message]'
+    ;;
+  esac
+  ;;
+esac

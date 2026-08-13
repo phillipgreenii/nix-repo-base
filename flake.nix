@@ -120,9 +120,20 @@
           # pnwf (workforest work-cycle) module: the shared pnwf-lib
           # primitives plus the `pnwf` command itself — all subcommands
           # (resolve/repos/stage/fork-preflight/land-plan/cleanup/status/
-          # sync-fetch) are implemented (bead pg2-xs5cj).
+          # sync-fetch) are implemented (bead pg2-xs5cj) — plus `wsplan`, the
+          # read-only Stage A land-plan emitter, a SECOND independent command
+          # in the same module (bead pg2-wjt8k.3).
+          #
+          # `pn` is threaded in from self.packages (mirroring ulScripts just
+          # above), because `wsplan` shells `pn workspace info --json` for the
+          # set directory. It MUST NOT come off `pkgs`: nixpkgs has no `pn`
+          # attribute, and overlays.default — the only thing that surfaces one
+          # — is exported for consumers and never applied to this flake's own
+          # pkgs. There is no recursion hazard: packages.pn does not depend on
+          # pnwfScripts, and nix attrset values are lazy per attribute.
           pnwfScripts = import ./modules/pnwf/scripts.nix {
             inherit pkgs bashBuilders;
+            inherit (self.packages.${system}) pn;
           };
           # Go builders (mkGoApp / mkGoBinary / mkGoLint) over the gomod2nix engine.
           goBuilders = import ./lib/go-builders.nix { inherit pkgs self; };
@@ -170,6 +181,12 @@
 
             # pnwf: deterministic helper for the workforest work-cycle.
             pnwf = pnwfScripts.pnwf.script;
+
+            # wsplan: read-only land-plan emitter (Stage A of `land`). This
+            # export is what makes it a real public command: flake.nix consumes
+            # only pnwfScripts.checks plus explicit per-package attrs — never
+            # pnwfScripts.packages — so without it the command reaches nobody.
+            wsplan = pnwfScripts.wsplan.script;
 
             # pn Go binary (single tool replacing the former pn-* bash scripts).
             pn = pkgs.callPackage ./modules/pn { inherit self; };

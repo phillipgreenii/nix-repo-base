@@ -154,6 +154,16 @@ choice — declare it, or keep the ambient-`PATH` assumption with the comment al
 the snippet. What is NOT acceptable is inheriting the assumption silently; that is why the first
 draft of this spec shipped an unbuildable test plan.
 
+**Choice made (implementation, 2026-08-12): keep the ambient-`PATH` assumption.** Declaring it is
+not merely undesirable but IMPOSSIBLE without inverting the workspace graph: `integrate-branch-support`
+lives in `phillipgreenii-nix-agent-support`, which DEPENDS ON this flake (the workspace lock records
+`phillipgreenii-nix-agent-support -> phillipg-nix-repo-base`, and this flake's `inputs` contain no
+agent-support), so declaring it would require adding agent-support as an input here and turning that
+edge into a cycle. `pnwf` already relies on ambient `PATH` for exactly this binary, and both commands
+reach `PATH` through the same agent-support overlay that provides it — so on any machine where
+`wsplan` is installed, `integrate-branch-support` is too. The rationale is recorded in
+`modules/pnwf/wsplan/default.nix` beside the `runtimeDeps` list, where the next reader will look.
+
 For tests, both MUST be mocked; the existing suite already does exactly this
 (`modules/pnwf/pnwf/tests/test-pnwf.bats:164` copies `pn` and `integrate-branch-support` mocks
 into `MOCK_BIN`). The bats check `PATH` is only
@@ -413,6 +423,18 @@ nothing to land. Detect it with `git rev-parse -q --verify HEAD` failing.
 
 ### 5.6 The edge test
 
+**Which lock, and where.** The lock this section means is the CANONICAL workspace's own, at
+`canonical_root/pn-workspace.lock.json` — the same file §6.1's `missing-lock` names. It is read
+ONLY on the workspace-root path, and that path reads it TWICE OVER: `.order[]` is the member list
+`incomplete-workspace` is defined against, and `.edges` is this test's graph. The SET path never
+reads a lock at all: `pnwf land-plan` reads the SET's OWN
+`canonical_root/<workforests_dir>/<branch>/pn-workspace.lock.json` itself (subset sets enumerate
+only their own members), and the standalone path has no workspace and therefore no lock — so
+`missing-lock` is unreachable on both. Because the workspace-root path cannot answer at all without
+the graph, the lock MUST be read EAGERLY there, before enumeration: reporting `nothing-to-do` for a
+workspace whose graph could not be read would be exactly the silent miss §5.1 exists to prevent, so
+an unreadable lock stops the run whatever |TOUCHED| would have been.
+
 `pn-workspace.lock.json` carries a top-level `edges` array of `{consumer, alias, target}`, plus
 `order` (topological) and `terminal`. Verified against the live lock 2026-08-12: 12 edges over 6
 repos.
@@ -472,25 +494,44 @@ On exit 0, exactly one JSON object MUST be written to stdout, and nothing else.
 
 ### 6.1 The `reason` enum
 
-Each code names ONE condition, so Stage B can branch on it without parsing `display`:
+Each code names ONE condition, so Stage B can branch on it without parsing `display`. The `shape`
+column resolves §6's rule "`null` ONLY when the run stopped before classifying" for every code, so
+no reader has to infer it:
 
-| code                   | condition                                                                           |
-| ---------------------- | ----------------------------------------------------------------------------------- |
-| `edges-present`        | multi-repo with a direct edge among `TOUCHED` (§5.6)                                |
-| `ambiguous-target`     | a repo has >1 unlanded work area (D7, §5.4)                                         |
-| `detached-head`        | a work area's `HEAD` is detached (§8)                                               |
-| `absent-ref`           | a work area's branch ref does not exist (§5.5)                                      |
-| `bad-path`             | an emitted path fails the §6.3 charset check                                        |
-| `missing-lock`         | the lock (`canonical_root/pn-workspace.lock.json`) is missing or unreadable         |
-| `not-a-repo`           | `--root` is outside any git repo and any workspace                                  |
-| `set-branch-required`  | `--root` is inside a set but `--set-branch` was not given (§5.2 Q2B)                |
-| `incomplete-workspace` | a member named in the lock has no clone on disk, at the workspace root              |
-| `unsupported-layout`   | absolute `workforests_dir` (§5.3)                                                   |
-| `delegate-failed`      | a non-zero exit or unusable output from `pn`, `pnwf`, or `integrate-branch-support` |
+| code                   | condition                                                                           | `shape`                                          |
+| ---------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `edges-present`        | multi-repo with a direct edge among `TOUCHED` (§5.6)                                | `multi-repo`                                     |
+| `ambiguous-target`     | a repo has >1 unlanded work area (D7, §5.4)                                         | the §7 mapping's — `single-repo` or `multi-repo` |
+| `detached-head`        | a work area's `HEAD` is detached (§8)                                               | detected input shape                             |
+| `absent-ref`           | a work area's branch ref does not exist (§5.5)                                      | detected input shape                             |
+| `bad-path`             | an emitted path fails the §6.3 charset check                                        | detected input shape                             |
+| `missing-lock`         | the lock (`canonical_root/pn-workspace.lock.json`) is missing or unreadable         | `workspace`, or `multi-repo` at the edge test    |
+| `not-a-repo`           | `--root` is outside any git repo and any workspace                                  | `null`                                           |
+| `set-branch-required`  | `--root` is inside a set but `--set-branch` was not given (§5.2 Q2B)                | `null`                                           |
+| `incomplete-workspace` | a member named in the lock has no clone on disk, at the workspace root              | `workspace`                                      |
+| `unsupported-layout`   | absolute `workforests_dir` (§5.3)                                                   | `set`                                            |
+| `delegate-failed`      | a non-zero exit or unusable output from `pn`, `pnwf`, or `integrate-branch-support` | detected input shape, or `null` — see below      |
+
+**"Detected input shape"** is the shape §5.2's routing settled when it picked a branch:
+`workspace` (`--root` IS the workspace root), `single-repo` (the D6 pointed-repo path, or the
+standalone path), `set` (Q1 took `--set-branch`). It is fixed the moment the branch is chosen, so
+every `stopped` code above except the two explicit `null`s carries a shape — a `stopped` run
+never reaches the |TOUCHED| refinement of §7, which is why refinement appears only for
+`ambiguous-target` (a `refuse`, which does).
+
+The two `null` rows are the only codes that stop BEFORE routing concludes: `not-a-repo` is Q2A's
+dead end and `set-branch-required` is Q2B's. `delegate-failed` is `null` in exactly one further
+case — when the `pn workspace info --json` at Q2B is itself what failed, so Q3 never ran — and
+carries the detected input shape otherwise.
 
 `delegate-failed` is scoped to actual delegate failures and MUST NOT be used as a catch-all. There
 is deliberately no catch-all for **shape**, since D1 covers every row of parent §4.1. `display`
 MUST carry the underlying diagnostic for `delegate-failed`.
+
+Note what having no catch-all implies for a failure that is NOT one of these eleven conditions —
+`git` is not among the three named delegates, so an unexpected `git` failure in a directory already
+confirmed to be a repo has no honest code. It MUST therefore exit NON-ZERO with no envelope, which
+is exactly the distinction §6.2 exists to preserve: the emitter DIED, rather than answered.
 
 ### 6.2 Exit-code contract
 
@@ -545,9 +586,48 @@ forbidden.
 | multi-repo, disjoint                      | `plan`                        | `multi-repo`                                    | per repo: `validate`, then `integrate-branch`; order-free                           |
 | any repo with >1 unlanded work area       | `refuse` (`ambiguous-target`) | as detected                                     | `[]`                                                                                |
 
+### 7.1 Which row, from |TOUCHED|
+
+Rows 1, 2, 4 and 5 are selected by the CARDINALITY of `TOUCHED` (§5.4 step 2 — repo names, never
+work areas), so the mapping is stated once here rather than left to be inferred from the row
+labels:
+
+| \|TOUCHED\| | row    | `outcome`                            | `shape`                                                                    |
+| ----------- | ------ | ------------------------------------ | -------------------------------------------------------------------------- |
+| 0           | 1      | `nothing-to-do`                      | the DETECTED INPUT SHAPE (§6.1) — this is what row 1's "as detected" means |
+| 1           | 2      | `plan`                               | `single-repo`                                                              |
+| ≥ 2         | 4 or 5 | `refuse` (`edges-present`) or `plan` | `multi-repo`                                                               |
+
+Two consequences are deliberate, not accidents of the table:
+
+- |TOUCHED| = 1 is `single-repo` **whichever path reached it** — workspace-wide enumeration with
+  exactly one touched member yields the same envelope as pointing `--root` at that member. There is
+  nothing multi- about landing one repo, and Stage B needs no third case.
+- `workspace` is therefore the shape of an ANSWER only via row 1. A workspace with work in it
+  always refines to `single-repo` or `multi-repo`; `shape = workspace` on a `plan`/`refuse`/
+  `nothing-to-do` envelope says "this was a workspace-wide question, and the answer is nothing to
+  do". A `stopped` envelope also reports it (§6.1) precisely because such a run never reached this
+  refinement.
+
+D7's refusal (row 6) is checked BEFORE the edge test and before row selection, and reports the
+shape this same mapping WOULD have given: `single-repo` when the one ambiguous repo is all of
+`TOUCHED`, `multi-repo` when other repos are touched too. Checking it first is load-bearing — a
+repo with two unlanded work areas must never reach row 5.
+
 The `refuse` rows MUST explain the remedy in `display` — form a coordinated set for
 `edges-present`, or re-point `--root` for `ambiguous-target`. The emitter MUST NOT fork a set: it
 is read-only.
+
+That requirement collides with §6.3's 256-character cap, and the collision is not theoretical:
+measured against the live workspace, two real absolute work-area paths overflow the cap on their
+own, and a single absolute canonical plus prose consumed the entire budget under a 155-character
+fixture root — losing exactly the work-area names §5.4 step 3 requires. A refusal's `display`
+MUST therefore (a) lead with the REMEDY, so the cap can never truncate it, and (b) carry NO absolute
+path — name the repo, and each competing work area RELATIVE to that repo's canonical. Both halves
+are needed: remedy-first alone just moves the truncation onto the evidence, and relativizing the
+areas while still naming an absolute canonical leaves the message's length dependent on how deep the
+tree happens to sit — silently correct in a shallow fixture and silently lossy in a real one. The
+caller loses nothing: it supplied `--root`, so it can reconstruct every absolute path.
 
 `cleanup` MUST NOT appear in any plan; it is `wrap-up`'s separate step (parent §4.1).
 
@@ -713,3 +793,14 @@ rounds of adversarial review:
 | bats check `PATH` excludes `pn` / `integrate-branch-support`; existing suite mocks both                       | `lib/bash-builders.nix:370-376`; `modules/pnwf/pnwf/tests/test-pnwf.bats:164`            |
 | git permits shell metacharacters in branch names                                                              | `git check-ref-format 'refs/heads/x$(id)'` ⇒ exit 0                                      |
 | the §6.3 charset accepts every real path this emitter emits                                                   | tested against workspace root, member clone, linked worktree, set dir, macOS `mktemp -d` |
+| `pn workspace info --json` reports `in_workforest` as a top-level boolean                                     | live probe (`false` at `/Users/phillipg/phillipg_mbp`); `info.go:19`                     |
+| its `.repos[]` carry `{name, path, applied_ref, dirty}`, `path` being the override-aware absolute clone path  | live probe (6 repos, each `path` = `<canonical_root>/<name>`); `info.go:29-34,51-52`     |
+| git reports PHYSICAL paths, so `--root` MUST be normalized before any comparison                              | live probe: a `mktemp -d` under macOS's `/var` symlink lists as `/private/var/…`         |
+
+The last three rows close cases the first two rounds left unstated. §5.2 depends on `in_workforest`
+(Q2B) and on `.repos[].path` (member enumeration and the D6 containment test), yet the
+`pn workspace info --json` row above records a probe only for `canonical_root` + `workforests_dir`.
+The third is the one genuine implementation finding: `git worktree list` and `rev-parse
+--show-toplevel` both report the PHYSICAL path, so an unresolved `--root` fails every containment
+test SILENTLY — a wrong ROUTE rather than a visible error. Normalizing `--root` (and each member
+path) with `cd … && pwd -P` is therefore REQUIRED, not hygiene.
