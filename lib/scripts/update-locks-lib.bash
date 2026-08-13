@@ -395,9 +395,24 @@ _ul_ensure_pre_commit_hooks() {
   rm -f "$errfile"
 
   # Tier 2: is the hook binary still valid (not GC'd)?
+  #
+  # `git rev-parse --git-path hooks` is the only correct resolution here, and its
+  # output is ALREADY the full hooks dir — it must NOT be joined onto the repo
+  # dir. It honours core.hooksPath when set (including an ABSOLUTE value, which
+  # every clone in this workspace holds and which the old
+  # "${_UL_SCRIPT_DIR}/${hooks_dir}" join doubled into a path that never existed),
+  # and with core.hooksPath unset it resolves to the COMMON hooks dir for a LINKED
+  # WORKTREE, which the old relative ".git/hooks" fallback could not (a worktree's
+  # .git is a FILE). Either miss made this tier unreachable: it always fell to the
+  # else branch, so every run reported "hook not found" and reinstalled, and the
+  # GC check below never ran. --path-format=absolute is load-bearing — without it
+  # the output can be relative to cwd (e.g. "../.git/hooks" from a subdir). A bare
+  # `git` is in-repo here: ul_setup cd's to script_dir before calling, which
+  # Tier 1's bare `.#install-pre-commit-hooks` flake ref already depends on.
+  # See bead pg2-rltuo.
   local hooks_dir hook_file exec_target needs_install
-  hooks_dir=$(git config --get core.hooksPath 2>/dev/null || echo ".git/hooks")
-  hook_file="${_UL_SCRIPT_DIR}/${hooks_dir}/pre-commit"
+  hooks_dir=$(git rev-parse --path-format=absolute --git-path hooks)
+  hook_file="${hooks_dir}/pre-commit"
   needs_install=false
 
   if [[ -f $hook_file ]]; then

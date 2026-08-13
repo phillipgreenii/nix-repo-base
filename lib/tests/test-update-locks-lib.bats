@@ -164,6 +164,109 @@ MOCK
   [ "$(cat "$TEST_DIR/untracked.txt")" = "precious user data" ]
 }
 
+# --- _ul_ensure_pre_commit_hooks: hooks-dir resolution (bead pg2-rltuo) ---
+#
+# Tier 2 ("is the hook binary still valid — not GC'd?") must first LOCATE the
+# installed hook. Two REAL configurations defeated it, both because the resolved
+# core.hooksPath was JOINED onto the repo dir:
+#
+#   (a) an ABSOLUTE core.hooksPath — what every clone in this workspace holds —
+#       produced "<repo>//<repo>/.git/hooks/pre-commit", which never exists;
+#   (b) with core.hooksPath UNSET the ".git/hooks" fallback is RELATIVE, so it
+#       cannot name a LINKED WORKTREE's hooks dir: a worktree's .git is a FILE
+#       and the hooks live in the COMMON dir under the main repo.
+#
+# Either miss left needs_install=true on EVERY run, so the GC check below the
+# lookup was unreachable. Both tests therefore assert the hook is FOUND — no
+# "hook not found" message and no reinstall at all — not merely that the path
+# string looks plausible.
+
+# Seed a findable, non-GC'd pre-commit hook in $1, a nix mock whose
+# `run .#install-pre-commit-hooks` is OBSERVABLE via a marker file, and a
+# current Tier-3 drv-path marker so a clean Tier 2 means NO reinstall happens.
+_seed_findable_pre_commit_hook() {
+  local hooks_dir="$1"
+  local drv="/nix/store/deadbeef-install-pre-commit-hooks"
+
+  # The hook's `exec` target must be a real executable or the GC check fires.
+  # It lives OUTSIDE any working tree so `git clean -fd` cannot remove it.
+  cat > "$MOCK_BIN/hook-runner" <<'RUNNER'
+#!/usr/bin/env bash
+exit 0
+RUNNER
+  _fix_mock_shebang "$MOCK_BIN/hook-runner"
+  chmod +x "$MOCK_BIN/hook-runner"
+
+  # Not chmod +x: the code only stats and greps it, and leaving it unexecutable
+  # keeps git from ever invoking it during the test's own commits.
+  mkdir -p "$hooks_dir"
+  printf 'exec %s hook-impl --hook-type=pre-commit\n' "$MOCK_BIN/hook-runner" \
+    > "$hooks_dir/pre-commit"
+
+  UL_TEST_REINSTALL_MARKER="$STATE_DIR/reinstall-ran"
+  export UL_TEST_REINSTALL_MARKER
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in
+  *build*install-pre-commit-hooks*) echo "/nix/store/deadbeef-install-pre-commit-hooks" ;;
+  *run*install-pre-commit-hooks*) : > "$UL_TEST_REINSTALL_MARKER" ;;
+esac
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  # Tier 3 agrees the derivation is unchanged, so any reinstall observed came
+  # from the Tier-2 lookup failing. Mirrors what ul_init/ul_setup would set.
+  # shellcheck disable=SC2034  # both are read by the sourced update-locks-lib
+  UL_STATE_DIR="$STATE_DIR/update-locks"
+  # shellcheck disable=SC2034  # ditto
+  _UL_PROJECT="test-project"
+  mkdir -p "$UL_STATE_DIR/$_UL_PROJECT"
+  echo "$drv" > "$UL_STATE_DIR/$_UL_PROJECT/pre-commit-drv-path"
+}
+
+@test "_ul_ensure_pre_commit_hooks finds the hook when core.hooksPath is ABSOLUTE" {
+  git config core.hooksPath "$TEST_DIR/.git/hooks"
+  _seed_findable_pre_commit_hook "$TEST_DIR/.git/hooks"
+
+  source "$UL_LOCKS_LIB"
+  # ul_setup sets this before calling; the old implementation joined the resolved
+  # hooksPath onto it, so it must be populated for this to test the real defect.
+  # shellcheck disable=SC2034  # read by the sourced update-locks-lib
+  _UL_SCRIPT_DIR="$TEST_DIR"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ ! $output =~ "hook not found" ]]
+  [[ ! $output =~ "hook binary missing" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks finds the COMMON hooks dir from a linked worktree with core.hooksPath unset" {
+  # Premise: git's normal state, no core.hooksPath anywhere in scope.
+  [ -z "$(git config --get core.hooksPath || true)" ]
+
+  # The hook lives in the main repo's COMMON hooks dir, never in the worktree.
+  _seed_findable_pre_commit_hook "$TEST_DIR/.git/hooks"
+
+  local wt="$TEST_DIR/linked-wt"
+  git worktree add --quiet "$wt" -b feat
+  [ -f "$wt/.git" ] # a FILE, not a directory — the reason a relative path fails
+
+  source "$UL_LOCKS_LIB"
+  # shellcheck disable=SC2034  # read by the sourced update-locks-lib
+  _UL_SCRIPT_DIR="$wt"
+  cd "$wt" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ ! $output =~ "hook not found" ]]
+  [[ ! $output =~ "hook binary missing" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
 # --- ul_run_step: success path ---
 
 @test "ul_run_step commits changes on success" {
