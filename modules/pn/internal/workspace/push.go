@@ -208,7 +208,10 @@ func (ws *Workspace) relockSiblingsBeforePush(ctx context.Context, out io.Writer
 // prek pre-push hook finds its config (ADR 0023 item 4).
 //
 // Push is a terminal-optional command: if no terminal is configured it emits
-// a warning to errOut and continues.
+// a warning to errOut and continues. It is likewise propagation-optional: if the
+// workspace edge lock cannot be derived, the publish still runs and the skipped
+// propagation is announced on errOut rather than failing the run (unlike the
+// dirty-tree refusal above, which aborts because the relock WOULD commit).
 func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, opts PushOptions) error {
 	if opts.Terminal == "" && ws.config.Workspace.Terminal == "" {
 		fmt.Fprintln(errOut, terminalWarningMessage)
@@ -233,9 +236,55 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 	// --no-siblings stays a pure git command. ws.lock is deliberately NOT used
 	// directly — it is empty on a fresh/stale checkout and would silently skip
 	// every repo (the C3 hazard propagate.go documents).
+	//
+	// The derivation is a WHOLE-RUN step, so its outcome is reported HERE, once,
+	// while the cause is still in hand — not per repo, where all that survives is
+	// an empty alias set. Discarding it (the C3 hazard, inherited unchanged from
+	// update's old call site) conflated two cases that must not be conflated:
+	//
+	//  1. The lock derived fine and a repo simply declares no workspace-sibling
+	//     inputs. Skipping it is CORRECT and stays SILENT — most repos in a
+	//     workspace are edgeless, so warning per edgeless repo would bury the run
+	//     in noise and train the operator to ignore the channel.
+	//  2. The lock could not be derived (or a repo's flake could not be
+	//     evaluated, so its edges were omitted). Then the empty alias set means
+	//     "unknown", not "none", and the relock below no-ops while push exits 0 —
+	//     which is exactly the silent non-convergence ADR 0023 makes push
+	//     responsible for preventing. That MUST be loud, and must name the
+	//     CONSEQUENCE (propagation skipped), not merely that a lock read failed.
 	var edgeLock *Lock
 	if propagate {
-		edgeLock, _, _ = ws.effectiveLock(ctx)
+		lock, validErrs, err := ws.effectiveLock(ctx)
+		if err != nil {
+			// Whole-run failure: no repo's aliases are knowable, so name them all
+			// once rather than repeating the same cause per repo.
+			fmt.Fprintf(errOut, "pn: push: WARNING: the workspace edge lock could not be derived: %v\n"+
+				"pn: push: WARNING: workspace-sibling relock SKIPPED for every repo (%s) — publishing anyway, "+
+				"but the workspace's flake locks will NOT converge; repair the lock (`pn workspace lock`) and "+
+				"re-run, or pass --no-siblings to publish deliberately without propagation\n",
+				err, strings.Join(names, ", "))
+			propagate = false
+		} else {
+			// Narrower blast radius, same conflation: the lock derived, but a repo
+			// whose flake failed every eval tier contributed NO edges to it, so that
+			// repo alone would relock nothing. The validation message already names
+			// the repo and the cause; add the consequence.
+			//
+			// Only the CAUSE half of that message is quoted. Its trailing advice
+			// (`--allow-missing-edges`) belongs to the lock-WRITE path and is not a
+			// push flag, so echoing it here would send the operator after a flag
+			// push does not accept. If derive_lock ever drops that " — " clause the
+			// Cut simply keeps the whole message, which is what push printed before.
+			for _, ve := range validErrs {
+				if ve.Code == "eval_failed" {
+					cause, _, _ := strings.Cut(ve.Message, " — ")
+					fmt.Fprintf(errOut, "pn: push: WARNING: workspace-sibling relock SKIPPED — %s; that repo's "+
+						"flake lock will NOT converge — fix its flake, or pass --no-siblings to publish "+
+						"deliberately without propagation\n", cause)
+				}
+			}
+			edgeLock = lock
+		}
 	}
 
 	for _, name := range names {

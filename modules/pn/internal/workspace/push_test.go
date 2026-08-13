@@ -646,6 +646,256 @@ func TestPush_RefusesToRelockDirtyRepo(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Push: an underivable edge lock must be AUDIBLE (bead pg2-l170v)
+// ---------------------------------------------------------------------------
+
+// pushUnderivableLockFixture builds a workspace whose edge lock cannot be
+// derived: two repos share one canonical remote URL, which buildEdges rejects
+// with duplicate_remote_url, so effectiveLock returns an error. There is
+// deliberately NO pn-workspace.lock.json (an on-disk lock matching config would
+// short-circuit the derivation) and no flake.nix (so no nix eval is needed to
+// reach the failure). Both repos are pushable, so a test can also assert that
+// publishing still happens.
+//
+// Repos are named "aaa"/"bbb" rather than dep/consumer because with the
+// derivation broken there is no edge and therefore no dependency direction —
+// the order is the alphabetical topoAlpha fallback.
+func pushUnderivableLockFixture(t *testing.T) (root, aaa, bbb string, f *exec.FakeRunner) {
+	t.Helper()
+	root = t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.aaa]
+url = "github:owner/same"
+
+[repos.bbb]
+url = "github:owner/same"
+`)
+	aaa = mkGitRepoDir(t, root, "aaa")
+	bbb = mkGitRepoDir(t, root, "bbb")
+	f = exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", aaa, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", bbb, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
+	return root, aaa, bbb, f
+}
+
+// TestPush_UnderivableEdgeLock_WarnsAndPublishes pins the fix for pg2-l170v: the
+// error from effectiveLock used to be discarded, so an underivable lock produced
+// an empty alias set for EVERY repo, the relock silently no-opped, and push
+// exited 0 having published without converging any flake lock. The warning must
+// name the underlying cause, name the repos whose propagation was skipped, and
+// say that propagation was SKIPPED — the consequence is the part an operator
+// needs. The publish itself must still happen (see the doc comment on Push).
+func TestPush_UnderivableEdgeLock_WarnsAndPublishes(t *testing.T) {
+	root, _, _, f := pushUnderivableLockFixture(t)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Push(context.Background(), &out, &errOut, PushOptions{Terminal: "aaa"}); err != nil {
+		t.Fatalf("an underivable edge lock must not fail the publish; got %v", err)
+	}
+	stderr := errOut.String()
+	// The underlying cause, not just "a lock read failed".
+	if !strings.Contains(stderr, "duplicate_remote_url") {
+		t.Errorf("warning must name the underlying derivation error; got %q", stderr)
+	}
+	// The consequence.
+	if !strings.Contains(stderr, "SKIPPED") {
+		t.Errorf("warning must say the sibling relock was SKIPPED; got %q", stderr)
+	}
+	if !strings.Contains(stderr, "NOT converge") {
+		t.Errorf("warning must state that the flake locks will not converge; got %q", stderr)
+	}
+	// The affected repos.
+	if !strings.Contains(stderr, "aaa") || !strings.Contains(stderr, "bbb") {
+		t.Errorf("warning must name the repos whose propagation was skipped; got %q", stderr)
+	}
+	// The escape hatch, so the operator can silence it deliberately.
+	if !strings.Contains(stderr, "--no-siblings") {
+		t.Errorf("warning must name the --no-siblings escape; got %q", stderr)
+	}
+	// Emitted ONCE for the whole run, not once per repo: the derivation is a
+	// whole-run step, so N copies of one cause is noise.
+	if got := strings.Count(stderr, "could not be derived"); got != 1 {
+		t.Errorf("the derivation failure must be reported exactly once for the run, got %d times in %q", got, stderr)
+	}
+	// Publishing still happened for both repos.
+	pushes := 0
+	for _, c := range f.Calls() {
+		if c.Name == "nix" {
+			t.Errorf("no relock is possible without an edge lock; got nix %v", c.Args)
+		}
+		if c.Name == "git" && len(c.Args) == 3 && c.Args[2] == "push" {
+			pushes++
+		}
+	}
+	if pushes != 2 {
+		t.Errorf("push must still publish every repo; got %d pushes, calls=%v", pushes, f.Calls())
+	}
+}
+
+// TestPush_UnderivableEdgeLock_NoSiblingsStaysSilent: --no-siblings never asked
+// for propagation, so there is nothing to warn about — and the lock is never
+// derived at all, keeping --no-siblings a pure git command (no nix eval) even
+// when the lock is underivable.
+func TestPush_UnderivableEdgeLock_NoSiblingsStaysSilent(t *testing.T) {
+	root, _, _, f := pushUnderivableLockFixture(t)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Push(context.Background(), &out, &errOut, PushOptions{Terminal: "aaa", NoSiblings: true}); err != nil {
+		t.Fatalf("Push --no-siblings: %v", err)
+	}
+	if strings.Contains(errOut.String(), "SKIPPED") {
+		t.Errorf("--no-siblings did not request propagation, so nothing was skipped; got stderr %q", errOut.String())
+	}
+	pushes := 0
+	for _, c := range f.Calls() {
+		if c.Name == "git" && len(c.Args) == 3 && c.Args[2] == "push" {
+			pushes++
+		}
+	}
+	if pushes != 2 {
+		t.Errorf("--no-siblings must still push every repo; got %d pushes, calls=%v", pushes, f.Calls())
+	}
+}
+
+// TestPush_UnevaluableFlake_WarnsNamingTheRepo covers the narrower half of the
+// same conflation, and the case the bead actually describes ("nix eval fails, or
+// there is no on-disk lock"): with no disk lock the edge lock is DERIVED, and a
+// repo whose flake fails every eval tier contributes no edges to it. That repo's
+// empty alias set means "unknown", not "none", so its skipped relock must be
+// audible and must name the repo — while the derivation as a whole succeeded, so
+// the whole-run warning must NOT fire.
+func TestPush_UnevaluableFlake_WarnsNamingTheRepo(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.aaa]
+url = "github:owner/aaa"
+
+[repos.bbb]
+url = "github:owner/bbb"
+`)
+	aaa := mkGitRepoDir(t, root, "aaa")
+	bbb := mkGitRepoDir(t, root, "bbb")
+	// A flake on disk is what distinguishes "eval failed" from "not cloned" /
+	// "no flake_path", both of which are legitimately edgeless. Every `nix eval`
+	// is left unscripted, so all three eval tiers fail for both repos.
+	writeFile(t, filepath.Join(aaa, "flake.nix"), `{ inputs = {}; outputs = { self, ... }: {}; }`)
+	writeFile(t, filepath.Join(bbb, "flake.nix"), `{ inputs = {}; outputs = { self, ... }: {}; }`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", aaa, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", bbb, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Push(context.Background(), &out, &errOut, PushOptions{Terminal: "bbb"}); err != nil {
+		t.Fatalf("an unevaluable flake must not fail the publish; got %v", err)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, "SKIPPED") || !strings.Contains(stderr, "NOT converge") {
+		t.Errorf("warning must say the relock was SKIPPED and the lock will not converge; got %q", stderr)
+	}
+	// One warning per affected repo, each naming its own repo — the cause here IS
+	// per repo, unlike the whole-run derivation failure.
+	if !strings.Contains(stderr, `"aaa"`) || !strings.Contains(stderr, `"bbb"`) {
+		t.Errorf("warning must name each repo whose flake could not be evaluated; got %q", stderr)
+	}
+	// The derivation itself succeeded, so the whole-run warning must stay quiet —
+	// otherwise the two cases are conflated again, in the other direction.
+	if strings.Contains(stderr, "could not be derived") {
+		t.Errorf("the lock DID derive; the whole-run warning must not fire; got %q", stderr)
+	}
+	// The escape named must be one push actually accepts. --allow-missing-edges is
+	// a `pn workspace lock` flag and belongs to the lock-write path, so quoting the
+	// validation message's trailing advice would misdirect the operator.
+	if strings.Contains(stderr, "--allow-missing-edges") {
+		t.Errorf("push must not name --allow-missing-edges, which is not a push flag; got %q", stderr)
+	}
+	if !strings.Contains(stderr, "--no-siblings") {
+		t.Errorf("warning must name push's own escape (--no-siblings); got %q", stderr)
+	}
+	pushes := 0
+	for _, c := range f.Calls() {
+		if c.Name == "git" && len(c.Args) == 3 && c.Args[2] == "push" {
+			pushes++
+		}
+	}
+	if pushes != 2 {
+		t.Errorf("push must still publish every repo; got %d pushes", pushes)
+	}
+}
+
+// TestPush_NoWorkspaceEdges_StaysSilent is the REGRESSION GUARD that stops the
+// pg2-l170v fix from becoming noise. A repo that legitimately declares no
+// workspace-sibling inputs is skipped correctly, and that skip must remain
+// SILENT: most repos in a workspace are edgeless, so warning per edgeless repo
+// would make the channel unreadable and mask the real warning above.
+//
+// The lock here derives from disk (it matches config), so there is no derivation
+// error and no eval failure — only an empty edge set.
+func TestPush_NoWorkspaceEdges_StaysSilent(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.aaa]
+url = "github:owner/aaa"
+
+[repos.bbb]
+url = "github:owner/bbb"
+`)
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["aaa", "bbb"],
+  "repos": {
+    "aaa": {"flake_path": "flake.nix", "remote_url": "github:owner/aaa"},
+    "bbb": {"flake_path": "flake.nix", "remote_url": "github:owner/bbb"}
+  },
+  "edges": []
+}`)
+	aaa := mkGitRepoDir(t, root, "aaa")
+	bbb := mkGitRepoDir(t, root, "bbb")
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", aaa, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", bbb, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Push(context.Background(), &out, &errOut, PushOptions{Terminal: "bbb"}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if errOut.String() != "" {
+		t.Errorf("an edgeless workspace must produce NO propagation warning; got stderr %q", errOut.String())
+	}
+	// And no subprocess was spent looking for siblings that do not exist.
+	for _, c := range f.Calls() {
+		if c.Name == "nix" {
+			t.Errorf("an edgeless workspace must not run nix; got %v", c.Args)
+		}
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[2] == "diff" {
+			t.Errorf("an edgeless repo must not reach the relock dirty probe; got %v", c.Args)
+		}
+	}
+}
+
 // TestPush_InWorkforestSet_SkipsPropagation: inside a coordinated set, push
 // publishes the set's feature branch and does NOT relock — propagation is a
 // canonical-clone operation (ADR 0023 item 4), and the set deliberately resolves
