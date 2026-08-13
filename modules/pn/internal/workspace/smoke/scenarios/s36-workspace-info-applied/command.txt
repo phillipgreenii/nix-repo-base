@@ -1,6 +1,12 @@
 # Bootstrap, apply (records applied-state), then dump workspace info as JSON.
+# `workspace allow` is REQUIRED before apply: apply_command is config-sourced
+# argv, so Apply is TOFU trust-gated via ensureExecTrusted (ADR-0019, beads
+# pg2-oymai / pg2-x2q6o). Without it apply aborts, no applied_ref is recorded,
+# and the info assertion fails. `info --json` stays the LAST command, so the
+# expected_stdout.txt / expected_exit.txt assertions still target it.
 workspace init
 workspace clone
 workspace lock
+workspace allow
 workspace apply
 workspace info --json

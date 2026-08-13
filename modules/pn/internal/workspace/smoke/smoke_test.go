@@ -83,13 +83,32 @@ func checkPreconditions() {
 	}
 }
 
-// nixAvailable reports whether nix is on PATH with nix-command+flakes.
-// Used by scenarios that require nix to skip themselves when unavailable.
-// It is a package-level var so tests can stub it to simulate a no-nix host
-// without uninstalling nix.
+// nixAvailable reports whether a `nix` binary is on PATH. Used by scenarios that
+// require nix to skip themselves when unavailable. It is a package-level var so
+// tests can stub it to simulate a no-nix host without uninstalling nix.
+//
+// NOTE: presence on PATH is all this checks. It deliberately does NOT imply nix
+// can reach the network — inside the `pn-smoke-tests` flake check nix is present
+// and evaluates local flakes fine, yet cannot fetch an external input. That
+// second, independent capability is gated by networkAvailable below.
 var nixAvailable = func() bool {
 	_, err := exec.LookPath("nix")
 	return err == nil
+}
+
+// networkAvailable reports whether outbound network is usable. It is a
+// package-level var so tests can stub it without changing the host's
+// connectivity.
+//
+// The probe is the presence of NIX_BUILD_TOP, which nix sets only inside a
+// builder. A nix build sandbox has no network by construction (only
+// fixed-output derivations do), so this is exact, instant and deterministic —
+// deliberately preferred over a real DNS/TCP dial, which would add latency and
+// a flaky failure mode to every run to answer a question whose answer is
+// already known. Outside a nix builder we assume connectivity and let the
+// scenario fail honestly if it is wrong.
+var networkAvailable = func() bool {
+	return os.Getenv("NIX_BUILD_TOP") == ""
 }
 
 // requiresNixMarker is the name of the per-scenario marker file that declares
@@ -113,6 +132,33 @@ func skipScenarioIfNixUnavailable(t *testing.T, scenarioDir string) {
 	t.Helper()
 	if scenarioRequiresNix(scenarioDir) && !nixAvailable() {
 		t.Skipf("scenario requires nix (marker %q present) but nix is not available on this host", requiresNixMarker)
+	}
+}
+
+// requiresNetworkMarker is the name of the per-scenario marker file that declares
+// the scenario needs outbound network — distinct from requires-nix, because a
+// present-and-working nix still cannot FETCH an external flake input in an
+// offline sandbox. S23 is the only such scenario: its generated flake has a
+// `nixpkgs` input, so `nix fmt` must resolve the flake registry. Scenarios
+// carrying this marker are skipped — not failed — when network is unavailable.
+const requiresNetworkMarker = "requires-network"
+
+// scenarioRequiresNetwork reports whether the scenario directory declares a
+// network prerequisite via the requires-network marker file.
+func scenarioRequiresNetwork(scenarioDir string) bool {
+	_, err := os.Stat(filepath.Join(scenarioDir, requiresNetworkMarker))
+	return err == nil
+}
+
+// skipScenarioIfNetworkUnavailable skips the test (with a clear reason) when the
+// scenario requires network but none is available. Without this gate S23 hard-fails
+// inside the `pn-smoke-tests` flake check with an opaque SSL/CA error from nix's
+// flake-registry fetch, which reads as a real regression rather than a missing
+// capability.
+func skipScenarioIfNetworkUnavailable(t *testing.T, scenarioDir string) {
+	t.Helper()
+	if scenarioRequiresNetwork(scenarioDir) && !networkAvailable() {
+		t.Skipf("scenario requires outbound network (marker %q present) but none is available (inside a nix build sandbox?)", requiresNetworkMarker)
 	}
 }
 
@@ -417,6 +463,11 @@ func runScenario(t *testing.T, name string) {
 	// Must run before setup.sh, which for nix-dependent scenarios (e.g. S23)
 	// invokes `nix build` and would otherwise hard-fail with a setup error.
 	skipScenarioIfNixUnavailable(t, scenarioDir)
+
+	// Same, for scenarios needing outbound network (e.g. S23 resolving the
+	// `nixpkgs` flake input). Independent of the nix gate: the pn-smoke-tests
+	// flake check HAS a working nix but no network.
+	skipScenarioIfNetworkUnavailable(t, scenarioDir)
 
 	// Create a fresh temp workspace for this scenario.
 	wsRoot := t.TempDir()

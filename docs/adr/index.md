@@ -25,6 +25,7 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0018](0018-os-aware-builder-and-terminal-path-template-vars.md) | OS-aware `{builder}` + explicit terminal-path template variables           | Accepted                                              |
 | [0019](0019-per-repo-event-hooks.md)                             | Event-based workspace + per-repo hooks with override-aware `{nix_run}`     | Accepted (supersedes 0002 hooks; amends 0017)         |
 | [0020](0020-update-locks-failure-classification.md)              | `update-locks` failure classification (transient / resource / hard)        | Accepted                                              |
-| [0021](0021-subpackages-check-scoping-mkgotest.md)               | `subPackages` scopes the gomod2nix check hook — gate tests with `mkGoTest` | Accepted                                              |
+| [0021](0021-subpackages-check-scoping-mkgotest.md)               | `subPackages` scopes the gomod2nix check hook — gate tests with `mkGoTest` | Accepted (amended by 0024)                            |
 | [0022](0022-adopt-uv2nix-for-python-packages.md)                 | Adopt `uv2nix` for lock-driven Python builds (`mkPythonPackage`)           | Accepted (base; consumers → `pg2-wun6b`)              |
 | [0023](0023-workspace-push-owns-sibling-propagation.md)          | `pn workspace push` owns sibling propagation; `update` never pushes        | Accepted (amends 0009)                                |
+| [0024](0024-build-tagged-suites-need-their-own-check.md)         | Build-tagged suites need their own check; per-scenario capability markers  | Accepted (amends 0021)                                |

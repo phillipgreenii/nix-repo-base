@@ -1,5 +1,10 @@
 # Bootstrap the workspace, then run build.
+# `workspace allow` is REQUIRED before build: build_command is config-sourced
+# argv, so Build is TOFU trust-gated via ensureExecTrusted (ADR-0019, beads
+# pg2-oymai / pg2-x2q6o). Each scenario gets a fresh XDG_STATE_HOME, so the
+# synthetic workspace is always untrusted until allowed.
 workspace init
 workspace clone
 workspace lock
+workspace allow
 workspace build

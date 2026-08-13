@@ -1,0 +1,8 @@
+# Marker: this scenario requires OUTBOUND NETWORK, over and above `nix` itself.
+# The generated flake declares a `nixpkgs` input, so `nix fmt` must resolve it
+# via the flake registry (channels.nixos.org). runScenario skips this scenario
+# (rather than hard-failing with an opaque SSL/CA error) when no network is
+# available — notably inside the `pn-smoke-tests` flake check, where nix IS
+# present and evaluates local flakes fine but the build sandbox has no network.
+# Un-skip condition: make the fixture resolve nixpkgs offline (e.g. pin the
+# input to a store path passed in from the flake check) and delete this marker.

@@ -1,7 +1,13 @@
 # Bootstrap the workspace, then create a workforest set.
-# The verb chain (status→build→update→rebase main→push --set-upstream)
+# The verb chain (status -> build -> update -> rebase main -> push --set-upstream)
 # and P1 primary-unchanged assertions are in assertS29VerbsInASet.
+# `workspace allow` MUST precede `workforest add`: installSetHooks propagates
+# trust from an already-trusted canonical to the pn-authored set (fail-closed —
+# an untrusted canonical grants the set nothing), and the in-set `workspace
+# build` is TOFU trust-gated (ADR-0019, beads pg2-oymai / pg2-x2q6o). Allowing
+# here therefore also covers the set, and exercises that propagation path.
 workspace init
 workspace clone
 workspace lock
+workspace allow
 workspace workforest add feature-y
