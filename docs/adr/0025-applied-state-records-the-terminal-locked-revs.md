@@ -170,3 +170,41 @@ remedy is on the resolution side.
   act on it.
 - ADR 0012 is **amended**, not superseded: its store path, its canonical-path keying rule, and its
   schema-stability contract all stand.
+
+## Amendment: the Context measurement was invalid, and `apply` does not build workspace repos from the lock (bd pg2-xg9wp)
+
+The **decision stands** — `locked_revs` is still correct, self-contained, fail-closed evidence — but
+two Context claims do not survive re-measurement, so `locked_revs` MUST NOT be read as "the rev this
+apply built that repo from".
+
+1. **The `strings … | grep -c ruff-pin` reading of `0` is an artifact of the probe.** `bin/pn` is a
+   1158-byte `makeWrapper` bash script; the Go binary is the sibling dotfile `bin/.pn-wrapped`, which
+   `ls` hides and `readlink -f` does not reach. The same probe returns `0` for `branch-synced` and
+   for bare `ruff`; run against `.pn-wrapped` it returns `3`. The ruff-pin work was in the terminal's
+   pinned `nix-base` rev (`d8b5972`) all along.
+
+2. **`pn workspace apply` overrides EVERY non-terminal workspace repo, so a `github:`-pinned repo is
+   built from the local clone at EVAL-TIME HEAD, not from the lock.** `Apply` computes
+   `overrideInputArgsFor` unconditionally (`apply.go`) and appends one
+   `--override-input <alias> git+file://<clone>` pair per lock edge (`helpers.go`). Evidence from
+   the active generation: system `795`'s `claude-extended-tool-approver` source is byte-identical to
+   `phillipgreenii-nix-agent-support` at `fc3bf2e9` — seven commits AHEAD of the terminal's pinned
+   `2b18e16` — and its digest moved `bf2dc569 → 34d5a4a5 → 5550dc75` across generations
+   `793 → 794 → 795` while the lock's rev never moved. Generation `794` is decisive on its own: its
+   CETA source is agent-support at `9e3bb00f` (14:25), which is NOT an ancestor of `2b18e16`, and the
+   terminal's `flake.lock` was last touched at 13:13. A lock-built system could not contain it.
+
+3. **The staleness the Context reported is a TOCTOU in `markApplied`, not a lock problem.** It reads
+   `git rev-parse HEAD` AFTER the rebuild, so a commit landing during the apply window is recorded as
+   `applied_ref` although the activated system was evaluated before it. Measured for generation `795`
+   via `nix path-info --json … .registrationTime` and `git reflog show main --date=iso`: the system
+   `.drv` was written `15:36:41`, its output registered and activated `15:38:34`, and the
+   applied-state files written `15:39:51` — while repo-base `main` advanced to `458b5e4` at `15:36:28`
+   and agent-support `main` to `974d0276` at `15:37:00`. Both were recorded as `applied_ref`; neither
+   is in generation `795`.
+
+Consequence for `phillipgreenii-nix-agent-support` ADR 0046: its condition 2 is sound as a
+fail-closed test but stricter than the build requires, because an override'd repo's built code is its
+local eval-time HEAD, which normally LEADS `locked_revs[repo]`. A `blocked` verdict therefore means
+"not provable from the lock", NOT "not in the running system". Closing the TOCTOU requires the apply
+to capture each override'd checkout's HEAD BEFORE the build; that is not done today.
