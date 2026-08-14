@@ -89,10 +89,32 @@ On any stop, emit `pnwf status <branch>` — a per-repo table (landed / blocked 
 reason / kept + why / not-started) — and map each `stopped:<reason>` to a next
 action:
 
-- `rebase-conflict` → resolve in `<set>/<repo>`, then re-run land-workforest.
+- `rebase-conflict` → the rebase STARTED and stopped mid-way, so a conflict really
+  is there: resolve it in `<set>/<repo>`, then re-run land-workforest.
+- `worktree-dirty` → `<set>/<repo>` has uncommitted changes, caught by
+  `integrate-branch`'s FF-0b **before** it rebased. Nothing is mid-rebase, so
+  `git rebase --continue` / `--abort` do **not** apply. Commit or stash there, then
+  re-run land-workforest. This is the no-uncommitted-changes precondition above,
+  caught at land time rather than by `validate-workforest` — expect it whenever a
+  parked bead reaches landing with work deliberately left uncommitted.
+- `rebase-in-progress` → a rebase was ALREADY running in `<set>/<repo>` before
+  landing began — someone else's unfinished rebase, not one this landing caused.
+  Finish it or abort it **in that worktree**, then re-run land-workforest.
+- `rebase-refused` → `git rebase` exited non-zero having started nothing, for a
+  cause FF-0b does not enumerate. There is nothing to resolve and nothing to
+  continue; relay the handler's verbatim git message, which names the cause, and let
+  the operator disposition it before re-running.
+- `rebase-indeterminate` → the rebase failed and the rebase-in-progress observable
+  could not be read, so `integrate-branch` asserted no recovery. Surface its quoted
+  git and probe output and let the operator inspect `<set>/<repo>`.
 - canonical off-primary/dirty → point the operator at the pn-workspace-rules
   Asymmetric-defer / Tier-R guidance; do **not** tell them to reset the canonical.
 - ff-race → re-run once concurrent landings settle.
+
+The four non-conflict rebase reasons above MUST NOT be relayed as
+`rebase-conflict`. Each has a different next action, and only `rebase-conflict` has
+anything to resolve — telling an operator to resolve a conflict that does not exist
+sends them hunting, and the `git rebase --continue` it implies exits 128.
 
 ## Re-validation
 
