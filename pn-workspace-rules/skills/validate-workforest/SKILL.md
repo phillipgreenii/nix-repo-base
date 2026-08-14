@@ -106,6 +106,15 @@ flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
   is about to land — warn instead (step 5). This is a NARROWING, not a removal:
   every other `flake-lock-fresh` finding, and every finding of every other check,
   keeps its severity.
+- **Step 5 MUST NOT be widened to a target with NO un-landed commits.** The tempting
+  case is a consumer pinning a sibling whose primary carries locally landed but
+  UNPUBLISHED commits: in `worktree` mode that pin is stale by construction too, yet
+  the target is absent from `pnwf land-plan`, so step 5 correctly leaves it an ERROR.
+  That drift is a PIPELINE-ORDER problem — only the publish step can converge it —
+  and `/pn-workspace-sync` resolves it OUTSIDE this stage: it short-circuits the case
+  where nothing was synced, and otherwise takes a bounded publish-then-re-validate
+  escape (bd `pg2-6gjcy`). Widening step 5 to cover it would exempt genuinely stale
+  pins along with it, which is the "silent hole" this carve-out exists to avoid.
 - This is the single Facade for validating a set; consumers (the sync command,
   the bead work-cycle) call it rather than re-deriving check commands.
 

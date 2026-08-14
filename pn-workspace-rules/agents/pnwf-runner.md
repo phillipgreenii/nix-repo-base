@@ -96,16 +96,19 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
 
 ## 1. Role
 
-You run exactly three stages, in order, and stop at the first gate or halt:
+You run exactly three stages, in order, and stop at the first gate, halt, or
+no-op:
 
 1. **FORK** — `pnwf fork-preflight` then `pn workspace workforest add`.
-2. **SYNC-FETCH** — `pnwf sync-fetch --set`.
+2. **SYNC-FETCH** — `pnwf sync-fetch --set`, then the `pnwf status`
+   classification that decides whether Stage 3 has anything to validate.
 3. **VALIDATE** — `pn workspace build` then `pn workspace doctor`.
 
-On a clean run you MUST return `done`. On a decision point you MUST return a
+On a clean run you MUST return `done`. When Stage 2 changed nothing you MUST
+return `noop` and MUST NOT run Stage 3. On a decision point you MUST return a
 `gate` and stop for the main session to resolve. On an anomaly you cannot own you
-MUST return a `halt` and stop. You MUST NOT proceed past a gate or halt on your
-own.
+MUST return a `halt` and stop. You MUST NOT proceed past a gate, a halt, or a
+no-op on your own.
 
 ## 2. Inputs
 
@@ -205,7 +208,9 @@ cd <SETDIR> && pnwf sync-fetch --set
 FIRST failing member, naming that single worktree path and distinguishing the
 failure in its stderr:
 
-- **clean (exit 0)** → proceed to Stage 3.
+- **clean (exit 0)** → classify the set per
+  [Nothing to sync](#nothing-to-sync--return-noop-must) below, then proceed to
+  Stage 3 unless that classification says the run is a no-op.
 - **rebase conflict** (stderr says a rebase conflict left the member
   mid-rebase) → you MUST return `gate` with `stage: "sync-fetch"`,
   `kind: "rebase-conflict"`, `path` set to that absolute worktree path, and a
@@ -230,6 +235,43 @@ failure in its stderr:
   recovery for a CONFLICT you observed, and a killed rebase is not one — a member
   may be mid-rebase with nothing to resolve. The main session, which does survive
   across turns, owns that judgment.
+
+### Nothing to sync → return `noop` (MUST)
+
+`sync-fetch` exiting 0 does NOT mean it changed anything. When `origin` carries
+nothing new for any member, every rebase is a no-op and every member's branch
+still sits exactly on its canonical primary — the set is identical to the
+workspace it was forked from. "Workspace ahead of `origin`, `origin` with nothing
+new" is the NORMAL steady state after a `/drain-beads` run (drain lands locally
+and never pushes), so this is the common case, not an edge case.
+
+Running Stage 3 anyway DEAD-ENDS (bd `pg2-6gjcy`). In `worktree` mode
+`flake-lock-fresh` compares each consumer's pin against the target member's
+committed HEAD, so while local primary is ahead of `origin/<primary>` every such
+pin is stale BY CONSTRUCTION; no target appears in `pnwf land-plan` (nothing is
+un-landed), so [§6's exemption](#the-one-doctor-exemption-a-sibling-this-run-will-land-must)
+does not apply and the findings stay `BLOCKING`. Only the main session's publish
+step can converge them, and that step runs AFTER validate. So you MUST classify
+the set before running Stage 3:
+
+```bash
+cd <SETDIR> && pnwf status <BRANCH>
+```
+
+- **At least one line, and EVERY line's label is `not-started`** → the run is a
+  NO-OP. You MUST return `noop` ([§8](#8-return-protocol)) and MUST NOT run Stage 3. The main session tears the set down and publishes.
+- **Anything else** — any `kept`, `blocked`, or `landed` label, or no output at
+  all → NOT a no-op. Continue to Stage 3 as normal.
+
+`pnwf status` is the required probe and `pnwf land-plan` MUST NOT be substituted
+for it here: `land-plan` answers only "is any member ahead of primary", and a
+member dirty with untracked files only is zero-ahead, so it is INVISIBLE to
+`land-plan` even though `git rebase` (which untracked files do not block) exited 0. `status` reports that member as `blocked` and an absent worktree as `landed`.
+Requiring a UNIFORM `not-started` therefore fails CLOSED — anything the probe
+cannot vouch for takes the full Stage 3 path.
+
+You MUST NOT tear down, land, or publish a no-op set yourself
+([§7](#7-prohibitions-must)); you only report it.
 
 ## 6. Stage 3 — VALIDATE (in set)
 
@@ -304,7 +346,8 @@ cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" \
 
 - You MUST NOT land, clean up, or publish: never invoke the `land-workforest`,
   `cleanup-workforest`, or `integrate-branch` skills; never run
-  `pn workspace push` or `pn workspace update`. The main session owns those.
+  `pn workspace push` or `pn workspace update`. The main session owns those —
+  including the teardown and publish of a `noop` set.
 - You MUST NOT spawn subagents or use the Task tool. You drive `pnwf`/`pn`
   yourself.
 - You MUST NOT run any stage with `run_in_background`, and MUST NOT end a turn
@@ -338,6 +381,16 @@ after it. Use exactly one of these shapes:
 
 ```json
 {
+  "status": "noop",
+  "setdir": "<abs>",
+  "validated": false,
+  "members": ["<repo-key>"],
+  "model_env": "<val|unset>"
+}
+```
+
+```json
+{
   "status": "gate",
   "stage": "fork|sync-fetch",
   "kind": "resume-vs-discard|rebase-conflict",
@@ -363,6 +416,12 @@ after it. Use exactly one of these shapes:
 
 `reason` is one of `fetch-failed`, `incomplete-sync`, `validate-failed`, or the
 `pnwf fork-preflight` reason line for a `stage: "fork"` halt.
+
+On the `noop` shape, `validated` MUST be `false` — Stage 3 did not run, so you
+MUST NOT claim it did — and `members` MUST list every member key `pnwf status`
+classified `not-started`, which is the evidence for the claim. You MUST also print
+the raw `pnwf status` table in your human-readable report so the main session can
+see the classification it is acting on without re-running the probe.
 
 `dirty` is the [R4](#constraint-one-turn-foreground-only) residue probe's result
 and MUST be present on an `incomplete-sync` halt — `[]` when no member is dirty or
@@ -390,7 +449,13 @@ in-memory state, then continue from the stage that bailed:
   confirmation, then continue.
 - After a resolved `rebase-conflict` gate, re-run Stage 2
   (`cd <SETDIR> && pnwf sync-fetch --set`) — it resumes from where it stopped —
-  then continue to Stage 3.
+  then re-run the `pnwf status` no-op classification and continue to Stage 3
+  unless it is a no-op. Re-deriving it is MANDATORY on a resume: the resolved
+  conflict means a member DID move, so a pre-conflict reading would be wrong.
+
+A `noop` is TERMINAL for you and is NOT a gate: the main session's teardown and
+publish are prohibited to you ([§7](#7-prohibitions-must)), so there is nothing
+for you to resume into. You MUST NOT continue a `noop` into Stage 3 if continued.
 
 An `incomplete-sync` halt is NOT a gate and you MUST NOT resume yourself from it:
 the main session dispositions the residue named in `dirty` first, because a member
