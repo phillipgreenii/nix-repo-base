@@ -410,19 +410,47 @@ _ul_ensure_pre_commit_hooks() {
   # `git` is in-repo here: ul_setup cd's to script_dir before calling, which
   # Tier 1's bare `.#install-pre-commit-hooks` flake ref already depends on.
   # See bead pg2-rltuo.
-  local hooks_dir hook_file exec_target needs_install
+  local hooks_dir hook_file needs_install
   hooks_dir=$(git rev-parse --path-format=absolute --git-path hooks)
   hook_file="${hooks_dir}/pre-commit"
   needs_install=false
 
   if [[ -f $hook_file ]]; then
-    # -m1: take only the FIRST `exec ` line so a hook with more than one never
-    # yields a multiline exec_target that breaks the `-x` test below (pg2-k8a6i).
-    exec_target=$(grep -m1 '^exec ' "$hook_file" | sed 's/^exec \([^ ]*\).*/\1/')
-    if [[ -n $exec_target && ! -x $exec_target ]]; then
-      echo "==> pre-commit hook binary missing (GC'd), reinstalling..."
-      needs_install=true
-    fi
+    # The GC test is FORMAT-AGNOSTIC by design: scan the hook for every
+    # /nix/store path it NAMES, wherever it names it, and reinstall if any is
+    # gone. It must NOT key on a particular line shape. The previous version
+    # parsed the `^exec ` line on the assumption the store path was the exec
+    # TARGET; prek's current template puts the path on its own `PREK=` line and
+    # execs the VARIABLE, so the parse yielded the literal 7-character string
+    # `"$PREK"` — never executable — and this tier reported a GC'd binary on
+    # EVERY run once pg2-rltuo made it reachable. Retargeting the parse at the
+    # `PREK=` line would break again at prek's next template change (this parse
+    # had already been patched once for one, see pg2-k8a6i), so the extraction
+    # is deliberately positional-agnostic. Bead pg2-hk08h.
+    #
+    # This tier is NOT redundant with the others and must not be dropped:
+    # Tier 3 reinstalls only when the DERIVATION PATH changes, so a
+    # garbage-collected binary under an UNCHANGED derivation is exactly the case
+    # only Tier 2 catches. And although prek's hook falls back to a `prek` on
+    # PATH, that fallback may resolve a DIFFERENT version than the pinned one,
+    # so restoring the pinned binary has real value.
+    #
+    # -e, not -x: what a GC removes is the path's EXISTENCE, and the paths found
+    # are no longer guaranteed to be the executable (they may be a config, a
+    # directory, or a non-executable data path the hook references).
+    # The character class is the store-name alphabet, which deliberately
+    # excludes the `"` the paths are wrapped in, plus whitespace and the `:` of
+    # a PATH list, so no closing quote or separator is captured. `|| true`
+    # because grep exits 1 when the hook names none — a non-nix install has
+    # nothing to validate, and an empty scan must leave needs_install false.
+    local store_path
+    while IFS= read -r store_path; do
+      if [[ ! -e $store_path ]]; then
+        echo "==> pre-commit hook binary missing (GC'd), reinstalling..."
+        needs_install=true
+        break
+      fi
+    done < <(grep -oE '/nix/store/[a-zA-Z0-9+._?=-]+(/[a-zA-Z0-9+._?=-]+)*' "$hook_file" | sort -u || true)
   else
     echo "==> pre-commit hook not found, installing..."
     needs_install=true

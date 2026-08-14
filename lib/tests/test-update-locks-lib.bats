@@ -181,27 +181,12 @@ MOCK
 # "hook not found" message and no reinstall at all — not merely that the path
 # string looks plausible.
 
-# Seed a findable, non-GC'd pre-commit hook in $1, a nix mock whose
+# Seed the scaffolding every Tier-2 test shares: a nix mock whose
 # `run .#install-pre-commit-hooks` is OBSERVABLE via a marker file, and a
-# current Tier-3 drv-path marker so a clean Tier 2 means NO reinstall happens.
-_seed_findable_pre_commit_hook() {
-  local hooks_dir="$1"
+# current Tier-3 drv-path marker so any reinstall observed can only have come
+# from Tier 2. The caller owns the hook file itself.
+_seed_pre_commit_hook_check_env() {
   local drv="/nix/store/deadbeef-install-pre-commit-hooks"
-
-  # The hook's `exec` target must be a real executable or the GC check fires.
-  # It lives OUTSIDE any working tree so `git clean -fd` cannot remove it.
-  cat > "$MOCK_BIN/hook-runner" <<'RUNNER'
-#!/usr/bin/env bash
-exit 0
-RUNNER
-  _fix_mock_shebang "$MOCK_BIN/hook-runner"
-  chmod +x "$MOCK_BIN/hook-runner"
-
-  # Not chmod +x: the code only stats and greps it, and leaving it unexecutable
-  # keeps git from ever invoking it during the test's own commits.
-  mkdir -p "$hooks_dir"
-  printf 'exec %s hook-impl --hook-type=pre-commit\n' "$MOCK_BIN/hook-runner" \
-    > "$hooks_dir/pre-commit"
 
   UL_TEST_REINSTALL_MARKER="$STATE_DIR/reinstall-ran"
   export UL_TEST_REINSTALL_MARKER
@@ -217,13 +202,64 @@ MOCK
   chmod +x "$MOCK_BIN/nix"
 
   # Tier 3 agrees the derivation is unchanged, so any reinstall observed came
-  # from the Tier-2 lookup failing. Mirrors what ul_init/ul_setup would set.
+  # from Tier 2. Mirrors what ul_init/ul_setup would set.
   # shellcheck disable=SC2034  # both are read by the sourced update-locks-lib
   UL_STATE_DIR="$STATE_DIR/update-locks"
   # shellcheck disable=SC2034  # ditto
   _UL_PROJECT="test-project"
   mkdir -p "$UL_STATE_DIR/$_UL_PROJECT"
   echo "$drv" > "$UL_STATE_DIR/$_UL_PROJECT/pre-commit-drv-path"
+}
+
+# A real, NON-store executable a hook can exec. It lives OUTSIDE any working
+# tree so `git clean -fd` in a test step cannot remove it.
+_seed_hook_runner_mock() {
+  cat > "$MOCK_BIN/hook-runner" <<'RUNNER'
+#!/usr/bin/env bash
+exit 0
+RUNNER
+  _fix_mock_shebang "$MOCK_BIN/hook-runner"
+  chmod +x "$MOCK_BIN/hook-runner"
+}
+
+# Print a /nix/store path that DEFINITELY exists, derived rather than
+# hardcoded. Tier 2's GC check reads only EXISTENCE, so which entry it is does
+# not matter — it just has to be a live one, and it cannot be fabricated under
+# $TEST_DIR because the check keys on the literal /nix/store prefix.
+_existing_store_path() {
+  local p
+  # Cheapest: the store entry owning this run's bash. True inside the nix check
+  # (its whole PATH is store paths); not true of a profile-symlink bash locally.
+  for p in "${BASH:-}" "$(command -v bash || true)"; do
+    if [[ $p == /nix/store/?* && -e $p ]]; then
+      printf '%s\n' "$p"
+      return 0
+    fi
+  done
+  # Local fast loop: any live store entry will do.
+  for p in /nix/store/*; do
+    if [[ -e $p ]]; then
+      printf '%s\n' "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Seed a findable, non-GC'd pre-commit hook in $1 plus the shared scaffolding.
+_seed_findable_pre_commit_hook() {
+  local hooks_dir="$1"
+
+  # The hook's exec target must be a real executable or the GC check fires.
+  _seed_hook_runner_mock
+
+  # Not chmod +x: the code only stats and greps it, and leaving it unexecutable
+  # keeps git from ever invoking it during the test's own commits.
+  mkdir -p "$hooks_dir"
+  printf 'exec %s hook-impl --hook-type=pre-commit\n' "$MOCK_BIN/hook-runner" \
+    > "$hooks_dir/pre-commit"
+
+  _seed_pre_commit_hook_check_env
 }
 
 @test "_ul_ensure_pre_commit_hooks finds the hook when core.hooksPath is ABSOLUTE" {
@@ -259,6 +295,122 @@ MOCK
   # shellcheck disable=SC2034  # read by the sourced update-locks-lib
   _UL_SCRIPT_DIR="$wt"
   cd "$wt" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ ! $output =~ "hook not found" ]]
+  [[ ! $output =~ "hook binary missing" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+# --- _ul_ensure_pre_commit_hooks: Tier-2 GC check (bead pg2-hk08h) ---
+#
+# Tier 2 asks "is the hook's pinned binary still in the store, or was it GC'd?".
+# It used to answer that by parsing the hook's `^exec ` line, which assumed the
+# store path was the exec TARGET. prek's current template puts the path on its
+# own `PREK=` line and execs the VARIABLE, so the parse yielded the literal
+# 7-character string `"$PREK"` — never executable — and Tier 2 reported a GC'd
+# binary on EVERY run. The check is now a format-agnostic scan for every
+# /nix/store path the hook NAMES, wherever it names it, so these tests fix the
+# BEHAVIOUR (fires iff a named store path is gone) and not a template shape.
+
+@test "_ul_ensure_pre_commit_hooks Tier 2 does NOT fire when a store path the hook names EXISTS" {
+  local store_path=""
+  store_path=$(_existing_store_path) || skip "no live /nix/store entry to name"
+  [ -e "$store_path" ]
+
+  local hooks_dir="$TEST_DIR/.git/hooks"
+  mkdir -p "$hooks_dir"
+  # The path is deliberately NOT the exec target: the scan must find it anyway.
+  printf 'PINNED="%s"\nexec "$PINNED" hook-impl\n' "$store_path" \
+    > "$hooks_dir/pre-commit"
+  _seed_pre_commit_hook_check_env
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ ! $output =~ "hook not found" ]]
+  [[ ! $output =~ "hook binary missing" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks Tier 2 FIRES when a store path the hook names is GONE" {
+  local gone="/nix/store/00000000000000000000000000000000-gc-d-1.0/bin/gone"
+  [ ! -e "$gone" ]
+
+  # The exec target is a live NON-store executable, so the old exec-line parse
+  # saw a healthy hook. Only a scan of what the hook NAMES sees the dead path —
+  # this is what stops the fix from neutering the check into always-passing.
+  _seed_hook_runner_mock
+  local hooks_dir="$TEST_DIR/.git/hooks"
+  mkdir -p "$hooks_dir"
+  printf 'PINNED="%s"\nexec %s hook-impl\n' "$gone" "$MOCK_BIN/hook-runner" \
+    > "$hooks_dir/pre-commit"
+  _seed_pre_commit_hook_check_env
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  # `== *…*`, not `=~`: the message's parens are regex metacharacters, and a
+  # quoted `=~` RHS that only LOOKS like a regex trips SC2076. This asserts the
+  # whole message literally, so the wording itself is locked in.
+  [[ $output == *"hook binary missing (GC'd), reinstalling"* ]]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks Tier 2 does NOT fire when the hook names NO store path" {
+  local hooks_dir="$TEST_DIR/.git/hooks"
+  mkdir -p "$hooks_dir"
+  # A non-nix install, and equally prek's own PATH fallback shape: there is no
+  # pinned store path to validate, so Tier 2 has nothing to say. Note the exec
+  # target is a bare command NAME, which the old `-x` test rejected outright.
+  printf '#!/bin/sh\nexec pre-commit hook-impl --hook-type=pre-commit\n' \
+    > "$hooks_dir/pre-commit"
+  _seed_pre_commit_hook_check_env
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ ! $output =~ "hook not found" ]]
+  [[ ! $output =~ "hook binary missing" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks Tier 2 does NOT fire on prek's CURRENT hook template" {
+  local store_path=""
+  store_path=$(_existing_store_path) || skip "no live /nix/store entry to name"
+
+  local hooks_dir="$TEST_DIR/.git/hooks"
+  mkdir -p "$hooks_dir"
+  # Verbatim shape emitted by prek 0.3.11 (--script-version 4), with only the
+  # pinned path swapped for a live one: the store path sits on its own `PREK=`
+  # line and `exec` runs the VARIABLE. This exact hook is what made the old
+  # parse yield `"$PREK"` and reinstall on every run.
+  cat > "$hooks_dir/pre-commit" <<HOOK
+#!/bin/sh
+# File generated by prek: https://github.com/j178/prek
+# ID: 182c10f181da4464a3eec51b83331688
+
+HERE="\$(cd "\$(dirname "\$0")" && pwd)"
+PREK="$store_path"
+
+# Check if the full path to prek is executable, otherwise fallback to PATH
+if [ ! -x "\$PREK" ]; then
+    PREK="prek"
+fi
+
+exec "\$PREK" hook-impl --hook-dir "\$HERE" --script-version 4 --hook-type=pre-commit --config=".pre-commit-config.yaml" -- "\$@"
+HOOK
+  _seed_pre_commit_hook_check_env
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
 
   run _ul_ensure_pre_commit_hooks
   [ "$status" -eq 0 ]
