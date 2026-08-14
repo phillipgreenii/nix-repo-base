@@ -304,23 +304,40 @@ instantiates `bashBuilders` where `self` is in scope).
 # Feature module. Mirrors home/pn and home/pjira: the package is sourced from
 # pkgs.pg-go-mutate, which consuming flakes make available by adding this
 # flake's overlays.default to nixpkgs.overlays.
+#
+# The engine is bound HERE, not at package build time, because repo-base's own
+# pkgs applies only overlays.gomod2nix -- overlays.default is exported for
+# consumers and never applied to this flake's own pkgs (see modules/pnwf/
+# scripts.nix, which documents the same constraint for `pn`). So
+# pkgs.phillipgreenii.gomu is resolvable only in a CONSUMER's pkgs, which is
+# exactly where this module evaluates.
 { config, lib, pkgs, ... }:
 let
-  inherit (lib) mkEnableOption mkPackageOption mkIf;
-  cfg = config.phillipgreenii.programs.pg-go-mutate;
+  inherit (lib) mkEnableOption mkPackageOption mkIf getExe;
+  cfg = config.phillipgreenii.pg-go-mutate;
+  # --set, not --suffix: the pin must be authoritative. An ambient
+  # ~/go/bin/gomu MUST NOT be able to substitute itself for the engine.
+  wrapped = pkgs.symlinkJoin {
+    name = "pg-go-mutate-wrapped";
+    paths = [ cfg.package ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      wrapProgram $out/bin/pg-go-mutate \
+        --set PG_GO_MUTATE_GOMU ${getExe cfg.gomuPackage}
+    '';
+  };
 in
 {
-  options.phillipgreenii.programs.pg-go-mutate = {
+  options.phillipgreenii.pg-go-mutate = {
     enable = mkEnableOption "pg-go-mutate, the Go mutation-testing diagnostic";
     package = mkPackageOption pkgs "pg-go-mutate" { };
-    # Resolved lazily in the CONSUMER, where the overlay flake is applied.
-    # repo-base takes no overlay input, so this creates no dependency cycle;
-    # a consumer that never enables the feature never forces the attribute.
+    # Forced only under mkIf cfg.enable, so a consumer that never enables the
+    # feature never evaluates this attribute and needs no overlay input.
     gomuPackage = mkPackageOption pkgs [ "phillipgreenii" "gomu" ] { };
   };
 
   config = mkIf cfg.enable {
-    home.packages = [ cfg.package ];
+    home.packages = [ wrapped ];
   };
 }
 ```
@@ -339,12 +356,23 @@ in
   or nix-personal (whose `golang` leaf cannot reference a repo-base feature
   unless the machine also imports the declaring module — a coupling that would
   eval-fail rather than degrade).
-- **W9** The wrapper MUST resolve the engine from an injected absolute store
-  path, not from `PATH`. repo-base's bash builders append `runtimeDeps` with
-  `--suffix PATH` by design, so an ambient `~/go/bin/gomu` would silently win and
-  defeat the pin. The engine MUST be injected as a config value
-  (`GOMU_BIN = lib.getExe cfg.gomuPackage`) and resolved as
-  `"${PG_GO_MUTATE_GOMU:-${GOMU_BIN:-gomu}}"`.
+- **W9** The wrapper MUST resolve the engine from an absolute store path, not
+  from `PATH`. repo-base's bash builders append `runtimeDeps` with
+  `--suffix PATH` by design ("runtimeDeps are a FALLBACK appended after the
+  user's PATH, so an ambient tool wins"), so a `runtimeDeps` entry would let an
+  ambient `~/go/bin/gomu` silently defeat the pin. The binding MUST be made in
+  the **home-manager module** via `makeWrapper --set PG_GO_MUTATE_GOMU`, as in
+  §9.2 — **not** via `mkBashScript`'s `config`, which would require resolving
+  `pkgs.phillipgreenii.gomu` at package build time inside repo-base, where that
+  attribute does not exist. The script MUST read
+  `"${PG_GO_MUTATE_GOMU:-gomu}"`, so the env var is simultaneously the
+  production binding, the escape hatch, and the bats stub seam (**T7**).
+- **W14** The option namespace MUST be `phillipgreenii.pg-go-mutate`, matching
+  `home/pjira` (`phillipgreenii.pjira`) and `home/pn` — **not**
+  `phillipgreenii.programs.*`. The `programs.` prefix is required only by
+  `mkCapability`, which interpolates `phillipgreenii.programs.${f}.enable`, and
+  no capability leaf is created (**W8**). Adopting a capability later would
+  require moving the option, which is a deliberate, recorded trade-off.
 - **W10** The wrapper MUST NOT embed its own Go toolchain; `go` is a runtime
   requirement resolved from the environment, and its absence MUST produce an
   actionable message. Embedding one would duplicate the toolchain in
@@ -366,7 +394,7 @@ in
 ```nix
 # a machine's home-manager configuration
 imports = [ inputs.phillipgreenii-nix-base.homeModules.pg-go-mutate ];
-phillipgreenii.programs.pg-go-mutate.enable = true;
+phillipgreenii.pg-go-mutate.enable = true;
 ```
 
 ## 10. Agent awareness
