@@ -176,6 +176,18 @@ setup() {
   PATH="$MOCK_BIN:$PATH"
   export PATH MOCK_BIN
 
+  # HERMETIC HOME (bead pg2-7hr6o), the same three lines the wsplan suites in this
+  # module already carry — copied, not reinvented. The bash-scripting skill's
+  # test-isolation rule 2 requires it and this suite lacked it, so a bare
+  # `bats modules/pnwf/pnwf/tests` read the developer's real HOME for every non-git
+  # purpose (the nix check's sandbox HOME hid that: only the gate was hermetic).
+  # setup_file's GIT_CONFIG_GLOBAL=/dev/null outranks HOME for GIT alone; caches,
+  # XDG defaults, tool configs and credential helpers still resolved off the real
+  # one. Per-test (not per-file) so each test gets a pristine, empty HOME.
+  HOME="$TEST_DIR/home"
+  mkdir -p "$HOME"
+  export HOME
+
   MOCK_PN_ENV_LOG="$TEST_DIR/pn-env.log"
   : >"$MOCK_PN_ENV_LOG"
   export MOCK_PN_ENV_LOG
@@ -1291,4 +1303,23 @@ _ur_set_upstream() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"PN_WORKSPACE_ROOT=<unset>"* ]]
   [[ "$output" != *"PN_WORKSPACE_ROOT=$CANONICAL_DIR"* ]]
+}
+
+# --- harness hermeticity guard ----------------------------------------------
+
+@test "setup() relocates HOME off the developer's own (pg2-7hr6o regression guard)" {
+  # Discriminating guard for the HOME isolation setup() installs, mirroring the
+  # one in lib/tests/test-update-locks-lib.bats: drop `export HOME` from setup()
+  # and HOME is the developer's real one, so the equality fails; drop the whole
+  # block and $TEST_DIR/home does not exist, so the -d fails. Either way it goes
+  # red, which is what separates a guard from a restatement.
+  #
+  # The real ~ is never touched, read, or probed: the assertions look only at the
+  # temp dir setup() created, and a fresh mktemp path can never BE the
+  # developer's home, so proving isolation needs no reference to the real path.
+  [ -n "${TEST_DIR:-}" ]
+  [ "$HOME" = "$TEST_DIR/home" ]
+  [ -d "$HOME" ]
+  # Empty, i.e. nothing of the developer's is reachable through $HOME.
+  [ -z "$(ls -A "$HOME")" ]
 }

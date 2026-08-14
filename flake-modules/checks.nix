@@ -166,6 +166,17 @@ in
                 ]
               }:$PATH"
               export UL_LIB_SCRIPTS_DIR="${scriptsDir}"
+              # KEPT DELIBERATELY, and no longer the thing that makes the suites
+              # hermetic (bead pg2-7hr6o). Each suite in testsDir now overrides HOME
+              # into its own temp dir in setup(), so per-TEST isolation is owned
+              # there and is what a bare local `bats lib/tests` gets too — this
+              # export is only the sandbox FLOOR for whatever runs OUTSIDE a test's
+              # setup(): bats' own machinery and each file's top-level preamble. That
+              # floor is worth having because the nix sandbox's default HOME is
+              # /homeless-shelter, which does not exist. Relationship, so neither
+              # side silently becomes the load-bearing one (which is how the git half
+              # drifted): the SUITE is authoritative for test isolation; this line
+              # asserts nothing about it and MUST NOT be relied on for it.
               export HOME="$TMPDIR/test-home"
               mkdir -p "$HOME"
               bats ${testsDir}

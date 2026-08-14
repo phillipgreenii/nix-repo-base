@@ -46,6 +46,24 @@ MOCK
   chmod +x "$MOCK_BIN/nix"
   export PATH="$MOCK_BIN:$PATH"
 
+  # HERMETIC HOME (bead pg2-7hr6o, closing the half pg2-klyn6 below left open):
+  # the bash-scripting skill's test-isolation rule 2 requires every suite to
+  # override HOME, and this one never did. Only the NIX check supplied a clean one
+  # (flake-modules/checks.nix's testUpdateLocksLib), so `nix flake check` was
+  # hermetic while the bare `bats lib/tests` a developer actually types read the
+  # developer's real HOME for every non-git purpose — caches, XDG defaults, tool
+  # configs, credential helpers. GIT_CONFIG_GLOBAL=/dev/null below now outranks
+  # HOME for GIT specifically and for nothing else; HOME is the very path by which
+  # the fsmonitor leak entered, which is why the pg2-klyn6 guard simulates it.
+  #
+  # Same shape as the wsplan suites (modules/pnwf/wsplan/tests/*.bats), with one
+  # deliberate difference: it is rooted in its OWN mktemp rather than under
+  # TEST_DIR, because TEST_DIR here IS the git working tree and `git add -A` in a
+  # step's commit would sweep a $TEST_DIR/home into the per-step stamp commits —
+  # the identical reason XDG_STATE_HOME above lives outside it.
+  HOME_DIR=$(mktemp -d)
+  export HOME="$HOME_DIR"
+
   # HERMETIC GIT (bead pg2-klyn6, mirroring the pg2-39rz2 Go fix's TestMain in
   # modules/pn/internal/workspace/realgit_test.go): neutralise the developer's
   # GLOBAL and SYSTEM git config for every git invocation in this test — the
@@ -81,6 +99,7 @@ teardown() {
   rm -rf "$TEST_DIR"
   rm -rf "${MOCK_BIN:-}"
   rm -rf "${STATE_DIR:-}"
+  rm -rf "${HOME_DIR:-}"
 }
 
 # --- ul_setup ---
@@ -1063,6 +1082,24 @@ SCRIPT
   # compiled-in prefix are not writable by the test (and must not be), so assert
   # the neutralisation directly.
   [ "${GIT_CONFIG_SYSTEM:-}" = "/dev/null" ]
+}
+
+@test "setup() relocates HOME off the developer's own (pg2-7hr6o regression guard)" {
+  # The HOME half of the same property, guarded the same discriminating way: drop
+  # `export HOME="$HOME_DIR"` from setup() and HOME is the developer's real one,
+  # so the equality below fails; drop the whole block and HOME_DIR is unset, so the
+  # first assertion fails. Either way the guard goes red, which is what makes it a
+  # guard rather than a restatement.
+  #
+  # The real ~ is never touched, read, or probed — the assertions look only at the
+  # temp dir setup() created, and a fresh `mktemp -d` can never BE the developer's
+  # home, so "is it isolated?" needs no reference to the real path at all.
+  [ -n "${HOME_DIR:-}" ]
+  [ "$HOME" = "$HOME_DIR" ]
+  [ -d "$HOME" ]
+  # Empty, i.e. nothing of the developer's is reachable through $HOME. This also
+  # catches a HOME pointed at a shared or reused directory.
+  [ -z "$(ls -A "$HOME")" ]
 }
 
 # --- ul_reexec_in_dev_shell ---

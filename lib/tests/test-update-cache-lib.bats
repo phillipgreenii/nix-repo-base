@@ -11,6 +11,22 @@ fi
 
 setup() {
   TEST_DIR=$(mktemp -d)
+
+  # HERMETIC HOME (bead pg2-7hr6o). This suite is the sharpest instance of the
+  # defect that bead names: update-cache-lib.bash computes, at SOURCE time,
+  #   UL_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/update-locks"
+  # so before this block a bare `bats lib/tests` resolved UL_STATE_DIR straight
+  # into the developer's real state directory — the value depended on whose
+  # machine ran it, and only the nix check (flake-modules/checks.nix, which
+  # exports its own clean HOME) was hermetic. Same three-line shape as the wsplan
+  # suites; XDG_STATE_HOME is UNSET rather than pointed elsewhere so the
+  # $HOME-derived DEFAULT branch is what gets exercised, which is what makes the
+  # guard test at the bottom of this file discriminate on HOME itself.
+  HOME="$TEST_DIR/home"
+  mkdir -p "$HOME"
+  export HOME
+  unset XDG_STATE_HOME
+
   export NIX_UL_FORCE_UPDATE="false"
   source "$UL_LIB_SCRIPT"
   ul_init "my-project" "$TEST_DIR/repo"   # repo dir; stamps live under it
@@ -197,4 +213,27 @@ MOCK
   [ "$status" -eq 1 ]
   [[ "$output" =~ "nix daemon" ]]
   rm -rf "$MOCK_BIN"
+}
+
+# --- harness hermeticity guard ---
+
+@test "setup() keeps UL_STATE_DIR out of the developer's real state dir (pg2-7hr6o regression guard)" {
+  # Behavioural, not cosmetic: UL_STATE_DIR is derived from $HOME at source time
+  # (update-cache-lib.bash), so this asserts the DERIVED value landed in the
+  # test's own temp tree.
+  #
+  # Which assertion catches what, stated precisely because the two are NOT
+  # interchangeable: drop setup()'s HOME override and the FIRST assertion still
+  # passes — both of its sides derive from the same $HOME, so they move together
+  # — and only the SECOND fails, on HOME no longer being the temp dir. So the
+  # second is the one that discriminates on isolation. The first earns its place
+  # against the other half: drop the `unset XDG_STATE_HOME` and UL_STATE_DIR
+  # takes the XDG branch instead of the $HOME-derived default, resolving under
+  # whatever that variable holds on the running machine, and only the first
+  # fails. Neither alone covers both edits.
+  #
+  # The real ~ is never touched or read — a fresh mktemp path can never BE the
+  # developer's home.
+  [ "$UL_STATE_DIR" = "$HOME/.local/state/update-locks" ]
+  [ "$HOME" = "$TEST_DIR/home" ]
 }
