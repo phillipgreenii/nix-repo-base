@@ -46,6 +46,27 @@ MOCK
   chmod +x "$MOCK_BIN/nix"
   export PATH="$MOCK_BIN:$PATH"
 
+  # HERMETIC GIT (bead pg2-klyn6, mirroring the pg2-39rz2 Go fix's TestMain in
+  # modules/pn/internal/workspace/realgit_test.go): neutralise the developer's
+  # GLOBAL and SYSTEM git config for every git invocation in this test — the
+  # harness's own, the library under test's, and any `bash -c` / background
+  # subprocess a test spawns, all of which inherit these exports.
+  #
+  # Setting only repo-LOCAL user.email/user.name below is not isolation: every
+  # other key still merges in from ~/.gitconfig, $XDG_CONFIG_HOME/git/config and
+  # /etc/gitconfig, so the suite's outcome depended on whose machine ran it. The
+  # concrete hazard is `core.fsmonitor=true`: it would be inherited by every temp
+  # repo these tests create, and then ul_setup's clean-tree gate refreshes the
+  # index and spawns git's native fsmonitor daemon — which is deterministically
+  # wedged on some setups (bead pg2-mgcv5), hanging the whole suite.
+  #
+  # /dev/null is the NEUTRAL setting. A test that deliberately needs a global
+  # value opts in by pointing GIT_CONFIG_GLOBAL at a temp file of its own (see
+  # the fsmonitor scoping tests below); it must never touch the real one.
+  # Requires git >= 2.32 for these two variables; this repo pins a modern git.
+  export GIT_CONFIG_GLOBAL=/dev/null
+  export GIT_CONFIG_SYSTEM=/dev/null
+
   cd "$TEST_DIR" || return 1
   git init
   git config user.email "test@test.com"
@@ -891,8 +912,10 @@ SCRIPT
 # wedged on some setups (bead pg2-mgcv5), hanging the run outright. These tests
 # only ever invoke `git config`, so they are safe and fast everywhere.
 #
-# GIT_CONFIG_GLOBAL is set explicitly in every test: the shared setup() does not
-# isolate it, so otherwise the developer's own ~/.gitconfig decides the outcome.
+# The shared setup() already pins GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM to
+# /dev/null (bead pg2-klyn6), so the NEUTRAL "no global value" case needs nothing
+# here. A test that needs a global value present OPTS IN by repointing
+# GIT_CONFIG_GLOBAL at a temp file of its own — never at the real ~/.gitconfig.
 
 @test "_ul_restore_fsmonitor unsets the local key when the value came from global config" {
   local global_cfg="$STATE_DIR/gitconfig"
@@ -921,7 +944,6 @@ SCRIPT
 }
 
 @test "_ul_restore_fsmonitor restores a pre-existing repo-local value verbatim" {
-  export GIT_CONFIG_GLOBAL=/dev/null
   git config core.fsmonitor true
 
   source "$UL_LOCKS_LIB"
@@ -935,7 +957,6 @@ SCRIPT
 }
 
 @test "_ul_disable_fsmonitor handles a non-canonical boolean value" {
-  export GIT_CONFIG_GLOBAL=/dev/null
   # git accepts yes/on/1 as boolean true and spawns the native daemon for them
   # exactly as for `true`, so a string compare against "true" would skip the
   # dance and leave a live .ipc socket to break flake evaluation.
@@ -952,8 +973,6 @@ SCRIPT
 }
 
 @test "_ul_disable_fsmonitor is a no-op when fsmonitor is disabled" {
-  export GIT_CONFIG_GLOBAL=/dev/null
-
   source "$UL_LOCKS_LIB"
   _ul_disable_fsmonitor
 
@@ -967,7 +986,6 @@ SCRIPT
 }
 
 @test "_ul_disable_fsmonitor leaves a hook-path fsmonitor untouched" {
-  export GIT_CONFIG_GLOBAL=/dev/null
   # A hook-based fsmonitor (what the WS1 design on pg2-mgcv5 plans for the ZR
   # monorepo) runs no native daemon and creates no .ipc socket, so it needs no
   # dance — and rewriting the value would destroy the hook path.
@@ -983,7 +1001,6 @@ SCRIPT
 }
 
 @test "_ul_disable_fsmonitor removes a stale socket even when fsmonitor is disabled" {
-  export GIT_CONFIG_GLOBAL=/dev/null
   # A socket left behind by an earlier crashed run makes `nix flake` import fail
   # with "unsupported type" regardless of the current config, so its removal must
   # NOT be gated on the dance.
@@ -1008,9 +1025,44 @@ SCRIPT
 
   # Disarm the armed cleanup trap and leave fsmonitor OFF. _ul_cleanup runs
   # `git status`; letting the trap restore fsmonitor first would refresh the index
-  # with the native daemon live and hang teardown (bead pg2-mgcv5).
+  # with the native daemon live and hang teardown (bead pg2-mgcv5). The opted-in
+  # global config needs no reset — bats runs each test in its own process, so this
+  # export cannot leak into a sibling test.
   trap - EXIT INT TERM
-  export GIT_CONFIG_GLOBAL=/dev/null
+}
+
+# --- harness hermeticity guard ---
+
+@test "setup() neutralises an ambient global core.fsmonitor (pg2-klyn6 regression guard)" {
+  # The pg2-klyn6 guard, mirroring TestHarnessNeutralizesGlobalFsmonitor from the
+  # pg2-39rz2 Go fix: prove the harness never inherits the developer's global git
+  # config. Plant a SIMULATED developer global config that turns core.fsmonitor on
+  # — the setting that, on an affected machine, made every temp repo spawn `git
+  # fsmonitor--daemon` and hang the suite — at both locations git looks for a
+  # global config, then assert git in this test's repo still sees it unset.
+  #
+  # The simulation is via HOME / XDG_CONFIG_HOME rather than GIT_CONFIG_GLOBAL,
+  # deliberately: that is the exact path by which the real defect enters, and it
+  # is what setup()'s GIT_CONFIG_GLOBAL=/dev/null outranks. Drop that export from
+  # setup() and this test reads back "true" and fails. The developer's real
+  # ~/.gitconfig is never written — only these temp copies, outside TEST_DIR.
+  local fake_home="$STATE_DIR/fake-home"
+  mkdir -p "$fake_home/.config/git"
+  printf '[core]\n\tfsmonitor = true\n' > "$fake_home/.gitconfig"
+  cp "$fake_home/.gitconfig" "$fake_home/.config/git/config"
+  export HOME="$fake_home"
+  export XDG_CONFIG_HOME="$fake_home/.config"
+
+  # CONFIG READ ONLY — never `git status`. `git config` merges config without
+  # touching the index, so this assertion cannot itself spawn an fsmonitor daemon;
+  # a guard that hung the suite it protects would be worse than no guard at all.
+  # `--default false` so an unset key reads back as "false" instead of exiting 1.
+  [ "$(git config --default false --type=bool --get core.fsmonitor)" = "false" ]
+
+  # The SYSTEM half cannot be simulated the same way — /etc/gitconfig and git's
+  # compiled-in prefix are not writable by the test (and must not be), so assert
+  # the neutralisation directly.
+  [ "${GIT_CONFIG_SYSTEM:-}" = "/dev/null" ]
 }
 
 # --- ul_reexec_in_dev_shell ---

@@ -53,6 +53,17 @@ setup_file() {
   export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
   export GIT_CONFIG_KEY_1=core.untrackedcache GIT_CONFIG_VALUE_1=false
 
+  # Full hermeticity on top of that surgical pin (bead pg2-klyn6): the pin above
+  # covers only two keys, so EVERY other key still merged in from the developer's
+  # ~/.gitconfig, $XDG_CONFIG_HOME/git/config and /etc/gitconfig. /dev/null is the
+  # NEUTRAL setting for both scopes, so no test outcome depends on whose machine
+  # runs it. Safe here because this suite always pins what it needs explicitly —
+  # `git init -q -b <branch>` (never inheriting init.defaultBranch) and repo-local
+  # user.email/user.name. Mirrors the pg2-39rz2 Go fix's TestMain in
+  # modules/pn/internal/workspace/realgit_test.go. Requires git >= 2.32.
+  export GIT_CONFIG_GLOBAL=/dev/null
+  export GIT_CONFIG_SYSTEM=/dev/null
+
   # Immutable mock TEMPLATE, seeded once. setup() copies these into each test's
   # own MOCK_BIN, so a test may still overwrite its own integrate-branch-support
   # (or drop in a `git` shim) without leaking into sibling tests.
