@@ -301,6 +301,57 @@ EOF
   [ ! -e "$bin" ]
 }
 
+@test "pgm_run_engine cleans up the private workdir and returns non-zero when the harvest-time mktemp fails" {
+  target="$(make_module harvestmktempfail)"
+  add_passing_test "$target"
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/stub-gomu-harvestfail"
+  cat >"$PG_GO_MUTATE_GOMU" <<'EOF'
+#!/usr/bin/env bash
+# Stub engine: writes a minimal report into CWD, exactly like the other
+# pgm_run_engine stubs above. The private workdir this run creates is left
+# behind by the stub itself, in $PGM_TEST_WORKDIR_LOG, so the test can
+# confirm it gets removed even though the harvest step below fails.
+pwd >"$PGM_TEST_WORKDIR_LOG"
+printf '{"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"/x/a.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0,"mutationScore":0}}' >mutation-report.json
+EOF
+  chmod +x "$PG_GO_MUTATE_GOMU"
+  PGM_TEST_WORKDIR_LOG="$TEST_DIR/workdir.log"
+  export PGM_TEST_WORKDIR_LOG
+
+  # A `mktemp` stub that discriminates by argument shape: pgm_run_engine's
+  # OWN workdir `mktemp -d` call must keep working (real mktemp), so only the
+  # harvest-time `mktemp -t pg-go-mutate-report.XXXXXX.json` call is made to
+  # fail -- this is the one line the hardening under test guards. Put first
+  # on PATH so it shadows the real mktemp for this test only.
+  real_mktemp="$(command -v mktemp)"
+  mock_bin="$TEST_DIR/mock-bin"
+  mkdir -p "$mock_bin"
+  cat >"$mock_bin/mktemp" <<MOCK
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+  pg-go-mutate-report.*)
+    echo "mock mktemp: simulated failure (no space left on device)" >&2
+    exit 1
+    ;;
+  esac
+done
+exec "$real_mktemp" "\$@"
+MOCK
+  chmod +x "$mock_bin/mktemp"
+  PATH="$mock_bin:$PATH"
+
+  run pgm_run_engine "$target" 2 60 ""
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not create a temp file to harvest the report"* ]]
+
+  # The private workdir the stub recorded must be gone -- proving cleanup ran
+  # rather than errexit skipping straight past it.
+  [ -s "$PGM_TEST_WORKDIR_LOG" ]
+  workdir="$(cat "$PGM_TEST_WORKDIR_LOG")"
+  [ ! -e "$workdir" ]
+}
+
 @test "pgm_run_engine preserves a main-package binary that already existed before the run" {
   target="$(make_main_module mainbinpre)"
   bin="$target/$(basename "$target")"

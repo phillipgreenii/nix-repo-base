@@ -195,8 +195,18 @@ pgm_run_engine() {
     return 1
   fi
 
-  # Harvest out of the private cwd BEFORE cleanup removes it.
-  report="$(mktemp -t pg-go-mutate-report.XXXXXX.json)"
+  # Harvest out of the private cwd BEFORE cleanup removes it. Guarded like the
+  # workdir mktemp above: this script runs under the builder-injected
+  # `set -euo pipefail`, so an unguarded failure here would errexit straight
+  # out of this function -- skipping _pgm_run_engine_cleanup and leaking
+  # $workdir, which the whole explicit-cleanup design (see the comment on
+  # _pgm_run_engine_cleanup above) exists to prevent.
+  report="$(mktemp -t pg-go-mutate-report.XXXXXX.json)" || {
+    pgm_die "could not create a temp file to harvest the report"
+    _pgm_run_engine_cleanup
+    trap - INT TERM HUP
+    return 1
+  }
   cp "$workdir/mutation-report.json" "$report"
 
   _pgm_run_engine_cleanup
