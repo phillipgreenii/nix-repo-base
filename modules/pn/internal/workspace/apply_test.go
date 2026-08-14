@@ -330,7 +330,7 @@ url = "github:owner/dep"
 `)
 	got := w.allRepoDirs(nil)
 	leafDir := filepath.Join(root, "leaf")
-	want := []repoDir{{keyPath: leafDir, gitDir: leafDir}}
+	want := []repoDir{{name: "leaf", keyPath: leafDir, gitDir: leafDir}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("allRepoDirs should skip missing clones: got %#v want %#v", got, want)
 	}
@@ -351,7 +351,9 @@ terminal = "leaf"
 url = "github:owner/leaf"
 `)
 	got := w.allRepoDirs(map[string]string{"leaf": override})
-	want := []repoDir{{keyPath: filepath.Join(root, "leaf"), gitDir: override}}
+	// name is the [repos.<key>] key regardless of the override: markApplied maps it
+	// through the lock's edge set, which is keyed on the repo key, not on a path.
+	want := []repoDir{{name: "leaf", keyPath: filepath.Join(root, "leaf"), gitDir: override}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("override must keep the canonical store key while pointing git at the override: got %#v want %#v", got, want)
 	}

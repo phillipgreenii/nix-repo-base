@@ -3,8 +3,12 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -69,7 +73,269 @@ func TestMarkApplied_WriteFailIsReturned(t *testing.T) {
 	f.AddResponse("git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
 	f.AddResponse("git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	w := &Workspace{runner: f}
-	if err := w.markApplied(context.Background(), []repoDir{{keyPath: dir, gitDir: dir}}); err == nil {
+	dirs := []repoDir{{name: "leaf", keyPath: dir, gitDir: dir}}
+	if err := w.markApplied(context.Background(), dirs, "leaf", dir, io.Discard); err == nil {
 		t.Fatal("markApplied must return the store-write error (fail-closed)")
+	}
+}
+
+// depSpec describes one non-terminal repo for markAppliedFixture. alias is the
+// terminal's flake input name for it (empty ⇒ the terminal does not consume it as
+// an input at all, so no lock edge); rev is what the terminal's flake.lock pins
+// for that alias (empty ⇒ the lock node carries no rev); url overrides the default
+// remote so same-named repos under different owners can be built.
+type depSpec struct{ alias, rev, url string }
+
+// markAppliedFixture builds a workspace on disk for markApplied tests. The
+// terminal is "leaf"; every entry in deps becomes a [repos.<key>] repo AND (when
+// it has an alias) a pn-workspace.lock.json edge leaf --alias--> key — the same
+// edge set apply derives its --override-input flags from — with leaf's flake.lock
+// pinning that alias to the entry's rev. The FakeRunner is scripted so every
+// repo's HEAD is "<key>-head" and every working tree is clean.
+func markAppliedFixture(t *testing.T, deps map[string]depSpec) (*Workspace, *exec.FakeRunner, string) {
+	t.Helper()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	leafDir := mkRepoDir(t, root, "leaf")
+
+	toml := "\n[workspace]\nterminal = \"leaf\"\n\n[repos.leaf]\nurl = \"github:owner/leaf\"\n"
+	lockRepos := []string{`"leaf": {"flake_path": "flake.nix", "remote_url": "github:owner/leaf"}`}
+	var lockEdges, rootInputs, lockNodes []string
+	f := exec.NewFakeRunner()
+
+	for _, key := range sortedDepKeys(deps) {
+		d := deps[key]
+		mkRepoDir(t, root, key)
+		url := d.url
+		if url == "" {
+			url = "github:owner/" + key
+		}
+		toml += fmt.Sprintf("\n[repos.%s]\nurl = %q\n", key, url)
+		lockRepos = append(lockRepos, fmt.Sprintf(`%q: {"flake_path": "flake.nix", "remote_url": %q}`, key, url))
+		if d.alias == "" {
+			continue
+		}
+		lockEdges = append(lockEdges, fmt.Sprintf(`{"consumer":"leaf","alias":%q,"target":%q}`, d.alias, key))
+		node := key + "-node"
+		rootInputs = append(rootInputs, fmt.Sprintf("%q: %q", d.alias, node))
+		locked := "{}"
+		if d.rev != "" {
+			locked = fmt.Sprintf(`{"rev": %q}`, d.rev)
+		}
+		lockNodes = append(lockNodes, fmt.Sprintf(`%q: {"locked": %s}`, node, locked))
+	}
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), toml)
+	writeFile(t, filepath.Join(root, LockFileName), fmt.Sprintf(
+		`{"terminal":"leaf","order":[],"repos":{%s},"edges":[%s]}`,
+		strings.Join(lockRepos, ","), strings.Join(lockEdges, ","),
+	))
+	writeTerminalFlakeLock(t, leafDir, rootInputs, lockNodes)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for _, key := range append(sortedDepKeys(deps), "leaf") {
+		dir := filepath.Join(root, key)
+		f.AddResponse("git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte(key + "-head\n")}, nil)
+		f.AddResponse("git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	}
+	return w, f, leafDir
+}
+
+// writeTerminalFlakeLock writes the terminal's flake.lock: root.inputs[alias]
+// names a node whose locked.rev is the rev the apply built that input from.
+func writeTerminalFlakeLock(t *testing.T, leafDir string, rootInputs, lockNodes []string) {
+	t.Helper()
+	nodes := append([]string{fmt.Sprintf(`"root": {"inputs": {%s}}`, strings.Join(rootInputs, ","))}, lockNodes...)
+	writeFile(t, filepath.Join(leafDir, "flake.lock"), fmt.Sprintf(`{"root":"root","nodes":{%s}}`, strings.Join(nodes, ",")))
+}
+
+func sortedDepKeys(deps map[string]depSpec) []string {
+	keys := make([]string, 0, len(deps))
+	for k := range deps {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// runMarkApplied drives markApplied over every declared repo and returns what it
+// wrote to out.
+func runMarkApplied(t *testing.T, w *Workspace, terminalNixDir string) string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := w.markApplied(context.Background(), w.allRepoDirs(nil), "leaf", terminalNixDir, &out); err != nil {
+		t.Fatalf("markApplied: %v", err)
+	}
+	return out.String()
+}
+
+func appliedStateOf(t *testing.T, w *Workspace, name string) AppliedState {
+	t.Helper()
+	st, ok, err := readAppliedState(w.appliedStateKeyPath(name))
+	if err != nil || !ok {
+		t.Fatalf("read applied state for %s: ok=%v err=%v", name, ok, err)
+	}
+	return st
+}
+
+// TestMarkApplied_RecordsTerminalLockedRevs is the PRODUCER half of the pg2-ft60a
+// fix. A repo the terminal consumes as a flake input reaches the built system only
+// via the terminal's flake.lock, so the apply MUST record the rev that lock pinned
+// ("locked000") ALONGSIDE this checkout's local HEAD ("dep-head"). Recording only
+// the local HEAD is the whole defect: with local HEAD ahead of the locked rev, an
+// unpushed commit reported as applied and released a gated verification bead
+// (pg2-c40r4).
+//
+// Against the pre-change code this fails: there is no locked_revs at all.
+func TestMarkApplied_RecordsTerminalLockedRevs(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"dep": {alias: "depalias", rev: "locked000"},
+	})
+	runMarkApplied(t, w, leafDir)
+
+	st := appliedStateOf(t, w, "dep")
+	if st.Schema != appliedStateSchema {
+		t.Fatalf("schema = %d, want %d — consumers branch on it to tell 'no lock info' from 'not an input'",
+			st.Schema, appliedStateSchema)
+	}
+	if st.AppliedRef != "dep-head" {
+		t.Fatalf("applied_ref = %q, want the local HEAD %q — ADR 0025 ADDS locked_revs and must NOT "+
+			"redefine applied_ref (needsRebuild keys on it)", st.AppliedRef, "dep-head")
+	}
+	rev, isInput := st.LockedRevs["dep"]
+	if !isInput {
+		t.Fatalf("locked_revs = %v, want an entry for the terminal flake input %q", st.LockedRevs, "dep")
+	}
+	if rev != "locked000" {
+		t.Fatalf("locked_revs[dep] = %q, want the terminal's LOCKED rev %q (local HEAD %q is not in the "+
+			"built system until it is pushed and relocked)", rev, "locked000", "dep-head")
+	}
+}
+
+// TestMarkApplied_TerminalHasNoLockedRevEntry pins the clause that keeps
+// terminal-repo gates sound without a special case: the apply builds the terminal
+// from its LOCAL directory ({terminal_nix_dir}), so there is no lock rev to record
+// for it and the consumer's lock condition is SKIPPED on a missing entry.
+func TestMarkApplied_TerminalHasNoLockedRevEntry(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"dep": {alias: "depalias", rev: "locked000"},
+	})
+	runMarkApplied(t, w, leafDir)
+
+	st := appliedStateOf(t, w, "leaf")
+	if st.AppliedRef != "leaf-head" {
+		t.Fatalf("terminal applied_ref = %q, want its local HEAD %q", st.AppliedRef, "leaf-head")
+	}
+	if _, isInput := st.LockedRevs["leaf"]; isInput {
+		t.Fatalf("locked_revs must have NO entry for the terminal itself; got %v", st.LockedRevs)
+	}
+	// The apply's whole map is recorded in every record, so the terminal's record
+	// still describes the build (it just makes no claim about the terminal).
+	if st.LockedRevs["dep"] != "locked000" {
+		t.Fatalf("locked_revs = %v, want the apply's full input map recorded in every record", st.LockedRevs)
+	}
+}
+
+// TestMarkApplied_NotATerminalInputHasNoEntry covers a workspace repo that is not
+// a flake input of the terminal: no alias, so no edge, so no entry — the same
+// legitimate skip the terminal gets. This is the case whose value ("no entry") the
+// schema version has to distinguish from an OLD record's absent map.
+func TestMarkApplied_NotATerminalInputHasNoEntry(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{"dep": {}})
+	runMarkApplied(t, w, leafDir)
+
+	st := appliedStateOf(t, w, "dep")
+	if _, isInput := st.LockedRevs["dep"]; isInput {
+		t.Fatalf("a repo with no terminal edge must get NO locked_revs entry; got %v", st.LockedRevs)
+	}
+	if st.Schema != appliedStateSchema {
+		t.Fatalf("schema = %d, want %d so 'no entry' reads as evidence, not as absence of evidence",
+			st.Schema, appliedStateSchema)
+	}
+}
+
+// TestMarkApplied_UnresolvableLockRevFailsClosedAudibly covers an input the
+// terminal DOES declare but whose lock node carries no rev (a follows-only or
+// path: input, or an unreadable flake.lock). The entry MUST still be written, with
+// an EMPTY rev: dropping it would downgrade "the apply cannot say what it built
+// this from" into the indistinguishable "not an input" skip, which is fail-OPEN.
+// And it must be audible, because a silent unprovable apply is this bead's defect.
+func TestMarkApplied_UnresolvableLockRevFailsClosedAudibly(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"dep": {alias: "depalias"}, // edge exists; lock node has no rev
+	})
+	out := runMarkApplied(t, w, leafDir)
+
+	st := appliedStateOf(t, w, "dep")
+	rev, isInput := st.LockedRevs["dep"]
+	if !isInput || rev != "" {
+		t.Fatalf("locked_revs[dep] = %q present=%v; want a PRESENT entry with an EMPTY rev (fail closed)",
+			rev, isInput)
+	}
+	if !strings.Contains(out, "depalias") || !strings.Contains(out, "stays blocked") {
+		t.Fatalf("fail-closed must be observable, not silent; out=%q", out)
+	}
+}
+
+// TestMarkApplied_SameRepoNameDifferentOwners pins the OWNER half of the mapping
+// decision. Two workspace repos can share a repo NAME under different owners —
+// this workspace really does — so a mapping keyed on the repo name, or on
+// flake.lock's `locked.repo` alone, would cross them. Mapping through the workspace
+// lock's per-edge alias (whose edges were matched on the full host/owner/repo
+// canonical URL) keeps them distinct: each repo MUST get the rev pinned for ITS
+// OWN alias.
+func TestMarkApplied_SameRepoNameDifferentOwners(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"dep-a": {alias: "alias-a", rev: "reva0000", url: "github:ownerA/dep"},
+		"dep-b": {alias: "alias-b", rev: "revb0000", url: "github:ownerB/dep"},
+	})
+	runMarkApplied(t, w, leafDir)
+	for repo, want := range map[string]string{"dep-a": "reva0000", "dep-b": "revb0000"} {
+		if got := appliedStateOf(t, w, repo).LockedRevs[repo]; got != want {
+			t.Fatalf("locked_revs[%s] = %q, want %q — same-named repos under different owners must "+
+				"not be crossed", repo, got, want)
+		}
+	}
+}
+
+// TestMarkApplied_RecordsLockAtApplyTimeNotLater is the ORDERING-HOLE test on the
+// producer side, and it is the reason the ruling records the lock WITH the apply
+// rather than reading it at query time. Apply at T1 with the lock pinning "rev-t1";
+// relock to "rev-t2" at T2 > T1 WITHOUT applying. The T1 record MUST still say
+// "rev-t1" — otherwise the later relock retroactively makes the T1 build look as
+// though it contained code only the T2 lock names, which is the same false resolve
+// in a narrower window.
+func TestMarkApplied_RecordsLockAtApplyTimeNotLater(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"dep": {alias: "depalias", rev: "rev-t1"},
+	})
+	runMarkApplied(t, w, leafDir) // the T1 apply
+
+	// T2: the terminal is relocked forward. No apply runs.
+	writeTerminalFlakeLock(t, leafDir,
+		[]string{`"depalias": "dep-node"`}, []string{`"dep-node": {"locked": {"rev": "rev-t2"}}`})
+
+	if got := appliedStateOf(t, w, "dep").LockedRevs["dep"]; got != "rev-t1" {
+		t.Fatalf("locked_revs[dep] = %q after a later relock, want the T1 apply's %q — the recorded "+
+			"value must describe the build that ran, not the lock as it stands now", got, "rev-t1")
+	}
+	// Asserted through the PUBLISHED projection too, because that is what a consumer
+	// reads. A `pn workspace info` that resolved the rev LIVE instead of reporting
+	// the recorded one would be the rejected "is the lock NOW past the commit?"
+	// design, and it would report rev-t2 here.
+	info, err := w.Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	for _, r := range info.Repos {
+		if r.Name != "dep" {
+			continue
+		}
+		if !r.TerminalInput || r.LockedRev != "rev-t1" {
+			t.Fatalf("info dep: terminal_input=%v locked_rev=%q; want true/%q — info must publish the "+
+				"rev RECORDED with the apply, never the current lock", r.TerminalInput, r.LockedRev, "rev-t1")
+		}
 	}
 }

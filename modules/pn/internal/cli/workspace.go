@@ -498,7 +498,21 @@ func workspaceInfoCmd(_ *string) *cobra.Command {
 				if r.Dirty {
 					dirty = " (dirty)"
 				}
-				fmt.Fprintf(out, "  %s\t%s\t%s%s\n", r.Name, r.Path, applied, dirty)
+				// For a repo the terminal consumes as a flake input, the applied
+				// column is only this checkout's HEAD at apply time; what the BUILT
+				// system carries is the terminal's locked rev, which trails HEAD
+				// until the commit is pushed and the terminal relocked (ADR 0025).
+				// Print it alongside so a lone rev can never read as "this checkout
+				// is what is applied".
+				locked := ""
+				if r.TerminalInput {
+					rev := r.LockedRev
+					if rev == "" {
+						rev = "(unresolved)"
+					}
+					locked = "\tlocked " + rev
+				}
+				fmt.Fprintf(out, "  %s\t%s\t%s%s%s\n", r.Name, r.Path, applied, dirty, locked)
 			}
 			return nil
 		},

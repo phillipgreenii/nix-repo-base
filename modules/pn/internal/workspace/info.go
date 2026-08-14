@@ -26,11 +26,33 @@ type WorkspaceInfo struct {
 }
 
 // RepoInfo is one repo's identity + applied state.
+//
+// The three lock fields are the published projection of AppliedState.LockedRevs
+// (ADR 0025). ADR 0012 declares this schema a stable consumed API in which new
+// OPTIONAL fields may be added, which is what these are: nothing was renamed or
+// removed, so an existing consumer is unaffected.
 type RepoInfo struct {
-	Name       string `json:"name"`
-	Path       string `json:"path"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// AppliedRef is this checkout's local HEAD at apply time — evidence that an
+	// apply RAN. It is NOT evidence that the applied system CONTAINS that commit;
+	// for a repo the terminal consumes as a flake input that requires LockedRev.
 	AppliedRef string `json:"applied_ref"`
 	Dirty      bool   `json:"dirty"`
+	// AppliedStateSchema is the schema version of the applied-state record this
+	// entry was read from; 0 when the record predates locked_revs (or no record
+	// exists). A consumer MUST branch on it before trusting TerminalInput, because
+	// an old record's `false` means "no information recorded", not "not an input".
+	AppliedStateSchema int `json:"applied_state_schema"`
+	// TerminalInput reports whether the apply that wrote this record consumed the
+	// repo as a flake input of the terminal. Meaningful only when
+	// AppliedStateSchema >= 2.
+	TerminalInput bool `json:"terminal_input"`
+	// LockedRev is the rev the TERMINAL's flake.lock pinned for this repo at that
+	// apply — the rev the built system actually carries for it. Empty while
+	// TerminalInput is true means the apply could not establish it, and a consumer
+	// MUST fail closed rather than fall back to AppliedRef.
+	LockedRev string `json:"locked_rev"`
 }
 
 // Info joins the configured repos with their per-repo applied-state records.
@@ -55,6 +77,16 @@ func (ws *Workspace) Info(ctx context.Context) (WorkspaceInfo, error) {
 		} else if ok {
 			ri.AppliedRef = st.AppliedRef
 			ri.Dirty = st.Dirty
+			ri.AppliedStateSchema = st.Schema
+			// Project this repo's own entry. Presence of the KEY (not a non-empty
+			// value) is what makes it a terminal flake input — an entry with an empty
+			// rev is the fail-closed state, and collapsing the two would silently
+			// turn "the apply cannot say what it built this from" into "no lock check
+			// applies here".
+			if rev, isInput := st.LockedRevs[name]; isInput {
+				ri.TerminalInput = true
+				ri.LockedRev = rev
+			}
 		}
 		info.Repos = append(info.Repos, ri)
 	}

@@ -45,6 +45,116 @@ url = "github:owner/r"
 	}
 }
 
+// TestInfo_PublishesLockedRevProjection covers the three states a consumer must be
+// able to tell apart from `pn workspace info` alone (ADR 0025):
+//
+//	an entry with a rev  -> terminal_input true,  locked_rev = the rev (check it)
+//	an entry with no rev -> terminal_input true,  locked_rev = ""   (fail closed)
+//	no entry             -> terminal_input false                    (skip the check)
+//
+// Collapsing the middle case into the last one is fail-OPEN, which is the defect
+// pg2-ft60a is about, so the projection is asserted per-repo rather than in bulk.
+func TestInfo_PublishesLockedRevProjection(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "term"
+
+[repos.term]
+url = "github:owner/term"
+
+[repos.pinned]
+url = "github:owner/pinned"
+
+[repos.unresolved]
+url = "github:owner/unresolved"
+`)
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// One apply's map, written into every record (as markApplied does): "pinned"
+	// resolved, "unresolved" is an input whose rev could not be read, "term" (the
+	// terminal) has no entry at all.
+	lockedRevs := map[string]string{"pinned": "lockedrev", "unresolved": ""}
+	for _, name := range []string{"term", "pinned", "unresolved"} {
+		if err := writeAppliedState(filepath.Join(root, name), AppliedState{
+			Schema: appliedStateSchema, AppliedRef: name + "-head", LockedRevs: lockedRevs,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, err := w.Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]RepoInfo{}
+	for _, r := range info.Repos {
+		byName[r.Name] = r
+	}
+	for name, want := range map[string]RepoInfo{
+		"term":       {AppliedStateSchema: appliedStateSchema, TerminalInput: false, LockedRev: ""},
+		"pinned":     {AppliedStateSchema: appliedStateSchema, TerminalInput: true, LockedRev: "lockedrev"},
+		"unresolved": {AppliedStateSchema: appliedStateSchema, TerminalInput: true, LockedRev: ""},
+	} {
+		got := byName[name]
+		if got.AppliedStateSchema != want.AppliedStateSchema ||
+			got.TerminalInput != want.TerminalInput || got.LockedRev != want.LockedRev {
+			t.Errorf("%s: schema=%d terminal_input=%v locked_rev=%q; want schema=%d terminal_input=%v locked_rev=%q",
+				name, got.AppliedStateSchema, got.TerminalInput, got.LockedRev,
+				want.AppliedStateSchema, want.TerminalInput, want.LockedRev)
+		}
+	}
+}
+
+// TestInfo_PreLockedRevsRecordReportsSchemaZero pins the backwards-compatibility
+// contract. A record written by a pn that predates locked_revs MUST report
+// applied_state_schema 0, NOT the current schema: 0 is what tells a consumer "no
+// lock information was recorded", so it skips the lock condition instead of
+// treating terminal_input=false as positive evidence and blocking every gate until
+// a new pn is deployed. applied_ref must still read back verbatim — its meaning
+// never changed.
+func TestInfo_PreLockedRevsRecordReportsSchemaZero(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "r"
+
+[repos.r]
+url = "github:owner/r"
+`)
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := os.MkdirAll(appliedStateDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Byte-for-byte the pre-locked_revs layout: no `schema`, no `locked_revs`.
+	writeFile(t, appliedStateFile(filepath.Join(root, "r")),
+		`{"applied_ref":"oldhead","dirty":false,"applied_at":"2026-06-26T00:00:00Z"}`)
+
+	info, err := w.Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := info.Repos[0]
+	if r.AppliedStateSchema != 0 {
+		t.Errorf("applied_state_schema = %d, want 0 — an old record must not be stamped forward, or a "+
+			"consumer reads 'no information' as 'not a flake input'", r.AppliedStateSchema)
+	}
+	if r.TerminalInput || r.LockedRev != "" {
+		t.Errorf("terminal_input=%v locked_rev=%q, want false/empty for a record with no locked_revs",
+			r.TerminalInput, r.LockedRev)
+	}
+	if r.AppliedRef != "oldhead" {
+		t.Errorf("applied_ref = %q, want %q read back verbatim (its meaning is unchanged)", r.AppliedRef, "oldhead")
+	}
+}
+
 // TestInfo_FindsOverridePathAppliedState is the regression test for pg2-k43p.3.
 // An override-path apply (coordinated-worktree flow) applies the terminal repo
 // from an alternate checkout (`OverridePaths`). The applied-state store MUST be

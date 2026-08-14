@@ -16,7 +16,7 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0009](0009-pn-workspace-update-worktree-isolation.md)           | `pn workspace update` isolates per-repo work in ephemeral git worktrees    | Proposed (push/propagation amended by 0023)           |
 | [0010](0010-claude-marketplace-builder-and-identity.md)          | `mkClaudeMarketplace` builder + local-marketplace identity convention      | Accepted                                              |
 | [0011](0011-source-digest-in-derivation-version.md)              | Per-source digest in the derivation `version` for bash & python            | Accepted                                              |
-| [0012](0012-pn-applied-state-store-and-info-api.md)              | `pn` applied-state store, workspace info API, and wsid registry            | Accepted                                              |
+| [0012](0012-pn-applied-state-store-and-info-api.md)              | `pn` applied-state store, workspace info API, and wsid registry            | Accepted (amended by 0025)                            |
 | [0013](0013-activation-output-convention.md)                     | Activation-script output convention (`mkActivationSection` + helpers)      | Accepted (extended by 0014; color superseded by 0015) |
 | [0014](0014-activation-output-home-manager.md)                   | Extend the activation-output convention to home-manager activation         | Accepted                                              |
 | [0015](0015-activation-color-default-on.md)                      | Activation color defaults ON; `NO_COLOR` is the only off-switch            | Accepted                                              |
@@ -29,3 +29,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0022](0022-adopt-uv2nix-for-python-packages.md)                 | Adopt `uv2nix` for lock-driven Python builds (`mkPythonPackage`)           | Accepted (base; consumers → `pg2-wun6b`)              |
 | [0023](0023-workspace-push-owns-sibling-propagation.md)          | `pn workspace push` owns sibling propagation; `update` never pushes        | Accepted (amends 0009)                                |
 | [0024](0024-build-tagged-suites-need-their-own-check.md)         | Build-tagged suites need their own check; per-scenario capability markers  | Accepted (amends 0021)                                |
+| [0025](0025-applied-state-records-the-terminal-locked-revs.md)   | Applied-state records the terminal's locked revs at apply time             | Accepted (amends 0012)                                |

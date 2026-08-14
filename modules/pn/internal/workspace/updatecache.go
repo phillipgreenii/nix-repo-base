@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +23,14 @@ var hexFilenameRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // A corrupt or unreadable store returns an error (fail-closed) rather than
 // triggering a rebuild. Returns false (with a notice) only when every repo is
 // clean and unchanged.
+//
+// The gate compares local HEAD against AppliedState.AppliedRef, and ADR 0025
+// deliberately left that comparison alone: it added LockedRevs as a SEPARATE field
+// instead of redefining AppliedRef. This is load-bearing. AppliedRef answers "has
+// this checkout changed since the last apply", which is a question about the local
+// working copy; if it had been redefined to a terminal-locked rev, this comparison
+// would pit local HEAD against a rev that normally differs from it, the skip would
+// never fire, and every apply would rebuild.
 func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []repoDir, force bool, out io.Writer) (bool, error) {
 	if force {
 		return true, nil
@@ -83,12 +93,44 @@ func (ws *Workspace) gitStatusPorcelain(ctx context.Context, dir string) (string
 }
 
 // markApplied records each repo's current HEAD (and dirty flag) into the
-// authoritative applied-state store. Written only after a successful apply.
+// authoritative applied-state store, TOGETHER WITH the terminal's locked revs as
+// they stood for THIS apply. Written only after a successful apply.
+//
 // git reads HEAD/dirtiness from the applied checkout (gitDir), but the store is
 // keyed by the canonical path (keyPath) — the same key Info reads — so an
-// override-path apply is discoverable by `pn workspace info`.
-func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir) error {
+// override-path apply is discoverable by `pn workspace info`. terminalNixDir is
+// the directory holding the terminal's flake.nix/flake.lock for THIS apply, so an
+// override-path apply reads the lock it actually ran against.
+//
+// AppliedRef stays exactly what it always was (this checkout's local HEAD): it is
+// the evidence that an apply RAN. What it does NOT prove is that the applied
+// system CONTAINS that commit — for a repo the terminal consumes as a flake input
+// (a `github:` pin), the commit reaches the built system only once it is pushed and
+// the terminal relocked, so a commit landed on local main resolved a `pn:applied`
+// gate against code no build had ever seen (bead pg2-ft60a, which released the
+// gated verification bead pg2-c40r4).
+//
+// The remedy is the SECOND, independent fact recorded here: LockedRevs, the rev the
+// terminal's flake.lock pinned for each of its workspace flake inputs at this
+// apply. A consumer requires BOTH — an apply happened (AppliedRef's range contains
+// the patch) AND that apply's lock contained the commit. Recording the lock WITH
+// the apply, rather than re-reading it at query time, is what closes the ordering
+// hole: an apply at T1 followed by a relock at T2 > T1 must not read as though the
+// T1 build contained code only the T2 lock names.
+//
+// The same map is written into EVERY repo's record: it describes the apply, not one
+// repo, and each record is therefore self-contained evidence about the build that
+// produced it. A repo with no entry (the terminal itself, or a repo no terminal
+// input names) is a legitimate SKIP for the lock condition; an entry with an EMPTY
+// rev is a FAIL-CLOSED marker and is announced on out, because a silent unprovable
+// apply is the failure mode this bead is about.
+func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir, terminal, terminalNixDir string, out io.Writer) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+	tl, lockErr := ws.terminalLockedRevs(terminal, terminalNixDir)
+	if lockErr != nil {
+		fmt.Fprintf(out, "pn: warn: applied-state: cannot read terminal %q flake.lock in %s: %v\n",
+			terminal, terminalNixDir, lockErr)
+	}
 	for _, rd := range repoDirs {
 		res, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "rev-parse", "HEAD"}, exec.RunOptions{})
 		if err != nil {
@@ -100,11 +142,103 @@ func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir) error 
 			return fmt.Errorf("git status in %s: %w", rd.gitDir, err)
 		}
 		dirty := porcelain != ""
-		if err := writeAppliedState(rd.keyPath, AppliedState{AppliedRef: head, Dirty: dirty, AppliedAt: now}); err != nil {
+		if rev, isInput := tl.Revs[rd.name]; isInput && rev == "" {
+			fmt.Fprintf(out, "pn: warn: applied-state: %s: terminal %q declares it as flake input %q but its "+
+				"flake.lock pins no rev for it; locked_revs[%s] is left empty, so a pn:applied gate on %s "+
+				"stays blocked (fail closed)\n", rd.name, terminal, tl.Aliases[rd.name], rd.name, rd.name)
+		}
+		if err := writeAppliedState(rd.keyPath, AppliedState{
+			Schema:     appliedStateSchema,
+			AppliedRef: head,
+			LockedRevs: tl.Revs,
+			Dirty:      dirty,
+			AppliedAt:  now,
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// terminalLock is what the TERMINAL's flake.lock said, at one apply, about the
+// workspace repos the terminal consumes as flake inputs. Aliases and Revs share
+// one key set: the repos that ARE terminal flake inputs.
+type terminalLock struct {
+	// Aliases maps workspace repo key -> the flake input name the terminal uses
+	// for it. Kept alongside Revs so a fail-closed warning can name the input the
+	// operator has to look at.
+	Aliases map[string]string
+	// Revs maps workspace repo key -> the rev the terminal's flake.lock pinned,
+	// or "" when no rev could be resolved for that alias. See AppliedState.LockedRevs
+	// for how the three states (absent / non-empty / empty) must be read.
+	Revs map[string]string
+}
+
+// terminalLockedRevs resolves, for each workspace repo the TERMINAL declares as a
+// flake input, the rev the terminal's flake.lock pins for it.
+//
+// The repo -> lock-node mapping composes two mechanisms that already exist rather
+// than pattern-matching flake.lock node keys or their locked.repo/locked.owner
+// fields:
+//
+//   - ws.lock.Edges already maps (consumer, alias) -> target repo, and those edges
+//     were derived by matching canonicalURL(flake input URL) against
+//     canonicalURL(the repo's configured remote). The canonical form is
+//     host/owner/repo, so the OWNER is inherently part of the match and two
+//     same-named repos under different owners cannot be crossed (this workspace has
+//     exactly that shape). buildEdges already rejects a genuinely ambiguous config
+//     at lock time, so no ambiguity survives to here.
+//   - alias -> rev then goes through readAliasRevs, which walks
+//     root.inputs[alias] -> node key -> nodes[key].locked.rev exactly as nix
+//     resolves it (the same path checkFollows and tree.go use). Node KEYS are
+//     unusable as identities: they neither match the workspace repo key
+//     (`phillipgreenii-nix-base` is the node for repo `phillipg-nix-repo-base`) nor
+//     stay stable (nix appends `_2`/`_3` to disambiguate), so they are never
+//     matched against.
+//
+// It reads ws.lock — the SAME edge set apply derived its --override-input flags
+// from (see overrideInputArgsForLock) — so the recorded state describes the build
+// that just ran. It deliberately does NOT fall back to effectiveLock's nix-eval
+// derivation: markApplied runs AFTER a successful apply, where a fresh nix fan-out
+// could fail and turn a good apply into an error.
+//
+// Every repo with an edge gets a key, INCLUDING when its rev cannot be resolved —
+// the key set is the claim "the terminal consumes these repos as flake inputs", and
+// dropping an unresolvable one would downgrade a fail-closed state into an
+// indistinguishable "not an input" skip. An unreadable terminal flake.lock
+// therefore yields every input keyed to "" plus the error; an edgeless workspace
+// lock yields an EMPTY key set, which correctly says "the terminal has no workspace
+// flake inputs" — the same edge set apply passes as overrides, so an edgeless lock
+// is also an apply that overrode nothing.
+func (ws *Workspace) terminalLockedRevs(terminal, terminalNixDir string) (terminalLock, error) {
+	tl := terminalLock{Aliases: map[string]string{}, Revs: map[string]string{}}
+	if ws == nil || ws.lock == nil {
+		return tl, nil
+	}
+	for _, e := range ws.lock.Edges {
+		if e.Consumer == terminal {
+			tl.Aliases[e.Target] = e.Alias
+			tl.Revs[e.Target] = ""
+		}
+	}
+	if len(tl.Aliases) == 0 {
+		return tl, nil
+	}
+	names := make([]string, 0, len(tl.Aliases))
+	for _, alias := range tl.Aliases {
+		names = append(names, alias)
+	}
+	sort.Strings(names) // deterministic; readAliasRevs is order-insensitive
+	byAlias, err := readAliasRevs(filepath.Join(terminalNixDir, "flake.lock"), names)
+	if err != nil {
+		return tl, err
+	}
+	for repo, alias := range tl.Aliases {
+		if rev := byAlias[alias]; rev != "" {
+			tl.Revs[repo] = rev
+		}
+	}
+	return tl, nil
 }
 
 // checkNixDaemon probes daemon responsiveness with a 10s-bounded `nix eval`. On

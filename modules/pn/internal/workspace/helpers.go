@@ -59,6 +59,12 @@ func (ws *Workspace) overrideInputArgsFor(consumer string, opts overrideOpts) []
 // overrideInputArgsForLock is overrideInputArgsFor keyed on an explicit lock
 // rather than ws.lock, so callers that need a freshly derived lock (e.g. hook
 // fan-out via effectiveLock) get overrides even when ws.lock is empty/stale.
+//
+// The edge set this walks is the SAME one markApplied maps through to record
+// AppliedState.LockedRevs (terminalLockedRevs), which is why an apply's override
+// set and its recorded lock evidence always describe the same list of repos: an
+// edge here is an alias there, and no edge means neither an override nor a lock
+// entry.
 func (ws *Workspace) overrideInputArgsForLock(lk *Lock, consumer string, opts overrideOpts) []string {
 	if ws == nil || lk == nil {
 		return []string{}

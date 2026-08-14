@@ -126,7 +126,10 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		ws.restartFsmonitorDaemon(ctx, out)
 	}
 
-	return ws.markApplied(ctx, allDirs)
+	// markApplied is reached ONLY here, after a real rebuild — the !rebuild early
+	// return above skips it. So a record (and its locked_revs) is written exactly
+	// when a build actually happened, never on a skipped apply.
+	return ws.markApplied(ctx, allDirs, terminal, terminalNixDir, out)
 }
 
 // gitBinaryID returns a string identifying the installed git *binary*, via the
@@ -172,6 +175,11 @@ func (ws *Workspace) stopFsmonitorDaemon(ctx context.Context, dir string) {
 // canonical <root>/<name>) so `pn workspace info`, which knows only the
 // canonical path, finds the record. Absent overrides the two are identical.
 type repoDir struct {
+	// name is the [repos.<key>] workspace repo key. It is the identity markApplied
+	// maps through the workspace lock's edge set to find the terminal's flake input
+	// alias for this repo — the edge set is keyed on the repo key, never on a path,
+	// so name is unaffected by an override.
+	name    string
 	keyPath string // canonical <root>/<name>; the applied-state store key
 	gitDir  string // resolved checkout (override path or canonical); git runs here
 }
@@ -202,7 +210,7 @@ func (ws *Workspace) allRepoDirs(overrides map[string]string) []repoDir {
 		if !dirExists(gitDir) {
 			continue
 		}
-		dirs = append(dirs, repoDir{keyPath: keyPath, gitDir: gitDir})
+		dirs = append(dirs, repoDir{name: key, keyPath: keyPath, gitDir: gitDir})
 	}
 	return dirs
 }
