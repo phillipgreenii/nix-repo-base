@@ -633,10 +633,18 @@ _setup_fetch_and_rebase_origin() {
 }
 
 @test "pnwf_fetch_and_rebase: a REFUSED rebase returns the NEVER-STARTED sentinel, not the mid-rebase one, and leaves no rebase state" {
-  # The bd pg2-k3s0x case. A dirty working tree makes `git rebase` refuse
-  # OUTRIGHT: it exits non-zero having started nothing, so the mid-rebase
-  # sentinel (3) -- and the `git rebase --continue` hand-off it selects --
-  # would be actively wrong advice.
+  # The bd pg2-k3s0x case. `git rebase` refuses OUTRIGHT: it exits non-zero
+  # having started nothing, so the mid-rebase sentinel (3) -- and the `git
+  # rebase --continue` hand-off it selects -- would be actively wrong advice.
+  #
+  # The CAUSE modelled here is a `pre-rebase` hook veto, NOT the dirty tree
+  # this test used to use (bd pg2-lgzcg): a dirty tree no longer reaches the
+  # rebase at all -- the pre-check refuses it first, as 6 -- and with
+  # `rebase.autoStash` on it would not have made git refuse anyway. A hook
+  # veto is a REAL remaining cause of 4, verified on git 2.54 with
+  # autoStash=true: exit 1, "the pre-rebase hook refused to rebase", and no
+  # rebase state directory, on a CLEAN tree. It is hermetic (a repo-local
+  # hook file, no git config involved).
   _setup_fetch_and_rebase_origin
   command git -C "$CLONE" checkout -q -b feature
 
@@ -647,8 +655,17 @@ _setup_fetch_and_rebase_origin() {
   command git -C "$REPO" commit -q -m "origin advance"
   command git -C "$REPO" push -q "$ORIGIN" main
 
-  # An unstaged change to a TRACKED file is what git refuses on.
-  echo uncommitted-work >"$CLONE/file.txt"
+  cat >"$CLONE/.git/hooks/pre-rebase" <<'HOOK'
+#!/bin/sh
+echo "pre-rebase hook refuses in this test" >&2
+exit 1
+HOOK
+  chmod +x "$CLONE/.git/hooks/pre-rebase"
+
+  # The tree is CLEAN, so the dirtiness pre-check passes it through to the
+  # rebase -- which is what makes this a test of 4 rather than of 6.
+  run bash -c "command git -C '$CLONE' status --porcelain"
+  [ -z "$output" ]
 
   run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
   [ "$status" -eq 4 ]
@@ -661,11 +678,138 @@ _setup_fetch_and_rebase_origin() {
   # so there is nothing for `git rebase --continue` to continue.
   [ ! -d "$CLONE/.git/rebase-apply" ]
   [ ! -d "$CLONE/.git/rebase-merge" ]
+}
 
-  # The dirty change is left exactly as found -- this helper never stashes,
-  # commits, or discards the operator's work.
+# --- pnwf_fetch_and_rebase: the dirtiness PRE-CHECK ----------------------
+# bd pg2-lgzcg. `git rebase` refuses on a dirty tree only while
+# `rebase.autoStash` is OFF, so relying on git to refuse makes this helper's
+# behaviour depend on a setting outside the repo -- and on THIS machine
+# (`~/.config/git/config`, the XDG file `git config --global --get` does not
+# read) it is ON, which is the configuration where a dirty member returns 0
+# from `pnwf_fetch_and_rebase` while its worktree is left conflicted.
+#
+# BOTH configurations are pinned below, and BOTH set `rebase.autoStash`
+# EXPLICITLY in the test's own repo-local config. That is load-bearing twice
+# over: setup_file exports GIT_CONFIG_GLOBAL=/dev/null (beads pg2-klyn6 /
+# pg2-7hr6o), so the ambient value cannot reach these tests at all; and a
+# test that DID depend on the developer's setting would be an instance of the
+# very defect this pair exists to close.
+
+_setup_dirty_member_against_advanced_origin() {
+  # A real member whose worktree holds an uncommitted change to a TRACKED
+  # file, with origin genuinely ahead so a rebase has commits to replay --
+  # the test must turn on the DIRTINESS, not on there being nothing to do.
+  # The uncommitted change touches the SAME file the origin advance rewrites,
+  # which is what makes the unfixed path leave a CONFLICTED autostash rather
+  # than a clean pop: the worst reachable outcome, asserted against below.
+  _setup_fetch_and_rebase_origin
+  command git -C "$CLONE" checkout -q -b feature
+
+  echo origin-side >"$REPO/file.txt"
+  command git -C "$REPO" commit -q -am "origin change"
+  command git -C "$REPO" push -q "$ORIGIN" main
+
+  echo uncommitted-work >"$CLONE/file.txt"
+
+  # Recorded BEFORE the call under test, so "nothing moved" is asserted
+  # against observed values rather than against an assumed shape. The
+  # remote-tracking ref is deliberately STALE here (the push above landed
+  # after the clone), which is what makes it evidence about the FETCH.
+  FEATURE_SHA_BEFORE=$(command git -C "$CLONE" rev-parse feature)
+  ORIGIN_MAIN_SHA_BEFORE=$(command git -C "$CLONE" rev-parse origin/main)
+  export FEATURE_SHA_BEFORE ORIGIN_MAIN_SHA_BEFORE
+}
+
+# Asserts the whole point of the pre-check: the member was left exactly as
+# found -- unfetched, unrebased, unstashed, unconflicted -- because deciding
+# the fate of work pnwf did not create is not pnwf's call.
+_assert_member_untouched_by_refusal() {
+  # The operator's uncommitted work is still in the working tree, verbatim.
   run cat "$CLONE/file.txt"
   [ "$output" = "uncommitted-work" ]
+
+  # NOT stashed. On the unfixed path this is where the work ends up when the
+  # autostash pop conflicts ("Your changes are safe in the stash"), orphaned
+  # from any command that would put it back.
+  run bash -c "command git -C '$CLONE' stash list"
+  [ -z "$output" ]
+
+  # No conflict markers, and nothing mid-rebase.
+  run bash -c "command git -C '$CLONE' status --porcelain"
+  [[ "$output" != *"UU "* ]]
+  [ ! -d "$CLONE/.git/rebase-apply" ]
+  [ ! -d "$CLONE/.git/rebase-merge" ]
+
+  # The branch tip did NOT move, so no rebase replayed anything. This is what
+  # separates "refused" from "passed": under autoStash=true the unfixed path
+  # DOES advance this tip (it rebases successfully; only the pop fails).
+  run bash -c "command git -C '$CLONE' rev-parse feature"
+  [ "$output" = "$FEATURE_SHA_BEFORE" ]
+
+  # The stale remote-tracking ref did NOT advance either, so `git fetch` was
+  # never run: the pre-check precedes the fetch, so a member that is already a
+  # decided stop costs no network round trip.
+  run bash -c "command git -C '$CLONE' rev-parse origin/main"
+  [ "$output" = "$ORIGIN_MAIN_SHA_BEFORE" ]
+}
+
+@test "pnwf_fetch_and_rebase: a DIRTY member is refused with its own sentinel under rebase.autoStash=true, where git itself reports SUCCESS" {
+  _setup_dirty_member_against_advanced_origin
+  # EXPLICIT, repo-local: the harness is hermetic against the ambient value.
+  command git -C "$CLONE" config rebase.autoStash true
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
+
+  # 6, and specifically NOT 0. Without the pre-check this call returns 0 --
+  # git autostashes, rebases, fails to pop, and STILL exits 0 (verified git
+  # 2.54: "Applying autostash resulted in conflicts" AND "Successfully
+  # rebased" together) -- so the caller reads a clean pass and moves to the
+  # next member while this worktree sits at `UU file.txt`. Neither 3 nor 4
+  # can catch it either: git refused nothing and started nothing that stopped.
+  [ "$status" -eq 6 ]
+  [[ "$stderr" == *"pnwf_fetch_and_rebase: $CLONE has uncommitted changes"* ]]
+  # The diagnostic must not offer the mid-rebase recovery: nothing started.
+  [[ "$stderr" != *"rebase --continue"* ]]
+  [[ "$stderr" != *"rebase --abort"* ]]
+
+  _assert_member_untouched_by_refusal
+}
+
+@test "pnwf_fetch_and_rebase: a DIRTY member is refused with the SAME sentinel under rebase.autoStash=false, where git would have refused" {
+  _setup_dirty_member_against_advanced_origin
+  # EXPLICIT, repo-local: pins the other machine configuration, so the
+  # outcome stops depending on which one the reader happens to have.
+  command git -C "$CLONE" config rebase.autoStash false
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
+
+  # 6, NOT 4: git WOULD have refused this one ("cannot rebase: You have
+  # unstaged changes"), but the answer must not depend on that -- the
+  # sentinel, the diagnostic and the state left behind are identical to the
+  # autoStash=true case above, which is the property that makes the behaviour
+  # configuration-independent. 4 now means a refusal on a CLEAN tree only.
+  [ "$status" -eq 6 ]
+  [[ "$stderr" == *"pnwf_fetch_and_rebase: $CLONE has uncommitted changes"* ]]
+  [[ "$stderr" != *"git rebase origin/main failed"* ]]
+
+  _assert_member_untouched_by_refusal
+}
+
+@test "pnwf_fetch_and_rebase: an UNREADABLE working tree yields the INDETERMINATE-DIRTINESS sentinel and attempts nothing" {
+  # The path exists (pnwf_worktree_present is a plain path check, so
+  # cmd_sync_fetch can hand one over) but is not a git repo, so whether a
+  # rebase is SAFE to attempt cannot be read. Same discipline as sentinel 5,
+  # one step earlier: assert NO cause rather than guess one. A distinct code,
+  # not the probe's own rc (128), which would reach the caller as an
+  # unrecognised sentinel.
+  mkdir -p "$TEST_DIR/not-a-repo"
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$TEST_DIR/not-a-repo' main"
+  [ "$status" -eq 7 ]
+  [[ "$stderr" == *"pnwf_fetch_and_rebase: could not determine whether $TEST_DIR/not-a-repo has uncommitted changes"* ]]
+  # No recovery is asserted -- neither the dirty-tree one nor a rebase one.
+  [[ "$stderr" != *"commit or stash"* ]]
+  [[ "$stderr" != *"rebase --continue"* ]]
 }
 
 @test "pnwf_fetch_and_rebase: git fetch failure does not abort, returns the FETCH-step sentinel, and prints a diagnostic" {

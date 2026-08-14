@@ -946,19 +946,29 @@ SHIM
 # the evidence that the mid-rebase-vs-refused verdict came from an
 # observable rather than from a catch-all.
 #
-# THREE distinguishable rebase failures are modelled, because
+# FIVE distinguishable stopping points are modelled, because
 # `pnwf_fetch_and_rebase` returns a different sentinel for each and this
-# subcommand must not collapse them (bd pg2-k3s0x):
+# subcommand must not collapse them (bd pg2-k3s0x, bd pg2-lgzcg):
 #   .mock-rebase-conflict     rebase STARTS and stops mid-way -- the mock
 #                             creates the rebase state directory git itself
 #                             would leave behind, so the probe reports
 #                             in-progress (sentinel 3).
-#   .mock-rebase-refused      rebase is REFUSED outright (git's real wording
-#                             for a dirty tree) and creates NO state
+#   .mock-rebase-refused      rebase is REFUSED outright and creates NO state
 #                             directory, so the probe reports not-in-progress
 #                             (sentinel 4).
 #   .mock-rev-parse-failure   the probe itself cannot read the observable, so
 #                             neither verdict may be asserted (sentinel 5).
+#   .mock-dirty               `status --porcelain` reports an uncommitted
+#                             change, so the PRE-CHECK refuses the member
+#                             before the fetch (sentinel 6).
+#   .mock-status-failure      `status --porcelain` itself fails, so whether a
+#                             rebase is safe cannot be read (sentinel 7).
+#
+# The mocked `status --porcelain` is SYNTHETIC -- driven only by the two
+# markers above, never by what is actually on disk. That is deliberate: the
+# marker files are themselves untracked files inside the member directory, so
+# a real `status` would report EVERY marked member as dirty and the pre-check
+# would swallow the rebase cases this suite exists to pin.
 #
 # `rev-parse --git-path <name>` answers with an ABSOLUTE path under a
 # per-member `.mock-gitdir`, mirroring the LINKED-WORKTREE shape a real set
@@ -980,6 +990,16 @@ fi
 echo "$dir ${1:-}" >>"$MOCK_GIT_LOG"
 
 case "${1:-}" in
+status)
+  if [[ -f "$dir/.mock-status-failure" ]]; then
+    echo "mock git: fatal: not a git repository" >&2
+    exit 128
+  fi
+  if [[ -f "$dir/.mock-dirty" ]]; then
+    echo " M file.txt"
+  fi
+  exit 0
+  ;;
 fetch)
   if [[ -f "$dir/.mock-fetch-failure" ]]; then
     echo "mock git: fatal: could not read from remote repository" >&2
@@ -1042,13 +1062,19 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 6 ]
-  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[2]}" = "$SET_DIR/repoB fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoB rebase" ]
-  [ "${lines[4]}" = "$SET_DIR/repoC fetch" ]
-  [ "${lines[5]}" = "$SET_DIR/repoC rebase" ]
+  # THREE calls per member, and `status` is FIRST: the dirtiness pre-check
+  # precedes the fetch, so a member that is already a decided stop costs no
+  # network round trip (bd pg2-lgzcg).
+  [ "${#lines[@]}" -eq 9 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[3]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[4]}" = "$SET_DIR/repoB fetch" ]
+  [ "${lines[5]}" = "$SET_DIR/repoB rebase" ]
+  [ "${lines[6]}" = "$SET_DIR/repoC status" ]
+  [ "${lines[7]}" = "$SET_DIR/repoC fetch" ]
+  [ "${lines[8]}" = "$SET_DIR/repoC rebase" ]
 }
 
 @test "sync-fetch --set: conflicting rebase stops on the FIRST conflicting repo, reports repo+worktree with rebase-specific recovery, exits non-zero, and does not continue" {
@@ -1080,24 +1106,33 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 5 ]
-  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[2]}" = "$SET_DIR/repoB fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoB rebase" ]
+  [ "${#lines[@]}" -eq 7 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA rebase" ]
+  # repoB's pre-check passes (it is not dirty), so this IS a rebase-stage
+  # failure rather than the pre-check's own refusal.
+  [ "${lines[3]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[4]}" = "$SET_DIR/repoB fetch" ]
+  [ "${lines[5]}" = "$SET_DIR/repoB rebase" ]
   # The classifying probe -- the failed rebase is diagnosed by ASKING git
   # whether a rebase is in progress, not by assuming one is. It runs exactly
   # once here: `rebase-merge` is found, so `rebase-apply` is never queried.
-  [ "${lines[4]}" = "$SET_DIR/repoB rev-parse" ]
+  [ "${lines[6]}" = "$SET_DIR/repoB rev-parse" ]
   [[ "$output" != *"repoC"* ]]
 }
 
-@test "sync-fetch --set: a REFUSED rebase reports commit-or-stash recovery, NEVER 'rebase --continue', exits non-zero, and does not continue" {
-  # bd pg2-k3s0x. A dirty worktree makes `git rebase` refuse without
-  # starting, so nothing is mid-rebase: this member's recovery is to commit
-  # or stash, and the mid-rebase hand-off would send the operator to
+@test "sync-fetch --set: a REFUSED rebase on a CLEAN tree reports git's own refusal, NEVER 'rebase --continue', exits non-zero, and does not continue" {
+  # bd pg2-k3s0x. `git rebase` refuses without starting, so nothing is
+  # mid-rebase and the mid-rebase hand-off would send the operator to
   # `git rebase --continue` for a rebase that never existed. Before the fix
   # a catch-all `*)` branch asserted exactly that.
+  #
+  # bd pg2-lgzcg narrowed WHICH causes land here: this member is NOT dirty
+  # (no `.mock-dirty`), so the pre-check passes it through and the refusal is
+  # git's own -- an unresolvable upstream or a `pre-rebase` hook veto, both
+  # verified on git 2.54 as exit non-zero with no rebase state directory. A
+  # DIRTY member never reaches this code path at all; that is sentinel 6.
   _stage_write_lock repoA repoB repoC
   _sync_fetch_init_members repoA repoB repoC
   touch "$SET_DIR/repoB/.mock-rebase-refused"
@@ -1116,30 +1151,127 @@ _sync_fetch_init_members() {
   [[ "$output" == *"repoB"* ]]
   [[ "$output" == *"$SET_DIR/repoB"* ]]
 
-  # The whole point of the bead: the mid-rebase hand-off MUST NOT appear --
-  # not even the claim that the member IS mid-rebase -- and the recovery that
-  # actually applies MUST. The `rebase --continue` string is asserted absent
-  # OUTRIGHT (rather than "absent as advice"), because the pnwf-runner agent
-  # classifies this stderr and would key on it wherever it appeared.
+  # The whole point of pg2-k3s0x: the mid-rebase hand-off MUST NOT appear --
+  # not even the claim that the member IS mid-rebase. The `rebase --continue`
+  # string is asserted absent OUTRIGHT (rather than "absent as advice"),
+  # because the pnwf-runner agent classifies this stderr and would key on it
+  # wherever it appeared.
   [[ "$output" != *"rebase --continue"* ]]
   [[ "$output" != *"mid-rebase"* ]]
   [[ "$output" == *"REFUSED"* ]]
+  [[ "$output" != *"'git fetch origin' failed"* ]]
+
+  # pg2-lgzcg: this message must no longer offer the DIRTY-tree recovery, and
+  # must no longer call a dirty worktree the classic cause. With
+  # `rebase.autoStash` on, a dirty tree does not make git refuse at all, so
+  # "commit or stash" here was advice for a stop that would not occur -- and
+  # the runner classifies this stderr, so a stale string is not inert. That
+  # recovery now belongs to sentinel 6 alone.
+  [[ "$output" != *"commit or stash"* ]]
+  [[ "$output" != *"classic cause"* ]]
+  # And it says what actually refused instead, on a tree it confirmed clean.
+  [[ "$output" == *"CLEAN"* ]]
+  [[ "$output" == *"pre-rebase"* ]]
+
+  run cat "$MOCK_GIT_LOG"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 8 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA rebase" ]
+  # repoB's pre-check runs and PASSES (not dirty), so the fetch and rebase
+  # are both attempted -- the evidence that "CLEAN" above is observed rather
+  # than asserted.
+  [ "${lines[3]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[4]}" = "$SET_DIR/repoB fetch" ]
+  [ "${lines[5]}" = "$SET_DIR/repoB rebase" ]
+  # BOTH backends are queried before concluding "no rebase in progress" --
+  # `rebase-merge` then `rebase-apply`; concluding it off one would miss a
+  # rebase run with the apply/am backend.
+  [ "${lines[6]}" = "$SET_DIR/repoB rev-parse" ]
+  [ "${lines[7]}" = "$SET_DIR/repoB rev-parse" ]
+  [[ "$output" != *"repoC"* ]]
+}
+
+@test "sync-fetch --set: a DIRTY member is refused BEFORE any fetch or rebase, with its own status and recovery, and does not continue" {
+  # bd pg2-lgzcg, the CLI half. This member never reaches `git rebase`, so
+  # the outcome cannot depend on `rebase.autoStash` -- which is the whole
+  # point: with it ON git reports SUCCESS for a dirty member (having possibly
+  # left a conflicted autostash), so exit 4's "REFUSED" path could never fire
+  # for the cause its own message used to call classic.
+  _stage_write_lock repoA repoB repoC
+  _sync_fetch_init_members repoA repoB repoC
+  touch "$SET_DIR/repoB/.mock-dirty"
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  # 6: its own status, DISTINCT from 2/3/4/5, so the runner picks the
+  # dirty-member gate rather than either rebase gate.
+  [ "$status" -eq 6 ]
+  [[ "$output" == *"repoB"* ]]
+  [[ "$output" == *"$SET_DIR/repoB"* ]]
+
+  # The recovery that actually applies -- and it is the ONLY message that
+  # carries it now.
+  [[ "$output" == *"UNCOMMITTED CHANGES"* ]]
   [[ "$output" == *"commit or stash"* ]]
+
+  # The mid-rebase commands are absent OUTRIGHT: not as advice, not as a
+  # negation, not named at all. Nothing was started here, and the runner
+  # classifies this stderr -- a naive matcher keying on either string would
+  # re-emit a rebase-conflict hand-off for a member that never rebased.
+  [[ "$output" != *"rebase --continue"* ]]
+  [[ "$output" != *"rebase --abort"* ]]
+  [[ "$output" != *"mid-rebase"* ]]
+  # Distinguishable from sentinel 4 by WORDING as well as by status, so a
+  # human reading stderr cannot confuse pnwf's own refusal with git's.
+  [[ "$output" != *"REFUSED"* ]]
   [[ "$output" != *"'git fetch origin' failed"* ]]
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 6 ]
-  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[2]}" = "$SET_DIR/repoB fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoB rebase" ]
-  # BOTH backends are queried before concluding "no rebase in progress" --
-  # `rebase-merge` then `rebase-apply`; concluding it off one would miss a
-  # rebase run with the apply/am backend.
-  [ "${lines[4]}" = "$SET_DIR/repoB rev-parse" ]
-  [ "${lines[5]}" = "$SET_DIR/repoB rev-parse" ]
+  # FOUR lines, and this is the discriminating evidence: repoB's `status` is
+  # logged but its `fetch` and `rebase` are NOT -- nothing was attempted --
+  # and repoC is never reached.
+  [ "${#lines[@]}" -eq 4 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[3]}" = "$SET_DIR/repoB status" ]
   [[ "$output" != *"repoC"* ]]
+}
+
+@test "sync-fetch --set: when the dirtiness observable cannot be read, NO recovery is asserted and nothing is attempted" {
+  # Same discipline as the unreadable rebase-in-progress observable (5), one
+  # step earlier: the pre-check could not read whether a rebase is SAFE, so
+  # neither the dirty-member recovery nor any rebase recovery may be claimed.
+  _stage_write_lock repoA repoB
+  _sync_fetch_init_members repoA repoB
+  touch "$SET_DIR/repoB/.mock-status-failure"
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  # 7: its own status, so the runner halts rather than picking any gate.
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"repoB"* ]]
+  [[ "$output" == *"could not be determined"* ]]
+  [[ "$output" != *"commit or stash"* ]]
+  [[ "$output" != *"rebase --continue"* ]]
+
+  run cat "$MOCK_GIT_LOG"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 4 ]
+  [ "${lines[3]}" = "$SET_DIR/repoB status" ]
 }
 
 @test "sync-fetch --set: when the rebase-in-progress observable cannot be read, NO recovery is asserted" {
@@ -1193,10 +1325,13 @@ _sync_fetch_init_members() {
   # (the later member) is never touched.
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 3 ]
-  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[2]}" = "$SET_DIR/repoB fetch" ]
+  [ "${#lines[@]}" -eq 5 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA rebase" ]
+  # repoB's pre-check passes, so the fetch IS attempted -- and stops there.
+  [ "${lines[3]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[4]}" = "$SET_DIR/repoB fetch" ]
   [[ "$output" != *"repoC"* ]]
 }
 
@@ -1220,11 +1355,13 @@ _sync_fetch_init_members() {
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
   [[ "$output" != *"repoB"* ]]
-  [ "${#lines[@]}" -eq 4 ]
-  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[2]}" = "$SET_DIR/repoC fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoC rebase" ]
+  [ "${#lines[@]}" -eq 6 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[3]}" = "$SET_DIR/repoC status" ]
+  [ "${lines[4]}" = "$SET_DIR/repoC fetch" ]
+  [ "${lines[5]}" = "$SET_DIR/repoC rebase" ]
 }
 
 @test "sync-fetch --set: a re-run after a member is already up to date is a clean no-op for it" {
@@ -1245,11 +1382,13 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 4 ]
-  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
+  [ "${#lines[@]}" -eq 6 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[3]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[5]}" = "$SET_DIR/repoA rebase" ]
 }
 
 @test "sync-fetch --set exits non-zero on a guard violation" {

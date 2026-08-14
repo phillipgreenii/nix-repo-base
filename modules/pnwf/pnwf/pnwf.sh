@@ -38,9 +38,12 @@ Subcommands (read-only, implemented):
 Subcommands (mutating WORK-recipe helpers, not read-only probes):
   sync-fetch [--set]
                      Per present member (topo order): `git fetch origin`,
-                     then rebase onto the remote primary. Stops on the
-                     FIRST failure, reporting the member + worktree path;
-                     recovery is agent-owned.
+                     then rebase onto the remote primary. Pre-flight refuses
+                     a member whose working tree is dirty -- with
+                     `rebase.autoStash` on, git would NOT refuse but could
+                     leave a conflicted autostash behind while reporting
+                     success. Stops on the FIRST failure, reporting the
+                     member + worktree path; recovery is agent-owned.
   update-relock [--set]
                      Relock every present member's flake inputs (nixpkgs +
                      third-party + workspace siblings) IN PLACE, by shelling
@@ -764,9 +767,20 @@ cmd_sync_fetch() {
 Usage: pnwf sync-fetch [--set]
 
 For each member of the resolved workspace's own lock, in topo order (an
-absent worktree -- already landed/cleaned up elsewhere -- is skipped): `git
-fetch origin`, then attempt to rebase the member's current branch onto the
-remote primary (origin/<primary>, resolved via integrate-branch-support).
+absent worktree -- already landed/cleaned up elsewhere -- is skipped):
+refuse the member outright if its working tree is DIRTY, else `git fetch
+origin`, then attempt to rebase the member's current branch onto the remote
+primary (origin/<primary>, resolved via integrate-branch-support).
+
+The dirtiness PRE-CHECK is pnwf's own, and it is load-bearing rather than a
+courtesy: `git rebase` refuses on a dirty tree only while `rebase.autoStash`
+is OFF. With it ON, git stashes, rebases, pops -- and reports SUCCESS even
+when that pop CONFLICTS (verified git 2.54: both "Applying autostash
+resulted in conflicts" and "Successfully rebased", exit 0, tree left at
+`UU <file>` with an orphaned autostash). Without the pre-check a dirty
+member is therefore reported as a clean pass while its worktree holds
+unresolved conflicts, and case 4 below cannot catch it because git never
+refused anything.
 
 Stops on the FIRST failure, reporting which member and worktree path
 stopped it, then exits non-zero WITH THE EXIT CODE THAT IDENTIFIES THE
@@ -777,14 +791,28 @@ failed rebase, on whether a rebase is actually in progress afterwards:
   3  rebase mid-way      a conflict left the worktree mid-rebase: resolve
                           it there, run `git rebase --continue`, then
                           re-run `pnwf sync-fetch`.
-  4  rebase REFUSED      the rebase never started (classically a dirty
-                          worktree), so NOTHING is mid-rebase -- there is
-                          nothing to resolve and nothing to continue:
-                          commit or stash in that worktree, then re-run
-                          `pnwf sync-fetch`.
+  4  rebase REFUSED      the rebase never started, so NOTHING is mid-rebase
+                          -- there is nothing to resolve and nothing to
+                          continue. A dirty worktree is NOT a cause here
+                          (that is 6): what reaches this code is a refusal
+                          on a CLEAN tree -- an origin/<primary> that does
+                          not resolve (an unborn HEAD reads the same way),
+                          or a `pre-rebase` hook veto. Read git's own
+                          message in that worktree, fix the cause it names,
+                          then re-run `pnwf sync-fetch`.
   5  indeterminate       the rebase failed and whether one is in progress
                           could not be read, so NO recovery is asserted:
                           inspect the worktree first.
+  6  member DIRTY        the pre-check found uncommitted changes (tracked
+                          or untracked), so NOTHING was attempted -- no
+                          fetch, no rebase, and nothing is mid-rebase:
+                          commit or stash that work in the reported
+                          worktree, then re-run `pnwf sync-fetch`.
+  7  dirtiness unknown   the pre-check could not read the member's working
+                          tree state (e.g. the path exists but is not a git
+                          repo), so whether a rebase is safe to attempt is
+                          unknown and NO recovery is asserted: inspect the
+                          member first.
 Exits 0 once every member has fetched and rebased clean.
 
 This is a MUTATING WORK-recipe helper, not a read-only probe like
@@ -831,9 +859,10 @@ HELP
     primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
       die "could not resolve primary branch for member '$member'"
 
-    # Guarded (never a bare call): a fetch failure or any rebase failure
-    # exits nonzero, and MUST NOT abort this loop via errexit before the
-    # step-appropriate hand-off message below gets a chance to print.
+    # Guarded (never a bare call): a dirtiness refusal, a fetch failure, or
+    # any rebase failure exits nonzero, and MUST NOT abort this loop via
+    # errexit before the step-appropriate hand-off message below gets a
+    # chance to print.
     #
     # EVERY sentinel pnwf_fetch_and_rebase documents is enumerated
     # EXPLICITLY, and `*)` asserts NO cause at all. A catch-all that claimed
@@ -857,10 +886,33 @@ HELP
       # even to say it would be wrong: consumers (the pnwf-runner agent)
       # classify this stderr, so naming it here is a string a naive matcher
       # would key on and re-emit as a rebase-conflict hand-off.
-      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git rebase' was REFUSED and never started, so NO rebase is in progress there: nothing to resolve and nothing to continue; the classic cause is a dirty worktree, so inspect 'git -C $member_setpath status' and commit or stash, then re-run 'pnwf sync-fetch'" "$rc"
+      #
+      # It also no longer names a dirty worktree as the cause. With
+      # `rebase.autoStash` on, a dirty tree does not make git refuse AT ALL
+      # (it autostashes and reports success), and the pre-check now stops
+      # that case earlier as 6 -- so "commit or stash" was advice for a stop
+      # that would not occur while the real hazard passed silently
+      # (bd pg2-lgzcg). What genuinely reaches 4 refuses on a CLEAN tree, and
+      # git's own message in that worktree names which: an origin/<primary>
+      # that does not resolve, or a `pre-rebase` hook veto.
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git rebase' was REFUSED and never started, so NO rebase is in progress there: nothing to resolve and nothing to continue; its working tree was checked and is CLEAN, so the cause is git's own refusal (an unresolvable 'origin/$primary', or a 'pre-rebase' hook veto) -- read git's message above, fix what it names, then re-run 'pnwf sync-fetch'" "$rc"
       ;;
     5)
       die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git rebase' failed AND whether a rebase is in progress there could not be determined, so no recovery is asserted; inspect 'git -C $member_setpath status' before re-running 'pnwf sync-fetch'" "$rc"
+      ;;
+    6)
+      # Same drafting rule as 4 above -- and it binds harder here, because
+      # THIS is the case whose recovery is "commit or stash": the mid-rebase
+      # command is not named at all, not even to say it does not apply. The
+      # runner classifies this stderr, and a matcher keying on the string
+      # would re-emit a rebase-conflict hand-off for a member where no rebase
+      # was ever started. Nothing here decides the fate of that work either:
+      # pnwf did not create it, so it is not pnwf's to stash, commit, or
+      # discard.
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- its working tree has UNCOMMITTED CHANGES, so NOTHING was attempted there (no fetch, no rebase): inspect 'git -C $member_setpath status' and commit or stash that work, then re-run 'pnwf sync-fetch'. pnwf checks this itself because git would not reliably stop: with 'rebase.autoStash' enabled it stashes, rebases and pops, reporting success even when that pop conflicts" "$rc"
+      ;;
+    7)
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- whether its working tree has uncommitted changes could not be determined, so no rebase was attempted and no recovery is asserted; the path exists but may not be a git repo, so inspect it (e.g. 'git -C $member_setpath status') before re-running 'pnwf sync-fetch'" "$rc"
       ;;
     *)
       die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- pnwf_fetch_and_rebase returned the UNRECOGNISED code $rc, so this subcommand cannot say which step stopped it or what to recover; inspect 'git -C $member_setpath status' rather than acting on a guessed cause" "$rc"

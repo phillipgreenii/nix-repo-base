@@ -43,7 +43,7 @@
 
 `pnwf status {{branch}}`
 
-- Fetch + rebase every member of the current set onto its remote primary branch (stops and reports on the first failure):
+- Fetch + rebase every member of the current set onto its remote primary branch (refuses a member whose working tree is dirty; stops and reports on the first failure):
 
 `pnwf sync-fetch --set`
 

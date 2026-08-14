@@ -234,8 +234,32 @@ faithfully propagated the claim (bd `pg2-k3s0x`). Read stderr only for the
   You MUST NOT resolve the conflict yourself.
 
 - **exit 4 — rebase REFUSED, never started** (`pnwf` observed NO
-  rebase-in-progress state; the classic cause is a dirty member worktree) → you
-  MUST return `gate` with `stage: "sync-fetch"`, `kind: "rebase-refused"`, `path`
+  rebase-in-progress state) → you MUST return `gate` with
+  `stage: "sync-fetch"`, `kind: "rebase-refused"`, `path` set to that absolute
+  worktree path, and a `resume_hint` pointing at git's own refusal message,
+  which names the cause:
+
+  ```bash
+  git -C <path> rebase origin/<primary>
+  ```
+
+  A DIRTY worktree is NOT the cause of this code — that is **exit 6** below, and
+  `pnwf` has already confirmed this tree CLEAN before the rebase ran. So you MUST
+  NOT put "commit or stash" in this hint: what reaches exit 4 is a refusal on a
+  clean tree (an `origin/<primary>` that does not resolve, or a `pre-rebase` hook
+  veto), and the disposition is to fix what git named, not to dispose of work
+  that is not there (bd `pg2-lgzcg`). You MUST NOT emit the `rebase-conflict`
+  gate here and MUST NOT put `git rebase --continue` in the hint: nothing is
+  mid-rebase, so there is nothing to continue and that command would fail.
+
+- **exit 5 — indeterminate** (the rebase failed and `pnwf` could not read whether
+  one is in progress, so it asserts no cause) → you MUST return `halt` with
+  `stage: "sync-fetch"` and `reason: "rebase-indeterminate"`, quoting `pnwf`'s
+  stderr in `detail`. You MUST NOT pick either gate: `pnwf` declined to guess and
+  so MUST you.
+- **exit 6 — member worktree DIRTY, nothing attempted** (`pnwf`'s own pre-check
+  found uncommitted changes, so it ran neither the fetch nor the rebase) → you
+  MUST return `gate` with `stage: "sync-fetch"`, `kind: "worktree-dirty"`, `path`
   set to that absolute worktree path, and a `resume_hint` naming the DISPOSITION
   a person owns — commit or stash the changes in that worktree:
 
@@ -243,17 +267,27 @@ faithfully propagated the claim (bd `pg2-k3s0x`). Read stderr only for the
   git -C <path> status --porcelain
   ```
 
-  You MUST NOT emit the `rebase-conflict` gate here and MUST NOT put
-  `git rebase --continue` in the hint: nothing is mid-rebase, so there is nothing
-  to continue and that command would fail. You MUST NOT commit, stash, or discard
-  the changes yourself — that is a disposition, and you have no user
-  ([§7](#7-prohibitions-must)).
+  This gate, not `rebase-refused`, is the one that carries the commit-or-stash
+  disposition. You MUST NOT emit either rebase gate here and MUST NOT put
+  `git rebase --continue` or `git rebase --abort` in the hint: no rebase was
+  started, so there is nothing to continue and nothing to abort. You MUST NOT
+  commit, stash, or discard the changes yourself — that is a disposition, and you
+  have no user ([§7](#7-prohibitions-must)).
 
-- **exit 5 — indeterminate** (the rebase failed and `pnwf` could not read whether
-  one is in progress, so it asserts no cause) → you MUST return `halt` with
-  `stage: "sync-fetch"` and `reason: "rebase-indeterminate"`, quoting `pnwf`'s
-  stderr in `detail`. You MUST NOT pick either gate: `pnwf` declined to guess and
-  so MUST you.
+  Why `pnwf` stops here at all, rather than letting `git rebase` refuse: with
+  `rebase.autoStash` enabled (it is, on this operator's machine) git does NOT
+  refuse a dirty tree — it stashes, rebases, pops, and reports **success even
+  when that pop conflicts**. So a member you report as clean could have been left
+  at `UU <file>` with the operator's work orphaned in an autostash. Exit 6 is the
+  only outcome that catches that, and it fires under BOTH settings of
+  `rebase.autoStash`, so what you report does not depend on the machine.
+
+- **exit 7 — dirtiness INDETERMINATE** (the pre-check could not read whether the
+  member's working tree is dirty, so `pnwf` attempted nothing and asserted no
+  cause) → you MUST return `halt` with `stage: "sync-fetch"` and
+  `reason: "dirtiness-indeterminate"`, quoting `pnwf`'s stderr in `detail`. You
+  MUST NOT pick the `worktree-dirty` gate: whether there is any work to dispose of
+  is exactly what could not be read.
 - **any other non-zero exit** → you MUST return `halt` with
   `stage: "sync-fetch"`, `reason: "sync-fetch-unrecognised"`, the exit status and
   `pnwf`'s stderr in `detail`. Do NOT map it onto the nearest gate above.
@@ -261,11 +295,13 @@ faithfully propagated the claim (bd `pg2-k3s0x`). Read stderr only for the
   classify on at all) → you MUST return `halt` with `stage: "sync-fetch"`,
   `reason: "incomplete-sync"`, the [R4](#constraint-one-turn-foreground-only)
   residue probe's result in `dirty`, and `detail` saying the step exceeded the
-  foreground ceiling rather than failing. You MUST NOT emit the `rebase-conflict`
-  or `rebase-refused` gate here and MUST NOT include a `resume_hint`: both are
-  recoveries for a state `pnwf` OBSERVED and reported, and a killed rebase is
-  neither — a member may be mid-rebase with nothing to resolve. The main session,
-  which does survive across turns, owns that judgment.
+  foreground ceiling rather than failing. You MUST NOT emit the `rebase-conflict`,
+  `rebase-refused`, or `worktree-dirty` gate here and MUST NOT include a
+  `resume_hint`: all three are recoveries for a state `pnwf` OBSERVED and
+  reported, and a killed rebase is none of them — a member may be mid-rebase with
+  nothing to resolve, and residue the probe finds dirty may be a killed rebase's
+  own leavings rather than the operator's work. The main session, which does
+  survive across turns, owns that judgment.
 
 ### Nothing to sync → return `noop` (MUST)
 
@@ -424,7 +460,7 @@ after it. Use exactly one of these shapes:
 {
   "status": "gate",
   "stage": "fork|sync-fetch",
-  "kind": "resume-vs-discard|rebase-conflict|rebase-refused",
+  "kind": "resume-vs-discard|rebase-conflict|rebase-refused|worktree-dirty",
   "setdir": "<abs>",
   "path": "<abs|null>",
   "resume_hint": "…",
@@ -446,8 +482,9 @@ after it. Use exactly one of these shapes:
 ```
 
 `reason` is one of `fetch-failed`, `rebase-indeterminate`,
-`sync-fetch-unrecognised`, `incomplete-sync`, `validate-failed`, or the
-`pnwf fork-preflight` reason line for a `stage: "fork"` halt.
+`dirtiness-indeterminate`, `sync-fetch-unrecognised`, `incomplete-sync`,
+`validate-failed`, or the `pnwf fork-preflight` reason line for a
+`stage: "fork"` halt.
 
 On the `noop` shape, `validated` MUST be `false` — Stage 3 did not run, so you
 MUST NOT claim it did — and `members` MUST list every member key `pnwf status`
@@ -479,13 +516,14 @@ in-memory state, then continue from the stage that bailed:
 
 - After a resolved `resume-vs-discard` gate, re-run Stage 1's `resolve --set`
   confirmation, then continue.
-- After a resolved `rebase-conflict` **or `rebase-refused`** gate, re-run Stage 2
-  (`cd <SETDIR> && pnwf sync-fetch --set`) — it resumes from where it stopped —
-  then re-run the `pnwf status` no-op classification and continue to Stage 3
-  unless it is a no-op. Re-deriving it is MANDATORY on a resume: the resolved
-  conflict means a member DID move, so a pre-conflict reading would be wrong. It
-  is mandatory after a `rebase-refused` too — that member had NOT rebased when you
-  bailed, so it rebases for the first time on the re-run.
+- After a resolved `rebase-conflict`, `rebase-refused`, **or `worktree-dirty`** gate,
+  re-run Stage 2 (`cd <SETDIR> && pnwf sync-fetch --set`) — it resumes from where
+  it stopped — then re-run the `pnwf status` no-op classification and continue to
+  Stage 3 unless it is a no-op. Re-deriving it is MANDATORY on a resume: the
+  resolved conflict means a member DID move, so a pre-conflict reading would be
+  wrong. It is mandatory after a `rebase-refused` or `worktree-dirty` too — that
+  member had NOT rebased when you bailed (on `worktree-dirty` it had not even
+  fetched), so it rebases for the first time on the re-run.
 
 A `noop` is TERMINAL for you and is NOT a gate: the main session's teardown and
 publish are prohibited to you ([§7](#7-prohibitions-must)), so there is nothing

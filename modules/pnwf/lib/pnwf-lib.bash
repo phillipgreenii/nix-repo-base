@@ -337,16 +337,86 @@ pnwf_rebase_in_progress() {
 #      cleaned up here (no `git rebase --abort`), so the caller's hand-off
 #      message ("resolve here, then `git rebase --continue`") points at
 #      exactly the state this function stopped in.
-#   4  `git rebase origin/<primary>` was REFUSED OUTRIGHT and never started
-#      -- the classic cause is a dirty working tree. `pnwf_rebase_in_progress`
-#      observes NO rebase state directory, so there is nothing to resolve and
-#      nothing to continue: the recovery is to commit or stash, and
-#      "git rebase --continue" would be wrong here too.
+#   4  `git rebase origin/<primary>` was REFUSED OUTRIGHT and never started.
+#      `pnwf_rebase_in_progress` observes NO rebase state directory, so there
+#      is nothing to resolve and nothing to continue, and
+#      "git rebase --continue" would be wrong here too. A DIRTY working tree
+#      is NOT a cause of this code -- the pre-check below stops that earlier,
+#      as 6. What reaches 4 is a refusal on a CLEAN tree, verified on git
+#      2.54 with `rebase.autoStash=true`: an `origin/<primary>` that does not
+#      resolve (rc 128, "fatal: invalid upstream" -- an unborn HEAD reads the
+#      same way, having no commit for the ref to name), or a `pre-rebase`
+#      hook veto (rc 1, "the pre-rebase hook refused to rebase"). An index
+#      git cannot autostash (unmerged paths left by a merge/cherry-pick) also
+#      refuses, but `git status --porcelain` reports those paths, so the
+#      pre-check classifies it as 6 before the rebase is ever attempted.
 #   5  `git rebase origin/<primary>` failed AND the rebase-in-progress
 #      observable itself could not be read, so 3 vs 4 is INDETERMINATE. The
 #      caller MUST NOT assert either recovery; a distinct code (rather than
 #      relaying the probe's own rc) keeps this case from ever colliding with
 #      the 2/3/4 sentinels above.
+#   6  repo_dir's working tree is DIRTY, so NOTHING was attempted -- not the
+#      fetch and not the rebase. See the pre-check rationale below; the
+#      recovery is to commit or stash in repo_dir, and as with 4 there is
+#      nothing mid-rebase to continue.
+#   7  the DIRTINESS observable itself could not be read (e.g. repo_dir
+#      exists but is not a git repo -- `pnwf_worktree_present` is a plain
+#      path check, so the caller can hand one over), so whether a rebase is
+#      SAFE to attempt is INDETERMINATE and none is attempted. Same
+#      reasoning as 5, one step earlier: assert no cause. A distinct code
+#      rather than relaying the probe's rc, which for a non-repo is 128 and
+#      would otherwise reach the caller as an unrecognised sentinel.
+#
+# THE DIRTINESS PRE-CHECK IS LOAD-BEARING, NOT A CONVENIENCE, and it is why
+# codes 6/7 exist at all (bd pg2-lgzcg). `git rebase` refuses on a dirty tree
+# only while `rebase.autoStash` is OFF. With it ON -- and it IS on for this
+# repo's operator, set in the XDG file `~/.config/git/config`, which
+# `git config --global --get rebase.autoStash` does NOT see -- git stashes,
+# rebases, pops, and reports exit 0 EVEN WHEN THAT POP CONFLICTS. Verified on
+# git 2.54: the rebase printed BOTH "Applying autostash resulted in
+# conflicts" AND "Successfully rebased", exited 0, and left the tree at
+# `UU <file>` with the autostash still in `git stash list`. So without this
+# pre-check a dirty member returns 0 from here -- an apparent CLEAN PASS --
+# while its worktree holds unresolved conflict markers and the operator's
+# work sits in an orphaned autostash, and the caller moves on to the next
+# member. Code 4's "REFUSED" path can never catch that: git never refused.
+#
+# The check lives HERE, in the library, and not in `cmd_sync_fetch`, because
+# it is what makes THIS function's return 0 mean what it says. Placed in the
+# caller it would fix one call site and leave the next caller inheriting the
+# same false clean pass. It also cannot be bypassed from the caller side:
+# this function owns the only `git rebase` invocation in the pnwf codebase,
+# the check precedes it unconditionally, and `cmd_sync_fetch` enumerates
+# every sentinel explicitly with a `*)` that asserts NO cause -- so a code it
+# has not been taught surfaces as an honest "unrecognised", never as silence.
+#
+# It runs BEFORE the fetch, not between fetch and rebase: it is purely local,
+# a dirty member stops the whole run (the caller's stop-on-first-member
+# convention), and the fetch is a network round trip that would be spent to
+# reach a stop already decided. That ordering also means a member directory
+# that is not a git repo is reported as 7 rather than as 2 ("fetch failed --
+# check the remote/network/auth"), which was never the right advice for it.
+#
+# UNTRACKED FILES COUNT AS DIRTY, deliberately stricter than `git rebase`
+# (verified git 2.54: an untracked-only tree is not autostashed and rebases
+# clean). `pnwf_working_tree_dirty` is `git status --porcelain` non-empty,
+# which is the same observable FF-0b uses in the `ff-merge-to-main` skill,
+# and the same one `pnwf_classify_member` already reports as "blocked" --
+# reusing it keeps one definition of "dirty" for the member lifecycle. It is
+# also the definition the END of that lifecycle enforces: `git worktree
+# remove` refuses a worktree that "contains modified or untracked files", so
+# untracked residue blocks the landing step regardless. (Note this is a
+# DIFFERENT, stricter definition than `cmd_update_relock`'s pre-flight, which
+# ignores untracked to match `pn`'s own isDirty -- that guard exists to
+# refuse exactly what `pn` would silently skip, so it is pinned to pn's
+# definition, not to this one.)
+#
+# What this function MUST NOT do on 6 is act on the caller's behalf: no
+# stash, no commit, no `git rebase --abort`. Deciding the fate of work the
+# tool did not create is not the tool's call -- the same rule FF-0b states
+# for the `ff-merge-to-main` handler, and the reason 3 is likewise left
+# mid-rebase rather than aborted.
+#
 # Never aborts the caller under set -e; a first-party diagnostic naming
 # which git step failed AND its real exit code goes to stderr, while git's
 # own chatter (e.g. the conflicting paths, or "cannot rebase: You have
@@ -354,6 +424,29 @@ pnwf_rebase_in_progress() {
 # resolves it.
 pnwf_fetch_and_rebase() {
   local repo_dir="$1" primary="$2" rc=0
+
+  # Guarded (never a bare call): the probe is a TRI-state here, and its
+  # "clean" answer is a nonzero return, which an unguarded call would let
+  # errexit turn into an abort of this whole function -- discarding the pass
+  # that is the common case. `pnwf_working_tree_dirty` writes its own
+  # first-party diagnostic on rc>1, so nothing is suppressed here: an
+  # unreadable working tree is NOT an expected case (unlike the 128s that
+  # pnwf_classify_member silences), and its detail is what the operator needs.
+  local dirty_rc=0
+  pnwf_working_tree_dirty "$repo_dir" || dirty_rc=$?
+  case "$dirty_rc" in
+  0)
+    echo "pnwf_fetch_and_rebase: $repo_dir has uncommitted changes; refusing to fetch or rebase it (nothing attempted)" >&2
+    return 6
+    ;;
+  1) : ;;
+  *)
+    echo "pnwf_fetch_and_rebase: could not determine whether $repo_dir has uncommitted changes (probe rc=$dirty_rc); refusing to fetch or rebase it (nothing attempted)" >&2
+    return 7
+    ;;
+  esac
+
+  rc=0
   git -C "$repo_dir" fetch origin || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "pnwf_fetch_and_rebase: git fetch origin failed in $repo_dir (rc=$rc)" >&2

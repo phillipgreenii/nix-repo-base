@@ -74,17 +74,34 @@ flowchart TD
      case for sync. Resolve the conflict WITH the user in the reported worktree,
      run `git -C <path> rebase --continue`, then continue the SAME runner (it
      re-runs `pnwf sync-fetch`).
+   - **`gate` / `sync-fetch` / `worktree-dirty`** → the reported member had
+     UNCOMMITTED CHANGES, so `pnwf sync-fetch` (exit 6) attempted nothing there —
+     no fetch, no rebase. Do NOT treat this as a `rebase-conflict` and do NOT run
+     `git rebase --continue` or `--abort`: nothing was started, so there is
+     nothing to continue or abort and either command fails. Show the user
+     `git -C <path> status`, decide WITH them whether that work is committed or
+     stashed, then continue the SAME runner (it re-runs `pnwf sync-fetch`, which
+     fetches and rebases that member for the first time). Expect this gate
+     whenever a member is left deliberately dirty; `pnwf` checks it itself
+     because with `rebase.autoStash` on git would NOT refuse — it would stash,
+     rebase and pop, reporting success even when the pop conflicts, so the run
+     would look clean while that worktree sat at `UU <file>` (bd `pg2-lgzcg`).
+     Same condition and same disposition as `integrate-branch`'s FF-0b
+     `stopped:worktree-dirty` at land time, deliberately sharing its name.
    - **`gate` / `sync-fetch` / `rebase-refused`** → `git rebase` was REFUSED in
      the reported worktree and NEVER STARTED (`pnwf sync-fetch` exit 4), so
      NOTHING there is mid-rebase. Do NOT treat this as a `rebase-conflict` and do
      NOT run `git rebase --continue` — there is no rebase to continue and the
-     command fails. The classic cause is uncommitted work in that member: show
-     the user `git -C <path> status`, decide WITH them whether it is committed or
-     stashed, then continue the SAME runner (it re-runs `pnwf sync-fetch`, which
-     rebases that member for the first time).
+     command fails. This is NOT the dirty-worktree case (that is `worktree-dirty`
+     above, and `pnwf` confirmed this tree CLEAN before rebasing): the cause is
+     git's own refusal — an `origin/<primary>` that does not resolve, or a
+     `pre-rebase` hook veto. Relay `pnwf`'s verbatim stderr and git's message,
+     fix the cause WITH the user, then continue the SAME runner (it re-runs
+     `pnwf sync-fetch`).
    - **`halt`** → surface the reason and STOP; do NOT work around a canonical
      anomaly (R-3/R-8) or a broken validate. Reasons are `fetch-failed`,
-     `rebase-indeterminate`, `sync-fetch-unrecognised`, `incomplete-sync`,
+     `rebase-indeterminate`, `dirtiness-indeterminate`,
+     `sync-fetch-unrecognised`, `incomplete-sync`,
      `validate-failed`, or a `fork` reason line. The ONE
      exception is a `validate-failed` whose every `BLOCKING` line is an
      unpublished-sibling-lock `flake-lock-fresh` finding — see

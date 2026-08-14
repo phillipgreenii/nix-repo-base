@@ -58,10 +58,12 @@ if any stage halts.
      then continue the SAME runner (send it the decision) — its context is
      preserved.
    - Unlike `/pn-workspace-sync`, there is **NO** `sync-fetch` stage and therefore
-     none of its rebase gates — neither `rebase-conflict` nor `rebase-refused`:
-     `/pn-workspace-update` relocks rather than fetch+rebase, so the runner never
-     rebases anything and never emits either. The only gate is `fork` /
-     `resume-vs-discard` above.
+     none of its gates — not `rebase-conflict`, not `rebase-refused`, and not
+     `worktree-dirty`: `/pn-workspace-update` relocks rather than fetch+rebase, so
+     the runner never rebases anything and never emits any of them. The only gate
+     is `fork` / `resume-vs-discard` above. A dirty member is still refused in
+     this flow, but by `pnwf update-relock`'s OWN pre-flight, which surfaces as an
+     `update-failed` halt rather than a gate.
    - **`halt`** → surface the reason and STOP; do NOT work around it. Reasons
      include `update-failed`, `incomplete-update`, `validate-failed`, or a
      canonical anomaly (R-3/R-8).
