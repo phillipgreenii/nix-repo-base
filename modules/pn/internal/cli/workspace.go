@@ -504,6 +504,11 @@ func workspaceInfoCmd(_ *string) *cobra.Command {
 				// until the commit is pushed and the terminal relocked (ADR 0025).
 				// Print it alongside so a lone rev can never read as "this checkout
 				// is what is applied".
+				//
+				// When the apply OVERRODE the input, though, the locked rev is NOT
+				// what the build carries — nix read the local clone at eval-time HEAD
+				// — so it is marked, or the annotation would mislead in the opposite
+				// direction (bead pg2-14yqh).
 				locked := ""
 				if r.TerminalInput {
 					rev := r.LockedRev
@@ -511,6 +516,9 @@ func workspaceInfoCmd(_ *string) *cobra.Command {
 						rev = "(unresolved)"
 					}
 					locked = "\tlocked " + rev
+					if r.Overridden {
+						locked += " (overridden: built from the local clone)"
+					}
 				}
 				fmt.Fprintf(out, "  %s\t%s\t%s%s%s\n", r.Name, r.Path, applied, dirty, locked)
 			}

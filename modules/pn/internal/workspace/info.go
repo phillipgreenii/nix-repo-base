@@ -28,9 +28,10 @@ type WorkspaceInfo struct {
 // RepoInfo is one repo's identity + applied state.
 //
 // The three lock fields are the published projection of AppliedState.LockedRevs
-// (ADR 0025). ADR 0012 declares this schema a stable consumed API in which new
-// OPTIONAL fields may be added, which is what these are: nothing was renamed or
-// removed, so an existing consumer is unaffected.
+// (ADR 0025) and Overridden is the projection of AppliedState.OverriddenInputs.
+// ADR 0012 declares this schema a stable consumed API in which new OPTIONAL fields
+// may be added, which is what these are: nothing was renamed or removed, so an
+// existing consumer is unaffected.
 type RepoInfo struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
@@ -49,10 +50,24 @@ type RepoInfo struct {
 	// AppliedStateSchema >= 2.
 	TerminalInput bool `json:"terminal_input"`
 	// LockedRev is the rev the TERMINAL's flake.lock pinned for this repo at that
-	// apply — the rev the built system actually carries for it. Empty while
-	// TerminalInput is true means the apply could not establish it, and a consumer
-	// MUST fail closed rather than fall back to AppliedRef.
+	// apply. Empty while TerminalInput is true means the apply could not establish
+	// it, and a consumer MUST fail closed rather than fall back to AppliedRef.
+	//
+	// It is what the built system carries ONLY when Overridden is false. When the
+	// apply overrode the input, the build read the LOCAL clone at eval-time HEAD and
+	// this rev normally TRAILS it.
 	LockedRev string `json:"locked_rev"`
+	// Overridden reports whether the apply that wrote this record passed
+	// `--override-input` for this repo, i.e. built it from a LOCAL clone rather than
+	// from the terminal's flake.lock. Meaningful only when AppliedStateSchema >= 3;
+	// on an older record it is false because the field did not exist, which is NOT
+	// evidence that the repo was lock-built. A consumer MUST branch on the schema
+	// before reading it, and MUST NOT test anything against LockedRev when it is
+	// true (bead pg2-14yqh).
+	//
+	// True implies TerminalInput: both derive from the terminal's lock edges, and an
+	// override additionally requires the clone to exist on disk.
+	Overridden bool `json:"overridden"`
 }
 
 // Info joins the configured repos with their per-repo applied-state records.
@@ -86,6 +101,12 @@ func (ws *Workspace) Info(ctx context.Context) (WorkspaceInfo, error) {
 			if rev, isInput := st.LockedRevs[name]; isInput {
 				ri.TerminalInput = true
 				ri.LockedRev = rev
+			}
+			// Same key-presence rule for the override set: a present key is the claim
+			// "this apply built the repo from that local clone", and the URL beside it
+			// is diagnostic only, so it is never tested for emptiness here.
+			if _, wasOverridden := st.OverriddenInputs[name]; wasOverridden {
+				ri.Overridden = true
 			}
 		}
 		info.Repos = append(info.Repos, ri)

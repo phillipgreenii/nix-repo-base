@@ -208,3 +208,64 @@ fail-closed test but stricter than the build requires, because an override'd rep
 local eval-time HEAD, which normally LEADS `locked_revs[repo]`. A `blocked` verdict therefore means
 "not provable from the lock", NOT "not in the running system". Closing the TOCTOU requires the apply
 to capture each override'd checkout's HEAD BEFORE the build; that is not done today.
+
+## Note: `locked_revs` stays as-is; schema 3 records WHAT THE APPLY OVERRODE alongside it (bd pg2-14yqh)
+
+**Date**: 2026-08-14
+**Tracking**: pg2-14yqh
+**Provenance**: operator ruling by `phillipg@ziprecruiter.com`, 2026-08-14, recorded on bead
+`pg2-14yqh`. The consuming rule lives in `phillipgreenii-nix-agent-support` ADR 0046's amendment
+"condition 2 is CONDITIONAL on whether the apply OVERRODE the repo" — read it for why.
+
+**Nothing in the Decision above is withdrawn.** `locked_revs` is still recorded for every terminal
+flake input, still recorded WITH the apply rather than re-read at query time, still carries the same
+three states read by KEY presence, and is still the fail-closed evidence a lock-built input's gate is
+tested against. The operator ruling explicitly left it in place.
+
+What the amendment above established is that it is not, by itself, the whole story: an apply
+OVERRIDES every terminal lock edge whose clone exists, and such a repo is built from that clone at
+eval-time HEAD, not from `locked_revs[repo]`. The consumer therefore needs a second fact — WHICH
+inputs this apply overrode — and the applied-state did not carry it. Schema **3** adds it:
+
+```json
+{
+  "schema": 3,
+  "applied_ref": "<git rev>",
+  "locked_revs": { "<repo key>": "<git rev>" },
+  "overridden_inputs": { "<repo key>": "git+file://<local dir>" },
+  "dirty": false,
+  "applied_at": "<RFC 3339 timestamp>"
+}
+```
+
+- **The bump is purely additive**, exactly as schema 2 was. No field changes meaning, `readAppliedState`
+  still performs no migration, and `needsRebuild` still keys on `applied_ref`.
+- **Read the KEY SET, not the values.** A key present means the build read the repo from that local
+  directory; absent means nix resolved it from the terminal's `flake.lock`. Unlike `locked_revs`
+  there is no third state — the value is never empty for a present key. It is diagnostic: under a
+  coordinated-worktree (override-path) apply it names the set member the build actually read, which is
+  not `<root>/<name>`.
+- **The key set is a SUBSET of `locked_revs`'.** Both come from the terminal's lock edges;
+  an override additionally requires the clone to exist on disk. That gap is the only state in which a
+  workspace repo is genuinely lock-built, and it is what keeps the consumer's lock condition
+  meaningful rather than dead.
+- **One resolution, two projections.** `Apply` resolves the override set ONCE and derives both the
+  emitted `--override-input` flags and the recorded map from it, then hands the map to `markApplied`.
+  It is a parameter rather than recomputed after the build because the set depends on which clones
+  exist: a second resolution would re-stat the filesystem and could record an override nix was never
+  given (fail-OPEN for the consumer) or miss one it was.
+- **`pn workspace info --json` publishes `overridden`** per repo, per ADR 0012's "new optional fields
+  MAY be added". Meaningful only when `applied_state_schema >= 3`; a consumer MUST branch on the
+  version, because on an older record `false` means "not recorded", not "lock-built". The
+  human-readable `info` now prints `locked <rev> (overridden: built from the local clone)` so the
+  annotation cannot mislead in the opposite direction.
+- **The unresolvable-rev warning is now conditional.** `markApplied` announces an empty
+  `locked_revs` entry only when the input was NOT overridden. Its claim — "a `pn:applied` gate on this
+  repo stays blocked" — is false for an overridden input, and warning anyway would fire on every
+  apply, which is what teaches an operator to ignore warnings. The empty entry itself is still
+  RECORDED either way.
+
+The `markApplied` TOCTOU (bead `pg2-0782j`) is **not** addressed here and was the reason the operator
+declined the alternative of comparing against the overridden eval-time HEAD: that is exactly the value
+`markApplied` mis-samples. Recording WHICH inputs were overridden does not depend on any HEAD reading,
+so it is unaffected.

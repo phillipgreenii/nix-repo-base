@@ -74,7 +74,7 @@ func TestMarkApplied_WriteFailIsReturned(t *testing.T) {
 	f.AddResponse("git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	w := &Workspace{runner: f}
 	dirs := []repoDir{{name: "leaf", keyPath: dir, gitDir: dir}}
-	if err := w.markApplied(context.Background(), dirs, "leaf", dir, io.Discard); err == nil {
+	if err := w.markApplied(context.Background(), dirs, "leaf", dir, nil, io.Discard); err == nil {
 		t.Fatal("markApplied must return the store-write error (fail-closed)")
 	}
 }
@@ -83,8 +83,15 @@ func TestMarkApplied_WriteFailIsReturned(t *testing.T) {
 // terminal's flake input name for it (empty ⇒ the terminal does not consume it as
 // an input at all, so no lock edge); rev is what the terminal's flake.lock pins
 // for that alias (empty ⇒ the lock node carries no rev); url overrides the default
-// remote so same-named repos under different owners can be built.
-type depSpec struct{ alias, rev, url string }
+// remote so same-named repos under different owners can be built. noClone declares
+// the repo in the toml and the lock but creates NO directory for it, which is the
+// one state where the apply's override set is a STRICT subset of the lock edges:
+// nix cannot be pointed at a clone that is not there, so that input is genuinely
+// resolved from the terminal's flake.lock.
+type depSpec struct {
+	alias, rev, url string
+	noClone         bool
+}
 
 // markAppliedFixture builds a workspace on disk for markApplied tests. The
 // terminal is "leaf"; every entry in deps becomes a [repos.<key>] repo AND (when
@@ -105,7 +112,9 @@ func markAppliedFixture(t *testing.T, deps map[string]depSpec) (*Workspace, *exe
 
 	for _, key := range sortedDepKeys(deps) {
 		d := deps[key]
-		mkRepoDir(t, root, key)
+		if !d.noClone {
+			mkRepoDir(t, root, key)
+		}
 		url := d.url
 		if url == "" {
 			url = "github:owner/" + key
@@ -161,11 +170,25 @@ func sortedDepKeys(deps map[string]depSpec) []string {
 }
 
 // runMarkApplied drives markApplied over every declared repo and returns what it
-// wrote to out.
+// wrote to out. The override set is derived exactly as Apply derives it — one
+// resolveOverridesFor over the same lock — so these producer tests exercise the
+// real relationship between the flags nix is given and the record written, rather
+// than a hand-written map that could disagree with either.
 func runMarkApplied(t *testing.T, w *Workspace, terminalNixDir string) string {
 	t.Helper()
+	return runMarkAppliedWith(t, w, terminalNixDir, overriddenInputs(w.resolveOverridesFor("leaf", overrideOpts{})))
+}
+
+// runMarkAppliedWith is runMarkApplied with an EXPLICIT override set, for the
+// states the lock-derived set cannot produce in one fixture. The set is a
+// parameter of markApplied precisely because it is sampled at the TOP of Apply,
+// before the build, while markApplied runs after it: the two can legitimately
+// disagree when a clone appears or vanishes inside that window, and the recorded
+// evidence must describe the flags nix was actually given.
+func runMarkAppliedWith(t *testing.T, w *Workspace, terminalNixDir string, overridden map[string]string) string {
+	t.Helper()
 	var out bytes.Buffer
-	if err := w.markApplied(context.Background(), w.allRepoDirs(nil), "leaf", terminalNixDir, &out); err != nil {
+	if err := w.markApplied(context.Background(), w.allRepoDirs(nil), "leaf", terminalNixDir, overridden, &out); err != nil {
 		t.Fatalf("markApplied: %v", err)
 	}
 	return out.String()
@@ -262,11 +285,16 @@ func TestMarkApplied_NotATerminalInputHasNoEntry(t *testing.T) {
 // an EMPTY rev: dropping it would downgrade "the apply cannot say what it built
 // this from" into the indistinguishable "not an input" skip, which is fail-OPEN.
 // And it must be audible, because a silent unprovable apply is this bead's defect.
+//
+// The override set is explicitly EMPTY, which is what makes this the genuinely
+// LOCK-BUILT case — the only case where an unresolvable rev has a consequence, and
+// therefore the only case that warrants the warning (pg2-14yqh; the overridden
+// counterpart is the next test).
 func TestMarkApplied_UnresolvableLockRevFailsClosedAudibly(t *testing.T) {
 	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
 		"dep": {alias: "depalias"}, // edge exists; lock node has no rev
 	})
-	out := runMarkApplied(t, w, leafDir)
+	out := runMarkAppliedWith(t, w, leafDir, nil)
 
 	st := appliedStateOf(t, w, "dep")
 	rev, isInput := st.LockedRevs["dep"]
@@ -276,6 +304,103 @@ func TestMarkApplied_UnresolvableLockRevFailsClosedAudibly(t *testing.T) {
 	}
 	if !strings.Contains(out, "depalias") || !strings.Contains(out, "stays blocked") {
 		t.Fatalf("fail-closed must be observable, not silent; out=%q", out)
+	}
+}
+
+// TestMarkApplied_UnresolvableLockRevOnAnOverriddenInputIsSilent is the other half
+// of the warning's contract, and it exists because the warning makes a CLAIM ("a
+// pn:applied gate on dep stays blocked") that stops being true once the apply
+// overrode the input: the build read the local clone, so `pb`'s condition 2 is
+// skipped for it and nothing is blocked (bead pg2-14yqh). Warning anyway would fire
+// on every such apply and train the operator to ignore the warning — the failure
+// mode agent-support ADR 0046 argues against for the gate's own reporting.
+//
+// The record itself is unchanged: the empty locked_revs entry is STILL written, so
+// the fail-closed evidence survives for a later apply that does not override.
+func TestMarkApplied_UnresolvableLockRevOnAnOverriddenInputIsSilent(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"dep": {alias: "depalias"}, // edge exists; lock node has no rev
+	})
+	out := runMarkApplied(t, w, leafDir) // dep's clone exists ⇒ derived set overrides it
+
+	if strings.Contains(out, "stays blocked") {
+		t.Fatalf("an OVERRIDDEN input's unresolvable lock rev blocks nothing, so it must not warn; out=%q", out)
+	}
+	st := appliedStateOf(t, w, "dep")
+	if rev, isInput := st.LockedRevs["dep"]; !isInput || rev != "" {
+		t.Fatalf("locked_revs[dep] = %q present=%v; the fail-closed entry must still be RECORDED — only the "+
+			"warning is conditional", rev, isInput)
+	}
+	if _, wasOverridden := st.OverriddenInputs["dep"]; !wasOverridden {
+		t.Fatalf("overridden_inputs = %v, want an entry for dep", st.OverriddenInputs)
+	}
+}
+
+// TestMarkApplied_RecordsWhatTheApplyOverrode is the PRODUCER half of the pg2-14yqh
+// ruling: option (c) makes `pb`'s gate condition 2 conditional on whether the repo
+// was actually OVERRIDDEN in that apply, and nothing in the applied-state carried
+// that fact. The recorded key set MUST be the apply's override set, and the value
+// MUST be the local flake URL nix was pointed at — the same string the
+// `--override-input` flag carried, so record and flag cannot describe different
+// builds.
+//
+// Against the pre-change code this fails: there is no overridden_inputs at all, and
+// the schema is 2.
+func TestMarkApplied_RecordsWhatTheApplyOverrode(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"dep": {alias: "depalias", rev: "locked000"},
+	})
+	runMarkApplied(t, w, leafDir)
+
+	st := appliedStateOf(t, w, "dep")
+	if st.Schema != appliedStateSchema || appliedStateSchema < 3 {
+		t.Fatalf("schema = %d, want %d (>= 3) — a consumer tells 'not overridden' from 'no override "+
+			"information' by the version, not by the map being empty", st.Schema, appliedStateSchema)
+	}
+	url, wasOverridden := st.OverriddenInputs["dep"]
+	if !wasOverridden {
+		t.Fatalf("overridden_inputs = %v, want an entry for dep: apply passes --override-input for every "+
+			"terminal lock edge whose clone exists, so dep was built from the LOCAL clone, not from "+
+			"locked_revs[dep]=%q", st.OverriddenInputs, st.LockedRevs["dep"])
+	}
+	if want := "git+file://" + w.appliedStateKeyPath("dep"); url != want {
+		t.Fatalf("overridden_inputs[dep] = %q, want %q — the recorded value must be the flake URL the "+
+			"--override-input flag carried", url, want)
+	}
+	// The apply's whole map goes into every record, exactly as locked_revs does.
+	if _, wasOverridden := appliedStateOf(t, w, "leaf").OverriddenInputs["dep"]; !wasOverridden {
+		t.Fatalf("the terminal's record must carry the apply's full override map too")
+	}
+	// The TERMINAL is never overridden — it is built from its own directory, has no
+	// self-edge, and so appears in neither map.
+	if _, wasOverridden := appliedStateOf(t, w, "leaf").OverriddenInputs["leaf"]; wasOverridden {
+		t.Fatalf("overridden_inputs must have NO entry for the terminal itself")
+	}
+}
+
+// TestMarkApplied_MissingCloneIsNotOverridden pins the ONE state in which the
+// override set is a STRICT subset of the terminal's lock edges, and it is the state
+// that keeps `pb`'s condition 2 from becoming dead code: nix cannot be pointed at a
+// clone that does not exist, so that input really is resolved from the terminal's
+// flake.lock and its locked rev really is what the build carries.
+func TestMarkApplied_MissingCloneIsNotOverridden(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"cloned":  {alias: "clonedalias", rev: "locked111"},
+		"missing": {alias: "missingalias", rev: "locked222", noClone: true},
+	})
+	runMarkApplied(t, w, leafDir)
+
+	st := appliedStateOf(t, w, "leaf")
+	if _, isInput := st.LockedRevs["missing"]; !isInput {
+		t.Fatalf("locked_revs = %v, want an entry for the un-cloned terminal input: the lock EDGE exists "+
+			"whether or not the clone does", st.LockedRevs)
+	}
+	if _, wasOverridden := st.OverriddenInputs["missing"]; wasOverridden {
+		t.Fatalf("overridden_inputs = %v must NOT contain an un-cloned repo — nix was given no "+
+			"--override-input for it, so it was built from the lock", st.OverriddenInputs)
+	}
+	if _, wasOverridden := st.OverriddenInputs["cloned"]; !wasOverridden {
+		t.Fatalf("overridden_inputs = %v, want an entry for the cloned input", st.OverriddenInputs)
 	}
 }
 

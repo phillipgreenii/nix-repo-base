@@ -86,6 +86,79 @@ func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
 	}
 }
 
+// TestApply_RecordsTheOverridesItEmitted is the WIRING test for the pg2-14yqh
+// ruling. `pb`'s gate condition 2 is skipped for a repo the apply overrode, so the
+// evidence the gate trusts is only as good as its agreement with what nix was
+// actually told. This asserts the agreement END TO END: the `--override-input`
+// value in the emitted apply command and the value recorded in the applied-state
+// MUST be the same string, for the same repo.
+//
+// Deriving the record from the SAME resolution as the flags is what makes that
+// hold; a second, independent derivation at markApplied time would re-stat the
+// filesystem and could disagree.
+func TestApply_RecordsTheOverridesItEmitted(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	mkRepoDir(t, root, "dep")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
+	writeFile(t, filepath.Join(root, LockFileName), applyLock)
+	trustWS(t, root)
+	leafDir := filepath.Join(root, "leaf")
+	depDir := filepath.Join(root, "dep")
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
+	f.AddResponse("sudo", []string{
+		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
+		"--override-input", "dep-input", "git+file://" + depDir,
+	}, exec.Result{}, nil)
+	for _, dir := range []string{depDir, leafDir} {
+		f.AddResponse("git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("h\n")}, nil)
+		f.AddResponse("git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	}
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// The flag value nix was actually given, read back off the recorded call.
+	var emitted string
+	for _, c := range f.Calls() {
+		if c.Name != "sudo" {
+			continue
+		}
+		for i, a := range c.Args {
+			if a == "--override-input" && i+2 < len(c.Args) {
+				emitted = c.Args[i+2]
+			}
+		}
+	}
+	if emitted == "" {
+		t.Fatalf("apply emitted no --override-input; calls = %v", f.Calls())
+	}
+	for _, name := range []string{"dep", "leaf"} {
+		st, ok, err := readAppliedState(w.appliedStateKeyPath(name))
+		if err != nil || !ok {
+			t.Fatalf("read applied state for %s: ok=%v err=%v", name, ok, err)
+		}
+		got, wasOverridden := st.OverriddenInputs["dep"]
+		if !wasOverridden {
+			t.Fatalf("%s record: overridden_inputs = %v, want an entry for dep — the apply DID override it",
+				name, st.OverriddenInputs)
+		}
+		if got != emitted {
+			t.Fatalf("%s record: overridden_inputs[dep] = %q but the apply command carried %q; the record "+
+				"MUST describe the build that ran", name, got, emitted)
+		}
+	}
+}
+
 // calledPkillFsmonitor reports whether the FakeRunner saw the
 // `pkill -f 'git fsmonitor--daemon'` invocation.
 func calledPkillFsmonitor(calls []exec.Call) bool {

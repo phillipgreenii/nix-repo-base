@@ -124,7 +124,16 @@ func (ws *Workspace) gitStatusPorcelain(ctx context.Context, dir string) (string
 // input names) is a legitimate SKIP for the lock condition; an entry with an EMPTY
 // rev is a FAIL-CLOSED marker and is announced on out, because a silent unprovable
 // apply is the failure mode this bead is about.
-func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir, terminal, terminalNixDir string, out io.Writer) error {
+//
+// overridden is the THIRD fact, and the reason it is a PARAMETER rather than
+// recomputed here: it must be the very override set Apply emitted as
+// `--override-input` flags, captured from the same resolution (bead pg2-14yqh).
+// Recomputing it after the build would resample dirExists and could disagree with
+// what nix was actually told. A repo listed there was built from its LOCAL clone at
+// eval-time HEAD, so its LockedRevs entry is NOT what the build carries and a
+// consumer must not test against it; see AppliedState.OverriddenInputs. It is
+// written into every record for the same reason LockedRevs is.
+func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir, terminal, terminalNixDir string, overridden map[string]string, out io.Writer) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	tl, lockErr := ws.terminalLockedRevs(terminal, terminalNixDir)
 	if lockErr != nil {
@@ -142,17 +151,25 @@ func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir, termin
 			return fmt.Errorf("git status in %s: %w", rd.gitDir, err)
 		}
 		dirty := porcelain != ""
-		if rev, isInput := tl.Revs[rd.name]; isInput && rev == "" {
+		_, wasOverridden := overridden[rd.name]
+		// The unresolvable-rev warning is conditioned on NOT having overridden the
+		// repo, because the consequence it announces only exists for a lock-built
+		// input. For an overridden repo the lock rev is not what the build carries at
+		// all, so its gate does NOT stay blocked and warning here would be a false
+		// alarm on every apply — which is what trains an operator to ignore the
+		// warning (agent-support ADR 0046's "a blocked gate says why" reasoning).
+		if rev, isInput := tl.Revs[rd.name]; isInput && rev == "" && !wasOverridden {
 			fmt.Fprintf(out, "pn: warn: applied-state: %s: terminal %q declares it as flake input %q but its "+
 				"flake.lock pins no rev for it; locked_revs[%s] is left empty, so a pn:applied gate on %s "+
 				"stays blocked (fail closed)\n", rd.name, terminal, tl.Aliases[rd.name], rd.name, rd.name)
 		}
 		if err := writeAppliedState(rd.keyPath, AppliedState{
-			Schema:     appliedStateSchema,
-			AppliedRef: head,
-			LockedRevs: tl.Revs,
-			Dirty:      dirty,
-			AppliedAt:  now,
+			Schema:           appliedStateSchema,
+			AppliedRef:       head,
+			LockedRevs:       tl.Revs,
+			OverriddenInputs: overridden,
+			Dirty:            dirty,
+			AppliedAt:        now,
 		}); err != nil {
 			return err
 		}

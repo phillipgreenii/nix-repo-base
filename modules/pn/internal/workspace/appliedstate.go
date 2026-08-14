@@ -9,21 +9,29 @@ import (
 )
 
 // appliedStateSchema is the current on-disk schema version of an applied-state
-// record. Schema 2 (ADR 0025) ADDS locked_revs; it does NOT change the meaning of
-// any pre-existing field, so no read-time migration is needed and none is done —
-// see readAppliedState.
+// record. Every bump so far has been PURELY ADDITIVE — schema 2 (ADR 0025) added
+// locked_revs, schema 3 (ADR 0025's "what the apply overrode" amendment) added
+// overridden_inputs — and neither changed the meaning of any pre-existing field,
+// so no read-time migration is needed and none is done (see readAppliedState).
 //
-// The version exists so a CONSUMER can tell "this record predates locked_revs, so
-// there is no lock information" (schema < 2) from "this record carries the apply's
-// complete lock information and this repo simply has no entry in it" (schema >= 2,
-// key absent). Those two look identical if you probe the map alone, and they are
-// NOT the same claim: the second is positive evidence that the repo was not a
-// flake input of the terminal, the first is no evidence at all. Distinguishing
-// them by version rather than by emptiness is what lets `pb gate check` skip its
-// lock condition for OLD records (so gates keep resolving on an un-upgraded pn
-// instead of every gate becoming permanently unresolvable) while still applying it
-// to every record a current pn writes.
-const appliedStateSchema = 2
+// The version exists so a CONSUMER can tell "this record predates the field, so
+// there is no information" from "this record carries the apply's complete
+// information and this repo simply has no entry in it". Those two look identical
+// if you probe the map alone, and they are NOT the same claim: the second is
+// positive evidence, the first is no evidence at all. Both maps need that
+// distinction, and each consumer decides which way its own absence leans:
+//
+//   - locked_revs / schema < 2 — `pb gate check` SKIPS its lock condition, so
+//     gates keep resolving against an un-upgraded pn rather than every gate
+//     becoming permanently unresolvable (a bootstrap stall, since the fix itself
+//     ships through an apply).
+//   - overridden_inputs / schema < 3 — `pb gate check` reads the absence as NOT
+//     overridden and therefore ENFORCES its lock condition, i.e. fail-CLOSED. The
+//     asymmetry is deliberate: at schema 2 the lock condition is still fully
+//     evaluable, so leaning the other way would ASSERT an override the record does
+//     not evidence, and a false "the change shipped" is the expensive direction
+//     (agent-support ADR 0046's amendment carries the reasoning).
+const appliedStateSchema = 3
 
 type AppliedState struct {
 	// Schema is this record's on-disk schema version. Absent (0) means the
@@ -53,8 +61,34 @@ type AppliedState struct {
 	//     path: input). Consumers MUST fail CLOSED on this: it is the one state in
 	//     which the apply cannot say what it built that input from.
 	LockedRevs map[string]string `json:"locked_revs,omitempty"`
-	Dirty      bool              `json:"dirty"`
-	AppliedAt  string            `json:"applied_at"`
+	// OverriddenInputs is WHAT THIS APPLY OVERRODE: for each workspace repo the
+	// apply passed `--override-input <alias> git+file://<dir>` for, the local flake
+	// URL it pointed nix at. Recorded because the apply is the only moment the fact
+	// exists — `Apply` derives the override set from the lock edges AND from which
+	// clones are present on disk, and neither the lock nor the record's other
+	// fields can reconstruct that later.
+	//
+	// Read the KEY SET, not the values:
+	//
+	//   - key ABSENT   → this apply did NOT override the repo, so nix resolved it
+	//     from the terminal's flake.lock and LockedRevs[repo] is what the build
+	//     carries. Absent because there is no lock edge (the terminal itself, or a
+	//     non-input) or because the clone was missing.
+	//   - key PRESENT  → the build read the repo from that LOCAL directory at
+	//     eval-time HEAD, NOT from LockedRevs[repo] — which normally TRAILS it. A
+	//     consumer MUST NOT test anything against LockedRevs[repo] for such a repo
+	//     (bead pg2-14yqh; agent-support ADR 0046's amendment).
+	//
+	// The value is never empty for a present key, so — unlike LockedRevs — there is
+	// no third fail-closed state. It is diagnostic: under a coordinated-worktree
+	// apply it names the set member the build actually read, which is not
+	// <root>/<name>.
+	//
+	// The key set is a SUBSET of LockedRevs': both come from the terminal's lock
+	// edges, and an override additionally requires the clone to exist.
+	OverriddenInputs map[string]string `json:"overridden_inputs,omitempty"`
+	Dirty            bool              `json:"dirty"`
+	AppliedAt        string            `json:"applied_at"`
 }
 
 func appliedStateDir() string {
@@ -97,13 +131,15 @@ func writeAppliedState(repoDir string, st AppliedState) error {
 }
 
 // readAppliedState loads a repo's applied-state record. There is deliberately NO
-// schema migration: ADR 0025 only ADDED LockedRevs, so every field an older record
-// carries still means exactly what it meant when written. A schema-1 record
-// therefore reads back as itself — Schema 0, no LockedRevs — and its Schema value
-// is left AT 0 rather than stamped forward, because 0 is the honest statement
-// "this record carries no lock information" that consumers key their fail-open
-// decision on (see appliedStateSchema). Records gain locked_revs on the next
-// successful apply.
+// schema migration: every bump so far only ADDED a field (LockedRevs at 2,
+// OverriddenInputs at 3), so every field an older record carries still means
+// exactly what it meant when written. An older record therefore reads back as
+// ITSELF — a schema-1 record as Schema 0 with neither map, a schema-2 record as
+// Schema 2 with no OverriddenInputs — and its Schema value is left as written
+// rather than stamped forward, because the recorded version is the honest
+// statement of which facts this record can speak to, and it is what consumers key
+// their compatibility branch on (see appliedStateSchema). Records gain the newer
+// fields on the next successful apply.
 func readAppliedState(repoDir string) (AppliedState, bool, error) {
 	var st AppliedState
 	data, err := os.ReadFile(appliedStateFile(repoDir))

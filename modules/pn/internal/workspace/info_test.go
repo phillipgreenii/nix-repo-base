@@ -109,6 +109,116 @@ url = "github:owner/unresolved"
 	}
 }
 
+// TestInfo_PublishesOverriddenProjection pins the projection the pg2-14yqh ruling
+// added. `pb`'s gate condition 2 is SKIPPED for a repo the apply overrode, and this
+// bool is the only channel that fact travels through, so the three states must stay
+// distinguishable in the published API: overridden (built from the local clone),
+// a terminal input that was NOT overridden (genuinely lock-built — condition 2 still
+// applies), and the terminal itself (in neither map).
+func TestInfo_PublishesOverriddenProjection(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+id = "ws1"
+terminal = "term"
+
+[repos.term]
+url = "github:owner/term"
+
+[repos.overridden]
+url = "github:owner/overridden"
+
+[repos.lockbuilt]
+url = "github:owner/lockbuilt"
+`)
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// One apply's maps, written into every record: both non-terminal repos are
+	// terminal flake inputs, but only "overridden" had a clone to point nix at.
+	lockedRevs := map[string]string{"overridden": "lockedrev1", "lockbuilt": "lockedrev2"}
+	overridden := map[string]string{"overridden": "git+file://" + filepath.Join(root, "overridden")}
+	for _, name := range []string{"term", "overridden", "lockbuilt"} {
+		if err := writeAppliedState(filepath.Join(root, name), AppliedState{
+			Schema: appliedStateSchema, AppliedRef: name + "-head",
+			LockedRevs: lockedRevs, OverriddenInputs: overridden,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, err := w.Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range info.Repos {
+		want := map[string]bool{"term": false, "overridden": true, "lockbuilt": false}[r.Name]
+		if r.Overridden != want {
+			t.Errorf("%s: overridden = %v, want %v — a lock-built input must stay distinguishable from an "+
+				"overridden one, or condition 2 is either skipped for the wrong repo (fail-open) or "+
+				"enforced against a repo the build never read from the lock", r.Name, r.Overridden, want)
+		}
+	}
+}
+
+// TestInfo_PreOverrideRecordReportsNotOverridden is the backwards-compatibility
+// contract for the SECOND map, and the reason the consumer's fallback leans
+// fail-CLOSED. A schema-2 record (written by a pn that recorded locked_revs but not
+// the override set) carries NO override information, so `overridden` reads false —
+// which is indistinguishable from "recorded, and genuinely lock-built". That
+// ambiguity is resolved by applied_state_schema, which MUST still report 2 so a
+// consumer can see the field is absent rather than negative.
+func TestInfo_PreOverrideRecordReportsNotOverridden(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "term"
+
+[repos.term]
+url = "github:owner/term"
+
+[repos.dep]
+url = "github:owner/dep"
+`)
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := os.MkdirAll(appliedStateDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Byte-for-byte a schema-2 record: locked_revs present, overridden_inputs absent.
+	writeFile(t, appliedStateFile(filepath.Join(root, "dep")),
+		`{"schema":2,"applied_ref":"dephead","locked_revs":{"dep":"lockedrev"},"dirty":false,`+
+			`"applied_at":"2026-08-14T00:00:00Z"}`)
+
+	info, err := w.Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dep RepoInfo
+	for _, r := range info.Repos {
+		if r.Name == "dep" {
+			dep = r
+		}
+	}
+	if dep.AppliedStateSchema != 2 {
+		t.Errorf("applied_state_schema = %d, want 2 read back verbatim — an old record must not be stamped "+
+			"forward, or a consumer reads 'no override information' as 'recorded as lock-built'",
+			dep.AppliedStateSchema)
+	}
+	if dep.Overridden {
+		t.Errorf("overridden = true for a record that has no overridden_inputs at all; the field must not be " +
+			"synthesised, because a consumer's whole compatibility branch keys on it being absent")
+	}
+	if !dep.TerminalInput || dep.LockedRev != "lockedrev" {
+		t.Errorf("terminal_input=%v locked_rev=%q; a schema-2 record's LOCK fields must keep working verbatim",
+			dep.TerminalInput, dep.LockedRev)
+	}
+}
+
 // TestInfo_PreLockedRevsRecordReportsSchemaZero pins the backwards-compatibility
 // contract. A record written by a pn that predates locked_revs MUST report
 // applied_state_schema 0, NOT the current schema: 0 is what tells a consumer "no

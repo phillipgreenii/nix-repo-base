@@ -41,7 +41,13 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	nixRel := filepath.Dir(ws.resolveFlakePath(terminal))
 	terminalNixDir := filepath.Join(terminalRepoDir, nixRel)
 
-	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{OverridePaths: opts.OverridePaths})
+	// ONE resolution, TWO projections: the flags nix is given and the record of what
+	// this apply overrode (markApplied's `overridden`). Resolving once is deliberate
+	// — the set depends on which clones exist on disk, so a second resolution could
+	// sample a different filesystem and record an override nix was never told about,
+	// or miss one it was (bead pg2-14yqh).
+	resolvedOverrides := ws.resolveOverridesFor(terminal, overrideOpts{OverridePaths: opts.OverridePaths})
+	overrides := overrideInputArgs(resolvedOverrides)
 
 	if err := checkFollows(terminalNixDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
 		return err
@@ -127,9 +133,9 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	}
 
 	// markApplied is reached ONLY here, after a real rebuild — the !rebuild early
-	// return above skips it. So a record (and its locked_revs) is written exactly
-	// when a build actually happened, never on a skipped apply.
-	return ws.markApplied(ctx, allDirs, terminal, terminalNixDir, out)
+	// return above skips it. So a record (its locked_revs and its overridden_inputs)
+	// is written exactly when a build actually happened, never on a skipped apply.
+	return ws.markApplied(ctx, allDirs, terminal, terminalNixDir, overriddenInputs(resolvedOverrides), out)
 }
 
 // gitBinaryID returns a string identifying the installed git *binary*, via the
