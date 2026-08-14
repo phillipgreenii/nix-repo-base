@@ -123,3 +123,199 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *contract* ]]
 }
+
+# Builds a `main`-package module: pgm_run_engine's main-package binary
+# bookkeeping only fires for packages named "main" in `go list` output.
+make_main_module() {
+  local dir="$TEST_DIR/$1"
+  mkdir -p "$dir"
+  cat >"$dir/go.mod" <<'EOF'
+module example.com/fixture
+
+go 1.25
+EOF
+  printf 'package main\n\nfunc main() {}\n' >"$dir/main.go"
+  printf '%s\n' "$dir"
+}
+
+# A canned report shaped exactly like gomu's: absolute paths, uppercase
+# statuses, per-operator mutationTypes, and killedMutants deliberately 0
+# (gomu only populates it in CI mode).
+write_report() {
+  cat >"$TEST_DIR/report.json" <<EOF
+{
+  "version": "0.1.0",
+  "totalFiles": 1,
+  "processedFiles": 1,
+  "totalMutants": 5,
+  "killedMutants": 0,
+  "files": null,
+  "duration": 1000,
+  "statistics": {
+    "killed": 1,
+    "survived": 3,
+    "timedOut": 0,
+    "errors": 0,
+    "notViable": 1,
+    "mutationScore": 25.0,
+    "mutationTypes": {
+      "branch_condition": { "total": 3, "killed": 1, "survived": 2 },
+      "return_zero_value": { "total": 2, "killed": 0, "survived": 1 }
+    }
+  },
+  "results": [
+    { "mutant": { "id": "$TEST_DIR/mod/a.go_0", "filePath": "$TEST_DIR/mod/a.go",
+        "line": 30, "column": 5, "type": "branch_condition",
+        "original": "err != nil", "mutated": "false",
+        "description": "Replace branch condition \\"err != nil\\" with false" },
+      "status": "SURVIVED", "output": "", "error": "" },
+    { "mutant": { "id": "$TEST_DIR/mod/a.go_1", "filePath": "$TEST_DIR/mod/a.go",
+        "line": 42, "column": 9, "type": "branch_condition",
+        "original": "n > 0", "mutated": "true",
+        "description": "Replace branch condition \\"n > 0\\" with true" },
+      "status": "SURVIVED", "output": "", "error": "" },
+    { "mutant": { "id": "$TEST_DIR/mod/a.go_2", "filePath": "$TEST_DIR/mod/a.go",
+        "line": 50, "column": 2, "type": "return_zero_value",
+        "original": "\\"\\"", "mutated": "\\"\\"",
+        "description": "Replace return \\"\\" with return \\"\\"" },
+      "status": "SURVIVED", "output": "", "error": "" },
+    { "mutant": { "id": "$TEST_DIR/mod/a.go_3", "filePath": "$TEST_DIR/mod/a.go",
+        "line": 60, "column": 2, "type": "branch_condition",
+        "original": "ok", "mutated": "false",
+        "description": "Replace branch condition \\"ok\\" with false" },
+      "status": "KILLED", "output": "", "error": "" },
+    { "mutant": { "id": "$TEST_DIR/mod/a.go_4", "filePath": "$TEST_DIR/mod/a.go",
+        "line": 70, "column": 2, "type": "return_zero_value",
+        "original": "0", "mutated": "0",
+        "description": "Replace return 0 with return 0" },
+      "status": "NOT_VIABLE", "output": "compilation error", "error": "x" }
+  ]
+}
+EOF
+  printf '%s\n' "$TEST_DIR/report.json"
+}
+
+@test "pgm_report_sane accepts a healthy report" {
+  r="$(write_report)"
+  run pgm_report_sane "$r"
+  [ "$status" -eq 0 ]
+}
+
+@test "pgm_report_sane rejects a missing report" {
+  run pgm_report_sane "$TEST_DIR/nope.json"
+  [ "$status" -eq 1 ]
+}
+
+@test "pgm_report_sane rejects unparseable json" {
+  printf 'not json' >"$TEST_DIR/bad.json"
+  run pgm_report_sane "$TEST_DIR/bad.json"
+  [ "$status" -eq 1 ]
+}
+
+@test "pgm_report_sane rejects a null results array" {
+  printf '{"totalMutants":0,"results":null,"statistics":{}}' >"$TEST_DIR/null.json"
+  run pgm_report_sane "$TEST_DIR/null.json"
+  [ "$status" -eq 1 ]
+}
+
+@test "pgm_report_sane rejects a majority-non-viable report" {
+  printf '{"totalMutants":10,"results":[1],"statistics":{"notViable":9,"errors":0,"killed":1,"survived":0}}' >"$TEST_DIR/nv.json"
+  run pgm_report_sane "$TEST_DIR/nv.json"
+  [ "$status" -eq 1 ]
+}
+
+@test "pgm_report_sane flags the all-killed signature as suspect" {
+  printf '{"totalMutants":4,"results":[1],"statistics":{"notViable":0,"errors":0,"killed":4,"survived":0}}' >"$TEST_DIR/allk.json"
+  run pgm_report_sane "$TEST_DIR/allk.json"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *suspect* ]]
+}
+
+@test "pgm_worklist drops no-op mutants where original equals mutated" {
+  r="$(write_report)"
+  run pgm_worklist "$r" "$TEST_DIR/mod"
+  [ "$status" -eq 0 ]
+  # The two return_zero_value no-ops must not appear.
+  [[ "$output" != *"return \"\" with return \"\""* ]]
+  [[ "$output" != *"L50"* ]]
+  [[ "$output" != *"L70"* ]]
+}
+
+@test "pgm_worklist lists the two real survivors with line numbers" {
+  r="$(write_report)"
+  run pgm_worklist "$r" "$TEST_DIR/mod"
+  [[ "$output" == *"L30"* ]]
+  [[ "$output" == *"L42"* ]]
+  [[ "$output" != *"L60"* ]]  # KILLED
+}
+
+@test "pgm_worklist first line carries no percentage and no killed count" {
+  r="$(write_report)"
+  run pgm_worklist "$r" "$TEST_DIR/mod"
+  first="$(printf '%s\n' "$output" | head -1)"
+  [[ "$first" != *%* ]]
+  [[ "$first" != *killed* ]]
+}
+
+@test "pgm_worklist_json emits target-relative paths only" {
+  r="$(write_report)"
+  run pgm_worklist_json "$r" "$TEST_DIR/mod"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"$TEST_DIR"* ]]
+  printf '%s' "$output" | jq -e '.survivors[0].file == "a.go"'
+}
+
+@test "pgm_run_engine leaves no artifacts in the target directory" {
+  target="$(make_module cleanrun)"
+  add_passing_test "$target"
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/stub-gomu"
+  cat >"$PG_GO_MUTATE_GOMU" <<'EOF'
+#!/usr/bin/env bash
+# Stub engine: writes a minimal report into CWD, as the real gomu does.
+printf '{"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"/x/a.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0,"mutationScore":0}}' >mutation-report.json
+EOF
+  chmod +x "$PG_GO_MUTATE_GOMU"
+  run pgm_run_engine "$target" 2 60 ""
+  [ "$status" -eq 0 ]
+  [ ! -e "$target/mutation-report.json" ]
+  [ ! -e "$target/.gomu_history.json" ]
+}
+
+@test "pgm_run_engine removes a main-package binary it compiled that did not exist before the run" {
+  target="$(make_main_module mainbin)"
+  bin="$target/$(basename "$target")"
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/stub-gomu-mainbin"
+  cat >"$PG_GO_MUTATE_GOMU" <<'EOF'
+#!/usr/bin/env bash
+# Stub engine: writes a minimal report into CWD, and also drops a compiled
+# binary into the target's directory, simulating gomu's compile precheck
+# side effect for a `main` package (cmd.Dir is the target file's directory).
+target="${@: -1}"
+printf '{"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"/x/a.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0,"mutationScore":0}}' >mutation-report.json
+printf 'fake-binary\n' >"$target/$(basename "$target")"
+EOF
+  chmod +x "$PG_GO_MUTATE_GOMU"
+  [ ! -e "$bin" ]
+  run pgm_run_engine "$target" 2 60 ""
+  [ "$status" -eq 0 ]
+  [ ! -e "$bin" ]
+}
+
+@test "pgm_run_engine preserves a main-package binary that already existed before the run" {
+  target="$(make_main_module mainbinpre)"
+  bin="$target/$(basename "$target")"
+  printf 'developer-build\n' >"$bin"
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/stub-gomu-mainbinpre"
+  cat >"$PG_GO_MUTATE_GOMU" <<'EOF'
+#!/usr/bin/env bash
+# Stub engine: writes a minimal report into CWD, and re-writes the
+# pre-existing binary too, as a real `go build` recompile would.
+target="${@: -1}"
+printf '{"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"/x/a.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0,"mutationScore":0}}' >mutation-report.json
+printf 'recompiled\n' >"$target/$(basename "$target")"
+EOF
+  chmod +x "$PG_GO_MUTATE_GOMU"
+  run pgm_run_engine "$target" 2 60 ""
+  [ "$status" -eq 0 ]
+  [ -e "$bin" ]
+}
