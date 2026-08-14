@@ -135,6 +135,17 @@
             inherit pkgs bashBuilders;
             inherit (self.packages.${system}) pn;
           };
+          # pg-go-mutate (Go mutation-testing diagnostic) module: the shared
+          # pg-go-mutate-lib primitives plus the `pg-go-mutate` command itself.
+          # No extra threaded package (unlike pnwfScripts' `pn`): the engine
+          # (pkgs.phillipgreenii.gomu) is bound only in the home-manager module,
+          # at wrap time in a CONSUMER's pkgs — never here. This flake's own
+          # pkgs applies only overlays.gomod2nix, and overlays.default (the
+          # only thing that would surface phillipgreenii.gomu) is exported for
+          # consumers and never applied to this flake's own pkgs.
+          pgGoMutateScripts = import ./modules/pg-go-mutate/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
           # Go builders (mkGoApp / mkGoBinary / mkGoLint) over the gomod2nix engine.
           goBuilders = import ./lib/go-builders.nix { inherit pkgs self; };
           # Pattern-B (local `replace => ../sibling`) fixture source shared by the
@@ -200,6 +211,11 @@
 
             # pjira Go binary (generic Atlassian Jira access tool).
             pjira = pkgs.callPackage ./modules/jira { inherit self; };
+
+            # pg-go-mutate: reports which assertions a Go package's tests are
+            # missing (bash CLI wrapping the pinned gomu mutation engine).
+            # Mirrors how pnwf/wsplan expose their module's script above.
+            pg-go-mutate = pgGoMutateScripts.pg-go-mutate.script;
 
             # This repo's own Claude Code marketplace, bundled into the store with
             # content-derived per-plugin version stamping. Identity:
@@ -871,6 +887,7 @@
           }
           // ulScripts.checks
           // pnwfScripts.checks
+          // pgGoMutateScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
           # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
           # never imported by any .nix (bead pg2-fqar3 / prior deep-dive T1).
@@ -893,6 +910,7 @@
         homeModules = {
           pn = import ./home/pn/default.nix;
           pjira = import ./home/pjira/default.nix;
+          pg-go-mutate = import ./home/pg-go-mutate/default.nix;
           install-metadata = ./home-modules/install-metadata.nix;
           # Light capability model framework (Plan 5): declares the shared
           # phillipgreenii.account.* property namespace + phillipgreenii.bundles.*
@@ -922,6 +940,7 @@
             pn
             pn-workspace-toml-enforce
             pjira
+            pg-go-mutate
             ;
         };
 

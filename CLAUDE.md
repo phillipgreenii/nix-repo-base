@@ -77,3 +77,10 @@ Custom artifacts version from a per-source content digest, never the repo git re
 package build. The per-source digest now ALSO appears in the derivation `version` for bash and
 python builders (matching Go), so it surfaces in `nvd` / the darwin "Package changes" report
 (ADR [0011](docs/adr/0011-source-digest-in-derivation-version.md)).
+
+## Mutation testing (`pg-go-mutate`)
+
+`pg-go-mutate` reports which assertions a Go package's tests are missing. Every surviving mutant is
+an assertion the tests do not make. It is a diagnostic, not a gate: it always exits 0 on a completed
+analysis, records nothing, and tracks no score over time. Use it when strengthening tests; see the
+`go-test-gaps` skill for the workflow. Design: `docs/superpowers/specs/2026-08-14-pg-go-mutate-design.md`.
