@@ -929,8 +929,10 @@ SHIM
 # brief): the orchestration under test (stop on the FIRST failing member,
 # do not continue, report repo+path with step-appropriate wording) doesn't
 # need real fetch/rebase mechanics -- those (incl. the FETCH-step vs.
-# REBASE-step return-code distinction pnwf_fetch_and_rebase itself signals)
-# are proven with REAL git directly in test-pnwf-lib.bats. Member dirs are
+# MID-REBASE vs. REFUSED-REBASE return-code distinctions
+# pnwf_fetch_and_rebase itself signals, and the `rev-parse --git-path` probe
+# it derives the latter two from) are proven with REAL git -- including a
+# real linked worktree -- directly in test-pnwf-lib.bats. Member dirs are
 # plain directories (no `.git` needed): sync-fetch's own git calls are
 # fully mocked, and pnwf_resolve_primary_branch only needs `cd` into
 # member_canonical before calling the (already-mocked)
@@ -939,7 +941,29 @@ SHIM
 # The mock logs every invocation as "<dir> <subcommand>" to MOCK_GIT_LOG so
 # tests can assert both WHICH members were touched and in what order --
 # proving the loop stops at the first failure rather than merely reporting
-# it while continuing underneath.
+# it while continuing underneath. A failed rebase now also logs the
+# `rev-parse` probe that classifies it (see below), so the log is likewise
+# the evidence that the mid-rebase-vs-refused verdict came from an
+# observable rather than from a catch-all.
+#
+# THREE distinguishable rebase failures are modelled, because
+# `pnwf_fetch_and_rebase` returns a different sentinel for each and this
+# subcommand must not collapse them (bd pg2-k3s0x):
+#   .mock-rebase-conflict     rebase STARTS and stops mid-way -- the mock
+#                             creates the rebase state directory git itself
+#                             would leave behind, so the probe reports
+#                             in-progress (sentinel 3).
+#   .mock-rebase-refused      rebase is REFUSED outright (git's real wording
+#                             for a dirty tree) and creates NO state
+#                             directory, so the probe reports not-in-progress
+#                             (sentinel 4).
+#   .mock-rev-parse-failure   the probe itself cannot read the observable, so
+#                             neither verdict may be asserted (sentinel 5).
+#
+# `rev-parse --git-path <name>` answers with an ABSOLUTE path under a
+# per-member `.mock-gitdir`, mirroring the LINKED-WORKTREE shape a real set
+# member has (where the state directory lives in the canonical clone's
+# .git/worktrees/<name>/, never in <member>/.git).
 
 _sync_fetch_write_git_mock() {
   cat >"$MOCK_BIN/git" <<'MOCK'
@@ -965,9 +989,26 @@ fetch)
   ;;
 rebase)
   if [[ -f "$dir/.mock-rebase-conflict" ]]; then
+    mkdir -p "$dir/.mock-gitdir/rebase-merge"
     echo "mock git: CONFLICT (content): Merge conflict in file.txt" >&2
     exit 1
   fi
+  if [[ -f "$dir/.mock-rebase-refused" ]]; then
+    echo "mock git: error: cannot rebase: You have unstaged changes." >&2
+    exit 1
+  fi
+  exit 0
+  ;;
+rev-parse)
+  if [[ "${2:-}" != "--git-path" ]]; then
+    echo "mock git: unsupported rev-parse invocation: $dir $*" >&2
+    exit 1
+  fi
+  if [[ -f "$dir/.mock-rev-parse-failure" ]]; then
+    echo "mock git: fatal: not a git repository" >&2
+    exit 128
+  fi
+  echo "$dir/.mock-gitdir/${3:?mock git: --git-path requires a name}"
   exit 0
   ;;
 *)
@@ -1022,24 +1063,107 @@ _sync_fetch_init_members() {
 
   cd "$SET_DIR"
   run "$SCRIPT_UNDER_TEST" sync-fetch --set
-  [ "$status" -ne 0 ]
+  # The EXIT STATUS is contract, not incidental: `pnwf sync-fetch --help`
+  # enumerates it and the pnwf-runner agent is required to classify on it
+  # rather than on this wording, so each case pins its own status.
+  [ "$status" -eq 3 ]
   [[ "$output" == *"repoB"* ]]
   [[ "$output" == *"$SET_DIR/repoB"* ]]
 
   # Rebase-specific recovery wording: a conflict DID leave a rebase in
   # progress, so `git rebase --continue` is correct advice here (contrast
-  # with the fetch-failure test below, where it would be wrong advice).
+  # with the fetch-failure and refused-rebase tests below, where it would be
+  # wrong advice).
   [[ "$output" == *"rebase --continue"* ]]
   [[ "$output" != *"'git fetch origin' failed"* ]]
+  [[ "$output" != *"REFUSED"* ]]
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 4 ]
+  [ "${#lines[@]}" -eq 5 ]
   [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
   [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
   [ "${lines[2]}" = "$SET_DIR/repoB fetch" ]
   [ "${lines[3]}" = "$SET_DIR/repoB rebase" ]
+  # The classifying probe -- the failed rebase is diagnosed by ASKING git
+  # whether a rebase is in progress, not by assuming one is. It runs exactly
+  # once here: `rebase-merge` is found, so `rebase-apply` is never queried.
+  [ "${lines[4]}" = "$SET_DIR/repoB rev-parse" ]
   [[ "$output" != *"repoC"* ]]
+}
+
+@test "sync-fetch --set: a REFUSED rebase reports commit-or-stash recovery, NEVER 'rebase --continue', exits non-zero, and does not continue" {
+  # bd pg2-k3s0x. A dirty worktree makes `git rebase` refuse without
+  # starting, so nothing is mid-rebase: this member's recovery is to commit
+  # or stash, and the mid-rebase hand-off would send the operator to
+  # `git rebase --continue` for a rebase that never existed. Before the fix
+  # a catch-all `*)` branch asserted exactly that.
+  _stage_write_lock repoA repoB repoC
+  _sync_fetch_init_members repoA repoB repoC
+  touch "$SET_DIR/repoB/.mock-rebase-refused"
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  # 4, DISTINCT from the mid-rebase 3 above: this status is what the
+  # pnwf-runner agent classifies on to pick the `rebase-refused` gate over
+  # the `rebase-conflict` one.
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"repoB"* ]]
+  [[ "$output" == *"$SET_DIR/repoB"* ]]
+
+  # The whole point of the bead: the mid-rebase hand-off MUST NOT appear --
+  # not even the claim that the member IS mid-rebase -- and the recovery that
+  # actually applies MUST. The `rebase --continue` string is asserted absent
+  # OUTRIGHT (rather than "absent as advice"), because the pnwf-runner agent
+  # classifies this stderr and would key on it wherever it appeared.
+  [[ "$output" != *"rebase --continue"* ]]
+  [[ "$output" != *"mid-rebase"* ]]
+  [[ "$output" == *"REFUSED"* ]]
+  [[ "$output" == *"commit or stash"* ]]
+  [[ "$output" != *"'git fetch origin' failed"* ]]
+
+  run cat "$MOCK_GIT_LOG"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 6 ]
+  [ "${lines[0]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[1]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[2]}" = "$SET_DIR/repoB fetch" ]
+  [ "${lines[3]}" = "$SET_DIR/repoB rebase" ]
+  # BOTH backends are queried before concluding "no rebase in progress" --
+  # `rebase-merge` then `rebase-apply`; concluding it off one would miss a
+  # rebase run with the apply/am backend.
+  [ "${lines[4]}" = "$SET_DIR/repoB rev-parse" ]
+  [ "${lines[5]}" = "$SET_DIR/repoB rev-parse" ]
+  [[ "$output" != *"repoC"* ]]
+}
+
+@test "sync-fetch --set: when the rebase-in-progress observable cannot be read, NO recovery is asserted" {
+  # Neither hand-off may be given when the classifying probe itself fails:
+  # asserting one would be the same defect as the old catch-all, just with a
+  # different guess.
+  _stage_write_lock repoA repoB
+  _sync_fetch_init_members repoA repoB
+  touch "$SET_DIR/repoB/.mock-rebase-refused"
+  touch "$SET_DIR/repoB/.mock-rev-parse-failure"
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  # 5: its own status, so the runner halts rather than picking either gate.
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"repoB"* ]]
+  [[ "$output" == *"could not be determined"* ]]
+  [[ "$output" != *"rebase --continue"* ]]
+  [[ "$output" != *"commit or stash"* ]]
 }
 
 @test "sync-fetch --set: a git fetch failure reports fetch-specific recovery (no rebase --continue), exits non-zero, and does not continue" {
@@ -1054,7 +1178,8 @@ _sync_fetch_init_members() {
 
   cd "$SET_DIR"
   run "$SCRIPT_UNDER_TEST" sync-fetch --set
-  [ "$status" -ne 0 ]
+  # 2: the FETCH-step status, distinct from both rebase statuses (3 and 4).
+  [ "$status" -eq 2 ]
   [[ "$output" == *"repoB"* ]]
   [[ "$output" == *"$SET_DIR/repoB"* ]]
 

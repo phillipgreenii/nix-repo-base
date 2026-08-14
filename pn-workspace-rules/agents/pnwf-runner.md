@@ -205,16 +205,27 @@ cd <SETDIR> && pnwf sync-fetch --set
 ```
 
 `pnwf sync-fetch` fetches and rebases each member in topo order and stops on the
-FIRST failing member, naming that single worktree path and distinguishing the
-failure in its stderr:
+FIRST failing member, naming that single worktree path and identifying the failure
+by its **EXIT STATUS**. You MUST classify on the exit status, NOT on the stderr
+wording: the status is the subcommand's contract (`pnwf sync-fetch --help`
+enumerates it), whereas the wording is prose that may be reworded — and matching
+on wording makes this agent inherit whatever cause that prose ASSERTS. That is
+how a member git had merely REFUSED to rebase reached the main session as a
+mid-rebase conflict with a `git rebase --continue` hint: `pnwf` claimed "a rebase
+conflict left it mid-rebase" for ANY rebase failure, and this classification
+faithfully propagated the claim (bd `pg2-k3s0x`). Read stderr only for the
+`detail` you report to the main session.
 
-- **clean (exit 0)** → classify the set per
+- **exit 0 — clean** → classify the set per
   [Nothing to sync](#nothing-to-sync--return-noop-must) below, then proceed to
   Stage 3 unless that classification says the run is a no-op.
-- **rebase conflict** (stderr says a rebase conflict left the member
-  mid-rebase) → you MUST return `gate` with `stage: "sync-fetch"`,
-  `kind: "rebase-conflict"`, `path` set to that absolute worktree path, and a
-  `resume_hint` of the exact follow-up:
+- **exit 2 — `git fetch` failure** (a network/remote/auth problem; no rebase was
+  started) → you MUST return `halt` with `stage: "sync-fetch"` and
+  `reason: "fetch-failed"`. You MUST NOT include a rebase hint.
+- **exit 3 — rebase STOPPED MID-WAY** (a conflict; `pnwf` observed git's own
+  rebase-in-progress state still present in that worktree) → you MUST return
+  `gate` with `stage: "sync-fetch"`, `kind: "rebase-conflict"`, `path` set to
+  that absolute worktree path, and a `resume_hint` of the exact follow-up:
 
   ```bash
   git -C <path> rebase --continue
@@ -222,19 +233,39 @@ failure in its stderr:
 
   You MUST NOT resolve the conflict yourself.
 
-- **`git fetch` failure** (stderr says `git fetch origin` failed — a
-  network/auth problem, distinct from a conflict) → you MUST return `halt` with
-  `stage: "sync-fetch"` and `reason: "fetch-failed"`. You MUST NOT include a
-  rebase hint; no rebase was started.
-- **timed out** (the `600000` ms ceiling hit, so you have no exit status and no
-  stderr classification) → you MUST return `halt` with `stage: "sync-fetch"`,
+- **exit 4 — rebase REFUSED, never started** (`pnwf` observed NO
+  rebase-in-progress state; the classic cause is a dirty member worktree) → you
+  MUST return `gate` with `stage: "sync-fetch"`, `kind: "rebase-refused"`, `path`
+  set to that absolute worktree path, and a `resume_hint` naming the DISPOSITION
+  a person owns — commit or stash the changes in that worktree:
+
+  ```bash
+  git -C <path> status --porcelain
+  ```
+
+  You MUST NOT emit the `rebase-conflict` gate here and MUST NOT put
+  `git rebase --continue` in the hint: nothing is mid-rebase, so there is nothing
+  to continue and that command would fail. You MUST NOT commit, stash, or discard
+  the changes yourself — that is a disposition, and you have no user
+  ([§7](#7-prohibitions-must)).
+
+- **exit 5 — indeterminate** (the rebase failed and `pnwf` could not read whether
+  one is in progress, so it asserts no cause) → you MUST return `halt` with
+  `stage: "sync-fetch"` and `reason: "rebase-indeterminate"`, quoting `pnwf`'s
+  stderr in `detail`. You MUST NOT pick either gate: `pnwf` declined to guess and
+  so MUST you.
+- **any other non-zero exit** → you MUST return `halt` with
+  `stage: "sync-fetch"`, `reason: "sync-fetch-unrecognised"`, the exit status and
+  `pnwf`'s stderr in `detail`. Do NOT map it onto the nearest gate above.
+- **timed out** (the `600000` ms ceiling hit, so you have NO exit status to
+  classify on at all) → you MUST return `halt` with `stage: "sync-fetch"`,
   `reason: "incomplete-sync"`, the [R4](#constraint-one-turn-foreground-only)
   residue probe's result in `dirty`, and `detail` saying the step exceeded the
   foreground ceiling rather than failing. You MUST NOT emit the `rebase-conflict`
-  gate here and MUST NOT include a `resume_hint`: `git rebase --continue` is the
-  recovery for a CONFLICT you observed, and a killed rebase is not one — a member
-  may be mid-rebase with nothing to resolve. The main session, which does survive
-  across turns, owns that judgment.
+  or `rebase-refused` gate here and MUST NOT include a `resume_hint`: both are
+  recoveries for a state `pnwf` OBSERVED and reported, and a killed rebase is
+  neither — a member may be mid-rebase with nothing to resolve. The main session,
+  which does survive across turns, owns that judgment.
 
 ### Nothing to sync → return `noop` (MUST)
 
@@ -393,7 +424,7 @@ after it. Use exactly one of these shapes:
 {
   "status": "gate",
   "stage": "fork|sync-fetch",
-  "kind": "resume-vs-discard|rebase-conflict",
+  "kind": "resume-vs-discard|rebase-conflict|rebase-refused",
   "setdir": "<abs>",
   "path": "<abs|null>",
   "resume_hint": "…",
@@ -414,7 +445,8 @@ after it. Use exactly one of these shapes:
 }
 ```
 
-`reason` is one of `fetch-failed`, `incomplete-sync`, `validate-failed`, or the
+`reason` is one of `fetch-failed`, `rebase-indeterminate`,
+`sync-fetch-unrecognised`, `incomplete-sync`, `validate-failed`, or the
 `pnwf fork-preflight` reason line for a `stage: "fork"` halt.
 
 On the `noop` shape, `validated` MUST be `false` — Stage 3 did not run, so you
@@ -447,11 +479,13 @@ in-memory state, then continue from the stage that bailed:
 
 - After a resolved `resume-vs-discard` gate, re-run Stage 1's `resolve --set`
   confirmation, then continue.
-- After a resolved `rebase-conflict` gate, re-run Stage 2
+- After a resolved `rebase-conflict` **or `rebase-refused`** gate, re-run Stage 2
   (`cd <SETDIR> && pnwf sync-fetch --set`) — it resumes from where it stopped —
   then re-run the `pnwf status` no-op classification and continue to Stage 3
   unless it is a no-op. Re-deriving it is MANDATORY on a resume: the resolved
-  conflict means a member DID move, so a pre-conflict reading would be wrong.
+  conflict means a member DID move, so a pre-conflict reading would be wrong. It
+  is mandatory after a `rebase-refused` too — that member had NOT rebased when you
+  bailed, so it rebases for the first time on the re-run.
 
 A `noop` is TERMINAL for you and is NOT a gate: the main session's teardown and
 publish are prohibited to you ([§7](#7-prohibitions-must)), so there is nothing

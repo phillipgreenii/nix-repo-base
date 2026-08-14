@@ -478,6 +478,81 @@ MOCK
   [[ "$output" == *"not found in $REPO"* ]]
 }
 
+# --- pnwf_rebase_in_progress -------------------------------------------
+# The OBSERVABLE that separates a rebase git REFUSED TO START from one it
+# started and stopped mid-way. Real git throughout, including a real LINKED
+# WORKTREE: a pnwf member IS a worktree, and the two worktree layouts are the
+# whole reason this probe cannot be `[ -d "$repo_dir/.git/rebase-merge" ]`.
+
+_setup_conflicting_feature_branch() {
+  # In $REPO: advance `main`, and leave a `feature` branch (checked out
+  # NOWHERE, so either worktree below may claim it) whose single commit
+  # rewrites the same file -- rebasing feature onto main is then a
+  # guaranteed content conflict, i.e. a rebase git STARTS and cannot finish.
+  echo main-side >"$REPO/file.txt"
+  command git -C "$REPO" commit -q -am "main side"
+  command git -C "$REPO" branch feature HEAD~1
+  command git -C "$REPO" checkout -q feature
+  echo feature-side >"$REPO/file.txt"
+  command git -C "$REPO" commit -q -am "feature side"
+  command git -C "$REPO" checkout -q main
+}
+
+@test "pnwf_rebase_in_progress: no rebase in progress returns false without aborting" {
+  run bash -euo pipefail -c "source '$LIB_PATH'; if pnwf_rebase_in_progress '$REPO'; then echo yes; else echo no; fi"
+  [ "$status" -eq 0 ]
+  [ "$output" = "no" ]
+}
+
+@test "pnwf_rebase_in_progress: a main worktree left mid-rebase is detected from an unrelated cwd" {
+  _setup_conflicting_feature_branch
+  command git -C "$REPO" checkout -q feature
+  run bash -c "command git -C '$REPO' rebase main"
+  [ "$status" -ne 0 ]
+
+  # cwd is deliberately NOT $REPO. In a MAIN worktree `--git-path` answers
+  # relative to git's own cwd (verified git 2.54), so the probe must
+  # re-anchor that answer on repo_dir; anchoring it on the CALLER's cwd
+  # would test $TEST_DIR/.git/rebase-merge and report "no rebase" here.
+  run bash -euo pipefail -c "cd '$TEST_DIR'; source '$LIB_PATH'; pnwf_rebase_in_progress '$REPO'"
+  [ "$status" -eq 0 ]
+}
+
+@test "pnwf_rebase_in_progress: a LINKED worktree left mid-rebase is detected even though <wt>/.git holds no state dir" {
+  _setup_conflicting_feature_branch
+  local wt="$TEST_DIR/member-wt"
+  command git -C "$REPO" worktree add -q "$wt" feature
+  run bash -c "command git -C '$wt' rebase main"
+  [ "$status" -ne 0 ]
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_rebase_in_progress '$wt'"
+  [ "$status" -eq 0 ]
+
+  # What makes the assertion above discriminating rather than a restatement:
+  # a linked worktree's rebase state lives under the CANONICAL clone's
+  # .git/worktrees/<name>/, and <wt>/.git is a gitfile, not a directory --
+  # so the hardcoded path this probe deliberately avoids cannot exist here,
+  # and a `[ -d "$repo_dir/.git/rebase-merge" ]` implementation would report
+  # "no rebase in progress" for a worktree that IS mid-rebase.
+  [ ! -d "$wt/.git" ]
+  [ ! -d "$wt/.git/rebase-merge" ]
+  [ ! -d "$wt/.git/rebase-apply" ]
+  [ -d "$REPO/.git/worktrees/member-wt/rebase-merge" ] ||
+    [ -d "$REPO/.git/worktrees/member-wt/rebase-apply" ]
+}
+
+@test "pnwf_rebase_in_progress: an unreadable repo does not abort, returns git's rc, and prints a diagnostic" {
+  # NOT reported as "no rebase in progress": the observable could not be
+  # read, so the caller (pnwf_fetch_and_rebase) must be able to tell that
+  # apart from a confident false and refuse to assert either recovery.
+  mkdir -p "$TEST_DIR/not-a-repo"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_rebase_in_progress '$TEST_DIR/not-a-repo'"
+  [ "$status" -ne 0 ]
+  [ "$status" -ne 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_rebase_in_progress: git rev-parse --git-path rebase-merge failed in $TEST_DIR/not-a-repo"* ]]
+}
+
 # --- pnwf_fetch_and_rebase ---------------------------------------------
 # Backs `pnwf sync-fetch`, the one MUTATING primitive in this file (every
 # other function above is a read-only probe). Real git throughout -- a real
@@ -544,16 +619,53 @@ _setup_fetch_and_rebase_origin() {
   # command actually aborting under set -e (see the non-vacuousness note at
   # the top of this file).
   run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
-  # 3 (not just "nonzero"): the REBASE-step sentinel -- the caller
+  # 3 (not just "nonzero"): the MID-REBASE sentinel -- the caller
   # (cmd_sync_fetch) switches on this to pick "git rebase --continue"
-  # wording rather than the fetch-failure wording (rc=2), so the exact
-  # code is load-bearing here, not incidental.
+  # wording rather than the fetch-failure wording (rc=2) or the
+  # refused-rebase wording (rc=4), so the exact code is load-bearing here,
+  # not incidental.
   [ "$status" -eq 3 ]
 
   # git itself leaves the rebase mid-progress -- pnwf_fetch_and_rebase MUST
   # NOT `git rebase --abort` it; the hand-off contract is `git rebase
   # --continue` in this exact worktree.
   [ -d "$CLONE/.git/rebase-apply" ] || [ -d "$CLONE/.git/rebase-merge" ]
+}
+
+@test "pnwf_fetch_and_rebase: a REFUSED rebase returns the NEVER-STARTED sentinel, not the mid-rebase one, and leaves no rebase state" {
+  # The bd pg2-k3s0x case. A dirty working tree makes `git rebase` refuse
+  # OUTRIGHT: it exits non-zero having started nothing, so the mid-rebase
+  # sentinel (3) -- and the `git rebase --continue` hand-off it selects --
+  # would be actively wrong advice.
+  _setup_fetch_and_rebase_origin
+  command git -C "$CLONE" checkout -q -b feature
+
+  # origin advances, so a rebase genuinely has commits to replay: this test
+  # must fail on the REFUSAL, not on there being nothing to do.
+  echo origin-advance >"$REPO/other-file.txt"
+  command git -C "$REPO" add other-file.txt
+  command git -C "$REPO" commit -q -m "origin advance"
+  command git -C "$REPO" push -q "$ORIGIN" main
+
+  # An unstaged change to a TRACKED file is what git refuses on.
+  echo uncommitted-work >"$CLONE/file.txt"
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
+  [ "$status" -eq 4 ]
+
+  # The rest of the contract is unchanged: a first-party diagnostic still
+  # names the git step that failed and its real exit code.
+  [[ "$stderr" == *"pnwf_fetch_and_rebase: git rebase origin/main failed in $CLONE"* ]]
+
+  # And the observable the sentinel was derived from: NOTHING is mid-rebase,
+  # so there is nothing for `git rebase --continue` to continue.
+  [ ! -d "$CLONE/.git/rebase-apply" ]
+  [ ! -d "$CLONE/.git/rebase-merge" ]
+
+  # The dirty change is left exactly as found -- this helper never stashes,
+  # commits, or discards the operator's work.
+  run cat "$CLONE/file.txt"
+  [ "$output" = "uncommitted-work" ]
 }
 
 @test "pnwf_fetch_and_rebase: git fetch failure does not abort, returns the FETCH-step sentinel, and prints a diagnostic" {
@@ -563,8 +675,11 @@ _setup_fetch_and_rebase_origin() {
 
   run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_fetch_and_rebase '$CLONE' main"
   # 2 (not just "nonzero"): the FETCH-step sentinel, distinct from the
-  # rebase-step sentinel (3) above -- no rebase was ever started here, so
-  # the caller must NOT tell the operator to `git rebase --continue`.
+  # mid-rebase sentinel (3) above -- no rebase was ever started here, so
+  # the caller must NOT tell the operator to `git rebase --continue`. It is
+  # also distinct from the refused-rebase sentinel (4), which shares
+  # "no rebase started" but NOT the recovery: this one is a
+  # remote/network/auth problem, that one is a dirty tree to commit or stash.
   [ "$status" -eq 2 ]
   [ -z "$output" ]
   [[ "$stderr" == *"pnwf_fetch_and_rebase: git fetch origin failed in $CLONE"* ]]

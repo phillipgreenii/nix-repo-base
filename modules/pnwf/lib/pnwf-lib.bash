@@ -275,26 +275,83 @@ pnwf_classify_member() {
   esac
 }
 
+# Boolean: is a rebase IN PROGRESS in repo_dir? (never aborts under set -e)
+#
+# This is the OBSERVABLE that separates a rebase git REFUSED TO START (e.g. a
+# dirty working tree -- git exits non-zero having done nothing) from one it
+# STARTED AND STOPPED MID-WAY (a conflict). It MUST NOT be replaced by a match
+# on git's message text: that wording is localized and changes between git
+# versions, whereas the on-disk state directory is git's own documented
+# rebase-in-progress marker (the same one `git rebase --continue`/`--abort`
+# require).
+#
+# `rev-parse --git-path <name>` -- NOT a hardcoded "$repo_dir/.git/<name>" --
+# is required because a `pnwf` member is a git WORKTREE: a linked worktree's
+# rebase state lives in the canonical clone's `.git/worktrees/<name>/`, so the
+# hardcoded path would never exist there and every refused rebase would still
+# be misreported as a mid-rebase conflict. The same probe, and the same
+# rationale, is written into the pnwf-runner agent's R4 residue probe.
+#
+# Verified with git 2.54: `--git-path` prints an ABSOLUTE path in a linked
+# worktree and a path RELATIVE TO GIT'S OWN CWD in a main worktree, so a
+# relative answer is re-anchored on repo_dir (that IS what `-C "$repo_dir"`
+# made git's cwd) and never on this caller's cwd, which is arbitrary here.
+# Both backends are checked: `rebase-merge` for the merge backend
+# (interactive, and the default since git 2.26) and `rebase-apply` for the
+# older apply/am backend, which `--apply`/`--whitespace` still select.
+pnwf_rebase_in_progress() {
+  local repo_dir="$1" name path rc
+  for name in rebase-merge rebase-apply; do
+    rc=0
+    path=$(git -C "$repo_dir" rev-parse --git-path "$name") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "pnwf_rebase_in_progress: git rev-parse --git-path $name failed in $repo_dir (rc=$rc)" >&2
+      return "$rc"
+    fi
+    case "$path" in
+    /*) ;;
+    *) path="$repo_dir/$path" ;;
+    esac
+    if [ -d "$path" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Fetches origin then attempts to rebase repo_dir's current branch onto
 # origin/<primary>. Backs `pnwf sync-fetch` -- the one MUTATING WORK-recipe
 # helper in this file (every other function above is a read-only probe).
 #
 # Returns 0 on a clean pass (already up to date counts as clean). A nonzero
 # return is the FIRST stopping point the caller must hand off on, and the
-# CODE itself tells the caller WHICH step stopped it -- the two failures
-# need different recovery advice, since a fetch failure never starts a
-# rebase (so "git rebase --continue" would be actively wrong there):
-#   2  `git fetch origin` failed (network/remote/auth -- no rebase started)
-#   3  `git rebase origin/<primary>` failed (typically a conflict) -- git
-#      itself leaves `.git/rebase-merge` (or `-apply`) in place in
-#      repo_dir, deliberately NOT cleaned up here (no `git rebase
-#      --abort`), so the caller's hand-off message ("resolve here, then
-#      `git rebase --continue`") points at exactly the state this function
-#      stopped in.
+# CODE itself tells the caller WHICH step stopped it AND WHAT STATE it left
+# repo_dir in -- each case needs DIFFERENT recovery advice, and advice from
+# the wrong case is not merely unhelpful but actively wrong:
+#   2  `git fetch origin` failed (network/remote/auth). No rebase was
+#      started, so "git rebase --continue" would be wrong here.
+#   3  `git rebase origin/<primary>` STARTED and STOPPED MID-WAY (a
+#      conflict): `pnwf_rebase_in_progress` observes git's own
+#      rebase-in-progress state directory (`rebase-merge`/`rebase-apply`
+#      under this worktree's git dir) still present. It is deliberately NOT
+#      cleaned up here (no `git rebase --abort`), so the caller's hand-off
+#      message ("resolve here, then `git rebase --continue`") points at
+#      exactly the state this function stopped in.
+#   4  `git rebase origin/<primary>` was REFUSED OUTRIGHT and never started
+#      -- the classic cause is a dirty working tree. `pnwf_rebase_in_progress`
+#      observes NO rebase state directory, so there is nothing to resolve and
+#      nothing to continue: the recovery is to commit or stash, and
+#      "git rebase --continue" would be wrong here too.
+#   5  `git rebase origin/<primary>` failed AND the rebase-in-progress
+#      observable itself could not be read, so 3 vs 4 is INDETERMINATE. The
+#      caller MUST NOT assert either recovery; a distinct code (rather than
+#      relaying the probe's own rc) keeps this case from ever colliding with
+#      the 2/3/4 sentinels above.
 # Never aborts the caller under set -e; a first-party diagnostic naming
 # which git step failed AND its real exit code goes to stderr, while git's
-# own chatter (e.g. the conflicting paths) is left on its normal stdout/
-# stderr for whoever resolves it.
+# own chatter (e.g. the conflicting paths, or "cannot rebase: You have
+# unstaged changes") is left on its normal stdout/stderr for whoever
+# resolves it.
 pnwf_fetch_and_rebase() {
   local repo_dir="$1" primary="$2" rc=0
   git -C "$repo_dir" fetch origin || rc=$?
@@ -307,6 +364,18 @@ pnwf_fetch_and_rebase() {
   git -C "$repo_dir" rebase "origin/$primary" || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "pnwf_fetch_and_rebase: git rebase origin/$primary failed in $repo_dir (rc=$rc)" >&2
-    return 3
+    # Guarded (never a bare call): the probe is a tri-state here, and an
+    # errexit abort on its "no rebase in progress" answer would discard the
+    # distinction this whole branch exists to make.
+    local probe_rc=0
+    pnwf_rebase_in_progress "$repo_dir" || probe_rc=$?
+    case "$probe_rc" in
+    0) return 3 ;;
+    1) return 4 ;;
+    *)
+      echo "pnwf_fetch_and_rebase: could not determine whether a rebase is in progress in $repo_dir (probe rc=$probe_rc)" >&2
+      return 5
+      ;;
+    esac
   fi
 }

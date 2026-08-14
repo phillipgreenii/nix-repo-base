@@ -769,12 +769,22 @@ fetch origin`, then attempt to rebase the member's current branch onto the
 remote primary (origin/<primary>, resolved via integrate-branch-support).
 
 Stops on the FIRST failure, reporting which member and worktree path
-stopped it, then exits non-zero. Recovery is agent-owned and depends on
-which step failed:
-  fetch failed    check the remote/network/auth, then re-run `pnwf
-                   sync-fetch` -- no rebase was started.
-  rebase failed    resolve the conflict in that worktree, run `git rebase
-                   --continue` there, then re-run `pnwf sync-fetch`.
+stopped it, then exits non-zero WITH THE EXIT CODE THAT IDENTIFIES THE
+CASE. Recovery is agent-owned and depends on which step failed and, for a
+failed rebase, on whether a rebase is actually in progress afterwards:
+  2  fetch failed        check the remote/network/auth, then re-run `pnwf
+                          sync-fetch` -- no rebase was started.
+  3  rebase mid-way      a conflict left the worktree mid-rebase: resolve
+                          it there, run `git rebase --continue`, then
+                          re-run `pnwf sync-fetch`.
+  4  rebase REFUSED      the rebase never started (classically a dirty
+                          worktree), so NOTHING is mid-rebase -- there is
+                          nothing to resolve and nothing to continue:
+                          commit or stash in that worktree, then re-run
+                          `pnwf sync-fetch`.
+  5  indeterminate       the rebase failed and whether one is in progress
+                          could not be read, so NO recovery is asserted:
+                          inspect the worktree first.
 Exits 0 once every member has fetched and rebased clean.
 
 This is a MUTATING WORK-recipe helper, not a read-only probe like
@@ -821,9 +831,17 @@ HELP
     primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
       die "could not resolve primary branch for member '$member'"
 
-    # Guarded (never a bare call): a fetch failure or a rebase conflict
+    # Guarded (never a bare call): a fetch failure or any rebase failure
     # exits nonzero, and MUST NOT abort this loop via errexit before the
     # step-appropriate hand-off message below gets a chance to print.
+    #
+    # EVERY sentinel pnwf_fetch_and_rebase documents is enumerated
+    # EXPLICITLY, and `*)` asserts NO cause at all. A catch-all that claimed
+    # one specific cause is precisely how the refused-rebase case (4) came to
+    # be reported as a mid-rebase conflict, handing the operator a `git rebase
+    # --continue` for a rebase that had never started (bd pg2-k3s0x). A new
+    # sentinel added to the library must therefore surface here as an honest
+    # "unrecognised", never as a guess.
     rc=0
     pnwf_fetch_and_rebase "$member_setpath" "$primary" || rc=$?
     case "$rc" in
@@ -831,8 +849,21 @@ HELP
     2)
       die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git fetch origin' failed there; check the remote/network/auth, then re-run 'pnwf sync-fetch'" "$rc"
       ;;
-    *)
+    3)
       die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- a rebase conflict left it mid-rebase; resolve it there, run 'git -C $member_setpath rebase --continue', then re-run 'pnwf sync-fetch'" "$rc"
+      ;;
+    4)
+      # This message deliberately does NOT spell out the mid-rebase command,
+      # even to say it would be wrong: consumers (the pnwf-runner agent)
+      # classify this stderr, so naming it here is a string a naive matcher
+      # would key on and re-emit as a rebase-conflict hand-off.
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git rebase' was REFUSED and never started, so NO rebase is in progress there: nothing to resolve and nothing to continue; the classic cause is a dirty worktree, so inspect 'git -C $member_setpath status' and commit or stash, then re-run 'pnwf sync-fetch'" "$rc"
+      ;;
+    5)
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git rebase' failed AND whether a rebase is in progress there could not be determined, so no recovery is asserted; inspect 'git -C $member_setpath status' before re-running 'pnwf sync-fetch'" "$rc"
+      ;;
+    *)
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- pnwf_fetch_and_rebase returned the UNRECOGNISED code $rc, so this subcommand cannot say which step stopped it or what to recover; inspect 'git -C $member_setpath status' rather than acting on a guessed cause" "$rc"
       ;;
     esac
   done

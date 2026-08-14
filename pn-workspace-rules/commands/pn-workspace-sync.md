@@ -74,9 +74,18 @@ flowchart TD
      case for sync. Resolve the conflict WITH the user in the reported worktree,
      run `git -C <path> rebase --continue`, then continue the SAME runner (it
      re-runs `pnwf sync-fetch`).
+   - **`gate` / `sync-fetch` / `rebase-refused`** → `git rebase` was REFUSED in
+     the reported worktree and NEVER STARTED (`pnwf sync-fetch` exit 4), so
+     NOTHING there is mid-rebase. Do NOT treat this as a `rebase-conflict` and do
+     NOT run `git rebase --continue` — there is no rebase to continue and the
+     command fails. The classic cause is uncommitted work in that member: show
+     the user `git -C <path> status`, decide WITH them whether it is committed or
+     stashed, then continue the SAME runner (it re-runs `pnwf sync-fetch`, which
+     rebases that member for the first time).
    - **`halt`** → surface the reason and STOP; do NOT work around a canonical
      anomaly (R-3/R-8) or a broken validate. Reasons are `fetch-failed`,
-     `incomplete-sync`, `validate-failed`, or a `fork` reason line. The ONE
+     `rebase-indeterminate`, `sync-fetch-unrecognised`, `incomplete-sync`,
+     `validate-failed`, or a `fork` reason line. The ONE
      exception is a `validate-failed` whose every `BLOCKING` line is an
      unpublished-sibling-lock `flake-lock-fresh` finding — see
      [the documented escape](#escape-validate-blocks-only-on-unpublished-sibling-locks).

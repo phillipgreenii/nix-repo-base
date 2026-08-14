@@ -57,9 +57,10 @@ if any stage halts.
      `fork-workforest` step 3 (resume the existing set, or discard + re-fork),
      then continue the SAME runner (send it the decision) — its context is
      preserved.
-   - Unlike `/pn-workspace-sync`, there is **NO** `sync-fetch` / `rebase-conflict`
-     gate: `/pn-workspace-update` relocks rather than fetch+rebase, so the runner
-     never emits a rebase-conflict gate. The only gate is `fork` /
+   - Unlike `/pn-workspace-sync`, there is **NO** `sync-fetch` stage and therefore
+     none of its rebase gates — neither `rebase-conflict` nor `rebase-refused`:
+     `/pn-workspace-update` relocks rather than fetch+rebase, so the runner never
+     rebases anything and never emits either. The only gate is `fork` /
      `resume-vs-discard` above.
    - **`halt`** → surface the reason and STOP; do NOT work around it. Reasons
      include `update-failed`, `incomplete-update`, `validate-failed`, or a
