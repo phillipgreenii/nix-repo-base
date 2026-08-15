@@ -504,6 +504,31 @@ _fp_write_canonical_info() {
   [[ "$output" == *"repoA"* ]]
 }
 
+@test "fork-preflight: canonical repo with a redirected worktree root -> stop" {
+  # The 2026-08-14 homelab defect: a stale `core.worktree` (left by an
+  # interrupted `pn workspace update`) redirects every working-tree probe to
+  # another directory. The decoy holds an identical checkout so the repo still
+  # looks on-primary and clean -- which is what made the real occurrence
+  # survive a whole fork -> sync -> validate -> land pipeline.
+  _fp_init_canonical_repo repoA
+  local decoy="$CANONICAL_DIR/decoy"
+  mkdir -p "$decoy"
+  cp "$CANONICAL_DIR/repoA/file.txt" "$decoy/file.txt"
+  command git -C "$CANONICAL_DIR/repoA" config core.worktree "$decoy"
+  _fp_write_canonical_info repoA
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" == *"worktree root mismatch"* ]]
+  [[ "$output" == *"repoA"* ]]
+  [[ "$output" == *"core.worktree"* ]]
+  # It MUST NOT be reported as the on-primary/clean failure -- sending the
+  # operator to inspect a working tree whose state is not the problem is the
+  # specific misdiagnosis this check exists to prevent.
+  [[ "$output" != *"not clean/on-primary"* ]]
+}
+
 @test "fork-preflight: existing set dir -> resume" {
   _fp_init_canonical_repo repoA
   _fp_write_canonical_info repoA

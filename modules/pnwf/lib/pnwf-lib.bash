@@ -95,6 +95,51 @@ pnwf_ahead_of_primary() {
   echo "$count"
 }
 
+# Boolean: do git operations against <repo_dir> actually ACT on <repo_dir>?
+#
+# A clone can carry a stale `core.worktree` naming some OTHER directory
+# (observed 2026-08-14 in the homelab canonical clone, left behind by an
+# interrupted `pn workspace update`). git then answers every working-tree
+# question about THAT directory while the caller believes it asked about
+# <repo_dir>: `symbolic-ref` reports the primary branch, `status` reports
+# clean, and the files actually sitting at <repo_dir> are never consulted.
+# BOTH halves of pnwf_canonical_on_primary_and_clean therefore return a
+# truthful "healthy" about the wrong tree, so the anomaly survives every gate
+# in the fork -> sync-fetch -> validate -> land pipeline.
+#
+# Hence this MUST be checked BEFORE pnwf_canonical_on_primary_and_clean, and a
+# failure MUST be reported as its own reason: folding it into "not
+# clean/on-primary" is precisely what makes it undiagnosable, because it sends
+# the operator to inspect a working tree whose state is not the problem.
+#
+# The comparison is deliberately about the RESOLVED root rather than about
+# core.worktree specifically, so it also catches a hand-edited `.git` file, a
+# member path nested inside an outer repo, and a member path that is not a
+# repo root at all. Both sides are normalised with the `cd ... && pwd -P`
+# idiom (as in wsplan.sh) so a workspace reached through a symlinked path does
+# not false-positive.
+pnwf_worktree_root_ok() {
+  local repo_dir="$1" rc=0 toplevel expected resolved
+  toplevel=$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "pnwf_worktree_root_ok: git rev-parse --show-toplevel failed (rc=$rc)" >&2
+    return "$rc"
+  fi
+
+  expected=$(cd "$repo_dir" >/dev/null 2>&1 && pwd -P) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "pnwf_worktree_root_ok: could not resolve repo_dir '$repo_dir' (rc=$rc)" >&2
+    return "$rc"
+  fi
+
+  # A toplevel that cannot be entered (e.g. core.worktree naming a directory
+  # that has since been removed) is a MISMATCH, not an unexpected failure --
+  # it is still "git is not acting on repo_dir", which is what this reports.
+  resolved=$(cd "$toplevel" >/dev/null 2>&1 && pwd -P) || return 1
+
+  [ "$resolved" = "$expected" ]
+}
+
 # Boolean: is repo_dir currently on <primary> AND clean? This is the R-3
 # steady-state check for the canonical clone (see repo CLAUDE.md's Git
 # Worktree / Integration Discipline rules). Detached HEAD, a different

@@ -247,6 +247,63 @@ teardown() {
   [ "$status" -eq 1 ]
 }
 
+# --- pnwf_worktree_root_ok ------------------------------------------------
+
+# Redirects $REPO's working tree to a decoy directory holding an IDENTICAL
+# checkout, reproducing the 2026-08-14 homelab defect: a stale `core.worktree`
+# left by an interrupted `pn workspace update`. The decoy must match the
+# committed content, otherwise `git status` reports the index's files as
+# deleted and the redirect shows up as a plain dirty tree -- which is exactly
+# the cheap-to-diagnose case this defect is NOT.
+_redirect_worktree_to_decoy() {
+  local decoy="$TEST_DIR/decoy"
+  mkdir -p "$decoy"
+  cp "$REPO/file.txt" "$decoy/file.txt"
+  command git -C "$REPO" config core.worktree "$decoy"
+  echo "$decoy"
+}
+
+@test "pnwf_worktree_root_ok: true for a normal clone" {
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$REPO'"
+  [ "$status" -eq 0 ]
+}
+
+@test "pnwf_worktree_root_ok: false when core.worktree redirects elsewhere" {
+  _redirect_worktree_to_decoy >/dev/null
+  # Bare call (not if-wrapped): see the non-vacuousness note at the top of
+  # this file.
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$REPO'"
+  [ "$status" -eq 1 ]
+}
+
+@test "pnwf_worktree_root_ok: the redirect is INVISIBLE to the on-primary/clean check" {
+  # Non-vacuousness for the ORDERING requirement in pnwf.sh's fork-preflight:
+  # with the redirect in place the R-3 check still reports healthy, so it
+  # cannot be relied on to surface this. That is why pnwf_worktree_root_ok
+  # runs first and reports its own reason.
+  _redirect_worktree_to_decoy >/dev/null
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_on_primary_and_clean '$REPO' main"
+  [ "$status" -eq 0 ]
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$REPO'"
+  [ "$status" -eq 1 ]
+}
+
+@test "pnwf_worktree_root_ok: false when core.worktree names a removed directory" {
+  command git -C "$REPO" config core.worktree "$TEST_DIR/gone"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$REPO'"
+  [ "$status" -eq 1 ]
+}
+
+@test "pnwf_worktree_root_ok: not a git repo propagates rc=128 with a diagnostic" {
+  mkdir -p "$TEST_DIR/plain"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$TEST_DIR/plain'"
+  [ "$status" -eq 128 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_worktree_root_ok: git rev-parse --show-toplevel failed (rc=128)"* ]]
+}
+
 # --- pnwf_resolve_primary_branch ------------------------------------------
 
 @test "pnwf_resolve_primary_branch: relays a non-default primary_branch (trunk)" {

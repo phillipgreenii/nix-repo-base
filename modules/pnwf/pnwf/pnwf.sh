@@ -325,15 +325,21 @@ Pre-flight checks before forking a coordinated workforest set on <branch>.
 Prints one of "proceed", "resume", or "stop" on the first line, followed by
 a reason line. Checks, in order (first match wins):
   1. not nested       — cwd must NOT already be inside a workforest set.
-  2. canonical clean   — every checked repo must be on its primary branch
+  2. worktree root     — git must actually operate on each checked repo's
+                          own path. A stale 'core.worktree' redirects every
+                          working-tree probe to another directory, which
+                          would make check 3 report healthy about the wrong
+                          tree, so this is checked first and reported
+                          separately.
+  3. canonical clean   — every checked repo must be on its primary branch
                           and clean (R-3/R-8; a stop-and-report, never a
                           warn-and-continue).
-  3. resume detection   — the set dir and/or <branch> already existing in
+  4. resume detection   — the set dir and/or <branch> already existing in
                           any checked repo reports "resume" (the caller
                           decides resume-vs-discard, not this tool).
 Otherwise: "proceed".
 
---repos a,b: restrict checks 2/3 to this comma-separated subset of the
+--repos a,b: restrict checks 2/3/4 to this comma-separated subset of the
 canonical workspace's repos (default: all of them).
 HELP
       exit 0
@@ -377,8 +383,28 @@ HELP
     | [$r.name, $r.path] | @tsv
   ')
 
-  # (2) canonical on primary + clean, for every checked repo.
-  local bad_repos="" name path primary
+  # (2) worktree root sanity, for every checked repo. Ordered BEFORE the
+  # on-primary/clean pass because a redirected worktree makes that pass report
+  # a truthful "healthy" about the WRONG directory -- see
+  # pnwf_worktree_root_ok's comment for the 2026-08-14 homelab case this
+  # prevents. Reported as its own reason, never folded into check (3).
+  local mismatched_repos="" name path actual_root
+  while IFS=$'\t' read -r name path; do
+    [[ -n $name ]] || continue
+    if ! pnwf_worktree_root_ok "$path"; then
+      actual_root=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || actual_root="<unresolvable>"
+      mismatched_repos+="${mismatched_repos:+, }$name ($path -> $actual_root)"
+    fi
+  done <<<"$repo_tsv"
+
+  if [[ -n $mismatched_repos ]]; then
+    echo "stop"
+    echo "reason: canonical worktree root mismatch for: $mismatched_repos; git is not operating on the member path (commonly a stale 'core.worktree' -- inspect with 'git -C <path> config --get core.worktree'). R-3: report, do not reset."
+    return 0
+  fi
+
+  # (3) canonical on primary + clean, for every checked repo.
+  local bad_repos="" primary
   while IFS=$'\t' read -r name path; do
     [[ -n $name ]] || continue
     primary=$(pnwf_resolve_primary_branch "$path") ||
@@ -394,7 +420,7 @@ HELP
     return 0
   fi
 
-  # (3) resume detection: the set dir itself, or the branch already existing
+  # (4) resume detection: the set dir itself, or the branch already existing
   # in any checked repo (`pn workspace workforest add` errors on an existing
   # set dir and reuses an existing branch's stale tip — see workforest.go's
   # pre-flight; pnwf reports it and leaves resume-vs-discard to the caller).
