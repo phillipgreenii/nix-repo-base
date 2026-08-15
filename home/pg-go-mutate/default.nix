@@ -23,12 +23,23 @@ let
   # --set, not --suffix: the pin must be authoritative, so an ambient
   # ~/go/bin/gomu cannot substitute itself for the engine.
   wrapped = pkgs.symlinkJoin {
-    name = "pg-go-mutate-wrapped";
+    # Derived from the wrapped package's own name so the per-source digest that
+    # ADR 0006/0011 put in the derivation version survives into this store path
+    # and stays visible in nvd's "Package changes" report. A bare
+    # "pg-go-mutate-wrapped" dropped it, so an upgrade of the tool showed as an
+    # unversioned path change.
+    name = "${cfg.package.name}-wrapped";
     paths = [ cfg.package ];
     nativeBuildInputs = [ pkgs.makeWrapper ];
+    # PG_GO_MUTATE_GOMU_VERSION is the other half of spec E1: this module is the
+    # only place that knows which gomu is pinned, and the wrapper aborts if the
+    # engine reports a different version. Without it, a `gomu version dev` build
+    # — the unattributable kind every measurement behind this tool was taken
+    # with — is accepted silently.
     postBuild = ''
       wrapProgram $out/bin/pg-go-mutate \
-        --set PG_GO_MUTATE_GOMU ${getExe cfg.gomuPackage}
+        --set PG_GO_MUTATE_GOMU ${getExe cfg.gomuPackage} \
+        --set PG_GO_MUTATE_GOMU_VERSION ${cfg.gomuPackage.version}
     '';
   };
 in

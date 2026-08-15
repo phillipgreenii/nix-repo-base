@@ -15,9 +15,9 @@ pg-go-mutate — report which assertions a Go package's tests are missing.
 USAGE
   pg-go-mutate [PATH] [options]
 
-  PATH   A directory (walked RECURSIVELY, so nested packages are included) or
-         a single .go file. Defaults to the current directory.
-         Go package patterns such as ./... are NOT accepted.
+  PATH   A directory, walked RECURSIVELY so nested packages are included.
+         Defaults to the current directory. Go package patterns such as ./...
+         are NOT accepted, and single-file targets are not supported.
 
 OPTIONS
   --tags <list>     Comma-separated build tags to enable, e.g. contract,smoke.
@@ -55,20 +55,51 @@ while [ $# -gt 0 ]; do
     shift
     ;;
   --tags)
-    tags="${2:?--tags needs a value}"
+    # `${2:?...}` would exit 1 with a bash-shaped "line N: 2: --tags needs a
+    # value", unlike every other flag error here (pg-go-mutate: … + exit 2).
+    [ $# -ge 2 ] || {
+      printf 'pg-go-mutate: --tags needs a value\n' >&2
+      exit 2
+    }
+    tags="$2"
+    # Validated because the value is interpolated straight into GOFLAGS, where
+    # an unvalidated one injects arbitrary go flags:
+    # --tags 'x -toolexec=/bin/sh' would be honoured by every `go` subprocess.
+    case "$tags" in
+    '' | *[!A-Za-z0-9_,.]* | [!A-Za-z0-9_]*)
+      printf 'pg-go-mutate: --tags must be a comma-separated build-tag list matching [A-Za-z0-9_][A-Za-z0-9_,.]*, got '\''%s'\''\n' "$tags" >&2
+      exit 2
+      ;;
+    esac
     shift 2
     ;;
   --workers)
-    workers="${2:?--workers needs a value}"
+    [ $# -ge 2 ] || {
+      printf 'pg-go-mutate: --workers needs a value\n' >&2
+      exit 2
+    }
+    workers="$2"
     shift 2
     ;;
   --timeout)
-    timeout="${2:?--timeout needs a value}"
+    [ $# -ge 2 ] || {
+      printf 'pg-go-mutate: --timeout needs a value\n' >&2
+      exit 2
+    }
+    timeout="$2"
     shift 2
     ;;
   --)
+    # A bare `break` here DISCARDED everything after the separator, so
+    # `pg-go-mutate -- ./pkg` silently analysed `.` instead -- a wrong-scope run
+    # that looks entirely legitimate. Written as an `if` rather than an
+    # `&&` list because a false test as the last command of this case branch
+    # would trip the injected errexit inside the while body.
     shift
-    break
+    if [ $# -gt 0 ]; then
+      target="$1"
+      shift
+    fi
     ;;
   -*)
     printf 'pg-go-mutate: unknown flag %s\n\n' "$1" >&2
@@ -84,27 +115,55 @@ done
 
 case "$target" in
 *'...'*)
-  printf 'pg-go-mutate: Go package patterns such as ./... are not accepted; the engine errors on them. Pass a directory (it is walked recursively) or a single .go file.\n' >&2
+  printf 'pg-go-mutate: Go package patterns such as ./... are not accepted; the engine errors on them. Pass a directory — it is walked recursively.\n' >&2
   exit 2
   ;;
 esac
 
-[ -d "$target" ] || [ -f "$target" ] || {
-  printf 'pg-go-mutate: %s is neither a directory nor a file\n' "$target" >&2
+# Directories only. A single .go file was documented but has never worked: every
+# guard runs `cd "$target"`, so for a file target the cd fails, `go list` never
+# runs, and the command aborts with "has no test files. Write a test first" —
+# which sends an agent off to write a test that already exists. Rejecting it
+# outright is the honest behaviour until the mode is actually implemented.
+[ -d "$target" ] || {
+  printf 'pg-go-mutate: %s is not a directory. Pass a directory (it is walked recursively, so a single package works); single-file targets are not supported.\n' "$target" >&2
   exit 2
 }
-# shellcheck disable=SC2164  # cd failure here would mean $target vanished between the -d/-f check above and now; the guaranteed-existing dirname is safe to cd into
-target="$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
 # shellcheck disable=SC2164  # cd failure here would mean $target (already confirmed a directory above) vanished in the interim; nothing safer to fall back to
-[ -d "$target" ] && target="$(cd "$target" && pwd)"
+target="$(cd "$target" && pwd)"
 
 pgm_validate_flags "$workers" "$timeout" || exit 2
 pgm_require_go || exit 1
+# The engine must exist AND be the pinned build (spec E1). Checked here rather
+# than discovered as "the engine produced no report (exit 127)" after every
+# guard has already spent its time.
+pgm_require_engine || exit 1
 
-pgm_has_tests "$target" || {
+# BEFORE the guards, not just before the engine. `go list`, `go vet` and
+# `go test` cannot see tag-gated tests without this, so a package whose tests
+# are entirely behind a custom tag aborted with "has no test files" even when
+# --tags was passed — and worse, tag-gated tests that fail to compile or already
+# fail stayed invisible to the guards while the engine measured them and
+# reported every mutant KILLED, which is the most dangerous failure mode the
+# guards exist to prevent. APPEND, never clobber (spec W11); pgm_run_engine's
+# own export is idempotent against this one.
+if [ -n "$tags" ]; then
+  export GOFLAGS="-tags=$tags ${GOFLAGS:-}"
+fi
+
+has_tests_rc=0
+pgm_has_tests "$target" || has_tests_rc=$?
+case "$has_tests_rc" in
+0) ;;
+2)
+  # pgm_has_tests already reported the enumeration failure in detail.
+  exit 1
+  ;;
+*)
   printf 'pg-go-mutate: %s has no test files. Write a test first — mutation testing reports missing ASSERTIONS, and with no tests every mutant trivially survives.\n' "$target" >&2
   exit 1
-}
+  ;;
+esac
 
 pgm_tests_healthy "$target" || exit 1
 
@@ -128,15 +187,40 @@ while :; do
   ignore_dir="$(dirname "$ignore_dir")"
 done
 
-report="$(pgm_run_engine "$target" "$workers" "$timeout" "$tags")" || exit 1
+# NOT `report="$(pgm_run_engine …)"`. A command substitution would run the engine
+# supervisor in a SUBSHELL, and that subshell would own the private workdir, the
+# engine's pid and the INT/TERM/HUP trap that cleans both up — so a `kill` on THIS
+# script's pid would kill this shell and orphan the engine, leaking the workdir.
+# That is the exact failure observed on this branch. Called plainly instead, with
+# the path read back from PGM_REPORT_PATH, the traps live in the process a user or
+# agent actually signals.
+pgm_run_engine "$target" "$workers" "$timeout" "$tags" >/dev/null || exit 1
+report="${PGM_REPORT_PATH:-}"
+[ -n "$report" ] || {
+  printf 'pg-go-mutate: the engine step reported success but produced no report path\n' >&2
+  exit 1
+}
+# All four signals, not EXIT alone (spec CL4): an untrapped TERM/HUP never ran
+# the EXIT trap, so the harvested report file leaked. The signal handlers exit
+# rather than fall through, because a handler that merely returns resumes the
+# pipeline it interrupted and would print a worklist for a run the user killed.
 trap 'rm -f -- "$report"' EXIT
+trap 'rm -f -- "$report"; exit 130' INT
+trap 'rm -f -- "$report"; exit 143' TERM HUP
 
 pgm_report_sane "$report" || exit 1
 
+# What the JSON renderer reports as buildTagsNotRun: tags detected in the target
+# but NOT enabled for this run.
+tags_not_run=""
+if [ -z "$tags" ]; then
+  tags_not_run="$detected_tags"
+fi
+
 if [ "$as_json" -eq 1 ]; then
-  pgm_worklist_json "$report" "$target"
+  pgm_worklist_json "$report" "$target" "$tags_not_run" || exit 1
 else
-  pgm_worklist "$report" "$target"
+  pgm_worklist "$report" "$target" || exit 1
   [ -n "$detected_tags" ] && [ -z "$tags" ] &&
     printf '\n  NOTE tests behind build tags (%s) were not run, so some entries above may be false gaps.\n' "$detected_tags"
 fi

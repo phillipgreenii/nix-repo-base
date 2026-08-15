@@ -16,6 +16,12 @@ setup() {
 }
 
 teardown() {
+  # The interrupt test starts a long-lived stub engine. It kills it as part of
+  # the assertions, but if that test fails midway the sandbox would otherwise sit
+  # waiting on the leftover process.
+  if [ -n "${PGM_TEST_PID_LOG:-}" ] && [ -s "${PGM_TEST_PID_LOG}" ]; then
+    kill -KILL "$(cat "$PGM_TEST_PID_LOG")" 2>/dev/null || true
+  fi
   [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"
 }
 
@@ -66,6 +72,79 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+# Writes a stub engine whose `version` subcommand prints $1, and points
+# PG_GO_MUTATE_GOMU at it. Shaped like the real thing: `gomu version` prints
+# three lines and the version is on the first.
+make_version_stub() {
+  local reported="$1" stub="$TEST_DIR/stub-gomu-version"
+  cat >"$stub" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = version ]; then
+  printf 'gomu version %s\n  commit: none\n  built:  unknown\n' '$reported'
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$stub"
+  export PG_GO_MUTATE_GOMU="$stub"
+}
+
+@test "pgm_require_engine aborts when the engine is absent" {
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/no-such-engine"
+  run pgm_require_engine
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no-such-engine"* ]]
+  [[ "$output" == *"was not found"* ]]
+}
+
+@test "pgm_require_engine aborts on a dev build when a version is pinned (spec E1)" {
+  make_version_stub dev
+  export PG_GO_MUTATE_GOMU_VERSION=0.2.1
+  run pgm_require_engine
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"version mismatch"* ]]
+  [[ "$output" == *dev* ]]
+}
+
+@test "pgm_require_engine accepts the pinned version" {
+  make_version_stub 0.2.1
+  export PG_GO_MUTATE_GOMU_VERSION=0.2.1
+  run pgm_require_engine
+  [ "$status" -eq 0 ]
+}
+
+@test "pgm_require_engine accepts a v-prefixed report of the pinned version" {
+  make_version_stub v0.2.1
+  export PG_GO_MUTATE_GOMU_VERSION=0.2.1
+  run pgm_require_engine
+  [ "$status" -eq 0 ]
+}
+
+@test "pgm_require_engine does not accept a version that merely contains the pin" {
+  make_version_stub 0.2.10
+  export PG_GO_MUTATE_GOMU_VERSION=0.2.1
+  run pgm_require_engine
+  [ "$status" -eq 1 ]
+}
+
+@test "pgm_require_engine skips the comparison when no version is pinned" {
+  make_version_stub dev
+  unset PG_GO_MUTATE_GOMU_VERSION
+  run pgm_require_engine
+  [ "$status" -eq 0 ]
+}
+
+@test "pgm_has_tests reports an enumeration failure distinctly from zero tests" {
+  # A directory that is not a Go module at all: `go list` fails, which must NOT
+  # be reported as "no test files" (that sends the reader off to write a test
+  # that is not the problem).
+  target="$TEST_DIR/notamodule"
+  mkdir -p "$target"
+  run pgm_has_tests "$target"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"not a Go module"* ]]
+}
+
 @test "pgm_has_tests fails on a module with no test files" {
   target="$(make_module notests)"
   run pgm_has_tests "$target"
@@ -106,13 +185,36 @@ EOF
   [ "$status" -eq 1 ]
 }
 
-@test "pgm_detect_tags ignores satisfied constraints like darwin and linux" {
+# `go1.1`, not `darwin`: the property under test is that ALREADY-SATISFIED
+# constraints are subtracted, and `darwin` proves that only on a darwin host --
+# on linux the same file is invisible to `go list` and the tag IS reported, so
+# the test would assert the opposite of its own name. Every Go toolchain since
+# 1.1 satisfies `go1.1`, so the portable form proves the property on every host.
+@test "pgm_detect_tags ignores constraints the build context already satisfies" {
   target="$(make_module satisfiedtags)"
   add_passing_test "$target"
-  printf '//go:build darwin\n\npackage fixture\n' >"$target/plat_test.go"
+  printf '//go:build go1.1\n\npackage fixture\n' >"$target/plat_test.go"
   run pgm_detect_tags "$target"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+# M-2 regression: visibility used to be matched on the BASENAME, so a tag-gated
+# foo_test.go in one package counted as satisfied whenever ANY other package had
+# a file of the same name -- and its tags went unreported, which is a silent
+# false-gap in the worklist.
+@test "pgm_detect_tags reports a tag-gated file whose basename exists in another package" {
+  target="$(make_module basenamecollision)"
+  add_passing_test "$target"
+  mkdir -p "$target/sub"
+  # Visible to go list in the ROOT package...
+  printf 'package fixture\n\nimport "testing"\n\nfunc TestNoop(t *testing.T) {}\n' >"$target/shared_test.go"
+  # ...and invisible, behind a custom tag, in a NESTED package of the same name.
+  printf '//go:build hostile\n\npackage sub\n' >"$target/sub/shared_test.go"
+  printf 'package sub\n' >"$target/sub/sub.go"
+  run pgm_detect_tags "$target"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *hostile* ]]
 }
 
 @test "pgm_detect_tags reports an unsatisfied custom tag" {
@@ -216,6 +318,17 @@ EOF
   printf '{"totalMutants":0,"results":null,"statistics":{}}' >"$TEST_DIR/null.json"
   run pgm_report_sane "$TEST_DIR/null.json"
   [ "$status" -eq 1 ]
+  [[ "$output" == *"analyzed nothing"* ]]
+}
+
+# The fixture above trips the EARLIER `.results != null` gate, so it never
+# reached this branch and the "no mutants" message was unproven. `results: []`
+# is the shape that gets past that gate: the engine ran and generated nothing.
+@test "pgm_report_sane rejects a zero-mutant report with its own message" {
+  printf '{"totalMutants":0,"results":[],"statistics":{}}' >"$TEST_DIR/zero.json"
+  run pgm_report_sane "$TEST_DIR/zero.json"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"generated no mutants"* ]]
 }
 
 @test "pgm_report_sane rejects a majority-non-viable report" {
@@ -239,6 +352,12 @@ EOF
   [[ "$output" != *"return \"\" with return \"\""* ]]
   [[ "$output" != *"L50"* ]]
   [[ "$output" != *"L70"* ]]
+  # ...and the COUNT must account for them too (spec O5: dropped before the
+  # worklist AND before any count). The fixture has 3 SURVIVED entries, one of
+  # which is a no-op, so a bare `survived 3` would contradict the "2 surviving
+  # mutants" first line with no explanation.
+  [[ "$output" == *"survived 3 (2 actionable, 1 no-op)"* ]]
+  [ "$(printf '%s\n' "$output" | head -1)" = "pg-go-mutate: 2 surviving mutants in $TEST_DIR/mod" ]
 }
 
 @test "pgm_worklist lists the two real survivors with line numbers" {
@@ -265,20 +384,206 @@ EOF
   printf '%s' "$output" | jq -e '.survivors[0].file == "a.go"'
 }
 
-@test "pgm_run_engine leaves no artifacts in the target directory" {
+@test "pgm_worklist_json splits the survivor count and omits the mutation score" {
+  r="$(write_report)"
+  run pgm_worklist_json "$r" "$TEST_DIR/mod"
+  [ "$status" -eq 0 ]
+  # Spec O5: no-ops dropped before ANY count, so a consumer can reconcile the
+  # survivors array (2) against the raw bucket (3).
+  printf '%s' "$output" | jq -e '.statistics.survived == 3'
+  printf '%s' "$output" | jq -e '.statistics.survivedActionable == 2'
+  printf '%s' "$output" | jq -e '.statistics.survivedNoOp == 1'
+  printf '%s' "$output" | jq -e '(.survivors | length) == .statistics.survivedActionable'
+  # The score is deliberately not handed to a machine consumer.
+  printf '%s' "$output" | jq -e 'has("mutationScore") == false'
+  printf '%s' "$output" | jq -e '.statistics | has("mutationScore") == false'
+}
+
+@test "pgm_worklist_json reports build tags that were not run, and null when none" {
+  r="$(write_report)"
+  run pgm_worklist_json "$r" "$TEST_DIR/mod" "contract,smoke"
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | jq -e '.buildTagsNotRun == "contract,smoke"'
+
+  run pgm_worklist_json "$r" "$TEST_DIR/mod" ""
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | jq -e '.buildTagsNotRun == null'
+}
+
+# M-7: ltrimstr is a plain prefix strip, so a target whose reported form differs
+# from the logical one (darwin's /var vs /private/var) would silently ship
+# absolute paths. The assertion must FAIL the run rather than emit them.
+@test "pgm_worklist_json strips the resolved target form as well as the logical one" {
+  # $TEST_DIR is under /var/folders on darwin; its resolved form is
+  # /private/var/folders. Build a report whose filePath uses the RESOLVED form
+  # while the caller passes the logical one.
+  resolved="$(cd "$TEST_DIR" && pwd -P)"
+  if [ "$resolved" = "$TEST_DIR" ]; then
+    skip "this host's temp dir is not reached through a symlink, so the two forms coincide"
+  fi
+  # The target must EXIST for its resolved form to be derivable at all.
+  mkdir -p "$TEST_DIR/mod"
+  printf '{"totalMutants":1,"results":[{"mutant":{"id":"x","filePath":"%s/mod/a.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0}}' \
+    "$resolved" >"$TEST_DIR/resolved.json"
+  run pgm_worklist_json "$TEST_DIR/resolved.json" "$TEST_DIR/mod"
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | jq -e '.survivors[0].file == "a.go"'
+}
+
+# Without the assertion this report renders "somewhere/else/a.go" -- a
+# plausible-looking relative path that points nowhere, because the filter's
+# trailing ltrimstr("/") strips the leading slash off a path it never matched.
+@test "the renderers fail an absolute path that is not under the target" {
+  printf '{"totalMutants":1,"results":[{"mutant":{"id":"x","filePath":"/somewhere/else/a.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0}}' \
+    >"$TEST_DIR/foreign.json"
+  run pgm_worklist_json "$TEST_DIR/foreign.json" "$TEST_DIR/mod"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot be made target-relative"* ]]
+  [[ "$output" != *"somewhere/else/a.go"* ]]
+
+  run pgm_worklist "$TEST_DIR/foreign.json" "$TEST_DIR/mod"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot be made target-relative"* ]]
+}
+
+# Exercises CL1 itself, not a tautology. Asserting only that the report is
+# absent from the TARGET proves nothing: the stub writes into $PWD, which is
+# never the target under any implementation, so deleting the private-cwd
+# mechanism entirely left that assertion passing. What CL1 actually promises is
+# that the engine runs in a private directory that is neither the target nor the
+# caller's cwd, that the report lands THERE, and that the directory is gone
+# afterwards -- so the stub records its own cwd and every part is checked.
+@test "pgm_run_engine runs the engine in a private cwd and removes it (spec CL1)" {
   target="$(make_module cleanrun)"
   add_passing_test "$target"
+  caller_cwd="$PWD"
+  PGM_TEST_WORKDIR_LOG="$TEST_DIR/cleanrun-workdir.log"
+  export PGM_TEST_WORKDIR_LOG
   export PG_GO_MUTATE_GOMU="$TEST_DIR/stub-gomu"
   cat >"$PG_GO_MUTATE_GOMU" <<'EOF'
 #!/usr/bin/env bash
-# Stub engine: writes a minimal report into CWD, as the real gomu does.
+# Stub engine: records its cwd, then writes a minimal report into it and a
+# history file beside it, exactly where the real gomu writes both (relative to
+# CWD, with no flag to relocate either).
+pwd >"$PGM_TEST_WORKDIR_LOG"
 printf '{"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"/x/a.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0,"mutationScore":0}}' >mutation-report.json
+printf '{}' >.gomu_history.json
 EOF
   chmod +x "$PG_GO_MUTATE_GOMU"
   run pgm_run_engine "$target" 2 60 ""
   [ "$status" -eq 0 ]
+
+  # The engine's cwd was PRIVATE: not the target, not the caller's cwd.
+  [ -s "$PGM_TEST_WORKDIR_LOG" ]
+  workdir="$(cat "$PGM_TEST_WORKDIR_LOG")"
+  [ "$workdir" != "$target" ]
+  [ "$workdir" != "$caller_cwd" ]
+  # ...and it is gone, along with both artifacts the engine wrote into it.
+  [ ! -e "$workdir" ]
+  [ ! -e "$workdir/mutation-report.json" ]
+  [ ! -e "$workdir/.gomu_history.json" ]
+  # The harvested report survived the cleanup, at the path the function printed.
+  [ -s "$output" ]
+  rm -f -- "$output"
+  # Nothing landed in the target or the caller's cwd.
   [ ! -e "$target/mutation-report.json" ]
   [ ! -e "$target/.gomu_history.json" ]
+  [ ! -e "$caller_cwd/mutation-report.json" ]
+  [ ! -e "$caller_cwd/.gomu_history.json" ]
+}
+
+# The one case that would have caught C-2. Three separate defects met here:
+# `$!` captured the background SUBSHELL rather than the engine (so every
+# pid-scoped cleanup could never match), the cleanup never signalled the engine
+# (so a TERM'd wrapper left it running against a deleted workdir), and gomu's
+# overlay dirs leak on every path except its normal exit -- the one path the
+# spec says does NOT leak.
+@test "pgm_run_engine kills the engine and removes its overlay dir when TERM'd mid-run (CL3/CL4)" {
+  target="$(make_module interrupted)"
+  add_passing_test "$target"
+
+  PGM_TEST_PID_LOG="$TEST_DIR/engine.pid"
+  PGM_TEST_WORKDIR_LOG="$TEST_DIR/engine.cwd"
+  PGM_TEST_OVERLAY_LOG="$TEST_DIR/engine.overlay"
+  export PGM_TEST_PID_LOG PGM_TEST_WORKDIR_LOG PGM_TEST_OVERLAY_LOG
+
+  stub="$TEST_DIR/stub-gomu-interrupt"
+  cat >"$stub" <<'EOF'
+#!/usr/bin/env bash
+# Stub engine: announces its own pid and cwd, creates an overlay dir named
+# exactly as gomu names them (gomu_overlay_<pid>_<unixnano>, under TMPDIR),
+# then becomes a sleep so the harness can TERM it mid-run. `exec sleep` keeps
+# the announced pid valid for the whole life of the process -- a forked sleep
+# would be a grandchild this wrapper cannot signal.
+overlay="${TMPDIR:-/tmp}/gomu_overlay_$$_$(date +%s)"
+mkdir -p "$overlay"
+pwd >"$PGM_TEST_WORKDIR_LOG"
+printf '%s\n' "$overlay" >"$PGM_TEST_OVERLAY_LOG"
+printf '%s\n' "$$" >"$PGM_TEST_PID_LOG"
+exec sleep 120
+EOF
+  chmod +x "$stub"
+
+  # pgm_run_engine must be interrupted while it is WAITING on the engine, which
+  # means the wrapper has to be a separate process this test can signal.
+  runner="$TEST_DIR/runner"
+  cat >"$runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+# shellcheck disable=SC1090
+source "$LIB_PATH"
+export PG_GO_MUTATE_GOMU="$stub"
+pgm_run_engine "$target" 1 60 ""
+RUNNER
+  chmod +x "$runner"
+
+  "$runner" >"$TEST_DIR/runner.out" 2>&1 &
+  runner_pid=$!
+
+  # Bounded wait for the engine to announce itself (no fixed sleep).
+  for _ in $(seq 1 200); do
+    [ -s "$PGM_TEST_PID_LOG" ] && break
+    sleep 0.1
+  done
+  [ -s "$PGM_TEST_PID_LOG" ]
+  engine_pid="$(cat "$PGM_TEST_PID_LOG")"
+  overlay="$(cat "$PGM_TEST_OVERLAY_LOG")"
+  workdir="$(cat "$PGM_TEST_WORKDIR_LOG")"
+
+  # The RECORDED pid must be the engine itself. Before the `exec` fix the
+  # captured pid was the subshell's, which had already exited by now -- so this
+  # assertion is what proves the pid capture, and it is also the precondition
+  # for the kill below being able to reach anything.
+  kill -0 "$engine_pid"
+  [ "$engine_pid" != "$runner_pid" ]
+
+  # The overlay dir must live INSIDE the private workdir (TMPDIR containment),
+  # which is what makes CL3 hold by construction rather than by pid arithmetic.
+  [ -d "$overlay" ]
+  case "$overlay" in
+  "$workdir"/*) ;;
+  *)
+    printf 'overlay %s is not inside the private workdir %s\n' "$overlay" "$workdir" >&2
+    return 1
+    ;;
+  esac
+
+  kill -TERM "$runner_pid"
+  wait "$runner_pid" || true
+
+  # The engine must be dead, not orphaned. 5s, deliberately FAR shorter than the
+  # stub's 120s sleep: a generous window would let the stub expire on its own and
+  # the case would pass without the kill in _pgm_run_engine_cleanup.
+  for _ in $(seq 1 50); do
+    kill -0 "$engine_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  run kill -0 "$engine_pid"
+  [ "$status" -ne 0 ]
+
+  # ...and the overlay dir and the private workdir must both be gone.
+  [ ! -e "$overlay" ]
+  [ ! -e "$workdir" ]
 }
 
 @test "pgm_run_engine removes a main-package binary it compiled that did not exist before the run" {
@@ -299,6 +604,11 @@ EOF
   run pgm_run_engine "$target" 2 60 ""
   [ "$status" -eq 0 ]
   [ ! -e "$bin" ]
+  # The harvested report is the CALLER's to remove (the CLI does it from its EXIT
+  # trap), so a library-level test that skips this litters the ambient TMPDIR --
+  # measured: 22 stale pg-go-mutate-report.*.json files accumulated in /tmp from
+  # earlier local runs of this suite.
+  rm -f -- "$output"
 }
 
 @test "pgm_run_engine cleans up the private workdir and returns non-zero when the harvest-time mktemp fails" {
@@ -369,4 +679,5 @@ EOF
   run pgm_run_engine "$target" 2 60 ""
   [ "$status" -eq 0 ]
   [ -e "$bin" ]
+  rm -f -- "$output"  # the harvested report is the caller's to remove
 }
