@@ -67,7 +67,7 @@ never by comparing totals.
 - Each entry is a **file**, a **line**, the mutation, and the operator that produced it. Write an
   assertion that would fail under that mutation, then re-run and confirm that specific mutant —
   matched on `file:line:type` — is now killed.
-- `survived 211 (205 actionable, 6 no-op)` reconciles the summary with the first line: the raw
+- `survived 208 (202 actionable, 6 no-op)` reconciles the summary with the first line: the raw
   bucket counts every survivor so the five statuses sum to the mutant total, while **no-op** mutants
   (where the mutated code is identical to the original, so no assertion can ever kill them) are
   excluded from the worklist and from the headline count.
