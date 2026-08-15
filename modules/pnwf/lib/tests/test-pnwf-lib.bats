@@ -118,18 +118,171 @@ teardown() {
   rm -rf "$TEST_DIR"
 }
 
-# --- pnwf_branch_exists -------------------------------------------------
+# --- pnwf_worktree_root_state ---------------------------------------------
+# Contract: PRINTS one "<state><TAB><detail>" line and always returns 0 --
+# confirmed | indeterminate. It is the shared precondition of pnwf_branch_state
+# and pnwf_upstream_state, and the property under test is the WALK-UP: `git -C`
+# does not fail for a path that merely sits inside a repo, so a path that is not
+# itself a worktree root must be refused here rather than silently answered for
+# by the ENCLOSING repository (bd pg2-xc9b7).
 
-@test "pnwf_branch_exists: existing branch returns true" {
-  command git -C "$REPO" branch feature
-  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_branch_exists '$REPO' feature"
+@test "pnwf_worktree_root_state: a working-tree root is confirmed" {
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$REPO'"
   [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "confirmed" ]
 }
 
-@test "pnwf_branch_exists: missing branch (non-zero) does not abort caller" {
-  run bash -euo pipefail -c "source '$LIB_PATH'; if pnwf_branch_exists '$REPO' nope; then echo yes; else echo no; fi"
+@test "pnwf_worktree_root_state: a path that EXISTS but is not a git repo is indeterminate" {
+  mkdir -p "$TEST_DIR/not-a-repo"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$TEST_DIR/not-a-repo'"
   [ "$status" -eq 0 ]
-  [ "$output" = "no" ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  [[ "$output" == *"$TEST_DIR/not-a-repo"* ]]
+}
+
+@test "pnwf_worktree_root_state: an ABSENT path is indeterminate" {
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$TEST_DIR/no-such-dir'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+}
+
+@test "pnwf_worktree_root_state: a subdirectory of a repo is indeterminate, NOT confirmed (rev-parse walks up)" {
+  # THE CRUX. `--git-dir` succeeds from here and answers for $REPO, which is why
+  # the confirmation is `--show-prefix`; a later "simplification" back to
+  # `--git-dir` must fail this test.
+  mkdir -p "$REPO/nested-not-a-repo"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$REPO/nested-not-a-repo'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  # The detail names the sub-path it sits at, i.e. the walk-up it detected.
+  [[ "$output" == *"nested-not-a-repo"* ]]
+}
+
+@test "pnwf_worktree_root_state: a BARE repo is indeterminate (it has no work tree)" {
+  command git init -q --bare "$TEST_DIR/bare.git"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$TEST_DIR/bare.git'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+}
+
+# Redirects $REPO's working tree to a decoy directory holding an IDENTICAL
+# checkout, reproducing the 2026-08-14 homelab defect: a stale `core.worktree`
+# left by an interrupted `pn workspace update`. The decoy must match the
+# committed content, otherwise `git status` reports the index's files as
+# deleted and the redirect shows up as a plain dirty tree -- which is exactly
+# the cheap-to-diagnose case this defect is NOT.
+_redirect_worktree_to_decoy() {
+  local decoy="$TEST_DIR/decoy"
+  mkdir -p "$decoy"
+  cp "$REPO/file.txt" "$decoy/file.txt"
+  command git -C "$REPO" config core.worktree "$decoy"
+  echo "$decoy"
+}
+
+@test "pnwf_worktree_root_state: a REDIRECTED working tree (stale core.worktree) is indeterminate" {
+  # `--show-prefix` is BLIND to this on its own -- verified on git 2.54, under a
+  # redirect it exits 0 printing EMPTY, exactly like a healthy root. It is
+  # `--is-inside-work-tree` (`false`, because $REPO is not inside the decoy) that
+  # catches it, so a later "simplification" dropping that probe must fail here.
+  local decoy
+  decoy="$(_redirect_worktree_to_decoy)"
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  # The detail MUST name the redirect as a possible cause and MUST report the
+  # tree git actually resolved. Reporting only "a bare repo" -- which is the
+  # other cause of the same `false` -- would send the operator to inspect the
+  # wrong thing, the misdiagnosis this reason exists to prevent.
+  [[ "$output" == *"core.worktree"* ]]
+  [[ "$output" == *"$decoy"* ]]
+}
+
+@test "pnwf_worktree_root_state: the redirect is INVISIBLE to the on-primary/clean check" {
+  # Non-vacuousness for the ORDERING requirement in pnwf.sh's fork-preflight:
+  # with the redirect in place the R-3 check still reports HEALTHY, so it cannot
+  # be relied on to surface this. That is why the root confirmation runs first
+  # and is reported in its own bucket.
+  _redirect_worktree_to_decoy >/dev/null
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_on_primary_and_clean '$REPO' main"
+  [ "$status" -eq 0 ]
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+}
+
+@test "pnwf_worktree_root_state: core.worktree naming a REMOVED directory is indeterminate" {
+  # The redirect target need not exist. This is still "git is not acting on
+  # $REPO", so it is the same refusal -- not an unexpected failure.
+  command git -C "$REPO" config core.worktree "$TEST_DIR/gone"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  [[ "$output" == *"core.worktree"* ]]
+}
+
+# --- pnwf_branch_state ----------------------------------------------------
+# Contract: PRINTS one "<state><TAB><detail>" line and always returns 0 --
+# exists | absent | indeterminate. The property under test is that "the ref is
+# ABSENT" and "git could not read this path as the repo you meant" are DISTINCT,
+# because the boolean pnwf_branch_exists this replaces answered BOTH as "the
+# branch does not exist" -- and its caller (cmd_fork_preflight) prints `proceed`
+# off that absence (bd pg2-xc9b7).
+
+@test "pnwf_branch_state: an existing branch prints exists and names its object id" {
+  command git -C "$REPO" branch feature
+  local expected
+  expected=$(command git -C "$REPO" rev-parse refs/heads/feature)
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_branch_state '$REPO' feature"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "exists" ]
+  [ "${output#*$'\t'}" = "$expected" ]
+}
+
+@test "pnwf_branch_state: a missing branch prints absent and does not abort the caller" {
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_branch_state '$REPO' nope; echo survived"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]%%$'\t'*}" = "absent" ]
+  [ "${lines[1]}" = "survived" ]
+}
+
+@test "pnwf_branch_state: a path that EXISTS but is not a git repo is indeterminate, NOT absent" {
+  # Both halves asserted: the state IS indeterminate, and it is NOT absent --
+  # "absent" is what the old boolean returned here, and what let
+  # cmd_fork_preflight say `proceed` for a path it never read.
+  mkdir -p "$TEST_DIR/not-a-repo"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_branch_state '$TEST_DIR/not-a-repo' feature"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  [[ "$output" != *"absent"* ]]
+  [[ "$output" == *"$TEST_DIR/not-a-repo"* ]]
+}
+
+@test "pnwf_branch_state: a non-repo directory NESTED in a repo is indeterminate, not the ENCLOSING repo's answer" {
+  # The walk-up, at this function's own boundary: `main` exists in $REPO, so an
+  # unconfirmed probe would print `exists` for a path that is not a repo at all.
+  mkdir -p "$REPO/nested-not-a-repo"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_branch_state '$REPO/nested-not-a-repo' main"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  [[ "$output" != *"exists"* ]]
+}
+
+@test "pnwf_branch_state: an unreadable ref store inside a CONFIRMED root is indeterminate, NOT absent" {
+  # A corrupt `packed-refs` rather than a chmod, so the outcome does not depend
+  # on the build user (the same reasoning as pg2-deonn's corrupted-index test).
+  # `rev-parse --show-prefix` still succeeds here, so this exercises the
+  # post-confirmation branch specifically: rev-parse --verify exits 128.
+  command git -C "$REPO" branch feature
+  command git -C "$REPO" pack-refs --all
+  printf 'garbage line\n' >"$REPO/.git/packed-refs"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_branch_state '$REPO' feature"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  [[ "$output" != *"absent"* ]]
+  [[ "$output" == *"128"* ]]
 }
 
 # --- pnwf_is_ancestor_of_primary ---------------------------------------
@@ -380,63 +533,6 @@ _upstream_publish() {
   command git -C "$REPO" checkout -q --detach HEAD
   run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_on_primary_and_clean '$REPO' main"
   [ "$status" -eq 1 ]
-}
-
-# --- pnwf_worktree_root_ok ------------------------------------------------
-
-# Redirects $REPO's working tree to a decoy directory holding an IDENTICAL
-# checkout, reproducing the 2026-08-14 homelab defect: a stale `core.worktree`
-# left by an interrupted `pn workspace update`. The decoy must match the
-# committed content, otherwise `git status` reports the index's files as
-# deleted and the redirect shows up as a plain dirty tree -- which is exactly
-# the cheap-to-diagnose case this defect is NOT.
-_redirect_worktree_to_decoy() {
-  local decoy="$TEST_DIR/decoy"
-  mkdir -p "$decoy"
-  cp "$REPO/file.txt" "$decoy/file.txt"
-  command git -C "$REPO" config core.worktree "$decoy"
-  echo "$decoy"
-}
-
-@test "pnwf_worktree_root_ok: true for a normal clone" {
-  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$REPO'"
-  [ "$status" -eq 0 ]
-}
-
-@test "pnwf_worktree_root_ok: false when core.worktree redirects elsewhere" {
-  _redirect_worktree_to_decoy >/dev/null
-  # Bare call (not if-wrapped): see the non-vacuousness note at the top of
-  # this file.
-  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$REPO'"
-  [ "$status" -eq 1 ]
-}
-
-@test "pnwf_worktree_root_ok: the redirect is INVISIBLE to the on-primary/clean check" {
-  # Non-vacuousness for the ORDERING requirement in pnwf.sh's fork-preflight:
-  # with the redirect in place the R-3 check still reports healthy, so it
-  # cannot be relied on to surface this. That is why pnwf_worktree_root_ok
-  # runs first and reports its own reason.
-  _redirect_worktree_to_decoy >/dev/null
-
-  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_on_primary_and_clean '$REPO' main"
-  [ "$status" -eq 0 ]
-
-  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$REPO'"
-  [ "$status" -eq 1 ]
-}
-
-@test "pnwf_worktree_root_ok: false when core.worktree names a removed directory" {
-  command git -C "$REPO" config core.worktree "$TEST_DIR/gone"
-  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$REPO'"
-  [ "$status" -eq 1 ]
-}
-
-@test "pnwf_worktree_root_ok: not a git repo propagates rc=128 with a diagnostic" {
-  mkdir -p "$TEST_DIR/plain"
-  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_ok '$TEST_DIR/plain'"
-  [ "$status" -eq 128 ]
-  [ -z "$output" ]
-  [[ "$stderr" == *"pnwf_worktree_root_ok: git rev-parse --show-toplevel failed (rc=128)"* ]]
 }
 
 # --- pnwf_resolve_primary_branch ------------------------------------------

@@ -19,7 +19,7 @@
 
 `pnwf stage --set`
 
-- Pre-flight checks before forking a workforest set on a branch (prints `proceed`, `resume`, or `stop` plus a reason):
+- Pre-flight checks before forking a workforest set on a branch (prints `proceed`, `resume`, or `stop` plus a reason; a canonical path git cannot read is a `stop`):
 
 `pnwf fork-preflight {{branch}}`
 

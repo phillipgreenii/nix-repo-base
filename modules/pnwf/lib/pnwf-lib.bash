@@ -15,8 +15,18 @@
 #     *) echo "..." >&2; return "$rc" ;;   # genuine, unexpected error
 #   esac
 #
-# `pnwf_is_ancestor_of_primary` and `pnwf_branch_exists` are the two guard
+# `pnwf_is_ancestor_of_primary` and `pnwf_branch_state` are the two guard
 # primitives this task exists to get right; the rest follow the same shape.
+#
+# A probe whose answer git cannot establish MUST report that as its OWN state,
+# never as one of the real answers -- and every caller MUST enumerate all of
+# them, with a `*)` that asserts NO cause. Where a probe needs to say WHY it
+# could not tell, it PRINTS "<state><TAB><detail>" and returns 0 (see
+# pnwf_worktree_root_state, pnwf_branch_state, pnwf_upstream_state); where the
+# caller needs no detail, the third state is a distinct RETURN CODE
+# (pnwf_working_tree_dirty). Both shapes exist to stop a caller asserting a
+# cause it never established -- bd pg2-k3s0x / pg2-42kh2 / pg2-lgzcg /
+# pg2-deonn / pg2-xc9b7 are five instances of exactly that.
 
 # Prints: landed | not-landed | absent  (never aborts under set -e)
 #
@@ -40,11 +50,183 @@ pnwf_is_ancestor_of_primary() {
   esac
 }
 
-# Boolean: does refs/heads/<branch> exist in repo_dir? (never aborts under set -e)
-pnwf_branch_exists() {
-  local repo_dir="$1" branch="$2" rc=0
-  git -C "$repo_dir" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null || rc=$?
-  [ "$rc" -eq 0 ]
+# Is repo_dir the ROOT of a git working tree git can actually read? Prints
+# exactly ONE line, "<state><TAB><detail>", and always returns 0 -- both states
+# are EXPECTED answers, not errors, so no caller can be aborted under set -e by
+# asking:
+#
+#   confirmed      detail = a fixed human phrase naming the confirmed root
+#   indeterminate  detail = why NO git answer for repo_dir can be trusted
+#
+# THIS IS THE PRECONDITION OF EVERY OTHER GIT QUESTION IN THIS FILE, and it is
+# a precondition rather than a courtesy because `git -C <path>` does NOT fail on
+# a path that is merely INSIDE a repository: rev-parse WALKS UP, so
+# `symbolic-ref HEAD`, `status --porcelain` and `rev-parse refs/heads/<branch>`
+# all answer, with exit 0 and no diagnostic, for the ENCLOSING repository.
+# Verified 2026-08-14 (bd pg2-xc9b7): with the workspace root itself a clean git
+# repo and a member path that is a plain directory inside it,
+# `pnwf fork-preflight` printed `proceed` -- the fork stage's go-ahead -- for a
+# canonical checkout it had never read, and printed `resume` naming that same
+# member for a branch that existed only in the enclosing repo. Both answers were
+# confident and wrong, which is why a caller cannot recover by reading rcs more
+# carefully: there is no failure to read.
+#
+# `rev-parse --show-prefix` -- NOT `--git-dir` -- detects the walk-up, because
+# `--git-dir` succeeds from that nested directory and so answers for the
+# enclosing repository too. `--show-prefix` prints EMPTY at a working tree's
+# ROOT and the relative sub-path otherwise, so a non-empty answer identifies
+# exactly that walk-up (and every path pnwf hands over -- a set member, a
+# canonical checkout -- is a worktree root, never a subdirectory). It is
+# deliberately the RELATIVE form: `--show-toplevel` prints an absolute path that
+# a caller would have to compare against repo_dir, and on darwin those differ by
+# symlink (`/var/…` vs `/private/var/…`) for paths that are in fact the same.
+#
+# `--show-prefix` ALONE IS NOT ENOUGH, and the comment this replaces claimed
+# otherwise: it said the flag "requires a work tree, so a bare repo lands in
+# indeterminate". Verified false on git 2.54 -- in a bare repo `--show-prefix`
+# exits 0 printing EMPTY, exactly like a working tree's root, so a bare path was
+# CONFIRMED as a working-tree root by a probe whose header said it could not be.
+# That is this defect family one level down: a comment documenting a property the
+# code did not have (bd pg2-xc9b7). `--is-inside-work-tree` is the flag that does
+# answer it (`false`, rc 0, in a bare repo), so it is asked EXPLICITLY. A bare
+# repo at a member path is an anomaly worth refusing on its own terms rather than
+# probing as a worktree: it has no index and no tracked files, so the
+# cleanliness and branch questions callers ask next are not meaningful for it.
+#
+# THE SAME `--is-inside-work-tree` PROBE IS WHAT CATCHES A REDIRECTED WORKING
+# TREE, and that is why this function REPLACED the separate
+# `pnwf_worktree_root_ok` rather than running alongside it. A clone can carry a
+# stale `core.worktree` naming some OTHER directory -- observed 2026-08-14 in the
+# homelab canonical clone, left by an interrupted `pn workspace update`, and
+# fixed once already in `feat(pnwf): stop fork-preflight when git is not acting
+# on the member path`. git then answers every working-tree question about THAT
+# directory while the caller believes it asked about repo_dir: `symbolic-ref`
+# reports the primary branch and `status` reports clean, so BOTH halves of
+# pnwf_canonical_on_primary_and_clean return a truthful "healthy" about the wrong
+# tree and the anomaly survives every gate in the fork -> sync-fetch -> validate
+# -> land pipeline. Verified on git 2.54: under such a redirect `--show-prefix`
+# exits 0 printing EMPTY (so it is blind to this on its own) while
+# `--is-inside-work-tree` prints `false`, because repo_dir is not inside the tree
+# git was pointed at. The predecessor established the same fact by comparing
+# `--show-toplevel` against repo_dir; the relative probe reaches it without ever
+# comparing two absolute paths, which is what the `--show-toplevel` note above
+# rules out on darwin. Two spellings of one question is how the definitions in
+# this family drift apart, so there is one.
+#
+# THE DETAIL MUST NAME BOTH CAUSES, and the resolved toplevel with them. Which
+# of "bare" and "redirected" occurred is not something `--is-inside-work-tree`
+# distinguishes -- both print `false` -- so the message names both as
+# possibilities and prints what git DID resolve, an observed fact that
+# discriminates them for the reader. Asserting "bare" alone would send an
+# operator holding a redirected canonical clone to inspect the wrong thing,
+# which is the specific misdiagnosis the predecessor's own header called
+# load-bearing.
+#
+# WHY TWO STATES AND NOT THREE: "the path is not readable as a working tree at
+# all" and "the path sits inside an enclosing repository" are DIFFERENT causes
+# but demand the IDENTICAL action from every caller -- refuse, and assert
+# nothing about the path. The `detail` names which one occurred, so no
+# information is lost; splitting them would only ask callers to enumerate a
+# distinction they cannot act on. (Contrast pnwf_fetch_and_rebase's sentinels 3
+# vs 4, which are separate codes precisely BECAUSE their recoveries differ.)
+pnwf_worktree_root_state() {
+  local repo_dir="$1" rc=0 prefix inside toplevel toplevel_rc=0
+  prefix=$(git -C "$repo_dir" rev-parse --show-prefix 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'indeterminate\t%s\n' \
+      "git could not read '$repo_dir' as a git working tree (rev-parse --show-prefix rc=$rc); the path may not be there at all, or may be there and not be a git repo"
+    return 0
+  fi
+
+  rc=0
+  inside=$(git -C "$repo_dir" rev-parse --is-inside-work-tree 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'indeterminate\t%s\n' \
+      "git could not establish whether '$repo_dir' has a working tree (rev-parse --is-inside-work-tree rc=$rc)"
+    return 0
+  fi
+  if [ "$inside" != "true" ]; then
+    # The toplevel is reported because it DISCRIMINATES the two causes for a
+    # reader (a bare repo has none; a redirect names the directory git went to),
+    # and it is an observed value, so printing it asserts no cause.
+    toplevel=$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null) || toplevel_rc=$?
+    if [ "$toplevel_rc" -ne 0 ] || [ -z "$toplevel" ]; then
+      toplevel="<none -- rev-parse --show-toplevel rc=$toplevel_rc>"
+    fi
+    printf 'indeterminate\t%s\n' \
+      "git is NOT acting on a working tree at '$repo_dir' (rev-parse --is-inside-work-tree said '$inside'; it resolved the working tree to $toplevel), so it is either a repository with no working tree at all (a bare repo) or one whose working tree is REDIRECTED elsewhere (commonly a stale 'core.worktree' -- inspect with 'git -C $repo_dir config --get core.worktree'); either way the working-tree questions a caller asks next would not be about '$repo_dir'"
+    return 0
+  fi
+
+  if [ -n "$prefix" ]; then
+    printf 'indeterminate\t%s\n' \
+      "'$repo_dir' is not the ROOT of a git working tree -- it sits at '$prefix' inside an ENCLOSING repository, so every git answer for it would be that other repository's"
+    return 0
+  fi
+  printf 'confirmed\t%s\n' "'$repo_dir' is the root of a readable git working tree"
+}
+
+# TRI-state: does refs/heads/<branch> exist in repo_dir? Prints exactly ONE
+# line, "<state><TAB><detail>", and always returns 0 -- all three states are
+# EXPECTED answers, not errors:
+#
+#   exists         detail = the object id refs/heads/<branch> resolves to
+#   absent         detail = a fixed human phrase
+#   indeterminate  detail = why the answer could not be established
+#
+# WHY THIS IS NOT THE BOOLEAN `pnwf_branch_exists` IT REPLACES (bd pg2-xc9b7).
+# That function was `rev-parse --verify --quiet refs/heads/<branch>` reduced to
+# `[ "$rc" -eq 0 ]`, so "the ref is ABSENT" and "git could not read this path as
+# the repo you meant" both came back as **the branch does not exist** -- an
+# answer, not a refusal. Its one non-test caller DECIDES on it: cmd_fork_preflight
+# adds nothing to its existing-branch list for a false absent, and with no other
+# reason present prints `proceed`, which is the fork stage's go/no-go. So the
+# collapse was fail-OPEN on the very check `fork-workforest` HALTS on (R-3/R-8),
+# and a boolean return has no room for the third answer -- hence the state token.
+#
+# The repo is CONFIRMED FIRST, by pnwf_worktree_root_state, and that ordering is
+# the load-bearing part: see its header for why a nested non-repo path gets the
+# ENCLOSING repository's refs with exit 0. Only inside a confirmed root is
+# rev-parse's rc read as the exists/absent signal.
+#
+# git's stderr is deliberately NOT discarded here (unlike
+# pnwf_is_ancestor_of_primary, whose 128 is an expected state whose chatter would
+# pollute its clean token): `--verify --quiet` already suppresses the ROUTINE
+# "not a valid object name" message for an absent ref, so anything git still
+# writes is a real anomaly -- `warning: ignoring broken ref refs/heads/<branch>`
+# on rc 1, or the reason for rc 128 -- and that is exactly what the operator
+# reading an `indeterminate` needs.
+pnwf_branch_state() {
+  local repo_dir="$1" branch="$2" rc=0 root_line root_state root_detail oid
+  root_line=$(pnwf_worktree_root_state "$repo_dir")
+  root_state=${root_line%%$'\t'*}
+  root_detail=${root_line#*$'\t'}
+  case "$root_state" in
+  confirmed) : ;;
+  indeterminate)
+    printf 'indeterminate\t%s\n' "$root_detail"
+    return 0
+    ;;
+  *)
+    printf 'indeterminate\t%s\n' \
+      "the working-tree-root probe returned the UNRECOGNISED state '$root_state' for '$repo_dir', so whether refs/heads/$branch exists cannot be established"
+    return 0
+    ;;
+  esac
+
+  rc=0
+  oid=$(git -C "$repo_dir" rev-parse --verify --quiet "refs/heads/$branch") || rc=$?
+  case "$rc" in
+  0) printf 'exists\t%s\n' "$oid" ;;
+  1) printf 'absent\t%s\n' "no refs/heads/$branch in '$repo_dir'" ;;
+  *)
+    # Reached only inside a root this function already CONFIRMED, so this is a
+    # ref-store git cannot read there (a corrupt `packed-refs`, an unreadable
+    # `refs/`) -- still indeterminate, still no cause asserted.
+    printf 'indeterminate\t%s\n' \
+      "git could not read refs/heads/$branch in '$repo_dir', which it DID read as a working-tree root (rev-parse --verify rc=$rc)"
+    ;;
+  esac
 }
 
 # Boolean: does a member checkout exist at <setdir>/<member>? Plain path
@@ -66,29 +248,47 @@ pnwf_worktree_present() {
 # pnwf_canonical_on_primary_and_clean and cmd_update_relock's pre-flight.
 #
 # The optional second argument selects WHICH definition of "dirty" applies.
-# BOTH definitions live HERE, in one function, so there is exactly one place
-# either is spelled and no caller re-implements one locally (a second local
-# `git diff --quiet` pair in cmd_update_relock was how the two drifted --
-# bd pg2-deonn):
+# THERE ARE EXACTLY TWO, THEY ARE BOTH DELIBERATE, AND BOTH LIVE HERE, in one
+# function, so there is exactly one place either is spelled and no caller
+# re-implements one locally (a second local `git diff --quiet` pair in
+# cmd_update_relock was how the two drifted -- bd pg2-deonn):
 #
 #   include-untracked  (DEFAULT) an untracked file counts as dirty. This is the
-#                      member-lifecycle definition -- the same observable
-#                      FF-0b uses in the `ff-merge-to-main` skill, and the one
-#                      `git worktree remove` enforces at the end of that
+#                      REPORTING / member-lifecycle definition -- the same
+#                      observable FF-0b uses in the `ff-merge-to-main` skill,
+#                      the one `git worktree remove` enforces at the end of that
 #                      lifecycle (it refuses a worktree that "contains modified
-#                      or untracked files"). Deliberately STRICTER than
+#                      or untracked files"), and the one BOTH runner agents' R4
+#                      residue probes use (`pnwf-runner.md`,
+#                      `pnwf-update-runner.md`). Deliberately STRICTER than
 #                      `git rebase`; see pnwf_fetch_and_rebase's header.
 #   tracked-only       untracked files are IGNORED; only staged/unstaged
 #                      TRACKED changes count. This is `pn`'s OWN isDirty
 #                      (modules/pn/internal/workspace/update.go: a
 #                      `git diff --quiet` + `git diff --cached --quiet` pair),
-#                      and `cmd_update_relock`'s pre-flight is pinned to it
-#                      BECAUSE that guard exists to refuse exactly what `pn`
-#                      would otherwise silently SKIP -- so it MUST classify a
-#                      member the same way `pn` does, no more strictly. The
-#                      `--untracked-files=no` flag is passed EXPLICITLY rather
-#                      than relying on `status.showUntrackedFiles`, so the
-#                      answer cannot be changed by ambient git config.
+#                      and it is the GATE definition: `cmd_update_relock`'s
+#                      pre-flight is pinned to it BECAUSE that guard exists to
+#                      refuse exactly what `pn` would otherwise silently SKIP --
+#                      so it MUST classify a member the same way `pn` does, no
+#                      more strictly.
+#
+# THEIR RELATIONSHIP, which callers and consumers MUST know (bd pg2-xc9b7):
+# include-untracked is a strict SUPERSET of tracked-only. A member whose only
+# residue is untracked files is therefore DIRTY to the reporting probes and
+# CLEAN to the gate -- so an R4 `dirty` entry does NOT imply `update-relock`'s
+# pre-flight will refuse the next run, and a consumer MUST NOT infer that. The
+# asymmetry is intended, not an oversight: the gate's job is to match what `pn`
+# will act on, while a residue report's job is to make everything a killed job
+# left READABLE to a person, and untracked files are precisely the residue no
+# lock-file diff would show. Narrowing the report to the gate would trade that
+# information for symmetry.
+#
+# `--untracked-files` is passed EXPLICITLY in BOTH scopes rather than relying on
+# `status.showUntrackedFiles`, so neither answer can be changed by ambient git
+# config. Without it the effective definition is whichever the operator's config
+# picks -- i.e. an include-untracked probe on a machine with
+# `status.showUntrackedFiles=no` silently BECOMES the tracked-only one, which is
+# a third, unnamed definition rather than either of the two above.
 #
 # An unknown scope returns 2 -- neither "dirty" nor "clean", so a caller's
 # indeterminate branch catches a typo instead of a guess being acted on.
@@ -130,13 +330,13 @@ pnwf_working_tree_dirty() {
 # fail-OPEN (bd pg2-deonn). So the repo is CONFIRMED first, and only inside a
 # confirmed working tree is the `@{u}` rc read as the has-upstream signal.
 #
-# `rev-parse --show-prefix` -- NOT `--git-dir` -- is the confirmation, because
-# rev-parse WALKS UP: from a non-repo directory nested anywhere under a repo,
-# `--git-dir` succeeds and answers for the ENCLOSING repository. `--show-prefix`
-# prints empty at a working tree's ROOT and the relative sub-path otherwise, so
-# a non-empty answer identifies exactly that walk-up (and a member path is
-# always a worktree root, never a subdirectory). It also requires a work tree,
-# so a bare repo lands in `indeterminate` rather than being probed as a member.
+# The confirmation is `pnwf_worktree_root_state`, which owns the `--show-prefix`
+# (never `--git-dir`) rule and the walk-up rationale for BOTH probes that need
+# it -- this one and `pnwf_branch_state`. It is written there ONCE on purpose:
+# a second local copy of a rule is how two spellings of one question drift
+# apart, which is the defect this function family keeps being fixed for
+# (bd pg2-deonn / pg2-xc9b7). Its two `indeterminate` details are relayed
+# VERBATIM here, so the operator learns which of the two the path hit.
 #
 # Inside a confirmed working tree the `@{u}` rc mirrors `pn`'s own hasUpstream
 # predicate bit for bit (modules/pn/internal/workspace/push.go runs the same
@@ -145,18 +345,22 @@ pnwf_working_tree_dirty() {
 # or unborn HEAD also answers non-zero here, and `pn` reads it the same way and
 # would not push either.
 pnwf_upstream_state() {
-  local repo_dir="$1" rc=0 prefix upstream
-  prefix=$(git -C "$repo_dir" rev-parse --show-prefix 2>/dev/null) || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    printf 'indeterminate\t%s\n' \
-      "git could not read '$repo_dir' as a git working tree (rev-parse --show-prefix rc=$rc); the path exists but may not be a git repo"
+  local repo_dir="$1" rc=0 root_line root_state root_detail upstream
+  root_line=$(pnwf_worktree_root_state "$repo_dir")
+  root_state=${root_line%%$'\t'*}
+  root_detail=${root_line#*$'\t'}
+  case "$root_state" in
+  confirmed) : ;;
+  indeterminate)
+    printf 'indeterminate\t%s\n' "$root_detail"
     return 0
-  fi
-  if [ -n "$prefix" ]; then
+    ;;
+  *)
     printf 'indeterminate\t%s\n' \
-      "'$repo_dir' is not the ROOT of a git working tree -- it sits at '$prefix' inside an enclosing repository, whose upstream is not this member's"
+      "the working-tree-root probe returned the UNRECOGNISED state '$root_state' for '$repo_dir', so whether its branch has an upstream cannot be established"
     return 0
-  fi
+    ;;
+  esac
 
   rc=0
   upstream=$(git -C "$repo_dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || rc=$?
@@ -191,55 +395,22 @@ pnwf_ahead_of_primary() {
   echo "$count"
 }
 
-# Boolean: do git operations against <repo_dir> actually ACT on <repo_dir>?
-#
-# A clone can carry a stale `core.worktree` naming some OTHER directory
-# (observed 2026-08-14 in the homelab canonical clone, left behind by an
-# interrupted `pn workspace update`). git then answers every working-tree
-# question about THAT directory while the caller believes it asked about
-# <repo_dir>: `symbolic-ref` reports the primary branch, `status` reports
-# clean, and the files actually sitting at <repo_dir> are never consulted.
-# BOTH halves of pnwf_canonical_on_primary_and_clean therefore return a
-# truthful "healthy" about the wrong tree, so the anomaly survives every gate
-# in the fork -> sync-fetch -> validate -> land pipeline.
-#
-# Hence this MUST be checked BEFORE pnwf_canonical_on_primary_and_clean, and a
-# failure MUST be reported as its own reason: folding it into "not
-# clean/on-primary" is precisely what makes it undiagnosable, because it sends
-# the operator to inspect a working tree whose state is not the problem.
-#
-# The comparison is deliberately about the RESOLVED root rather than about
-# core.worktree specifically, so it also catches a hand-edited `.git` file, a
-# member path nested inside an outer repo, and a member path that is not a
-# repo root at all. Both sides are normalised with the `cd ... && pwd -P`
-# idiom (as in wsplan.sh) so a workspace reached through a symlinked path does
-# not false-positive.
-pnwf_worktree_root_ok() {
-  local repo_dir="$1" rc=0 toplevel expected resolved
-  toplevel=$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null) || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    echo "pnwf_worktree_root_ok: git rev-parse --show-toplevel failed (rc=$rc)" >&2
-    return "$rc"
-  fi
-
-  expected=$(cd "$repo_dir" >/dev/null 2>&1 && pwd -P) || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    echo "pnwf_worktree_root_ok: could not resolve repo_dir '$repo_dir' (rc=$rc)" >&2
-    return "$rc"
-  fi
-
-  # A toplevel that cannot be entered (e.g. core.worktree naming a directory
-  # that has since been removed) is a MISMATCH, not an unexpected failure --
-  # it is still "git is not acting on repo_dir", which is what this reports.
-  resolved=$(cd "$toplevel" >/dev/null 2>&1 && pwd -P) || return 1
-
-  [ "$resolved" = "$expected" ]
-}
-
 # Boolean: is repo_dir currently on <primary> AND clean? This is the R-3
 # steady-state check for the canonical clone (see repo CLAUDE.md's Git
 # Worktree / Integration Discipline rules). Detached HEAD, a different
 # branch, or a dirty tree all classify as false without aborting.
+#
+# A CALLER MUST CONFIRM THE ROOT (pnwf_worktree_root_state) BEFORE ASKING THIS,
+# AND MUST REPORT A FAILED CONFIRMATION AS ITS OWN REASON. Both probes below
+# accept whatever tree git decides it was pointed at, so for a path git does not
+# read as its own working-tree root -- one nested inside an enclosing repo, or
+# one whose `core.worktree` redirects elsewhere -- this returns a truthful
+# "healthy" about a DIFFERENT tree. It cannot detect that itself, and pinning
+# that is the point of test-pnwf-lib's "the redirect is INVISIBLE to the
+# on-primary/clean check". Folding such a failure into this function's
+# "off-primary or dirty" is what made the 2026-08-14 homelab occurrence
+# undiagnosable: it sends the operator to inspect a working tree whose state is
+# not the problem.
 pnwf_canonical_on_primary_and_clean() {
   local repo_dir="$1" primary="$2" branch_rc=0 dirty_rc=0 current
   current=$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD) || branch_rc=$?

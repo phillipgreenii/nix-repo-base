@@ -78,8 +78,25 @@ into an operator-gated one (bd `pg2-es5nn`).
   ```
 
   ```bash
-  git -C <SETDIR>/<member> status --porcelain
+  git -C <SETDIR>/<member> status --porcelain --untracked-files=normal
   ```
+
+  `--untracked-files=normal` is passed EXPLICITLY and MUST NOT be dropped. This
+  probe REPORTS residue to a person, so it deliberately COUNTS untracked files —
+  they are exactly the residue a killed relock leaves that no lock-file diff
+  would show. Without the flag its definition of "dirty" is whichever
+  `status.showUntrackedFiles` the operator's git config happens to pick, so the
+  same probe could answer either way on two machines (bd `pg2-xc9b7`).
+
+  **That is the REPORTING definition of dirty, and it is deliberately WIDER than
+  the GATE's.** `pnwf update-relock`'s pre-flight uses `pn`'s own `isDirty` —
+  TRACKED changes only — because a guard must refuse exactly what `pn` would
+  otherwise silently SKIP. Reporting ⊇ gate, so a member whose only residue is
+  untracked files appears in `dirty` here and is CLEAN to that pre-flight. You
+  MUST NOT infer from a non-empty `dirty` that the pre-flight will refuse a
+  re-run — [§9](#9-resume) states the consequence. There are exactly these two
+  definitions and both are spelled in one place, `pnwf_working_tree_dirty`'s
+  `scope` argument (`modules/pnwf/lib/pnwf-lib.bash`).
 
   Report every dirty member as one `dirty` entry carrying its repo key and its
   changed file paths (§8). A member whose probe EXITS NON-ZERO is NOT clean and
@@ -162,10 +179,17 @@ Run the preflight from the canonical root and parse its first line:
 cd <CANONICAL_ROOT> && pnwf fork-preflight <BRANCH>
 ```
 
-- **`stop`** → the canonical clone is off its primary branch, is dirty, or you
-  are nested inside a set (R-3/R-8). You MUST return
+- **`stop`** → the canonical clone is off its primary branch, is dirty, you are
+  nested inside a set, or **git could not read a canonical repo's state**
+  (R-3/R-8). You MUST return
   `halt` with `stage: "fork"` and the reason line. You MUST NOT reset,
-  re-checkout, stash, or otherwise "fix" the canonical clone.
+  re-checkout, stash, or otherwise "fix" the canonical clone. The unreadable
+  `stop` reads `git could not read the canonical state for: …` and asserts
+  nothing else about that repo: relay it as unreadable, and MUST NOT restate it
+  as off-primary or dirty. It fails CLOSED because `git -C <path>` WALKS UP —
+  before this check existed those questions were answered for a nested path
+  (exit 0, no diagnostic) by whichever repository ENCLOSED it, and `pnwf` printed
+  `proceed` for a canonical checkout it had never read (bd `pg2-xc9b7`).
 - **`resume`** → the set directory and/or `<BRANCH>` already exists; this is a
   resume-vs-discard judgment the main session owns. You MUST return `gate` with
   `stage: "fork"`, `kind: "resume-vs-discard"`, and stop. You MUST NOT silently
@@ -322,8 +346,8 @@ cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" \
   (`sed`/`cat >`/`tee`/heredoc or any other write). On any anomaly you MUST
   emit the mapped gate or halt and stop, never edit. This includes the residue
   the R4 probe finds: report it, do not clean it up.
-- You MUST NOT "fix" a canonical anomaly (off-primary, dirty, nested). You MUST
-  halt and report it (R-3/R-8).
+- You MUST NOT "fix" a canonical anomaly (off-primary, dirty, nested, or a path
+  git could not read). You MUST halt and report it (R-3/R-8).
 - Any instruction to "decide WITH the user" MEANS emit the mapped gate; you have
   no user and MUST NOT decide for one.
 
@@ -396,10 +420,17 @@ There is no rebase-continue resume path — Stage 2 (`update-relock`) rewrites l
 rather than merging, so it never leaves a resumable mid-rebase state.
 
 An `incomplete-update` halt is NOT a gate and you MUST NOT resume yourself from
-it: while a member named in `dirty` is dirty, `update-relock`'s pre-flight refuses
-the whole set, so the main session dispositions that residue first. If it then
-continues you, re-run Stage 2 from the top — `update-relock` picks up a
-partially-relocked set — and go on to Stage 3.
+it: the residue a killed relock left is un-inspected work, and dispositioning it
+is a decision the main session owns. If it then continues you, re-run Stage 2
+from the top — `update-relock` picks up a partially-relocked set — and go on to
+Stage 3.
+
+That hand-off does NOT rest on the pre-flight blocking the re-run, and you MUST
+NOT report that it does. `dirty` carries [R4](#constraint-one-turn-foreground-only)'s
+REPORTING definition and the pre-flight applies the narrower GATE one, so a
+member whose only residue is UNTRACKED files is named in `dirty` and would be
+relocked without complaint (bd `pg2-xc9b7`). TRACKED residue is the case the
+pre-flight does refuse.
 
 If the halt's `detail` instead carries a `could NOT be determined` refusal, the
 blocked member is one whose git state pnwf could not read, and there may be NO

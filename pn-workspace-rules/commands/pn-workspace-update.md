@@ -74,8 +74,13 @@ if any stage halts.
      disposition the named residue (a relock leaves regenerated lock churn, but
      that is only knowable after inspection), then re-run
      `pnwf update-relock --set` in the set. You MUST NOT re-dispatch the runner
-     first — `update-relock`'s pre-flight refuses a dirty member, so the re-run
-     would fail on the residue. A missing/prose response where the JSON line
+     first: the residue is un-inspected work and dispositioning it is the user's
+     decision. Do NOT justify that with "the pre-flight would refuse it anyway" —
+     `dirty` carries the runner's R4 REPORTING definition of dirty (untracked
+     counts) while the pre-flight applies `pn`'s narrower GATE one (tracked
+     only), so a member whose only residue is UNTRACKED files is named in
+     `dirty` and would be relocked without complaint (bd `pg2-xc9b7`). TRACKED
+     residue is what the pre-flight refuses. A missing/prose response where the JSON line
      belongs is itself this class of failure: treat it as an
      `incomplete-update` halt and run the residue probe yourself rather than
      assuming the relock finished.

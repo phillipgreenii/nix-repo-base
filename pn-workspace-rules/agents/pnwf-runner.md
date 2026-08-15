@@ -77,7 +77,7 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   ```
 
   ```bash
-  git -C <SETDIR>/<member> status --porcelain
+  git -C <SETDIR>/<member> status --porcelain --untracked-files=normal
   ```
 
   ```bash
@@ -85,14 +85,39 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
     test -d "$(git rev-parse --git-path rebase-apply)"; }
   ```
 
+  `--untracked-files=normal` is passed EXPLICITLY and MUST NOT be dropped. This
+  probe REPORTS residue to a person, so it deliberately COUNTS untracked files;
+  without the flag its definition of "dirty" is whichever
+  `status.showUntrackedFiles` the operator's git config happens to pick, so the
+  same probe could answer either way on two machines (bd `pg2-xc9b7`). It is the
+  same REPORTING definition `pnwf sync-fetch`'s own exit-6 pre-check uses
+  (`pnwf_working_tree_dirty`'s default `include-untracked` scope), so what you
+  report and what `pnwf` refused agree. `pnwf update-relock`'s pre-flight — in
+  the `/pn-workspace-update` flow, not this one — is pinned to `pn`'s narrower
+  GATE definition instead; there are exactly those two, both spelled in
+  `pnwf_working_tree_dirty`'s `scope` argument
+  (`modules/pnwf/lib/pnwf-lib.bash`).
+
   The `--git-path` form is required and MUST be run from INSIDE the member: a set
   member is a WORKTREE, so its rebase state lives in that worktree's entry under
   the canonical clone's `.git/worktrees/`, not in `<member>/.git` — and git may
   print that path relative to the repo, so a cwd elsewhere would test the wrong
   one. Report every dirty or mid-rebase member as one `dirty` entry carrying its
-  repo key, its changed file paths, and `mid_rebase` (§8). All three probes are
-  reads, so they do not breach the no-modify prohibition; you MUST NOT reset,
-  stash, commit, abort, or continue anything you find.
+  repo key, its changed file paths, and `mid_rebase` (§8).
+
+  **NEITHER probe's own FAILURE is a finding, and you MUST NOT report it as
+  one.** `git status --porcelain` prints nothing when it fails, so a member whose
+  status probe exits non-zero and is simply omitted reads as "clean"; and if
+  `git rev-parse --git-path` fails the command substitution yields an empty
+  path, so `test -d ""` is false and the member reads as "not mid-rebase". Both
+  are the conflation of a probe FAILURE with its finding that `pnwf`'s own
+  guards were fixed for (bd `pg2-k3s0x` / `pg2-lgzcg` / `pg2-deonn`) — and it is
+  the shape `pnwf_fetch_and_rebase` already reports as its own sentinels 5 and 7
+  rather than as an answer. Name that member and the failing probe's exit code
+  in `detail` instead, and assert nothing about its contents or its rebase
+  state. All three probes are reads, so they do not breach the no-modify
+  prohibition; you MUST NOT reset, stash, commit, abort, or continue anything you
+  find.
 
 ## 1. Role
 
@@ -168,10 +193,17 @@ Run the preflight from the canonical root and parse its first line:
 cd <CANONICAL_ROOT> && pnwf fork-preflight <BRANCH>
 ```
 
-- **`stop`** → the canonical clone is off its primary branch, is dirty, or you
-  are nested inside a set (R-3/R-8). You MUST return
+- **`stop`** → the canonical clone is off its primary branch, is dirty, you are
+  nested inside a set, or **git could not read a canonical repo's state**
+  (R-3/R-8). You MUST return
   `halt` with `stage: "fork"` and the reason line. You MUST NOT reset,
-  re-checkout, stash, or otherwise "fix" the canonical clone.
+  re-checkout, stash, or otherwise "fix" the canonical clone. The unreadable
+  `stop` reads `git could not read the canonical state for: …` and asserts
+  nothing else about that repo: relay it as unreadable, and MUST NOT restate it
+  as off-primary or dirty. It fails CLOSED because `git -C <path>` WALKS UP —
+  before this check existed those questions were answered for a nested path
+  (exit 0, no diagnostic) by whichever repository ENCLOSED it, and `pnwf` printed
+  `proceed` for a canonical checkout it had never read (bd `pg2-xc9b7`).
 - **`resume`** → the set directory and/or `<BRANCH>` already exists; this is a
   resume-vs-discard judgment the main session owns. You MUST return `gate` with
   `stage: "fork"`, `kind: "resume-vs-discard"`, and stop. You MUST NOT silently
@@ -264,8 +296,13 @@ faithfully propagated the claim (bd `pg2-k3s0x`). Read stderr only for the
   a person owns — commit or stash the changes in that worktree:
 
   ```bash
-  git -C <path> status --porcelain
+  git -C <path> status --porcelain --untracked-files=normal
   ```
+
+  Pass `--untracked-files=normal` explicitly in the hint: `pnwf`'s exit-6
+  pre-check counts untracked files as dirty, so on a machine configured with
+  `status.showUntrackedFiles=no` a bare `status --porcelain` would print nothing
+  for the very tree `pnwf` just refused (bd `pg2-xc9b7`).
 
   This gate, not `rebase-refused`, is the one that carries the commit-or-stash
   disposition. You MUST NOT emit either rebase gate here and MUST NOT put
@@ -426,8 +463,8 @@ cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" \
   (`sed`/`cat >`/`tee`/heredoc or any other write). On any conflict you MUST
   emit the mapped gate and stop, never edit. This includes the residue the R4
   probe finds: report it, do not clean it up.
-- You MUST NOT "fix" a canonical anomaly (off-primary, dirty, nested). You MUST
-  halt and report it (R-3/R-8).
+- You MUST NOT "fix" a canonical anomaly (off-primary, dirty, nested, or a path
+  git could not read). You MUST halt and report it (R-3/R-8).
 - Any instruction to "decide WITH the user" MEANS emit the mapped gate; you have
   no user and MUST NOT decide for one.
 

@@ -532,12 +532,20 @@ _fp_write_canonical_info() {
   run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "stop" ]
-  [[ "$output" == *"worktree root mismatch"* ]]
+  # Reported by check (2), the canonical-READABLE bucket: git is not acting on
+  # repoA's own path, so nothing about repoA's state was established.
+  [[ "$output" == *"could not read the canonical state"* ]]
   [[ "$output" == *"repoA"* ]]
+  # The relayed detail must stay actionable: it names the likely cause and the
+  # directory git actually resolved to (basename only -- the absolute form
+  # differs by the /var -> /private/var symlink on darwin).
   [[ "$output" == *"core.worktree"* ]]
+  [[ "$output" == *"decoy"* ]]
   # It MUST NOT be reported as the on-primary/clean failure -- sending the
   # operator to inspect a working tree whose state is not the problem is the
-  # specific misdiagnosis this check exists to prevent.
+  # specific misdiagnosis this check exists to prevent. Non-vacuous: the lib
+  # test "the redirect is INVISIBLE to the on-primary/clean check" pins that
+  # that check really does report healthy here.
   [[ "$output" != *"not clean/on-primary"* ]]
 }
 
@@ -581,6 +589,104 @@ _fp_write_canonical_info() {
   run "$SCRIPT_UNDER_TEST" fork-preflight new-feature --repos repoA
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "proceed" ]
+}
+
+@test "fork-preflight: a canonical path that is not a git repo stops, and is NOT called dirty" {
+  # The member path EXISTS and is not a git repo. It must be diagnosed as
+  # unreadable, and the reason MUST NOT blame it for being off-primary or dirty
+  # -- neither was established (bd pg2-xc9b7).
+  _fp_init_canonical_repo repoA
+  mkdir -p "$CANONICAL_DIR/repoB"
+  _fp_write_canonical_info repoA repoB
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" == *"could not read the canonical state"* ]]
+  [[ "$output" == *"repoB"* ]]
+  [[ "$output" != *"not clean/on-primary"* ]]
+}
+
+@test "fork-preflight: a canonical path NESTED in an enclosing repo stops rather than proceeding" {
+  # THE CRUX. `git -C <path>` WALKS UP, so before the root confirmation every
+  # check answered for the ENCLOSING repository -- exit 0, no diagnostic -- and
+  # this printed `proceed`, the fork stage's go-ahead, for a canonical checkout
+  # it had never read (bd pg2-xc9b7). The enclosing repo is made CLEAN and on
+  # `main` on purpose: that is what made the old code's checks all pass.
+  #
+  # git config is set explicitly in the fixture repo (the harness is hermetic
+  # against ambient config and HOME -- pg2-klyn6/pg2-7hr6o), and `git status` is
+  # given `--untracked-files=no` here for the same reason: the assertion must not
+  # depend on `status.showUntrackedFiles`.
+  command git -C "$CANONICAL_DIR" init -q -b main
+  command git -C "$CANONICAL_DIR" config user.email "test@example.com"
+  command git -C "$CANONICAL_DIR" config user.name "Test"
+  mkdir -p "$CANONICAL_DIR/repoA"
+  echo placeholder >"$CANONICAL_DIR/repoA/.keep"
+  _fp_write_canonical_info repoA
+  command git -C "$CANONICAL_DIR" add -A
+  command git -C "$CANONICAL_DIR" commit -q -m "enclosing repo, clean"
+  [ -z "$(command git -C "$CANONICAL_DIR" status --porcelain --untracked-files=no)" ]
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" != *"proceed"* ]]
+  [[ "$output" == *"repoA"* ]]
+  [[ "$output" == *"ENCLOSING repository"* ]]
+}
+
+@test "fork-preflight: an enclosing repo's branch does not make a nested path 'resume'" {
+  # The other direction of the same walk-up: the branch exists ONLY in the
+  # enclosing repo, and the old boolean reported it as the member's, printing
+  # `resume` -- which sends the caller into a resume-vs-discard decision about a
+  # set that does not exist. It must stop instead.
+  command git -C "$CANONICAL_DIR" init -q -b main
+  command git -C "$CANONICAL_DIR" config user.email "test@example.com"
+  command git -C "$CANONICAL_DIR" config user.name "Test"
+  mkdir -p "$CANONICAL_DIR/repoA"
+  echo placeholder >"$CANONICAL_DIR/repoA/.keep"
+  _fp_write_canonical_info repoA
+  command git -C "$CANONICAL_DIR" add -A
+  command git -C "$CANONICAL_DIR" commit -q -m "enclosing repo, clean"
+  command git -C "$CANONICAL_DIR" branch new-feature
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" != *"resume"* ]]
+}
+
+@test "fork-preflight: a repo whose git state cannot be read stops, and is NOT called off-primary or dirty" {
+  # The path IS a working-tree root, so check (2)'s root confirmation passes; it
+  # is the REF STORE git cannot parse, which makes `symbolic-ref` and `status`
+  # both exit 128, so `pnwf_canonical_on_primary_and_clean` returns 128 rather
+  # than its established 1. That must be reported as unreadable, not as
+  # "expected on 'main', clean" -- the conflation one probe over from the branch
+  # one (bd pg2-xc9b7).
+  #
+  # An unparseable `packed-refs` is the corruption that does it: verified git
+  # 2.54, a branch-name/directory conflict, a self-symlink and a dangling symref
+  # all still exit 1 ("absent"). A corrupt FILE rather than a chmod, so the
+  # outcome does not depend on the build user (pg2-deonn's reasoning).
+  #
+  # `--separate-stderr` is required: git's own `fatal:` and pnwf's first-party
+  # diagnostic go to stderr, which bats' default `run` would merge into
+  # `${lines[0]}` ahead of the outcome token.
+  _fp_init_canonical_repo repoA
+  command git -C "$CANONICAL_DIR/repoA" pack-refs --all
+  printf 'garbage line\n' >"$CANONICAL_DIR/repoA/.git/packed-refs"
+  _fp_write_canonical_info repoA
+  cd "$CANONICAL_DIR"
+  run --separate-stderr "$SCRIPT_UNDER_TEST" fork-preflight new-feature
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stop" ]
+  [[ "$output" != *"proceed"* ]]
+  [[ "$output" == *"repoA"* ]]
+  [[ "$output" == *"could not read the canonical state"* ]]
+  [[ "$output" != *"not clean/on-primary"* ]]
 }
 
 @test "fork-preflight: without --repos, an off-primary sibling still stops" {

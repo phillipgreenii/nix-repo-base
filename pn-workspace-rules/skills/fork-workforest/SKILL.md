@@ -46,9 +46,22 @@ runtime judgment: the resume-vs-discard decision, and relaying halts.
 1. **Preflight (MUST).** Run `pnwf fork-preflight <branch> [--repos a,b,…]`. It
    prints one of `proceed`, `resume`, or `stop` plus a reason line. **Treat any
    non-zero `pnwf` exit as halt-and-report** — do not work around it.
-2. **On `stop`** — the canonical clone is off its primary branch or dirty, or you
-   are nested inside a set. **HALT and report** the reason to the user (R-3/R-8).
-   Do NOT reset, re-checkout, stash, or otherwise "fix" the canonical clone.
+2. **On `stop`** — the canonical clone is off its primary branch or dirty, you
+   are nested inside a set, or **git could not read a canonical repo's state**
+   (the path is missing, is not a git repo, is a plain directory sitting inside
+   an enclosing one, is bare, has its working tree redirected elsewhere by a
+   stale `core.worktree`, or its ref store will not parse). **HALT and
+   report** the reason to the user (R-3/R-8). Do NOT reset, re-checkout, stash,
+   or otherwise "fix" the canonical clone.
+
+   The unreadable `stop` reads `git could not read the canonical state for: …`
+   and asserts NOTHING else about that repo. You MUST relay it as unreadable and
+   MUST NOT restate it as off-primary or dirty — neither was established. It
+   fails CLOSED because `git -C <path>` WALKS UP: before this check existed,
+   those questions were answered for a nested path — exit 0, no diagnostic — by
+   whichever repository ENCLOSED it, and `pnwf` printed `proceed` for a canonical
+   checkout it had never read (bd `pg2-xc9b7`).
+
 3. **On `resume`** — a set directory and/or the `<branch>` already exist
    (`pn workspace workforest add` errors on an existing set dir and would reuse an
    existing branch's stale tip). This is a judgment call: present the situation

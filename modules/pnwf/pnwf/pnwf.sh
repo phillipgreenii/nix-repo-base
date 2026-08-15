@@ -21,7 +21,10 @@ Subcommands (read-only, implemented):
   fork-preflight <branch> [--repos a,b]
                      Pre-flight checks before forking a workforest set on
                      <branch>. Prints "proceed", "resume", or "stop" on the
-                     first line, followed by a reason line.
+                     first line, followed by a reason line. "stop" also
+                     covers a canonical path git cannot read as a
+                     working-tree root: that fails CLOSED and is diagnosed
+                     as unreadable rather than called off-primary or dirty.
   land-plan <branch>
                      Print the topo-ordered member repos of <branch>'s set
                      that still need landing (present worktree, not an
@@ -331,18 +334,25 @@ Pre-flight checks before forking a coordinated workforest set on <branch>.
 Prints one of "proceed", "resume", or "stop" on the first line, followed by
 a reason line. Checks, in order (first match wins):
   1. not nested       — cwd must NOT already be inside a workforest set.
-  2. worktree root     — git must actually operate on each checked repo's
-                          own path. A stale 'core.worktree' redirects every
-                          working-tree probe to another directory, which
-                          would make check 3 report healthy about the wrong
-                          tree, so this is checked first and reported
-                          separately.
+  2. canonical readable — git must read every checked repo's path as the
+                          ROOT of a working tree, and must actually ACT on
+                          that path. One it cannot reports "stop", naming
+                          only what the probe found: `git -C` WALKS UP, so
+                          an unconfirmed path would answer checks 3 and 4
+                          with an ENCLOSING repository's state, exit 0 and
+                          no diagnostic. A working tree REDIRECTED elsewhere
+                          (commonly a stale 'core.worktree') is the same
+                          failure and is caught here too, because check 3
+                          would otherwise report a truthful "healthy" about
+                          the wrong tree.
   3. canonical clean   — every checked repo must be on its primary branch
                           and clean (R-3/R-8; a stop-and-report, never a
                           warn-and-continue).
   4. resume detection   — the set dir and/or <branch> already existing in
                           any checked repo reports "resume" (the caller
-                          decides resume-vs-discard, not this tool).
+                          decides resume-vs-discard, not this tool). If
+                          whether <branch> exists cannot be read in a
+                          repo check 2 confirmed, that reports "stop".
 Otherwise: "proceed".
 
 --repos a,b: restrict checks 2/3/4 to this comma-separated subset of the
@@ -389,36 +399,96 @@ HELP
     | [$r.name, $r.path] | @tsv
   ')
 
-  # (2) worktree root sanity, for every checked repo. Ordered BEFORE the
-  # on-primary/clean pass because a redirected worktree makes that pass report
-  # a truthful "healthy" about the WRONG directory -- see
-  # pnwf_worktree_root_ok's comment for the 2026-08-14 homelab case this
-  # prevents. Reported as its own reason, never folded into check (3).
-  local mismatched_repos="" name path actual_root
+  # (2) canonical READABLE, then (3) on primary + clean, for every checked repo.
+  #
+  # THE ROOT CONFIRMATION COMES FIRST, AND IT IS WHY THIS LOOP HAS A SECOND
+  # BUCKET. Every question this subcommand asks is put to git as
+  # `git -C <path> …`, and that does NOT fail for a path which merely sits
+  # INSIDE a repository: rev-parse WALKS UP, so `symbolic-ref HEAD`,
+  # `status --porcelain` and `rev-parse refs/heads/<branch>` all answer for the
+  # ENCLOSING repository, with exit 0 and no diagnostic. Verified 2026-08-14
+  # (bd pg2-xc9b7): with the workspace root itself a clean git repo and a member
+  # path that is a plain directory inside it, this subcommand printed `proceed`
+  # for a canonical checkout it had never read, and `resume` naming that member
+  # for a branch that existed only in the enclosing repo. `proceed` is the fork
+  # stage's go/no-go and `fork-workforest`'s contract on a canonical anomaly is
+  # to HALT (R-3/R-8), never to work around one -- so an unreadable path MUST
+  # fail CLOSED, and of the three outcomes `stop` is the one that means HALT.
+  # `resume` would be wrong for it (it invites a resume-vs-discard decision on a
+  # path nothing has read) and `proceed` is the fail-open itself.
+  #
+  # It is bucketed SEPARATELY from bad_repos because "off primary / dirty" is a
+  # finding about a repo that WAS read. Reporting it for a path never read is
+  # the conflation this change removes, and the pre-existing message would have
+  # done exactly that -- `pnwf_canonical_on_primary_and_clean` returns its
+  # probe's own rc (128) for an unreadable path, which `if !` cannot tell from
+  # its rc 1 "genuinely off-primary or dirty" (bd pg2-deonn is the same shape,
+  # one guard over).
+  #
+  # A REDIRECTED WORKING TREE IS THE SAME FAILURE AND IS CAUGHT BY THE SAME
+  # CONFIRMATION, so it does NOT get a third bucket. A stale `core.worktree`
+  # (observed 2026-08-14 in the homelab canonical clone, left by an interrupted
+  # `pn workspace update`) points git at another directory, and there the (3)
+  # pass is not merely unreadable but WRONG: `symbolic-ref` and `status` both
+  # succeed, reporting a truthful "healthy" about a tree that is not this member.
+  # `pnwf_worktree_root_state`'s `--is-inside-work-tree` probe answers `false`
+  # for it, so the ordering here is what makes (3) trustworthy at all -- the
+  # earlier `pnwf_worktree_root_ok` established the same fact by comparing
+  # `--show-toplevel` against the member path and is folded into the state probe
+  # (see its header). What MUST survive is the ordering and the fact that the
+  # relayed detail names the redirect as a possible cause: attributing it to (3)
+  # sends the operator to inspect a working tree whose state is not the problem.
+  local bad_repos="" unreadable_repos="" name path primary
+  local root_line root_state root_detail on_primary_rc
   while IFS=$'\t' read -r name path; do
     [[ -n $name ]] || continue
-    if ! pnwf_worktree_root_ok "$path"; then
-      actual_root=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || actual_root="<unresolvable>"
-      mismatched_repos+="${mismatched_repos:+, }$name ($path -> $actual_root)"
-    fi
-  done <<<"$repo_tsv"
 
-  if [[ -n $mismatched_repos ]]; then
-    echo "stop"
-    echo "reason: canonical worktree root mismatch for: $mismatched_repos; git is not operating on the member path (commonly a stale 'core.worktree' -- inspect with 'git -C <path> config --get core.worktree'). R-3: report, do not reset."
-    return 0
-  fi
+    root_line=$(pnwf_worktree_root_state "$path")
+    root_state=${root_line%%$'\t'*}
+    root_detail=${root_line#*$'\t'}
+    case "$root_state" in
+    confirmed) : ;;
+    indeterminate)
+      unreadable_repos+="${unreadable_repos:+; }$name -- $root_detail"
+      continue
+      ;;
+    *)
+      # Documented as two states, so anything else means the probe itself
+      # changed under this caller. Route it to the same refusal rather than
+      # inventing an answer for it, and name no cause.
+      unreadable_repos+="${unreadable_repos:+; }$name -- the working-tree-root probe returned the UNRECOGNISED state '$root_state' for '$path'"
+      continue
+      ;;
+    esac
 
-  # (3) canonical on primary + clean, for every checked repo.
-  local bad_repos="" primary
-  while IFS=$'\t' read -r name path; do
-    [[ -n $name ]] || continue
     primary=$(pnwf_resolve_primary_branch "$path") ||
       die "could not resolve primary branch for repo '$name'"
-    if ! pnwf_canonical_on_primary_and_clean "$path" "$primary"; then
-      bad_repos+="${bad_repos:+, }$name (expected on '$primary', clean)"
-    fi
+
+    # Guarded and ENUMERATED, not `if ! …`. `pnwf_canonical_on_primary_and_clean`
+    # is a tri-state -- 0 on-primary-and-clean, 1 established off-primary or
+    # dirty, its probe's own rc (typically 128) when neither could be read -- and
+    # `if !` collapsed 1 with 128, then attributed BOTH to "expected on
+    # '<primary>', clean". A repo whose ref store git cannot parse (an
+    # unparseable `packed-refs` reaches here: the path IS a working-tree root, so
+    # the confirmation above passes, while `symbolic-ref` and `status` both exit
+    # 128) was therefore reported as off-primary or dirty, neither of which had
+    # been established. Same shape as the guard above, one probe over.
+    on_primary_rc=0
+    pnwf_canonical_on_primary_and_clean "$path" "$primary" || on_primary_rc=$?
+    case "$on_primary_rc" in
+    0) : ;;
+    1) bad_repos+="${bad_repos:+, }$name (expected on '$primary', clean)" ;;
+    *)
+      unreadable_repos+="${unreadable_repos:+; }$name -- git could not establish whether '$path' is on '$primary' with a clean tree (probe rc=$on_primary_rc); the probe's own diagnostic is on stderr"
+      ;;
+    esac
   done <<<"$repo_tsv"
+
+  if [[ -n $unreadable_repos ]]; then
+    echo "stop"
+    echo "reason: git could not read the canonical state for: $unreadable_repos. Every fork-preflight check asks git about the repo at that path, so this reports only what the probe itself found. Inspect the named path(s), then re-run 'pnwf fork-preflight'.${bad_repos:+ Separately, for repos that WERE read, canonical is not clean/on-primary for: $bad_repos}"
+    return 0
+  fi
 
   if [[ -n $bad_repos ]]; then
     echo "stop"
@@ -434,15 +504,55 @@ HELP
   if pnwf_worktree_present "$canonical_root/$workforests_dir" "$branch"; then
     resume_reasons+="set directory already exists at $canonical_root/$workforests_dir/$branch"
   fi
-  local existing_branch_repos=""
+
+  # `pnwf_branch_state` is a TRI-state and every state is enumerated: "absent"
+  # is the only one that may be passed over silently. Reached only for a repo
+  # check (2) above already CONFIRMED as a working-tree root, so `indeterminate`
+  # here is a ref store git cannot read INSIDE a real repo -- narrower than
+  # check (2)'s, and still asserting no cause about the repo.
+  #
+  # It is a FAIL-CLOSED BACKSTOP, not a path with its own fixture, and that is
+  # stated rather than left for a reader to assume: on git 2.54 the only
+  # corruption that makes `rev-parse --verify refs/heads/<branch>` exit 128
+  # instead of 1 is an unparseable `packed-refs`, and git loads that same file
+  # for `symbolic-ref` and `status`, so check (2) stops first every time. What
+  # this branch buys is that the outcome does not depend on check (2) still being
+  # there: were the root confirmation above removed, this would still refuse
+  # rather than read a false "absent" as a reason to proceed. The library probe
+  # is where that state is pinned by a test, since it can be called on its own.
+  local existing_branch_repos="" unreadable_branch_repos=""
+  local branch_line branch_state branch_detail
   while IFS=$'\t' read -r name path; do
     [[ -n $name ]] || continue
-    if pnwf_branch_exists "$path" "$branch"; then
+    branch_line=$(pnwf_branch_state "$path" "$branch")
+    branch_state=${branch_line%%$'\t'*}
+    branch_detail=${branch_line#*$'\t'}
+    case "$branch_state" in
+    absent) : ;;
+    exists)
       existing_branch_repos+="${existing_branch_repos:+, }$name"
-    fi
+      ;;
+    indeterminate)
+      unreadable_branch_repos+="${unreadable_branch_repos:+; }$name -- $branch_detail"
+      ;;
+    *)
+      unreadable_branch_repos+="${unreadable_branch_repos:+; }$name -- the branch probe returned the UNRECOGNISED state '$branch_state' for '$path'"
+      ;;
+    esac
   done <<<"$repo_tsv"
   if [[ -n $existing_branch_repos ]]; then
     resume_reasons+="${resume_reasons:+; }branch '$branch' already exists in: $existing_branch_repos"
+  fi
+
+  # A `stop` OUTRANKS a `resume`, and that ordering is the fail-closed half:
+  # `resume` hands the caller a resume-vs-discard decision (fork-workforest
+  # step 3), which cannot be made while it is unknown whether <branch> exists in
+  # one of the repos the set would span. Whatever resume evidence WAS found is
+  # carried into the same reason so the operator sees the whole picture.
+  if [[ -n $unreadable_branch_repos ]]; then
+    echo "stop"
+    echo "reason: whether branch '$branch' already exists could NOT be determined for: $unreadable_branch_repos. Inspect the named repo(s), then re-run 'pnwf fork-preflight'.${resume_reasons:+ Separately, for repos that WERE read: $resume_reasons}"
+    return 0
   fi
 
   if [[ -n $resume_reasons ]]; then
