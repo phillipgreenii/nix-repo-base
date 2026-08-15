@@ -39,10 +39,10 @@ and STOP; you have no user, so you MUST NOT pick a branch yourself.
 Only the MAIN session survives to be handed a background task's completion
 notification. You do not: a step you start in the BACKGROUND and then stop for is
 torn down MID-WRITE. For Stage 2 that is worse than a crash — a half-relocked set
-trips `pnwf update-relock`'s own cleanliness pre-flight ("A dirty tree (e.g. left
-by a prior failed relock) is refused so it is inspected, not relocked over"), so
-the set REFUSES ITS OWN RE-RUN and a person must disposition the residue. A silent
-teardown converts a resumable stage into an operator-gated one (bd `pg2-es5nn`).
+trips `pnwf update-relock`'s own cleanliness pre-flight ("A dirty tree is refused
+so it is inspected, not relocked over"), so the set REFUSES ITS OWN RE-RUN and a
+person must disposition the residue. A silent teardown converts a resumable stage
+into an operator-gated one (bd `pg2-es5nn`).
 
 - **R1** You MUST NOT end a turn while a background job whose result you need is
   still running. You MUST NOT start any of your three stages with
@@ -82,8 +82,14 @@ teardown converts a resumable stage into an operator-gated one (bd `pg2-es5nn`).
   ```
 
   Report every dirty member as one `dirty` entry carrying its repo key and its
-  changed file paths (§8). Both probes are reads, so they do not breach the
-  no-modify prohibition; you MUST NOT reset, stash, or commit what you find.
+  changed file paths (§8). A member whose probe EXITS NON-ZERO is NOT clean and
+  MUST NOT simply be omitted: `git status --porcelain` prints nothing when it
+  fails, so an omitted entry reads as "clean" — the same conflation of a probe
+  FAILURE with its finding that `pnwf update-relock`'s own pre-flight guards were
+  fixed for (bd `pg2-deonn`). Name that member and its probe exit code in
+  `detail` instead, and assert nothing about its contents. Both probes are reads,
+  so they do not breach the no-modify prohibition; you MUST NOT reset, stash, or
+  commit what you find.
 
 ## 1. Role
 
@@ -194,9 +200,9 @@ cd <SETDIR> && pnwf update-relock --set
 
 `pnwf update-relock` relocks every member's flake inputs (nixpkgs + third-party +
 workspace siblings) in place inside the set, after pre-flight guards that refuse
-if any member branch has an upstream (so NO remote write happens) or any member
-is dirty. It **rewrites** locks; it does NOT merge, so there is NO rebase and NO
-resumable conflict here.
+if any member branch has an upstream (so NO remote write happens), any member is
+dirty, or any member's git state cannot be read at all. It **rewrites** locks; it
+does NOT merge, so there is NO rebase and NO resumable conflict here.
 
 - **clean (exit 0)** → proceed to Stage 3.
 - **non-zero** → you MUST return `halt` with `stage: "update"`. Set `reason` to
@@ -205,6 +211,17 @@ resumable conflict here.
   `detail`. There is NO gate for this stage — because `update-relock` rewrites
   locks rather than merging, a failure is never a resume-vs-continue judgment you
   emit as a gate.
+- **non-zero from the PRE-FLIGHT** (it refused before relocking anything) → the
+  same `halt`, but `detail` MUST carry pnwf's own refusal line VERBATIM rather
+  than a paraphrase. The pre-flight has THREE distinct refusals with THREE
+  different recoveries, and only that line separates them: a member with an
+  UPSTREAM, a member with TRACKED CHANGES, and a member whose git state pnwf
+  **could not read** — which reads `could NOT be determined`, because the
+  no-remote-write guard fails CLOSED rather than treating "cannot tell" as the
+  required state (bd `pg2-deonn`). You MUST NOT restate an unreadable-member
+  refusal as dirtiness, and MUST NOT infer "nothing to look at" from an empty
+  `dirty` array: a member pnwf could not read is one the R4 probe cannot read
+  either.
 - **timed out** (the `600000` ms ceiling hit, so you have no exit status) → the
   relock was killed mid-member. You MUST return `halt` with `stage: "update"`,
   `reason: "incomplete-update"`, and `detail` saying the step exceeded the
@@ -383,3 +400,9 @@ it: while a member named in `dirty` is dirty, `update-relock`'s pre-flight refus
 the whole set, so the main session dispositions that residue first. If it then
 continues you, re-run Stage 2 from the top — `update-relock` picks up a
 partially-relocked set — and go on to Stage 3.
+
+If the halt's `detail` instead carries a `could NOT be determined` refusal, the
+blocked member is one whose git state pnwf could not read, and there may be NO
+residue at all: dispositioning residue cannot clear that refusal, so the main
+session inspects the named path first and a re-run before it does will refuse
+identically.

@@ -11,7 +11,7 @@ _pnwf_subcommands() {
     'cleanup:Best-effort teardown of a workforest set from the canonical clone'
     'status:Print a per-repo status table (landed/not-started/blocked/kept)'
     'sync-fetch:Fetch + rebase every member onto the remote primary (refuses a dirty member; stops on the first failure)'
-    'update-relock:Relock every member in place via pn workspace update --in-place (refuses upstream/dirty/skips)'
+    'update-relock:Relock every member in place via pn workspace update --in-place (refuses upstream/dirty/unreadable/skips)'
   )
   _describe 'pnwf subcommand' subcommands
 }

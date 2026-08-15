@@ -58,17 +58,113 @@ pnwf_worktree_present() {
   [ -e "$setdir/$member" ]
 }
 
-# Boolean: does repo_dir have uncommitted changes (staged, unstaged, or
-# untracked)? A genuine `git status` failure (e.g. repo_dir is not a git
-# repo) propagates its own rc rather than being reported as "clean".
+# TRI-state: does repo_dir have uncommitted changes? Returns 0 (dirty),
+# 1 (clean), or `git status`'s own rc (>1, typically 128 -- e.g. repo_dir is
+# not a git repo) when the question COULD NOT BE ANSWERED. A caller MUST
+# switch on all three and MUST NOT read the third as "clean" (nor as "dirty");
+# the shipped callers do -- see pnwf_fetch_and_rebase, pnwf_classify_member,
+# pnwf_canonical_on_primary_and_clean and cmd_update_relock's pre-flight.
+#
+# The optional second argument selects WHICH definition of "dirty" applies.
+# BOTH definitions live HERE, in one function, so there is exactly one place
+# either is spelled and no caller re-implements one locally (a second local
+# `git diff --quiet` pair in cmd_update_relock was how the two drifted --
+# bd pg2-deonn):
+#
+#   include-untracked  (DEFAULT) an untracked file counts as dirty. This is the
+#                      member-lifecycle definition -- the same observable
+#                      FF-0b uses in the `ff-merge-to-main` skill, and the one
+#                      `git worktree remove` enforces at the end of that
+#                      lifecycle (it refuses a worktree that "contains modified
+#                      or untracked files"). Deliberately STRICTER than
+#                      `git rebase`; see pnwf_fetch_and_rebase's header.
+#   tracked-only       untracked files are IGNORED; only staged/unstaged
+#                      TRACKED changes count. This is `pn`'s OWN isDirty
+#                      (modules/pn/internal/workspace/update.go: a
+#                      `git diff --quiet` + `git diff --cached --quiet` pair),
+#                      and `cmd_update_relock`'s pre-flight is pinned to it
+#                      BECAUSE that guard exists to refuse exactly what `pn`
+#                      would otherwise silently SKIP -- so it MUST classify a
+#                      member the same way `pn` does, no more strictly. The
+#                      `--untracked-files=no` flag is passed EXPLICITLY rather
+#                      than relying on `status.showUntrackedFiles`, so the
+#                      answer cannot be changed by ambient git config.
+#
+# An unknown scope returns 2 -- neither "dirty" nor "clean", so a caller's
+# indeterminate branch catches a typo instead of a guess being acted on.
 pnwf_working_tree_dirty() {
-  local repo_dir="$1" rc=0 status_output
-  status_output=$(git -C "$repo_dir" status --porcelain) || rc=$?
+  local repo_dir="$1" scope="${2:-include-untracked}" rc=0 status_output untracked_flag
+  case "$scope" in
+  include-untracked) untracked_flag=--untracked-files=normal ;;
+  tracked-only) untracked_flag=--untracked-files=no ;;
+  *)
+    echo "pnwf_working_tree_dirty: unknown scope '$scope' (expected include-untracked or tracked-only)" >&2
+    return 2
+    ;;
+  esac
+  status_output=$(git -C "$repo_dir" status --porcelain "$untracked_flag") || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "pnwf_working_tree_dirty: git status failed (rc=$rc)" >&2
     return "$rc"
   fi
   [ -n "$status_output" ]
+}
+
+# TRI-state upstream probe for ONE repo/worktree. Prints exactly ONE line,
+# "<state><TAB><detail>", and always returns 0 -- all three states are
+# EXPECTED answers, not errors, so no caller can be aborted under set -e by
+# asking:
+#
+#   has-upstream    detail = the upstream's name (e.g. "origin/feature-x")
+#   no-upstream     detail = a fixed human phrase
+#   indeterminate   detail = why the answer could not be established
+#
+# WHY THE TRI-STATE, AND WHY THE REPO CHECK COMES FIRST: `git rev-parse
+# --abbrev-ref --symbolic-full-name '@{u}'` exits 128 BOTH for "this branch has
+# no upstream configured" AND for "repo_dir is not a git repository at all", so
+# its rc ALONE cannot separate them -- and `pnwf_worktree_present` is a plain
+# `-e` existence check, so a caller CAN hand over a path that exists and is not
+# a repo. A caller that read any non-zero rc as "no upstream" would therefore
+# report the required state for a member whose real state it never learned; for
+# cmd_update_relock, whose no-remote-write guard prevents a `git push`, that is a
+# fail-OPEN (bd pg2-deonn). So the repo is CONFIRMED first, and only inside a
+# confirmed working tree is the `@{u}` rc read as the has-upstream signal.
+#
+# `rev-parse --show-prefix` -- NOT `--git-dir` -- is the confirmation, because
+# rev-parse WALKS UP: from a non-repo directory nested anywhere under a repo,
+# `--git-dir` succeeds and answers for the ENCLOSING repository. `--show-prefix`
+# prints empty at a working tree's ROOT and the relative sub-path otherwise, so
+# a non-empty answer identifies exactly that walk-up (and a member path is
+# always a worktree root, never a subdirectory). It also requires a work tree,
+# so a bare repo lands in `indeterminate` rather than being probed as a member.
+#
+# Inside a confirmed working tree the `@{u}` rc mirrors `pn`'s own hasUpstream
+# predicate bit for bit (modules/pn/internal/workspace/push.go runs the same
+# rev-parse and treats any error as "no upstream"), which is what makes
+# "no-upstream" load-bearing for a caller guarding against pn's push: a detached
+# or unborn HEAD also answers non-zero here, and `pn` reads it the same way and
+# would not push either.
+pnwf_upstream_state() {
+  local repo_dir="$1" rc=0 prefix upstream
+  prefix=$(git -C "$repo_dir" rev-parse --show-prefix 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'indeterminate\t%s\n' \
+      "git could not read '$repo_dir' as a git working tree (rev-parse --show-prefix rc=$rc); the path exists but may not be a git repo"
+    return 0
+  fi
+  if [ -n "$prefix" ]; then
+    printf 'indeterminate\t%s\n' \
+      "'$repo_dir' is not the ROOT of a git working tree -- it sits at '$prefix' inside an enclosing repository, whose upstream is not this member's"
+    return 0
+  fi
+
+  rc=0
+  upstream=$(git -C "$repo_dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf 'has-upstream\t%s\n' "$upstream"
+  else
+    printf 'no-upstream\t%s\n' "no upstream ref configured for HEAD in '$repo_dir'"
+  fi
 }
 
 # Prints the integer count of commits <branch> has that are not on
@@ -409,7 +505,9 @@ pnwf_rebase_in_progress() {
 # DIFFERENT, stricter definition than `cmd_update_relock`'s pre-flight, which
 # ignores untracked to match `pn`'s own isDirty -- that guard exists to
 # refuse exactly what `pn` would silently skip, so it is pinned to pn's
-# definition, not to this one.)
+# definition, not to this one. That is the `tracked-only` SCOPE of this same
+# function: both definitions are spelled in one place, and this call takes
+# the default one.)
 #
 # What this function MUST NOT do on 6 is act on the caller's behalf: no
 # stash, no commit, no `git rebase --abort`. Deciding the fate of work the

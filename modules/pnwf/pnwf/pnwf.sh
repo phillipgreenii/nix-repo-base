@@ -49,9 +49,12 @@ Subcommands (mutating WORK-recipe helpers, not read-only probes):
                      third-party + workspace siblings) IN PLACE, by shelling
                      `pn workspace update --in-place` for the whole set.
                      Pre-flight refuses any member with an upstream (an
-                     in-place relock would push it) or a dirty tree; on
-                     success it also refuses to report done if the relock
-                     skipped any member (incomplete relock).
+                     in-place relock would push it), a dirty tree, or a git
+                     state it cannot read -- the no-remote-write guard fails
+                     CLOSED, and an unreadable member is diagnosed as such
+                     rather than called dirty. On success it also refuses to
+                     report done if the relock skipped any member (incomplete
+                     relock).
 
 Options:
   -h, --help        Show this help message
@@ -954,11 +957,20 @@ up elsewhere -- is skipped):
                    /pn-workspace-update set branch must be unpushed, so a
                    configured upstream is refused (non-zero) rather than
                    pushed to origin. This invariant is what guarantees the
-                   relock performs NO remote write.
+                   relock performs NO remote write -- so it FAILS CLOSED: a
+                   member whose git state cannot be read (e.g. the path exists
+                   but is not a git worktree root) is refused too, because
+                   "could not tell" is not the required state. That refusal
+                   asserts NOTHING about the member's contents: it does not
+                   call it dirty and does not blame a prior relock.
   clean            the member worktree MUST have no tracked changes (staged
                    or unstaged; untracked are ignored, matching pn's own
-                   isDirty). A dirty tree (e.g. left by a prior failed
-                   relock) is refused so it is inspected, not relocked over.
+                   isDirty). A dirty tree is refused so it is inspected, not
+                   relocked over -- a prior failed relock is one possible
+                   source, not an established cause. If the cleanliness probe
+                   itself cannot run in a confirmed worktree, that is reported
+                   as its own, cause-free indeterminate refusal, never as
+                   dirtiness.
 
 Then runs `env -u PN_WORKSPACE_ROOT pn workspace update --in-place` from the
 set (PN_WORKSPACE_ROOT is cleared so a stale inherited value cannot redirect
@@ -1004,36 +1016,87 @@ HELP
   # write and starts from a clean tree in every present member. An absent
   # worktree is skipped, consistent with sync-fetch / every other member-
   # iterating subcommand.
-  local member member_setpath upstream upstream_rc unstaged_rc staged_rc
+  local member member_setpath upstream_line upstream_state upstream_detail upstream_rc dirty_rc
   for member in "${members[@]}"; do
     pnwf_worktree_present "$root" "$member" || continue
     member_setpath="$root/$member"
 
-    # No-remote-write guard: an upstream means `pn workspace update
-    # --in-place` would `git push` this member to origin (see pn's
-    # updateInPlace hasUpstream->push path). A /pn-workspace-update set branch
-    # must be unpushed; refuse rather than push. The rev-parse is guarded (its
-    # rc IS the has-upstream signal): rc=0 with the upstream name means one is
-    # configured; a non-zero rc (typically 128) means none, which is the
-    # required state.
+    # NO-REMOTE-WRITE guard, and it FAILS CLOSED. An upstream means
+    # `pn workspace update --in-place` would `git push` this member to origin
+    # (see pn's updateInPlace hasUpstream->push path), and a
+    # /pn-workspace-update set branch must be unpushed -- so this guard is the
+    # thing that makes the relock's "NO remote write" claim true.
+    #
+    # A guard against a remote write MUST NOT treat "could not tell" as the
+    # safe answer, and a bare `@{u}` rc cannot tell: rev-parse exits 128 both
+    # for "no upstream configured" (the required state) AND for "not a git
+    # repo" -- and `pnwf_worktree_present` above is a plain `-e` check, so a
+    # path that exists and is not a repo DOES reach here. Reading any non-zero
+    # rc as "no upstream" therefore waved through a member whose real state was
+    # never learned, and if that member did have an upstream the relock could
+    # push it: fail-OPEN on the one thing this guard exists to prevent
+    # (bd pg2-deonn). `pnwf_upstream_state` confirms the repo FIRST and answers
+    # a TRI-state; every state is enumerated below, `indeterminate` REFUSES,
+    # and `*)` asserts NO cause -- the same discipline cmd_sync_fetch applies to
+    # pnwf_fetch_and_rebase's sentinels (bd pg2-k3s0x / pg2-lgzcg).
     upstream_rc=0
-    upstream=$(git -C "$member_setpath" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || upstream_rc=$?
-    if [[ $upstream_rc -eq 0 ]]; then
-      die "update-relock: member '$member' has an upstream ('$upstream'); an in-place relock would 'git push' it to origin -- refusing (a /pn-workspace-update set branch must be unpushed). Worktree: $member_setpath"
+    upstream_line=$(pnwf_upstream_state "$member_setpath") || upstream_rc=$?
+    upstream_state=${upstream_line%%$'\t'*}
+    upstream_detail=${upstream_line#*$'\t'}
+    if [[ $upstream_rc -ne 0 ]]; then
+      # Documented to always return 0, so a non-zero rc means the probe itself
+      # broke -- which is INDETERMINATE, not "no upstream". Route it to the
+      # catch-all rather than inventing an answer for it.
+      upstream_state="probe-failed(rc=$upstream_rc)"
     fi
+    case "$upstream_state" in
+    no-upstream) : ;;
+    has-upstream)
+      die "update-relock: member '$member' has an upstream ('$upstream_detail'); an in-place relock would 'git push' it to origin -- refusing (a /pn-workspace-update set branch must be unpushed). Worktree: $member_setpath"
+      ;;
+    indeterminate)
+      # Asserts NO cause about the member's CONTENTS: it is not called dirty
+      # and no prior failed relock is implied -- neither was established, and
+      # the cleanliness guard below is never reached for this member, so this
+      # is the ONE diagnosis it gets.
+      die "update-relock: member '$member' -- whether its branch has an upstream could NOT be determined ($upstream_detail), so the relock is refused: this guard prevents a REMOTE WRITE, so an unanswerable probe MUST fail CLOSED. Nothing is asserted about the member's contents. Inspect it (e.g. 'git -C $member_setpath status'), then re-run 'pnwf update-relock'. Worktree: $member_setpath"
+      ;;
+    *)
+      die "update-relock: member '$member' -- the upstream probe returned the UNRECOGNISED state '$upstream_state', so whether an in-place relock would 'git push' it cannot be established; refusing (this guard fails CLOSED) rather than acting on a guessed cause. Inspect $member_setpath"
+      ;;
+    esac
 
-    # Cleanliness guard: tracked changes only (unstaged or staged), ignoring
-    # untracked -- matching pn's own isDirty, so pnwf refuses exactly what pn
-    # would otherwise silently SKIP (leaving the relock incomplete). Each git
-    # diff is guarded: rc!=0 (1 == a diff exists, or a probe failure) is the
-    # dirty/indeterminate signal and must not abort via errexit.
-    unstaged_rc=0
-    staged_rc=0
-    git -C "$member_setpath" diff --quiet || unstaged_rc=$?
-    git -C "$member_setpath" diff --cached --quiet || staged_rc=$?
-    if [[ $unstaged_rc -ne 0 || $staged_rc -ne 0 ]]; then
-      die "update-relock: member '$member' worktree is dirty ($member_setpath); a prior failed relock may have left it -- inspect/reset it, then re-run 'pnwf update-relock'"
-    fi
+    # CLEANLINESS guard: tracked changes only (unstaged or staged), ignoring
+    # untracked -- `tracked-only` is pn's own isDirty, so pnwf refuses exactly
+    # what pn would otherwise silently SKIP (leaving the relock incomplete).
+    # That scope lives in pnwf_working_tree_dirty rather than in a local
+    # `git diff --quiet` pair here: the local pair was a SECOND source of truth
+    # for "is this member dirty", and it also collapsed the tri-state (rc 1 == a
+    # diff exists vs rc 128 == the probe could not run) into one branch whose
+    # message then asserted dirtiness either way (bd pg2-deonn).
+    #
+    # Guarded (never a bare call): "clean" is a non-zero return, which errexit
+    # would otherwise turn into an abort. Reached only for a member whose repo
+    # the guard above already CONFIRMED, so `*)` here is a status probe that
+    # failed inside a real working tree (an unreadable index, a permissions
+    # problem) -- still indeterminate, still no cause asserted.
+    dirty_rc=0
+    pnwf_working_tree_dirty "$member_setpath" tracked-only || dirty_rc=$?
+    case "$dirty_rc" in
+    0)
+      die "update-relock: member '$member' worktree is dirty -- it has TRACKED changes, staged or unstaged ($member_setpath). pnwf does not know what left them (a prior failed relock is one possibility, not an established cause) -- inspect/reset it, then re-run 'pnwf update-relock'"
+      ;;
+    1) : ;;
+    *)
+      # Same drafting rule as cmd_sync_fetch's sentinels 4 and 6: the claims
+      # this case does NOT make are absent outright, not present as negations.
+      # Consumers classify this stderr -- /pn-workspace-update keys an update
+      # halt's recovery on whether the message names dirty residue -- so
+      # "not dirty" and "no prior failed relock" would be strings a naive
+      # matcher keys on and re-emit as exactly the wrong recovery.
+      die "update-relock: member '$member' -- whether its worktree holds uncommitted TRACKED changes could NOT be determined (probe rc=$dirty_rc), so the relock is refused and NO cause is asserted about its contents. Inspect it (e.g. 'git -C $member_setpath status'), then re-run 'pnwf update-relock'. Worktree: $member_setpath"
+      ;;
+    esac
   done
 
   # RELOCK: one `pn workspace update --in-place` for the whole set. cwd is the

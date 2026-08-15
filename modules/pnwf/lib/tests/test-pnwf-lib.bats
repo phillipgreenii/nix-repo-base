@@ -203,6 +203,129 @@ teardown() {
   [[ "$stderr" == *"pnwf_working_tree_dirty: git status failed (rc=128)"* ]]
 }
 
+# --- pnwf_working_tree_dirty: the tracked-only scope -------------------------
+# `tracked-only` is pn's OWN isDirty (a `git diff --quiet` + `git diff --cached
+# --quiet` pair in modules/pn/internal/workspace/update.go), which
+# cmd_update_relock's pre-flight is pinned to. The two scopes DISAGREE on
+# exactly one input -- an untracked-only tree -- and that disagreement is the
+# reason both live in this one function instead of the caller re-implementing
+# one (bd pg2-deonn).
+
+@test "pnwf_working_tree_dirty tracked-only: an untracked-only tree is CLEAN (pn isDirty parity)" {
+  echo extra >"$REPO/untracked.txt"
+  run bash -euo pipefail -c "source '$LIB_PATH'; if pnwf_working_tree_dirty '$REPO' tracked-only; then echo yes; else echo no; fi"
+  [ "$status" -eq 0 ]
+  [ "$output" = "no" ]
+  # The DISCRIMINATING half: the same tree, same function, default scope, is
+  # dirty -- so this test would pass vacuously if tracked-only silently fell
+  # back to the default.
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_working_tree_dirty '$REPO'"
+  [ "$status" -eq 0 ]
+}
+
+@test "pnwf_working_tree_dirty tracked-only: an unstaged tracked change is dirty" {
+  echo changed >"$REPO/file.txt"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_working_tree_dirty '$REPO' tracked-only"
+  [ "$status" -eq 0 ]
+}
+
+@test "pnwf_working_tree_dirty tracked-only: a STAGED tracked change is dirty" {
+  # pn's isDirty probes the index separately (`git diff --cached --quiet`), so
+  # a change that is staged and matches the worktree must still count.
+  echo changed >"$REPO/file.txt"
+  command git -C "$REPO" add file.txt
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_working_tree_dirty '$REPO' tracked-only"
+  [ "$status" -eq 0 ]
+}
+
+@test "pnwf_working_tree_dirty tracked-only: a non-git dir returns the probe rc, NOT clean" {
+  # The tri-state's third leg: 128 is "could not tell", and it MUST NOT be
+  # reachable as either 0 or 1. `pnwf_worktree_present` is a plain `-e` check,
+  # so a caller genuinely can hand over a path like this.
+  mkdir -p "$TEST_DIR/not-a-repo"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_working_tree_dirty '$TEST_DIR/not-a-repo' tracked-only"
+  [ "$status" -eq 128 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_working_tree_dirty: git status failed (rc=128)"* ]]
+}
+
+@test "pnwf_working_tree_dirty: an unknown scope returns neither dirty nor clean" {
+  # 2 lands in a caller's indeterminate branch, so a typo cannot be acted on as
+  # an answer.
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_working_tree_dirty '$REPO' tracked_only"
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"unknown scope 'tracked_only'"* ]]
+}
+
+# --- pnwf_upstream_state ---------------------------------------------------
+# Contract: PRINTS one "<state><TAB><detail>" line and always returns 0 --
+# has-upstream | no-upstream | indeterminate. The property under test is that
+# "no upstream configured" and "could not read this as a repo" are DISTINCT,
+# because `git rev-parse '@{u}'` exits 128 for both and its consumer
+# (cmd_update_relock's no-remote-write guard) must fail CLOSED on the second
+# (bd pg2-deonn).
+
+# Gives $REPO's current branch a real upstream via a local bare remote.
+_upstream_publish() {
+  local remote="$TEST_DIR/remote.git"
+  command git init -q --bare "$remote"
+  command git -C "$REPO" remote add origin "$remote"
+  command git -C "$REPO" push -q -u origin main
+}
+
+@test "pnwf_upstream_state: a branch with no upstream prints no-upstream" {
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_upstream_state '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "no-upstream" ]
+}
+
+@test "pnwf_upstream_state: a configured upstream prints has-upstream and names it" {
+  _upstream_publish
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_upstream_state '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "has-upstream" ]
+  [ "${output#*$'\t'}" = "origin/main" ]
+}
+
+@test "pnwf_upstream_state: a path that EXISTS but is not a git repo is indeterminate, NOT no-upstream" {
+  # THE CRUX. Before the fix the caller read rev-parse's 128 here as "no
+  # upstream configured" -- the required state -- and proceeded, so a member
+  # that did have an upstream could be pushed by the relock. Both halves are
+  # asserted: the state IS indeterminate, and it is NOT no-upstream.
+  mkdir -p "$TEST_DIR/not-a-repo"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_upstream_state '$TEST_DIR/not-a-repo'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  [[ "$output" != *"no-upstream"* ]]
+  [[ "$output" == *"$TEST_DIR/not-a-repo"* ]]
+}
+
+@test "pnwf_upstream_state: a non-repo directory NESTED in a repo is indeterminate (rev-parse walks up)" {
+  # Why the confirmation is `rev-parse --show-prefix` and not `--git-dir`:
+  # rev-parse walks UP, so from here `--git-dir` succeeds and answers for the
+  # ENCLOSING repo -- whose upstream is not this path's. Asserted here to keep a
+  # later "simplification" back to `--git-dir` from passing.
+  mkdir -p "$REPO/nested-not-a-repo"
+  _upstream_publish
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_upstream_state '$REPO/nested-not-a-repo'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "indeterminate" ]
+  # NOT the enclosing repo's answer, which `--git-dir` would have produced.
+  [[ "$output" != *"has-upstream"* ]]
+  [[ "$output" != *"origin/main"* ]]
+}
+
+@test "pnwf_upstream_state: a detached HEAD prints no-upstream (pn's hasUpstream reads it the same way)" {
+  # Documented subsumption: `pn` runs the same rev-parse and treats any error
+  # as "no upstream", so it would not push a detached member either -- the
+  # answer that matters to the no-remote-write guard.
+  command git -C "$REPO" checkout -q --detach HEAD
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_upstream_state '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "${output%%$'\t'*}" = "no-upstream" ]
+}
+
 # --- pnwf_ahead_of_primary ------------------------------------------------
 # Contract: PRINTS the integer count (git rev-list --count <primary>..<branch>).
 # Callers compare the printed value themselves. On a guarded rev-list

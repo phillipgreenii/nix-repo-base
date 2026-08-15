@@ -79,6 +79,17 @@ if any stage halts.
      belongs is itself this class of failure: treat it as an
      `incomplete-update` halt and run the residue probe yourself rather than
      assuming the relock finished.
+   - **The recovery above applies only when the halt NAMES dirty residue.**
+     `update-relock`'s pre-flight also refuses a member whose git state it
+     **could not read** — its message says `could NOT be determined`, and it
+     refuses precisely because that guard prevents a remote write and so fails
+     CLOSED (bd `pg2-deonn`). For that halt there may be no residue to
+     disposition and `dirty` may legitimately be `[]`: report the named path and
+     the verbatim refusal, and have the user INSPECT that path (e.g. it exists
+     but is not a git worktree). You MUST NOT call such a member dirty, MUST NOT
+     read `dirty: []` on an update halt as "nothing to look at", and MUST NOT
+     re-run the relock before the path is dispositioned — it will refuse
+     identically.
    - **`done`** → proceed to the main-session landing stages below.
    - If `model_env` is not `unset`/`sonnet`, WARN the user before continuing
      (silent-Opus guard: an env override may have forced a non-Sonnet model).

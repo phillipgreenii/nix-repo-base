@@ -1458,6 +1458,86 @@ _ur_set_upstream() {
   [[ "$output" == *"dirty"* ]]
 }
 
+@test "update-relock --set: a member path that EXISTS but is not a git repo gets ONE honest diagnosis" {
+  # bd pg2-deonn, the CLI half, and the input on which the two pre-flight guards
+  # used to fail in OPPOSITE directions: the no-remote-write guard waved this
+  # member through silently (it read rev-parse's 128 as "no upstream", the
+  # REQUIRED state) while the cleanliness guard then blamed "a prior failed
+  # relock". `pnwf_worktree_present` is a plain `-e` check, so this state is
+  # reachable, not theoretical.
+  #
+  # No _stage_init_member: the directory exists and is NOT a git repo.
+  mkdir -p "$SET_DIR/repoA"
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_RC=0
+  export MOCK_PN_UPDATE_OUTPUT="RELOCK-RAN"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"repoA"* ]]
+  [[ "$output" == *"$SET_DIR/repoA"* ]]
+
+  # The guard that answers is the no-remote-write one, and it FAILS CLOSED:
+  # "could not tell" is refused rather than treated as the required state.
+  [[ "$output" == *"could NOT be determined"* ]]
+  [[ "$output" == *"fail CLOSED"* ]]
+
+  # ONE diagnosis, not two contradictory ones: the cleanliness guard's claims
+  # are absent OUTRIGHT. "dirty" is asserted absent as a bare string (not merely
+  # as advice) because consumers classify this stderr -- /pn-workspace-update
+  # keys an update halt's recovery on whether the message names dirty residue,
+  # and would send the operator to disposition residue that was never observed.
+  [[ "$output" != *"dirty"* ]]
+  [[ "$output" != *"prior failed relock"* ]]
+
+  # And the relock itself never ran, so nothing could have been pushed.
+  [[ "$output" != *"RELOCK-RAN"* ]]
+}
+
+@test "update-relock --set: a confirmed worktree whose cleanliness probe cannot run is refused with NO cause asserted" {
+  # The cleanliness guard's own third leg, reachable only PAST the repo
+  # confirmation above: a real worktree whose `git status` cannot run. Corrupting
+  # the index does exactly that (verified git 2.54: "index file smaller than
+  # expected", rc 128) while leaving `rev-parse --show-prefix` -- which reads no
+  # index -- answering 0, so guard 1 passes the member and guard 2 is the one
+  # that must classify it. Deliberately NOT a chmod: a mode-based refusal would
+  # depend on the build user, and this suite must behave the same in the nix
+  # check sandbox as locally.
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  printf 'not-an-index' >"$(command git -C "$SET_DIR/repoA" rev-parse --git-path index)"
+  export MOCK_PN_UPDATE_RC=0
+  export MOCK_PN_UPDATE_OUTPUT="RELOCK-RAN"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"repoA"* ]]
+  [[ "$output" == *"could NOT be determined"* ]]
+
+  # rc 128 is NOT rc 1: neither claim of the rc-1 message survives here, and
+  # both are absent as BARE STRINGS rather than as negations -- the same
+  # drafting rule sync-fetch's sentinels 4/6 follow, because consumers classify
+  # this stderr and would key on either string wherever it appeared.
+  [[ "$output" == *"NO cause is asserted"* ]]
+  [[ "$output" != *"worktree is dirty"* ]]
+  [[ "$output" != *"prior failed relock"* ]]
+  # (The bare word "dirty" cannot be asserted absent HERE, unlike in the
+  # non-repo test above: the guarded probe's own first-party diagnostic names
+  # the function -- "pnwf_working_tree_dirty: git status failed (rc=128)" --
+  # and that line is the evidence the guard's error path ran rather than
+  # errexit aborting it. It says FAILED, not dirty.)
+  [[ "$output" == *"pnwf_working_tree_dirty: git status failed"* ]]
+  # It is the CLEANLINESS probe that could not answer, not the upstream one --
+  # guard 1 confirmed the repo and found no upstream.
+  [[ "$output" == *"TRACKED changes"* ]]
+  [[ "$output" != *"has an upstream"* ]]
+  [[ "$output" != *"REMOTE WRITE"* ]]
+
+  [[ "$output" != *"RELOCK-RAN"* ]]
+}
+
 @test "update-relock --set: an untracked-only member is NOT dirty (matches pn's isDirty)" {
   _stage_init_member repoA
   _stage_write_lock repoA
