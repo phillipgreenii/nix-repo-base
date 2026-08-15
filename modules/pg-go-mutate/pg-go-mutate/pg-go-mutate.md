@@ -2,12 +2,13 @@
 
 > Report which assertions a Go package's tests are missing.
 > Every surviving mutant is an assertion you do not make.
+> More information: <https://github.com/phillipgreenii/nix-repo-base>.
 
 - Analyze the current package:
 
 `pg-go-mutate`
 
-- Analyze a specific package:
+- Analyze a specific package (a directory, walked recursively):
 
 `pg-go-mutate ./internal/collect`
 
@@ -23,220 +24,48 @@
 
 `pg-go-mutate --workers {{4}} ./internal/collect`
 
-- Reference example (real output, `pg-go-mutate .` against a healthy package):
+- Raise the per-mutant test timeout for a slow suite (does NOT bound the compile phase):
+
+`pg-go-mutate --timeout {{180}} ./internal/collect`
+
+- Show usage:
+
+`pg-go-mutate --help`
+
+## Reading the output
+
+Real output from `pg-go-mutate modules/jira`, **truncated** — the full worklist ran to 205 entries,
+and the repository root is abridged to `…`:
 
 ```
-pg-go-mutate: 199 surviving mutants in /Users/phillipg/phillipg_mbp/.workforests/wf-pg2-xulhg-pg-go-mutate/phillipg-nix-repo-base/modules/jira
+pg-go-mutate: 205 surviving mutants in …/modules/jira
 
 cmd/pjira/main.go
     L40   Replace != with >   [conditional_binary]
     L52   Replace branch condition "path == \"\"" with true   [branch_condition]
     L52   Replace branch condition "path == \"\"" with false   [branch_condition]
-    L52   Replace == with <   [conditional_binary]
-    L52   Replace == with <=   [conditional_binary]
-    L52   Replace == with >   [conditional_binary]
-    L52   Replace == with >=   [conditional_binary]
+    L52   Replace == with !=   [conditional_binary]
     L56   Replace branch condition "err != nil" with false   [branch_condition]
     L57   Replace return err with return nil   [error_nilify]
     L64   Replace branch condition "cfg.BaseURL == \"\"" with false   [branch_condition]
-    L64   Replace == with <   [conditional_binary]
-    L64   Replace == with <=   [conditional_binary]
-    L67   Replace branch condition "cfg.Email == \"\"" with false   [branch_condition]
-    L67   Replace == with <   [conditional_binary]
-    L67   Replace == with <=   [conditional_binary]
-    L75   Replace branch condition "err != nil" with false   [branch_condition]
-    L76   Replace return err with return nil   [error_nilify]
-    L79   Replace branch condition "err != nil" with false   [branch_condition]
-    L80   Replace return err with return nil   [error_nilify]
-    L83   Replace branch condition "err != nil" with false   [branch_condition]
-    L84   Replace return err with return nil   [error_nilify]
-    L102   Replace branch condition "err != nil" with false   [branch_condition]
-    L103   Replace return err with return nil   [error_nilify]
-    L106   Replace branch condition "err != nil" with false   [branch_condition]
-    L107   Replace return err with return nil   [error_nilify]
-    L122   Replace == with <   [conditional_binary]
-    L122   Replace == with <=   [conditional_binary]
-    L125   Replace branch condition "all && strings.TrimSpace(cursor) != \"\"" with false   [branch_condition]
-    L125   Replace != with <   [conditional_binary]
-    L125   Replace != with >   [conditional_binary]
-    L129   Replace branch condition "err != nil" with false   [branch_condition]
-    L130   Replace return err with return nil   [error_nilify]
-    L132   Replace branch condition "limit == 0" with true   [branch_condition]
-    L132   Replace branch condition "limit == 0" with false   [branch_condition]
-    L132   Replace == with <   [conditional_binary]
-    L132   Replace == with <=   [conditional_binary]
-    L132   Replace == with >   [conditional_binary]
-    L132   Replace == with >=   [conditional_binary]
-    L144   Replace branch condition "all" with true   [branch_condition]
-    L147   Replace return err with return nil   [error_nilify]
-    L149   Replace branch condition "res.Truncated" with true   [branch_condition]
-    L156   Replace return err with return nil   [error_nilify]
-    L178   Replace return err with return nil   [error_nilify]
-    L181   Replace branch condition "err != nil" with false   [branch_condition]
-    L182   Replace return err with return nil   [error_nilify]
-    L185   Replace || with &&   [logical_binary]
-    L185   Replace == with <   [conditional_binary]
-    L185   Replace == with <=   [conditional_binary]
-    L201   Replace branch condition "statusErr != nil" with true   [branch_condition]
-    L201   Replace branch condition "statusErr != nil" with false   [branch_condition]
-    L201   Replace != with ==   [conditional_binary]
-    L225   Replace branch condition "err == nil" with true   [branch_condition]
-    L225   Replace branch condition "err == nil" with false   [branch_condition]
-    L225   Replace == with !=   [conditional_binary]
-    L233   Replace branch condition "ec.msg != \"\"" with true   [branch_condition]
-    L233   Replace branch condition "ec.msg != \"\"" with false   [branch_condition]
-    L233   Replace != with <   [conditional_binary]
-    L233   Replace != with <=   [conditional_binary]
-    L233   Replace != with >   [conditional_binary]
-    L233   Replace != with >=   [conditional_binary]
 
 pkg/pjira/adf.go
     L12   Replace branch condition "len(raw) == 0" with false   [branch_condition]
     L12   Replace == with <   [conditional_binary]
-    L12   Replace == with <=   [conditional_binary]
 
-pkg/pjira/client.go
-    L15   Replace * with +   [arithmetic_binary]
-    L15   Replace * with -   [arithmetic_binary]
-    L15   Replace * with /   [arithmetic_binary]
-    L15   Replace * with %   [arithmetic_binary]
-    L50   Replace && with ||   [logical_binary]
-    L50   Replace && with ||   [logical_binary]
-    L50   Replace == with !=   [conditional_binary]
-    L50   Replace == with <   [conditional_binary]
-    L50   Replace == with <=   [conditional_binary]
-    L50   Replace == with >   [conditional_binary]
-    L50   Replace == with >=   [conditional_binary]
-    L50   Replace == with !=   [conditional_binary]
-    L50   Replace == with <   [conditional_binary]
-    L50   Replace == with <=   [conditional_binary]
-    L50   Replace == with >   [conditional_binary]
-    L50   Replace == with >=   [conditional_binary]
-    L50   Replace == with !=   [conditional_binary]
-    L50   Replace == with <   [conditional_binary]
-    L50   Replace == with <=   [conditional_binary]
-    L50   Replace == with >   [conditional_binary]
-    L50   Replace == with >=   [conditional_binary]
-    L72   Replace branch condition "labels == nil" with true   [branch_condition]
-    L72   Replace branch condition "labels == nil" with false   [branch_condition]
-    L72   Replace == with !=   [conditional_binary]
-    L136   Replace branch condition "u == nil" with true   [branch_condition]
-    L136   Replace branch condition "u == nil" with false   [branch_condition]
-    L136   Replace == with !=   [conditional_binary]
-    L139   Replace branch condition "su != nil" with true   [branch_condition]
-    L139   Replace branch condition "su != nil" with false   [branch_condition]
-    L139   Replace != with ==   [conditional_binary]
-    L152   Replace branch condition "strings.TrimSpace(jql) == \"\"" with false   [branch_condition]
-    L152   Replace == with <   [conditional_binary]
-    L152   Replace == with <=   [conditional_binary]
-    L156   Replace branch condition "exp.Comments" with true   [branch_condition]
-    L160   Replace != with >   [conditional_binary]
-    L163   Replace branch condition "exp.Changelog" with true   [branch_condition]
-    L163   Replace branch condition "exp.Changelog" with false   [branch_condition]
-    L168   Replace return err with return nil   [error_nilify]
-    L172   Replace return err with return nil   [error_nilify]
-    L176   Replace branch condition "err != nil" with false   [branch_condition]
-    L180   Replace branch condition "resp.StatusCode/100 != 2" with false   [branch_condition]
-    L180   Replace != with <   [conditional_binary]
-    L180   Replace != with >   [conditional_binary]
-    L194   Replace branch condition "err != nil" with false   [branch_condition]
-    L199   Replace branch condition "is.Key == \"\"" with false   [branch_condition]
-    L199   Replace == with <   [conditional_binary]
-    L199   Replace == with <=   [conditional_binary]
-    L203   Replace branch condition "exp.Changelog" with true   [branch_condition]
-    L206   Replace branch condition "it.Field != \"status\"" with false   [branch_condition]
-    L206   Replace != with <   [conditional_binary]
-    L206   Replace != with >   [conditional_binary]
-    L217   Replace branch condition "exp.Comments" with true   [branch_condition]
-    L227   Replace != with >   [conditional_binary]
-    L227   Replace != with ==   [conditional_binary]
-    L241   Replace branch condition "maxPages <= 0" with false   [branch_condition]
-    L241   Replace <= with <   [conditional_binary]
-    L241   Replace <= with ==   [conditional_binary]
-    L246   Replace < with !=   [conditional_binary]
-    L248   Replace branch condition "err != nil" with false   [branch_condition]
-    L249   Replace return err with return nil   [error_nilify]
-    L252   Replace == with <=   [conditional_binary]
-    L263   Replace branch condition "key == \"\"" with false   [branch_condition]
-    L263   Replace == with <   [conditional_binary]
-    L263   Replace == with <=   [conditional_binary]
-    L269   Replace branch condition "err != nil" with false   [branch_condition]
-    L270   Replace return err with return nil   [error_nilify]
-    L273   Replace branch condition "err != nil" with false   [branch_condition]
-    L277   Replace branch condition "resp.StatusCode == http.StatusNotFound" with false   [branch_condition]
-    L277   Replace == with >   [conditional_binary]
-    L277   Replace == with >=   [conditional_binary]
-    L280   Replace != with <   [conditional_binary]
-    L280   Replace != with >   [conditional_binary]
-    L287   Replace branch condition "err != nil" with false   [branch_condition]
-    L303   Replace branch condition "err != nil" with false   [branch_condition]
-    L304   Replace return err with return nil   [error_nilify]
-    L312   Replace == with <=   [conditional_binary]
-    L314   Replace == with <=   [conditional_binary]
-    L316   Replace == with <=   [conditional_binary]
+[… 196 further entries omitted, including 3 more files …]
 
-pkg/pjira/config.go
-    L31   Replace return err with return nil   [error_nilify]
-    L34   Replace branch condition "err != nil" with false   [branch_condition]
-    L35   Replace return err with return nil   [error_nilify]
-    L43   Replace branch condition "over.BaseURL != \"\"" with true   [branch_condition]
-    L43   Replace != with >   [conditional_binary]
-    L43   Replace != with >=   [conditional_binary]
-    L46   Replace branch condition "over.Email != \"\"" with true   [branch_condition]
-    L46   Replace != with >   [conditional_binary]
-    L46   Replace != with >=   [conditional_binary]
-    L49   Replace branch condition "over.DefaultLimit != 0" with false   [branch_condition]
-    L49   Replace != with <   [conditional_binary]
-    L49   Replace != with >   [conditional_binary]
-    L52   Replace branch condition "over.Secret.Source != \"\"" with true   [branch_condition]
-    L52   Replace branch condition "over.Secret.Source != \"\"" with false   [branch_condition]
-    L52   Replace != with ==   [conditional_binary]
-    L52   Replace != with <   [conditional_binary]
-    L52   Replace != with <=   [conditional_binary]
-    L52   Replace != with >   [conditional_binary]
-    L52   Replace != with >=   [conditional_binary]
-    L55   Replace branch condition "over.Secret.EnvVar != \"\"" with true   [branch_condition]
-    L55   Replace branch condition "over.Secret.EnvVar != \"\"" with false   [branch_condition]
-    L55   Replace != with ==   [conditional_binary]
-    L55   Replace != with <   [conditional_binary]
-    L55   Replace != with <=   [conditional_binary]
-    L55   Replace != with >   [conditional_binary]
-    L55   Replace != with >=   [conditional_binary]
-    L58   Replace branch condition "over.Secret.Path != \"\"" with true   [branch_condition]
-    L58   Replace branch condition "over.Secret.Path != \"\"" with false   [branch_condition]
-    L58   Replace != with ==   [conditional_binary]
-    L58   Replace != with <   [conditional_binary]
-    L58   Replace != with <=   [conditional_binary]
-    L58   Replace != with >   [conditional_binary]
-    L58   Replace != with >=   [conditional_binary]
-    L61   Replace branch condition "len(over.Secret.Command) != 0" with true   [branch_condition]
-    L61   Replace branch condition "len(over.Secret.Command) != 0" with false   [branch_condition]
-    L61   Replace != with ==   [conditional_binary]
-    L61   Replace != with <   [conditional_binary]
-    L61   Replace != with <=   [conditional_binary]
-    L61   Replace != with >   [conditional_binary]
-    L61   Replace != with >=   [conditional_binary]
-
-pkg/pjira/secret.go
-    L34   Replace branch condition "v == \"\"" with false   [branch_condition]
-    L34   Replace == with <   [conditional_binary]
-    L34   Replace == with <=   [conditional_binary]
-    L44   Replace branch condition "err != nil" with false   [branch_condition]
-    L57   Replace branch condition "err != nil" with false   [branch_condition]
-    L61   Replace branch condition "t == \"\"" with false   [branch_condition]
-    L61   Replace == with <   [conditional_binary]
-    L61   Replace == with <=   [conditional_binary]
-    L73   Replace branch condition "v == \"\"" with false   [branch_condition]
-    L73   Replace == with <   [conditional_binary]
-    L73   Replace == with <=   [conditional_binary]
-    L78   Replace branch condition "cfg.Path == \"\"" with false   [branch_condition]
-    L78   Replace == with <   [conditional_binary]
-    L78   Replace == with <=   [conditional_binary]
-    L83   Replace branch condition "len(cfg.Command) == 0" with false   [branch_condition]
-    L83   Replace == with <   [conditional_binary]
-    L83   Replace == with <=   [conditional_binary]
-    L86   Replace branch condition "runner == nil" with false   [branch_condition]
 Each surviving mutant is an assertion your tests do not make.
 
-  killed 218  survived 205  not-viable 20  timed-out 0  errors 0
+  killed 214  survived 211 (205 actionable, 6 no-op)  not-viable 18  timed-out 0  errors 0
 ```
+
+- Each entry is a **file**, a **line**, the mutation, and the operator that produced it. Write an
+  assertion that would fail under that mutation, then re-run and confirm that specific mutant —
+  matched on `file:line:type` — is now killed.
+- `survived 211 (205 actionable, 6 no-op)` reconciles the summary with the first line: the raw
+  bucket counts every survivor so the five statuses sum to the mutant total, while **no-op** mutants
+  (where the mutated code is identical to the original, so no assertion can ever kill them) are
+  excluded from the worklist and from the headline count.
+- The exit status is **0** whenever an analysis completed, however many mutants survived. This is a
+  diagnostic and gates nothing; a non-zero exit means the run itself failed.

@@ -54,5 +54,14 @@ in
 
   config = mkIf cfg.enable {
     home.packages = [ wrapped ];
+
+    # Without this the tldr page is built into the store and reaches nobody:
+    # `tldr pg-go-mutate` fails (spec T3). Sourced from cfg.package rather than
+    # `wrapped` because the page lives in the script derivation; symlinkJoin
+    # would resolve it too, but naming the origin keeps it obvious.
+    programs.tldr.customPages.pg-go-mutate = mkIf config.programs.tldr.enable {
+      platform = "common";
+      source = "${cfg.package}/share/tldr/pages.common/pg-go-mutate.md";
+    };
   };
 }

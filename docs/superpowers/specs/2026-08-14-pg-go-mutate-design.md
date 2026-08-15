@@ -139,6 +139,17 @@ to a developer or an agent.
 
 ## 6. CLI contract
 
+> **Realization note (2026-08-14, final whole-branch review).** The single-`.go`-file
+> input mode below was **never implemented and is now rejected explicitly**. Every
+> guard runs `cd "$target"`, so a file target made `cd` fail, `go list` never ran,
+> and the command aborted with "has no test files. Write a test first" — sending a
+> reader off to write a test that already existed. The review's ruling was to take
+> the honest option: reject a non-directory target with its own message and delete
+> the promise from `--help`, the tldr page and the `go-test-gaps` skill, rather than
+> implement the mode under time pressure. Directories are walked recursively, so a
+> single _package_ is expressible; a single _file_ is not. Re-adding the mode is a
+> new piece of work, not a bug fix.
+
 ```
 pg-go-mutate [PATH]
 

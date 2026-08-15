@@ -6,4 +6,5 @@ _arguments -s \
   '--timeout[per-mutant test timeout in seconds]:seconds:' \
   '--workers[parallel workers]:count:' \
   '(-h --help)'{-h,--help}'[show help]' \
+  '(-v --version)'{-v,--version}'[show version information]' \
   '1:target:_directories'
