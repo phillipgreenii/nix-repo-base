@@ -34,17 +34,17 @@
 
 ## Reading the output
 
-Real output from `pg-go-mutate modules/jira`, **truncated** — the full worklist ran to 205 entries,
+Real output from `pg-go-mutate modules/jira`, **truncated** — the full worklist ran to 202 entries,
 and the repository root is abridged to `…`:
 
 ```
-pg-go-mutate: 205 surviving mutants in …/modules/jira
+pg-go-mutate: 202 surviving mutants in …/modules/jira
 
 cmd/pjira/main.go
     L40   Replace != with >   [conditional_binary]
     L52   Replace branch condition "path == \"\"" with true   [branch_condition]
     L52   Replace branch condition "path == \"\"" with false   [branch_condition]
-    L52   Replace == with !=   [conditional_binary]
+    L52   Replace == with <   [conditional_binary]
     L56   Replace branch condition "err != nil" with false   [branch_condition]
     L57   Replace return err with return nil   [error_nilify]
     L64   Replace branch condition "cfg.BaseURL == \"\"" with false   [branch_condition]
@@ -53,12 +53,16 @@ pkg/pjira/adf.go
     L12   Replace branch condition "len(raw) == 0" with false   [branch_condition]
     L12   Replace == with <   [conditional_binary]
 
-[… 196 further entries omitted, including 3 more files …]
+[… 193 further entries omitted, including 3 more files …]
 
 Each surviving mutant is an assertion your tests do not make.
 
-  killed 214  survived 211 (205 actionable, 6 no-op)  not-viable 18  timed-out 0  errors 0
+  killed 214  survived 208 (202 actionable, 6 no-op)  not-viable 21  timed-out 0  errors 0
 ```
+
+Counts move by a mutant or two between runs on identical source — including which mutants are
+viable — so verify a fix by re-running and checking that **that specific mutant** is now killed,
+never by comparing totals.
 
 - Each entry is a **file**, a **line**, the mutation, and the operator that produced it. Write an
   assertion that would fail under that mutation, then re-run and confirm that specific mutant —
