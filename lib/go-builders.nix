@@ -49,6 +49,38 @@ rec {
       extraPostInstall ? "",
       # Go linker target for the version string (mkGoApp injects it).
       versionPath ? "main.Version",
+      # Human-facing base version. mkGoApp derives
+      # `version = "${baseVersion}-${srcDigest}"`, so a release build reads
+      # `2.1.0-<8hex>` instead of `0.0.0-<8hex>`. This is NOT an ADR 0006
+      # exception: the per-source digest is ALWAYS appended, so the version is
+      # never a bare `2.1.0` and never carries the repo git rev. It mirrors the
+      # `baseVersion` argument ADR 0011 already added to mkBashScript "as a new
+      # argument defaulting to 0.0.0" — mkGoBinary was the outlier that could not
+      # reach mkGoApp's long-standing `baseVersion` because this arg set is
+      # closed (bead tc-5lxy.26).
+      #
+      # CONSUMER CONSTRAINT — the producer CANNOT enforce this, so it is stated
+      # here: the value MUST be derived from SOURCE CONTENT (e.g. a committed
+      # `VERSION` file read with `builtins.readFile ./VERSION`). A value derived
+      # from `self.rev` / `self.ref` / `self.dirtyRev` reintroduces exactly the
+      # per-commit derivation churn ADR 0006 exists to remove: `version` — and
+      # therefore the drvPath — would change on every commit, rebuilding the
+      # package for edits it does not contain.
+      baseVersion ? "0.0.0",
+      # Extra Go linker flags. mkGoApp appends its own
+      # `-X <versionPath>=<version>` after these, so the version injection is
+      # never lost. Typical use: [ "-s -w" ] to drop the symbol table and DWARF.
+      ldflags ? [ ],
+      # Extra build-time environment (stdenv's `env`). Note that
+      # `env.CGO_ENABLED = <n>` — the static-binary spelling buildGoModule
+      # consumers already write — is HOISTED by mkGoApp onto the top-level
+      # attribute gomod2nix reads; see the note in mkGoApp for why that shim
+      # exists.
+      env ? { },
+      # Extra package metadata, merged OVER mkGoBinary's own
+      # `{ description, mainProgram }` so a caller may add homepage / license /
+      # platforms (and override either default) without losing them.
+      meta ? { },
       # gomod2nix engine (ADR 0008): mkGoBinary is a CLOSED arg set (no `...`)
       # and calls mkGoApp with an explicit attr list, so these must be threaded
       # explicitly or pn cannot reach mkGoApp. `gomod2nixToml` is required by
@@ -66,6 +98,9 @@ rec {
       # defaults, so a partial override keeps the untouched shells enabled
       # (bead pg2-beppe).
       completions' = completionDefaults // completions;
+      # Keep `meta` reachable under an unambiguous name inside the (non-rec)
+      # attrset literal below, where the key `meta` is also being defined.
+      extraMeta = meta;
     in
     # Delegate to mkGoApp for the per-source version + gomod2nix build; this
     # opinionated wrapper only layers on the man-page / completion postInstall.
@@ -75,6 +110,8 @@ rec {
         inherit
           src
           versionPath
+          baseVersion
+          ldflags
           gomod2nixToml
           modRoot
           ;
@@ -129,12 +166,19 @@ rec {
         # mkGoBinary installs a single exe at `$out/bin/${name}` by construction,
         # so mainProgram = name is unconditionally correct (fixes the getExe
         # mainProgram-warning class at the builder layer — see bead pg2-148y).
+        # The caller's `meta` is merged OVER these defaults (last-wins), so
+        # homepage/license/platforms are additive and either default is
+        # overridable.
         meta = {
           inherit description;
           mainProgram = name;
-        };
+        }
+        // extraMeta;
       }
       // lib.optionalAttrs (subPackages != null) { inherit subPackages; }
+      # Omit `env` entirely when the caller passed none, so every existing
+      # mkGoBinary consumer's derivation hash is unchanged by this widening.
+      // lib.optionalAttrs (env != { }) { inherit env; }
     );
 
   # mkGoApp — build a Go application via gomod2nix (buildGoApplication), keyed to
@@ -193,7 +237,14 @@ rec {
       # Pass another symbol (e.g. "main.version") for a package that uses one.
       versionPath ? "main.Version",
       # Human-facing base; the per-source digest is appended for uniqueness.
+      # CONSUMER CONSTRAINT (unenforceable here, so stated): this MUST be
+      # SOURCE-CONTENT derived — a committed `VERSION` file, not `self.rev` /
+      # `self.ref` / `self.dirtyRev`, which would put the repo git rev back into
+      # the derivation version and undo ADR 0006. See mkGoBinary's copy of this
+      # note for the full rationale.
       baseVersion ? "0.0.0",
+      # Caller's Go linker flags; the `-X ${versionPath}=${version}` injection is
+      # appended AFTER these, so it can never be lost.
       ldflags ? [ ],
       # Committed gomod2nix lockfile, conventionally ./gomod2nix.toml beside
       # go.mod (REQUIRED). mkGoApp resolves its location from `pwd`, so callers
@@ -224,9 +275,29 @@ rec {
           sp = args.subPackages or null;
         in
         if sp != null && builtins.length sp == 1 then baseNameOf (builtins.head sp) else null;
+      # gomod2nix's buildGoApplication sets `CGO_ENABLED` as a TOP-LEVEL
+      # derivation attribute (`CGO_ENABLED = attrs.CGO_ENABLED or
+      # go.CGO_ENABLED;`, builder/default.nix) and sets it UNCONDITIONALLY, so a
+      # caller's `env.CGO_ENABLED` collides with it and stdenv aborts at eval:
+      #   error: The `env` attribute set cannot contain any attributes passed to
+      #   derivation. The following attributes are overlapping:
+      #     - CGO_ENABLED: in `env`: 0; in derivation arguments: 1
+      # `env.CGO_ENABLED = 0` is nonetheless the spelling every buildGoModule
+      # consumer already writes for a static binary (e.g. mobilecombackup's
+      # flake.nix), and silently dropping it yields a dynamically linked binary
+      # rather than a loud failure. So accept that spelling and HOIST it onto the
+      # attribute the gomod2nix engine actually reads; the rest of `env` is
+      # forwarded untouched, and an explicit top-level `CGO_ENABLED` still wins
+      # (bead tc-5lxy.26).
+      callerEnv = args.env or { };
+      hoistedCgo = lib.optionalAttrs (callerEnv ? CGO_ENABLED) {
+        CGO_ENABLED = args.CGO_ENABLED or callerEnv.CGO_ENABLED;
+      };
+      envRest = builtins.removeAttrs callerEnv [ "CGO_ENABLED" ];
       # `meta` is reassembled explicitly (default merged BENEATH args.meta so a
       # caller-supplied mainProgram wins), so strip it from `forwarded` to avoid
-      # passing it twice into buildGoApplication.
+      # passing it twice into buildGoApplication. `env` is likewise reassembled
+      # (see the CGO_ENABLED hoist above) and so is stripped here too.
       forwarded = builtins.removeAttrs args [
         "pname"
         "versionPath"
@@ -235,6 +306,7 @@ rec {
         "version"
         "gomod2nixToml"
         "meta"
+        "env"
       ];
     in
     # `version` is DERIVED (baseVersion + source digest) and then stripped from
@@ -261,6 +333,11 @@ rec {
           (lib.optionalAttrs (derivedMainProgram != null) { mainProgram = derivedMainProgram; })
           // (args.meta or { });
       }
+      // hoistedCgo
+      # Re-add `env` only when something other than CGO_ENABLED was in it, so
+      # callers that pass no `env` (or only `env.CGO_ENABLED`) keep a derivation
+      # with no `env` attribute at all — hash-neutral for every existing caller.
+      // lib.optionalAttrs (envRest != { }) { env = envRest; }
     );
 
   # mkGoLint — run golangci-lint over a Go module OFFLINE, reusing gomod2nix's

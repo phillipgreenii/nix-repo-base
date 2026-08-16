@@ -529,6 +529,103 @@
                   "echo 'mkGoApp silently accepted a caller-passed version (bead pg2-zvt37)' >&2; exit 1"
               );
 
+            # mkGoBinary's arg set is CLOSED and its mkGoApp call explicit, so
+            # `baseVersion`, `ldflags` and `env` were unreachable from a
+            # mkGoBinary consumer entirely — a release build could never carry a
+            # real semver, and a consumer's `-s -w` / `CGO_ENABLED=0` were
+            # SILENTLY dropped (bead tc-5lxy.26). This check proves all three now
+            # reach the build, on a REAL build rather than by eyeballing eval.
+            #
+            # It is NOT an ADR 0006 exception: assertion 1 pins the version to
+            # `2.1.0-<8hex>`, i.e. the per-source digest is STILL appended, so a
+            # bare `2.1.0` (or any repo-git-rev version) fails the check.
+            #
+            # Baselines that make the last two assertions differential rather
+            # than vacuous, measured on this repo's own `pn` (which passes
+            # neither knob): `go version -m` reports `CGO_ENABLED=1`, and `file`
+            # reports "dynamically linked ... not stripped".
+            go-builders-binary-passthrough =
+              let
+                probe = goBuilders.mkGoBinary {
+                  # Must match the installed exe name: `subPackages = [ "." ]`
+                  # on module `example.com/goversion` installs
+                  # $out/bin/goversion, and mkGoBinary's postInstall + meta
+                  # address $out/bin/<name>.
+                  name = "goversion";
+                  src = ./lib/tests/fixtures/goversion;
+                  gomod2nixToml = ./lib/tests/fixtures/goversion/gomod2nix.toml;
+                  subPackages = [ "." ];
+                  baseVersion = "2.1.0";
+                  ldflags = [ "-s -w" ];
+                  env.CGO_ENABLED = 0;
+                  # The man page / completion half of mkGoBinary is covered by
+                  # go-builders-completions-merge; disabling it here keeps this
+                  # check about the three forwarded arguments (and keeps the
+                  # fixture free of a CLI framework).
+                  manPage = false;
+                  completions = {
+                    bash = false;
+                    zsh = false;
+                    fish = false;
+                  };
+                };
+              in
+              pkgs.runCommand "check-go-builders-binary-passthrough"
+                {
+                  nativeBuildInputs = [
+                    pkgs.go
+                    pkgs.file
+                  ];
+                  inherit probe;
+                  inherit (probe) version;
+                }
+                ''
+                  set -euo pipefail
+                  bin="$probe/bin/goversion"
+
+                  # 1. baseVersion is honored AND the ADR 0006 source digest is
+                  #    still appended.
+                  echo "derivation version: $version"
+                  printf '%s' "$version" | grep -Eq '^2\.1\.0-[0-9a-f]{8}$' || {
+                    echo "FAIL: derivation version '$version' does not match ^2\.1\.0-[0-9a-f]{8}\$ (baseVersion not forwarded, or the digest was dropped)" >&2
+                    exit 1
+                  }
+
+                  # 2. that same string reached the linker: the binary prints
+                  #    main.Version, which mkGoApp injects with -X.
+                  runtime="$("$bin")"
+                  echo "runtime version: $runtime"
+                  [ "$runtime" = "$version" ] || {
+                    echo "FAIL: binary reports '$runtime' but the derivation version is '$version'" >&2
+                    exit 1
+                  }
+
+                  # 3/4. Go's embedded build settings.
+                  export HOME="$TMPDIR"
+                  buildinfo="$(go version -m "$bin")"
+                  printf '%s\n' "$buildinfo"
+                  printf '%s\n' "$buildinfo" | grep -q 'CGO_ENABLED=0' || {
+                    echo "FAIL: env.CGO_ENABLED = 0 did not reach the build (pn's baseline is CGO_ENABLED=1)" >&2
+                    exit 1
+                  }
+
+                  filetype="$(file -L "$bin")"
+                  echo "$filetype"
+                  case "$filetype" in
+                    *"statically linked"*) ;;
+                    *) echo "FAIL: binary is not statically linked, so CGO_ENABLED=0 did not take effect" >&2; exit 1 ;;
+                  esac
+                  # `-s -w` is not recorded in Go's build settings, so the absence
+                  # of the symbol table is the observable proof the caller's
+                  # ldflags reached the linker.
+                  case "$filetype" in
+                    *", stripped"*) ;;
+                    *) echo "FAIL: binary is not stripped, so ldflags = [ \"-s -w\" ] were dropped" >&2; exit 1 ;;
+                  esac
+
+                  touch $out
+                '';
+
             # Python builder checks (uv2nix, ADR 0022). Each test file imports the
             # builder DIRECTLY and so MUST receive the 3 uv2nix inputs (the outer
             # currying stage) or `nix flake check` fails at eval.
