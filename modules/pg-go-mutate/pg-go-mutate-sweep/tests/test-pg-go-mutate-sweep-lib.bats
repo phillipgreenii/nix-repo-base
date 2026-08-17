@@ -209,3 +209,99 @@ EOF
   pgms_append_record '{"kind":"unit","unit":"p#a","status":"done"}'
   [ "$(grep -c . "$(pgms_ledger_path)")" -eq 1 ]
 }
+
+_proj_with_two_units() {
+  _mkmod "$TEST_DIR/ws/p" example.com/p
+  mkdir -p "$TEST_DIR/ws/p/a" "$TEST_DIR/ws/p/b"
+  printf 'package a\n' >"$TEST_DIR/ws/p/a/a.go"
+  printf 'package b\n' >"$TEST_DIR/ws/p/b/b.go"
+}
+
+@test "bead is not due while a unit is unrecorded" {
+  _proj_with_two_units
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"done","finished":"2026-08-17T10:00:00-04:00"}
+EOF
+  run pgms_bead_due "$TEST_DIR/ws" p
+  [ "$status" -eq 1 ]
+}
+
+@test "bead is due once every unit is recorded" {
+  _proj_with_two_units
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"done","finished":"2026-08-17T10:00:00-04:00"}
+{"kind":"unit","unit":"p#b","status":"done","finished":"2026-08-17T10:01:00-04:00"}
+EOF
+  run pgms_bead_due "$TEST_DIR/ws" p
+  [ "$status" -eq 0 ]
+  run pgms_bead_action "$TEST_DIR/ws" p
+  [ "$output" = "file" ]
+}
+
+@test "bead is due on a fresh invocation that runs ZERO units" {
+  # The lost-project regression: the process died after the last unit record but
+  # before bd create, so a resumed sweep runs nothing for this project.
+  _proj_with_two_units
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"done","finished":"2026-08-17T10:00:00-04:00"}
+{"kind":"unit","unit":"p#b","status":"done","finished":"2026-08-17T10:01:00-04:00"}
+EOF
+  run pgms_bead_due "$TEST_DIR/ws" p
+  [ "$status" -eq 0 ]
+}
+
+@test "bead is not due once a bead record exists" {
+  _proj_with_two_units
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"done","finished":"2026-08-17T10:00:00-04:00"}
+{"kind":"unit","unit":"p#b","status":"done","finished":"2026-08-17T10:01:00-04:00"}
+{"kind":"bead","project":"p","bead":"pg2-x","action":"filed","finished":"2026-08-17T10:02:00-04:00"}
+EOF
+  run pgms_bead_due "$TEST_DIR/ws" p
+  [ "$status" -eq 1 ]
+}
+
+@test "bead is due again when a unit record is NEWER than the bead record" {
+  # Without this a project whose units all failed keeps a bead of failures and
+  # the worklists a later --retry produces can never reach any bead.
+  _proj_with_two_units
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"failed","finished":"2026-08-17T10:00:00-04:00"}
+{"kind":"unit","unit":"p#b","status":"failed","finished":"2026-08-17T10:01:00-04:00"}
+{"kind":"bead","project":"p","bead":"pg2-x","action":"filed","finished":"2026-08-17T10:02:00-04:00"}
+{"kind":"unit","unit":"p#a","status":"done","finished":"2026-08-17T11:00:00-04:00"}
+EOF
+  run pgms_bead_due "$TEST_DIR/ws" p
+  [ "$status" -eq 0 ]
+  run pgms_bead_action "$TEST_DIR/ws" p
+  [ "$output" = "amend" ]
+}
+
+@test "a suppressed marker has no id, so the action is file rather than amend" {
+  _proj_with_two_units
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"done","finished":"2026-08-17T10:00:00-04:00"}
+{"kind":"unit","unit":"p#b","status":"done","finished":"2026-08-17T10:01:00-04:00"}
+{"kind":"bead","project":"p","action":"suppressed","finished":"2026-08-17T10:02:00-04:00"}
+{"kind":"unit","unit":"p#a","status":"done","finished":"2026-08-17T11:00:00-04:00"}
+EOF
+  run pgms_bead_action "$TEST_DIR/ws" p
+  [ "$output" = "file" ]
+}
+
+@test "a suppressed marker keeps the bead not-due on a plain re-run" {
+  _proj_with_two_units
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"done","finished":"2026-08-17T10:00:00-04:00"}
+{"kind":"unit","unit":"p#b","status":"done","finished":"2026-08-17T10:01:00-04:00"}
+{"kind":"bead","project":"p","action":"suppressed","finished":"2026-08-17T10:02:00-04:00"}
+EOF
+  run pgms_bead_due "$TEST_DIR/ws" p
+  [ "$status" -eq 1 ]
+}
+
+@test "a zero-unit project is never due" {
+  _mkmod "$TEST_DIR/ws/empty" example.com/empty
+  run pgms_bead_due "$TEST_DIR/ws" empty
+  [ "$status" -eq 1 ]
+}

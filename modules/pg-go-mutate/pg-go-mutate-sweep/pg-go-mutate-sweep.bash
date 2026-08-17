@@ -212,3 +212,62 @@ pgms_unit_needs_run() { # <unit-key> <retry-spec>
   printf ',%s,' "$spec" | grep -qF ",$status," && return 0
   return 1
 }
+
+_pgms_latest_bead() { # <project> -> the whole record, or empty
+  local ledger
+  ledger="$(pgms_ledger_path)"
+  [ -f "$ledger" ] || return 0
+  pgms_valid_lines <"$ledger" |
+    jq -rs --arg p "$1" 'map(select(.kind == "bead" and .project == $p))
+                         | if length == 0 then empty else (last | @json) end'
+}
+
+# Unit records in this task's own ledger carry no "project" field (only the
+# "#"-joined key), while a later task's records include it. The fallback
+# derives the project from the key when the field is absent, so this predicate
+# sees a "newer unit" either way -- without it the amend path (predicate 2)
+# never fires against this task's own fixtures and the retried-findings hole
+# reopens. Controller ruling: use this form from the start, not the brief's
+# bare ".project == $p".
+_pgms_newest_unit_stamp() { # <project> -> RFC3339 or empty
+  local ledger
+  ledger="$(pgms_ledger_path)"
+  [ -f "$ledger" ] || return 0
+  pgms_valid_lines <"$ledger" |
+    jq -rs --arg p "$1" '
+      map(select(.kind == "unit"))
+      | map(select((.project // (.unit | split("#")[0])) == $p))
+      | map(.finished // "")
+      | max // empty'
+}
+
+# Predicate 2, evaluated by REPLAY at startup and after every unit record --
+# never as an in-loop "last unit" event. The event form files nothing for a
+# project whose units are all already recorded, which is the loss this closes.
+pgms_bead_due() { # <root> <project>
+  local root="$1" proj="$2" units u bead bead_stamp newest
+  units="$(pgms_find_units "$root" "$proj")"
+  [ -n "$units" ] || return 1 # a zero-unit project is never due
+  while IFS= read -r u; do
+    [ -n "$u" ] || continue
+    [ -z "$(pgms_unit_status "$(pgms_unit_key "$proj" "$u")")" ] && return 1
+  done <<<"$units"
+
+  bead="$(_pgms_latest_bead "$proj")"
+  [ -z "$bead" ] && return 0 # all recorded, never filed
+
+  bead_stamp="$(printf '%s' "$bead" | jq -r '.finished // ""')"
+  newest="$(_pgms_newest_unit_stamp "$proj")"
+  # Strictly newer, so appending the bead record makes this false again and the
+  # amend cannot loop. A same-second tie resolves in the terminating direction.
+  [ -n "$newest" ] && [ -n "$bead_stamp" ] && [[ $newest > $bead_stamp ]] && return 0
+  return 1
+}
+
+# A suppressed marker carries no id, so there is nothing to comment on: file.
+pgms_bead_action() { # <root> <project> -> file | amend
+  local bead id
+  bead="$(_pgms_latest_bead "$2")"
+  id="$(printf '%s' "$bead" | jq -r '.bead // ""' 2>/dev/null || true)"
+  if [ -n "$bead" ] && [ -n "$id" ]; then printf 'amend\n'; else printf 'file\n'; fi
+}
