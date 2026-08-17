@@ -271,3 +271,124 @@ pgms_bead_action() { # <root> <project> -> file | amend
   id="$(printf '%s' "$bead" | jq -r '.bead // ""' 2>/dev/null || true)"
   if [ -n "$bead" ] && [ -n "$id" ]; then printf 'amend\n'; else printf 'file\n'; fi
 }
+
+# flock(1) is absent on darwin, so the lock is an atomic mkdir stamped with the
+# holder's pid and start time.
+pgms_lock_acquire() {
+  local root lock pid stale
+  root="$(pgms_state_root)"
+  lock="$root/lock"
+  mkdir -p "$root"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -Iseconds)" >"$lock/holder"
+    return 0
+  fi
+  pid="$(awk '{print $1}' "$lock/holder" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    printf 'pg-go-mutate-sweep: another sweep holds the lock (pid %s). Use --force-unlock if it is wedged.\n' "$pid" >&2
+    return 3
+  fi
+  # Reclaim by RENAME onto a unique, NON-EXISTENT destination. A plain
+  # `mv lock lock.stale.$$` would move `lock` INSIDE a leftover directory of that
+  # name and still return 0, so "proceed only if the rename succeeded" would stop
+  # meaning what it says. Exactly one racer can win an atomic rename(2).
+  stale="$(mktemp -d "$root/lock.stale.XXXXXX")"
+  rmdir "$stale"
+  if mv "$lock" "$stale" 2>/dev/null; then
+    rm -rf "$stale"
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s %s\n' "$$" "$(date -Iseconds)" >"$lock/holder"
+      return 0
+    fi
+  fi
+  printf 'pg-go-mutate-sweep: lost the lock-reclaim race\n' >&2
+  return 3
+}
+
+pgms_lock_release() { rm -rf -- "$(pgms_state_root)/lock"; }
+
+# Classification is by EXIT CODE, never by matching the child's prose: a TERM
+# inside pgm_run_engine makes pg-go-mutate report "the engine produced no report
+# (exit 143)" and exit 1, byte-identical to a genuine failure.
+pgms_classify() { # <exit> [json-report] [threshold-percent]
+  local rc="$1" report="${2:-}" thr="${3:-50}" total timed
+  case "$rc" in
+  10)
+    printf 'no-tests\n'
+    return 0
+    ;;
+  11)
+    printf 'not-enumerable\n'
+    return 0
+    ;;
+  12)
+    printf 'unhealthy\n'
+    return 0
+    ;;
+  14)
+    printf 'vanished\n'
+    return 0
+    ;;
+  124)
+    printf 'timeout\n'
+    return 0
+    ;;
+  13 | 2)
+    printf 'fatal\n'
+    return 0
+    ;;
+  0) ;;
+  *)
+    printf 'failed\n'
+    return 0
+    ;;
+  esac
+  [ -n "$report" ] && [ -f "$report" ] || {
+    printf 'failed\n'
+    return 0
+  }
+  total="$(jq -r '[.statistics.killed, .statistics.survived, .statistics.notViable,
+                   .statistics.timedOut, .statistics.errors] | map(. // 0) | add' \
+    "$report" 2>/dev/null || printf '0')"
+  timed="$(jq -r '.statistics.timedOut // 0' "$report" 2>/dev/null || printf '0')"
+  case "$total" in '' | *[!0-9]*) total=0 ;; esac
+  case "$timed" in '' | *[!0-9]*) timed=0 ;; esac
+  # Guarded: an empty statistics object passes pgm_report_sane, and an unguarded
+  # division would abort a unit the engine considered acceptable.
+  [ "$total" -le 0 ] && {
+    printf 'failed\n'
+    return 0
+  }
+  if [ $((timed * 100 / total)) -gt "$thr" ]; then printf 'inconclusive\n'; else printf 'done\n'; fi
+}
+
+# Detection is pgm_detect_tags (reused, never reimplemented -- its header records
+# why a naive //go:build scan is wrong). APPLICATION is opt-in: a tag-gated suite
+# runs once per mutant, and these suites drive real bd/git/tmux/daemons.
+pgms_apply_tags() { # <abs-dir> <allowlist-csv> -> "applied<TAB>withheld"
+  local dir="$1" allow="${2:-}" detected t applied=() withheld=() det=()
+  detected="$(pgm_detect_tags "$dir")"
+  detected="${detected//[[:space:]]/}"
+  if [ -z "$detected" ]; then
+    printf '\t\n'
+    return 0
+  fi
+  IFS=, read -r -a det <<<"$detected"
+  for t in "${det[@]}"; do
+    [ -n "$t" ] || continue
+    if [ -n "$allow" ] && printf ',%s,' "$allow" | grep -qF ",$t,"; then
+      applied+=("$t")
+    else
+      withheld+=("$t")
+    fi
+  done
+  printf '%s\t%s\n' \
+    "$(
+      IFS=,
+      printf '%s' "${applied[*]+"${applied[*]}"}"
+    )" \
+    "$(
+      IFS=,
+      printf '%s' "${withheld[*]+"${withheld[*]}"}"
+    )"
+}

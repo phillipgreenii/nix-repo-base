@@ -305,3 +305,84 @@ EOF
   run pgms_bead_due "$TEST_DIR/ws" empty
   [ "$status" -eq 1 ]
 }
+
+@test "lock acquires, refuses a live holder, and releases" {
+  run pgms_lock_acquire
+  [ "$status" -eq 0 ]
+  [ -d "$(pgms_state_root)/lock" ]
+  run pgms_lock_acquire
+  [ "$status" -eq 3 ]
+  pgms_lock_release
+  [ ! -d "$(pgms_state_root)/lock" ]
+}
+
+@test "lock reclaims a stale holder" {
+  mkdir -p "$(pgms_state_root)/lock"
+  # PID 99999 is not running; the stamp format is "<pid> <iso8601>"
+  printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgms_state_root)/lock/holder"
+  run pgms_lock_acquire
+  [ "$status" -eq 0 ]
+  [ "$(awk '{print $1}' "$(pgms_state_root)/lock/holder")" = "$$" ]
+}
+
+@test "a leftover lock.stale directory does not corrupt the reclaim" {
+  mkdir -p "$(pgms_state_root)/lock" "$(pgms_state_root)/lock.stale.leftover"
+  printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgms_state_root)/lock/holder"
+  run pgms_lock_acquire
+  [ "$status" -eq 0 ]
+  # the reclaimed directory is removed, not accumulated
+  [ -z "$(find "$(pgms_state_root)" -maxdepth 1 -name 'lock.stale.*' -newer "$(pgms_state_root)/lock" 2>/dev/null)" ]
+}
+
+@test "classification maps every exit code" {
+  [ "$(pgms_classify 10)"  = "no-tests" ]
+  [ "$(pgms_classify 11)"  = "not-enumerable" ]
+  [ "$(pgms_classify 12)"  = "unhealthy" ]
+  [ "$(pgms_classify 14)"  = "vanished" ]
+  [ "$(pgms_classify 124)" = "timeout" ]
+  [ "$(pgms_classify 13)"  = "fatal" ]
+  [ "$(pgms_classify 2)"   = "fatal" ]
+  [ "$(pgms_classify 1)"   = "failed" ]
+  [ "$(pgms_classify 99)"  = "failed" ]
+}
+
+@test "137 is failed, NOT timeout" {
+  # timeout(1) returns 124 whether or not it escalated to KILL; 137 means
+  # timeout ITSELF was killed, e.g. OOM.
+  [ "$(pgms_classify 137)" = "failed" ]
+}
+
+@test "exit 0 with a low timed-out fraction is done" {
+  cat >"$TEST_DIR/r.json" <<'EOF'
+{"statistics":{"killed":90,"survived":8,"notViable":1,"timedOut":1,"errors":0}}
+EOF
+  [ "$(pgms_classify 0 "$TEST_DIR/r.json" 50)" = "done" ]
+}
+
+@test "exit 0 with a high timed-out fraction is inconclusive" {
+  cat >"$TEST_DIR/r.json" <<'EOF'
+{"statistics":{"killed":0,"survived":0,"notViable":0,"timedOut":100,"errors":0}}
+EOF
+  [ "$(pgms_classify 0 "$TEST_DIR/r.json" 50)" = "inconclusive" ]
+}
+
+@test "a zero denominator is failed, not a division error" {
+  # A report can carry totalMutants > 0 with an empty statistics object and still
+  # pass pgm_report_sane, so the fraction must be guarded.
+  printf '{"statistics":{}}\n' >"$TEST_DIR/r.json"
+  [ "$(pgms_classify 0 "$TEST_DIR/r.json" 50)" = "failed" ]
+}
+
+@test "tags are gated by the allowlist and default to none applied" {
+  pgm_detect_tags() { printf 'contract,hostile\n'; }
+  run pgms_apply_tags "$TEST_DIR" ""
+  [ "$output" = "	contract,hostile" ]
+  run pgms_apply_tags "$TEST_DIR" "contract"
+  [ "$output" = "contract	hostile" ]
+}
+
+@test "no detected tags yields both fields empty" {
+  pgm_detect_tags() { printf '\n'; }
+  run pgms_apply_tags "$TEST_DIR" "contract"
+  [ "$output" = "	" ]
+}
