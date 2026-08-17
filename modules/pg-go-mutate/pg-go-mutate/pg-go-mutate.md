@@ -73,3 +73,14 @@ never by comparing totals.
   excluded from the worklist and from the headline count.
 - The exit status is **0** whenever an analysis completed, however many mutants survived. This is a
   diagnostic and gates nothing; a non-zero exit means the run itself failed.
+
+| Code | Meaning                                                                          |
+| ---- | -------------------------------------------------------------------------------- |
+| `0`  | Analysis completed, however many mutants survived.                               |
+| `1`  | Operational failure not covered by a more specific code below.                   |
+| `2`  | Usage error: invalid flags or arguments.                                         |
+| `10` | Target has no test files.                                                        |
+| `11` | Target not enumerable (not a Go module, or the module does not load).            |
+| `12` | Target unhealthy: does not vet, or tests already fail on unmutated source.       |
+| `13` | Environment precondition failed: `go` or the pinned engine absent or mismatched. |
+| `14` | Target path is absent or not a directory.                                        |

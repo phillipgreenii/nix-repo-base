@@ -111,7 +111,18 @@ teardown() {
 
 @test "aborts non-zero on a target that does not exist" {
   run "$SCRIPT" "$TEST_DIR/missing"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 14 ]
+}
+
+@test "exits 14 when the target does not exist" {
+  run "$SCRIPT" "$TEST_DIR/nope"
+  [ "$status" -eq 14 ]
+}
+
+@test "exits 14 when the target is a file, not a directory" {
+  : >"$TEST_DIR/afile.go"
+  run "$SCRIPT" "$TEST_DIR/afile.go"
+  [ "$status" -eq 14 ]
 }
 
 @test "rejects a single .go file target instead of misdiagnosing it as untested" {
@@ -509,4 +520,75 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"not a Go module"* ]]
   [[ "$output" != *"Write a test first"* ]]
+}
+
+# --- exit-code allocation 10-14 (ADR 0026 decision 3) ------------------------
+#
+# These tighten the `-ne 0` guard-failure assertions above into the specific
+# codes the sweep (pg-go-mutate-sweep, a later task) classifies on. Each stub
+# engine below is created inline, matching the pattern the guard-related cases
+# above already use (e.g. "a target that is not a Go module says so...").
+
+@test "exits 10 when the module has no test files" {
+  mkdir -p "$TEST_DIR/m"
+  cat >"$TEST_DIR/m/go.mod" <<'EOF'
+module example.com/m
+
+go 1.25.0
+EOF
+  printf 'package m\n\nfunc F() int { return 1 }\n' >"$TEST_DIR/m/m.go"
+  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version %%s\\n" "$PGM_TEST_PINNED_VERSION"; exit 0; fi\n' >"$TEST_DIR/stub-gomu"
+  chmod +x "$TEST_DIR/stub-gomu"
+  run env PG_GO_MUTATE_GOMU="$TEST_DIR/stub-gomu" \
+      PG_GO_MUTATE_GOMU_VERSION="$PGM_TEST_PINNED_VERSION" "$SCRIPT" "$TEST_DIR/m"
+  [ "$status" -eq 10 ]
+  [[ "$output" == *"has no test files"* ]]
+}
+
+@test "exits 11 when the target is not a Go module" {
+  mkdir -p "$TEST_DIR/plain"
+  printf 'package plain\n' >"$TEST_DIR/plain/p.go"
+  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version %%s\\n" "$PGM_TEST_PINNED_VERSION"; exit 0; fi\n' >"$TEST_DIR/stub-gomu"
+  chmod +x "$TEST_DIR/stub-gomu"
+  run env PG_GO_MUTATE_GOMU="$TEST_DIR/stub-gomu" \
+      PG_GO_MUTATE_GOMU_VERSION="$PGM_TEST_PINNED_VERSION" "$SCRIPT" "$TEST_DIR/plain"
+  [ "$status" -eq 11 ]
+}
+
+@test "exits 12 when the target's tests already fail on unmutated source" {
+  mkdir -p "$TEST_DIR/bad"
+  cat >"$TEST_DIR/bad/go.mod" <<'EOF'
+module example.com/bad
+
+go 1.25.0
+EOF
+  printf 'package bad\n\nfunc F() int { return 1 }\n' >"$TEST_DIR/bad/b.go"
+  cat >"$TEST_DIR/bad/b_test.go" <<'EOF'
+package bad
+
+import "testing"
+
+func TestF(t *testing.T) {
+	if F() != 2 {
+		t.Fatal("deliberately failing")
+	}
+}
+EOF
+  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version %%s\\n" "$PGM_TEST_PINNED_VERSION"; exit 0; fi\n' >"$TEST_DIR/stub-gomu"
+  chmod +x "$TEST_DIR/stub-gomu"
+  run env PG_GO_MUTATE_GOMU="$TEST_DIR/stub-gomu" \
+      PG_GO_MUTATE_GOMU_VERSION="$PGM_TEST_PINNED_VERSION" "$SCRIPT" "$TEST_DIR/bad"
+  [ "$status" -eq 12 ]
+}
+
+@test "exits 13 when the engine is absent" {
+  mkdir -p "$TEST_DIR/m2"
+  cat >"$TEST_DIR/m2/go.mod" <<'EOF'
+module example.com/m2
+
+go 1.25.0
+EOF
+  printf 'package m2\n' >"$TEST_DIR/m2/m.go"
+  run env PG_GO_MUTATE_GOMU="$TEST_DIR/definitely-not-here" "$SCRIPT" "$TEST_DIR/m2"
+  [ "$status" -eq 13 ]
 }

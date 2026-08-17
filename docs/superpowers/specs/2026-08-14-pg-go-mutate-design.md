@@ -180,7 +180,13 @@ pg-go-mutate [PATH]
   from §5.1 failing, `gomu` or `go` absent, a version mismatch (**E1**), invalid
   flags, an unreadable target, a missing or unparseable report, or a report
   failing the **C6** sanity gate. These are categorically distinct from
-  "survivors found".
+  "survivors found". Exit codes `10`–`14` distinguish specific guard failures
+  (no test files, target not enumerable, target unhealthy, an environment
+  precondition, and a target that is absent or not a directory, respectively —
+  allocated by ADR 0026 decision 3 for `pg-go-mutate-sweep`'s classification).
+  This allocation is strictly ADDITIVE to the existing `0`/`1`/`2` contract:
+  `1` remains the catch-all for operational failure not covered by a more
+  specific code, and `2` remains reserved for usage errors (invalid flags).
 - **C4** `--workers` MUST default to 2, not gomu's 4. Six concurrent runs at 2
   workers each drove load average to 89 on an 11-core machine and exhausted swap.
 - **C5** The wrapper MUST invoke `gomu run` explicitly, never bare `gomu` (whose

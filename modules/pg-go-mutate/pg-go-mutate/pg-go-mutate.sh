@@ -146,17 +146,17 @@ esac
 # outright is the honest behaviour until the mode is actually implemented.
 [ -d "$target" ] || {
   printf 'pg-go-mutate: %s is not a directory. Pass a directory (it is walked recursively, so a single package works); single-file targets are not supported.\n' "$target" >&2
-  exit 2
+  exit 14
 }
 # shellcheck disable=SC2164  # cd failure here would mean $target (already confirmed a directory above) vanished in the interim; nothing safer to fall back to
 target="$(cd "$target" && pwd)"
 
 pgm_validate_flags "$workers" "$timeout" || exit 2
-pgm_require_go || exit 1
+pgm_require_go || exit 13
 # The engine must exist AND be the pinned build (spec E1). Checked here rather
 # than discovered as "the engine produced no report (exit 127)" after every
 # guard has already spent its time.
-pgm_require_engine || exit 1
+pgm_require_engine || exit 13
 
 # BEFORE the guards, not just before the engine. `go list`, `go vet` and
 # `go test` cannot see tag-gated tests without this, so a package whose tests
@@ -176,15 +176,15 @@ case "$has_tests_rc" in
 0) ;;
 2)
   # pgm_has_tests already reported the enumeration failure in detail.
-  exit 1
+  exit 11
   ;;
 *)
   printf 'pg-go-mutate: %s has no test files. Write a test first — mutation testing reports missing ASSERTIONS, and with no tests every mutant trivially survives.\n' "$target" >&2
-  exit 1
+  exit 10
   ;;
 esac
 
-pgm_tests_healthy "$target" || exit 1
+pgm_tests_healthy "$target" || exit 12
 
 detected_tags="$(pgm_detect_tags "$target")"
 if [ -z "$tags" ] && [ -n "$detected_tags" ]; then
