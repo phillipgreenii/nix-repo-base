@@ -558,8 +558,34 @@
             #
             # Baselines that make the last two assertions differential rather
             # than vacuous, measured on this repo's own `pn` (which passes
-            # neither knob): `go version -m` reports `CGO_ENABLED=1`, and `file`
-            # reports "dynamically linked ... not stripped".
+            # neither knob -- probe its `bin/.pn-wrapped`, since `bin/pn` is the
+            # bash wrapper): `go version -m` reports `CGO_ENABLED=1`, and
+            # `go tool nm` reports 8496 DEFINED symbols including `main.main`,
+            # against 0 and none for the stripped probe.
+            #
+            # EVERY ASSERTION HERE MUST BE PLATFORM-PORTABLE, AND `file` OUTPUT
+            # IS NOT (bd pg2-lpkxm). This check originally asserted that `file`
+            # said "statically linked" (for `CGO_ENABLED=0`) and ", stripped"
+            # (for `ldflags`), baselined against Linux `file` output. On
+            # aarch64-darwin the probe's `file` line is
+            # `Mach-O 64-bit executable arm64` (`pkgs.file` in the sandbox spells
+            # it `Mach-O 64-bit arm64 executable, flags:<|DYLDLINK|PIE>`) and so
+            # contains NEITHER string: the first assertion failed and the second
+            # would have failed immediately after it, breaking `nix flake check`
+            # for the whole repo on this system. The linkage assertion is also
+            # UNSATISFIABLE on darwin rather than merely mismeasured -- there is
+            # no static libSystem, so a Go binary is always dynamically linked
+            # there whatever `CGO_ENABLED` is -- and it was redundant besides:
+            # assertion 3 below reads Go's OWN recorded build setting, which is
+            # authoritative on every platform and differential against the `pn`
+            # baseline. So it is gone, and MUST NOT be reintroduced. The
+            # `ldflags` assertion is NOT redundant (`-s -w` is not recorded in
+            # the build settings), so it is kept and asked portably.
+            #
+            # `nm` is the wrong tool for that and MUST NOT be substituted for
+            # `go tool nm`: on a stripped Mach-O it still lists the 58 undefined
+            # dynamic-linker imports that `-s -w` does not remove, so it reports
+            # symbols for a binary that has no symbol table.
             go-builders-binary-passthrough =
               let
                 probe = goBuilders.mkGoBinary {
@@ -588,10 +614,11 @@
               in
               pkgs.runCommand "check-go-builders-binary-passthrough"
                 {
-                  nativeBuildInputs = [
-                    pkgs.go
-                    pkgs.file
-                  ];
+                  # `pkgs.file` is deliberately NOT here: every assertion below
+                  # asks Go's own tooling, for the portability reason in the
+                  # header. Re-adding it is the signal that a `file`-output
+                  # assertion is creeping back in.
+                  nativeBuildInputs = [ pkgs.go ];
                   inherit probe;
                   inherit (probe) version;
                 }
@@ -625,19 +652,19 @@
                     exit 1
                   }
 
-                  filetype="$(file -L "$bin")"
-                  echo "$filetype"
-                  case "$filetype" in
-                    *"statically linked"*) ;;
-                    *) echo "FAIL: binary is not statically linked, so CGO_ENABLED=0 did not take effect" >&2; exit 1 ;;
-                  esac
-                  # `-s -w` is not recorded in Go's build settings, so the absence
-                  # of the symbol table is the observable proof the caller's
-                  # ldflags reached the linker.
-                  case "$filetype" in
-                    *", stripped"*) ;;
-                    *) echo "FAIL: binary is not stripped, so ldflags = [ \"-s -w\" ] were dropped" >&2; exit 1 ;;
-                  esac
+                  # 5. `-s -w` is not recorded in Go's build settings, so the
+                  #    absence of the symbol table is the observable proof the
+                  #    caller's ldflags reached the linker. `go tool nm` lists
+                  #    DEFINED symbols only for a binary that still has one, so
+                  #    `main.main` -- which every Go program defines, and which
+                  #    assertion 2 just proved is present at LINK time by running
+                  #    the -X-injected version -- is absent exactly when `-s`
+                  #    applied. See the header for why this is not `file` or `nm`.
+                  echo "defined symbols: $(go tool nm "$bin" | grep -cv ' U ' || true)"
+                  if go tool nm "$bin" | grep -q 'main\.main'; then
+                    echo "FAIL: binary retains the main.main symbol, so ldflags = [ \"-s -w\" ] were dropped" >&2
+                    exit 1
+                  fi
 
                   touch $out
                 '';
