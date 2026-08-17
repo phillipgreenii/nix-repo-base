@@ -140,7 +140,13 @@ a unit `go list` refuses to enumerate.
 
 From that set, the tool MUST drop any dir nested under another candidate dir:
 `pg-go-mutate` walks its PATH argument RECURSIVELY, so an ancestor's run already covers its
-descendants. Measured: 233 candidate dirs, 17 nested, leaving **216 units**.
+descendants.
+
+**Every count in this spec is a snapshot, and the implementation MUST re-derive them rather
+than hardcode them.** Measured twice on 2026-08-17: 233 candidates / 17 nested / 216 units in
+the morning, and 232 / 17 / **215** hours later, the difference being ordinary Go churn in
+`claude-extended-tool-approver`. A plan or test that pins the number will be wrong by the time
+it lands; `--dry-run` reporting the plan size is the check, not a constant.
 
 ### 5.3 Subtree units, and the one pathological case
 
@@ -154,8 +160,15 @@ files, 10,937 non-test LOC, 615 test functions** — next largest is 5,507 LOC. 
 The subtree contains `internal/workspace/smoke/`, where all six files carry
 `//go:build smoke` — including three NON-test files. A `./...` pattern silently SKIPS a
 package with no buildable files rather than failing, so the parent unit passes both guards
-while those three files are mutated with no test visibility at all. That yields unkillable
-"survivors", which is the false-gap class this tool exists to prevent.
+while those three files are mutated with no test visibility at all, and its results for them
+are meaningless.
+
+Exactly WHICH bucket those mutants land in is not asserted here: gomu discovers files by
+walking and parsing rather than through `go/packages`, so they are mutated, but its per-mutant
+compile precheck runs with the working directory at the mutated file's own directory, and a
+package whose every file is build-excluded cannot compile — so `notViable`/`errors` is at
+least as likely as `survived`. Either way the unit's output for that package carries no
+information, which is what matters. Measure it once if a plan needs the distinction.
 
 So the disposition is explicit rather than aspirational:
 
@@ -219,19 +232,27 @@ suites in question drive real external state: `pb`'s `contract` tests "drive rea
 (and optionally pn)", `ccpool`'s `contract` harness needs `tmux`/`claude`/`sqlite3` and
 builds-and-execs the binary — which gomu's `-overlay` never reaches, so its mutants are
 meaningless anyway — and `pa-monitor`'s `hostile` suites spawn daemons, bind sockets and
-recycle PIDs. No unattended gate sets any of these tags, and neither should this tool
-without being asked. That reasoning applies equally to `contract`, which is why it is not a
-default either.
+recycle PIDs. **No gate runs any of these suites PER MUTANT**, and neither should this tool
+without being asked. (The per-gate picture differs and the distinction is not needed for the
+decision: `pn-smoke-tests` IS a `nix flake check` attribute that sets `-tags smoke`, once;
+`contract` runs only via the on-demand `ccpool-contract` / `pb-contract` apps, both documented
+as deliberately not flake checks; nothing in the workspace sets `-tags hostile`.) The
+arithmetic applies equally to `contract`, which is why it is not a default either.
 
-Consequences that MUST be documented, because they differ by unit shape:
+**THE GENERAL RULE: a non-empty `tags_withheld` means that unit's survivors are UNANALYSED,
+whatever its shape.** The triage protocol MUST apply that rule first (section 10, item 6). The
+shape-specific cases below explain how the symptom differs; they do not narrow the rule.
 
-- **Leaf unit, all tests behind a withheld tag** — `pg-go-mutate`'s guards see no test files
-  (GOFLAGS is exported before them), so the unit classifies `no-tests` or `unhealthy`. That
-  is correct reporting.
-- **Subtree unit containing a fully-gated package** — the guards pass and the gated files are
-  mutated with no test visibility, producing unkillable survivors (5.3). This is NOT correct
-  reporting, so the unit record MUST carry the withheld set and the triage protocol MUST
-  treat its survivors as unanalysed (section 10, item 6).
+- **Partially-gated tests, source visible — the common case.** E.g.
+  `pa-monitor/internal/daemon`: 47 test files, 2 behind `//go:build hostile`. The guards pass,
+  the unit records `done`, and every mutant covered only by those two files survives
+  unkillably. Nothing about the status distinguishes this from a genuine gap, which is exactly
+  why the general rule is keyed on `tags_withheld` and not on status.
+- **Leaf unit, ALL tests behind a withheld tag.** `pg-go-mutate`'s guards see no test files
+  (GOFLAGS is exported before them), so the unit classifies `no-tests` or `unhealthy` — the
+  one shape where the status itself is a warning.
+- **Subtree unit containing a fully-gated package.** The guards pass and that package's files
+  are analysed with no test visibility (5.3).
 
 ## 6. Durable state
 
@@ -341,6 +362,15 @@ machine-readably (`bd create --silent` prints the id alone).
 project. Without it, a `--no-beads` sweep leaves predicate 2 true for all 16 projects and
 the next ordinary invocation files 16 beads at once against artifacts of arbitrary age.
 
+Two consequences of a marker carrying no `bead` id, both of which MUST be handled:
+
+- When the latest bead record has NO id, the tool FILES rather than comments. Otherwise a
+  `--no-beads` run followed by a `--retry` would fire the amend path and `bd comment` on
+  nothing.
+- `--no-beads` MUST NOT write a marker over a project that already has a FILED bead record.
+  Doing so would make predicate 2 false forever and silently cancel a pending amend, which
+  reopens the retry-findings-unreachable hole the newer-record clause exists to close.
+
 A project with ZERO units satisfies predicate 2 vacuously. None exists today (minimum is 1),
 but the tool MUST skip a zero-unit project rather than file an empty bead.
 
@@ -370,11 +400,16 @@ with no artifact behind it.
 `flock(1)` is absent on darwin (verified), so the lock is a directory created with `mkdir`,
 atomic on APFS, stamped with the holder's PID and start time.
 
-Stale reclaim MUST be atomic and MUST NOT be a plain `mv`: with a leftover
+Stale reclaim MUST be atomic, and the destination MUST NOT already exist: with a leftover
 `lock.stale.<pid>` directory from an earlier reclaim, `mv lock lock.stale.$$` moves `lock`
 INSIDE it and still returns 0, so "proceed only if the rename succeeded" stops meaning what
-it says. Use `mv -T` (coreutils is a runtimeDep) against a `mktemp -d`-unique destination.
-Exactly one racer can win an atomic `rename(2)`; the losers see ENOENT and refuse.
+it says. Renaming onto a `mktemp -d`-unique, NON-EXISTENT destination is already a plain
+exactly-one-winner `rename(2)`; the losers see ENOENT and refuse. `mv -T` MAY be used as a
+belt-and-braces guard, but it MUST NOT be justified by "coreutils is a runtimeDep" — section 9
+explains that `runtimeDeps` are appended with `--suffix`, so that guarantees only that SOME
+`mv` is on PATH, and `/usr/bin/mv` has no `-T`. Resolve it explicitly or rely on the unique
+destination.
+
 Read-then-act reclaim is rejected — two sweeps would both read the same dead PID and both
 proceed, defeating G1.
 
@@ -473,8 +508,13 @@ timed-out fraction exceeds the threshold classifies `inconclusive`, not `done`.
 
 The fraction is computed from the `--json` artifact (6.4) as
 `timedOut / (killed + survived + notViable + timedOut + errors)`. The denominator is summed
-from the buckets because `pgm_worklist_json` does not carry a total. The value is used
-transiently to classify one unit and MUST NOT be written to the ledger (N1).
+from the buckets because `pgm_worklist_json` copies `.statistics` but not the engine's
+top-level `totalMutants`. It MUST be guarded against zero: a report can carry
+`totalMutants > 0` with an empty `statistics` object and still pass `pgm_report_sane`, so an
+unguarded division would abort the unit on a report the engine considered acceptable. A zero
+denominator classifies `failed`, not `inconclusive`.
+
+The value is used transiently to classify one unit and MUST NOT be written to the ledger (N1).
 
 ### 7.4 The watchdog
 
@@ -552,10 +592,18 @@ The mechanism is easy to state backwards. `mkBashScript` appends `runtimeDeps` w
 `--suffix PATH`, i.e. as a FALLBACK after the caller's PATH, so an ambient tool already wins
 — listing them could not displace the machine's wrapper. The real hazard is the opposite: a
 `runtimeDeps` entry would provide a SILENT FALLBACK to an unwrapped `pg-go-mutate` or an
-unmanaged `bd` when the wrapped one is absent. The unwrapped script accepts whatever `gomu`
-is on PATH, including an unattributable `gomu version dev` build (bead `pg2-afk4p`), and a
-`bd` from outside the machine wrapper loses `BEADS_DOLT_AUTO_START=0` and can spawn a
-competing dolt server on port 25252. With no fallback, the preflight fails loudly instead.
+unmanaged `bd` when the wrapped one is absent. A `bd` from outside the machine wrapper loses
+`BEADS_DOLT_AUTO_START=0` and can spawn a competing dolt server on port 25252. With no
+fallback, the preflight fails loudly instead.
+
+FRESHNESS NOTE, 2026-08-17: the engine half of that argument has WEAKENED since the ruling
+below was given. `pg2-afk4p` landed on main at `8b2f1ca`, adding
+`modules/pg-go-mutate/pg-go-mutate/gomu-pin.nix`, so the unwrapped package now bakes
+`PGM_PINNED_GOMU_VERSION` and asserts E1 on its own — it no longer "accepts whatever `gomu` is
+on PATH". The `bd` half is untouched and still carries this section on its own. The operator's
+wrapper-only ruling therefore STANDS as an executed decision and MUST NOT be re-derived from
+`pg2-afk4p`'s new state; a later reader who wants to revisit it needs a fresh operator ruling,
+not this note.
 
 `pg2-un41a` is therefore a hard prerequisite, wired as a blocking edge: no consumer currently
 imports `homeModules.pg-go-mutate`, so the command does not exist on this machine.
@@ -595,10 +643,12 @@ this context:
    killing it needs an input differing only in lexicographic order. Record the judgement.
 5. Verify per mutant on `file:line:type`. Survivor totals move by a mutant or two between runs
    on identical source, so a count dropping by one is indistinguishable from noise.
-6. Check `tags_withheld` FIRST. A leaf unit whose tests are all behind a withheld tag will
-   read as `no-tests`/`unhealthy`; a SUBTREE unit containing a fully-gated package passes the
-   guards and yields unkillable survivors (5.3). In both cases those survivors are UNANALYSED
-   and MUST NOT be filed as gaps until re-run with `--auto-tags` widened deliberately.
+6. Check `tags_withheld` FIRST, before reading any survivor. If it is non-empty, that unit's
+   survivors are UNANALYSED and MUST NOT be filed as gaps until re-run with `--auto-tags`
+   widened deliberately — whatever the unit's status. The status is NOT a reliable warning:
+   the common shape is partially-gated tests over visible source (e.g.
+   `pa-monitor/internal/daemon`, 47 test files with 2 behind `hostile`), which records `done`
+   and looks indistinguishable from a genuine gap. See 5.5 for the three shapes.
 
 ## 11. Nix wiring
 
@@ -746,6 +796,10 @@ Mocks live in a `mktemp -d` OUTSIDE any git working tree. No test asserts `--ver
 
 ## 15. Landing order
 
+0. **Rebase this branch onto current main first.** The spec branch forked at `31e3b57`, and
+   main has since advanced to `8b2f1ca` — including `pg2-afk4p`, which touches
+   `modules/pg-go-mutate/pg-go-mutate/` and `home/pg-go-mutate/default.nix`, i.e. files steps
+   3 and 4 both edit. Rebasing before writing code avoids planning against a stale tree.
 1. **ADR first.** Record the state-root layout, the ledger schema and unit-key format, the
    "one triage bead per project, never an epic" workflow rule, and the exit-code reallocation
    of a shipped public command. All four are compatibility surfaces, and this repo's own rule
