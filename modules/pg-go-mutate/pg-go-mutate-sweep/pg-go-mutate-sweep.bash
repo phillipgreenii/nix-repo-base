@@ -166,3 +166,49 @@ pgms_check_slug_collisions() { # <root>
   rm -f "$seen_file"
   return "$rc"
 }
+
+# Statuses whose re-attempt is likely to differ. This is a REAL partition, and
+# `--retry transient` is its shorthand; by default NO status is re-attempted, so
+# a re-run always makes forward progress and never loops on a broken unit.
+_PGMS_TRANSIENT="not-enumerable unhealthy vanished inconclusive timeout failed"
+
+pgms_append_record() { # <json-line>
+  mkdir -p "$(pgms_state_root)"
+  printf '%s\n' "$1" >>"$(pgms_ledger_path)"
+}
+
+# Per-line validation, not `jq -s`: a kill -9 can truncate the final line, and
+# slurping would then fail over the WHOLE ledger rather than skipping one line.
+pgms_valid_lines() {
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 && printf '%s\n' "$line"
+  done
+}
+
+pgms_replay_units() {
+  local ledger
+  ledger="$(pgms_ledger_path)"
+  [ -f "$ledger" ] || return 0
+  pgms_valid_lines <"$ledger" |
+    jq -rs 'map(select(.kind == "unit")) | group_by(.unit) | map(last)
+            | .[] | "\(.unit)\t\(.status)"'
+}
+
+pgms_unit_status() { # <unit-key>
+  pgms_replay_units | awk -F'\t' -v u="$1" '$1 == u { print $2 }' | tail -1
+}
+
+pgms_unit_needs_run() { # <unit-key> <retry-spec>
+  local unit="$1" spec="${2:-}" status s
+  status="$(pgms_unit_status "$unit")"
+  [ -z "$status" ] && return 0
+  [ -z "$spec" ] && return 1
+  if [ "$spec" = "transient" ]; then
+    for s in $_PGMS_TRANSIENT; do [ "$s" = "$status" ] && return 0; done
+    return 1
+  fi
+  printf ',%s,' "$spec" | grep -qF ",$status," && return 0
+  return 1
+}

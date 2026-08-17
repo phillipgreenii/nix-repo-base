@@ -146,3 +146,66 @@ _mkmod() { # <dir> <module-path>
   [ "$(printf '%s\n' "$output" | head -1)" = "aproj#one" ]
   [ "$(printf '%s\n' "$output" | sed -n 2p)" = "zproj#one" ]
 }
+
+_ledger() { mkdir -p "$(pgms_state_root)"; cat >"$(pgms_ledger_path)"; }
+
+@test "replay keeps the LAST record per unit" {
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"failed"}
+{"kind":"unit","unit":"p#a","status":"done"}
+EOF
+  run pgms_unit_status "p#a"
+  [ "$output" = "done" ]
+}
+
+@test "replay tolerates a truncated final line" {
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"done"}
+{"kind":"unit","unit":"p#b","sta
+EOF
+  run pgms_unit_status "p#a"
+  [ "$output" = "done" ]
+  run pgms_unit_status "p#b"
+  [ -z "$output" ]
+}
+
+@test "replay ignores bead records when building unit state" {
+  _ledger <<'EOF'
+{"kind":"bead","project":"p","bead":"pg2-x","action":"filed"}
+{"kind":"unit","unit":"p#a","status":"done"}
+EOF
+  run pgms_replay_units
+  [ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+  [[ "$output" == "p#a	done" ]]
+}
+
+@test "a recorded unit does not need a run by default" {
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"failed"}
+EOF
+  run pgms_unit_needs_run "p#a" ""
+  [ "$status" -eq 1 ]
+}
+
+@test "an unrecorded unit needs a run" {
+  mkdir -p "$(pgms_state_root)"; : >"$(pgms_ledger_path)"
+  run pgms_unit_needs_run "p#zzz" ""
+  [ "$status" -eq 0 ]
+}
+
+@test "--retry selects by status and 'transient' expands to the cohort" {
+  _ledger <<'EOF'
+{"kind":"unit","unit":"p#a","status":"failed"}
+{"kind":"unit","unit":"p#b","status":"done"}
+{"kind":"unit","unit":"p#c","status":"timeout"}
+EOF
+  run pgms_unit_needs_run "p#a" "failed";    [ "$status" -eq 0 ]
+  run pgms_unit_needs_run "p#b" "failed";    [ "$status" -eq 1 ]
+  run pgms_unit_needs_run "p#c" "transient"; [ "$status" -eq 0 ]
+  run pgms_unit_needs_run "p#b" "transient"; [ "$status" -eq 1 ]
+}
+
+@test "append writes one line and creates the state root" {
+  pgms_append_record '{"kind":"unit","unit":"p#a","status":"done"}'
+  [ "$(grep -c . "$(pgms_ledger_path)")" -eq 1 ]
+}
