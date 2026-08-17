@@ -44,3 +44,7 @@ teardown() {
 @test "unit key parses on the FIRST hash" {
   [ "$(pgms_unit_pkg "a/b#c/d#e")" = "c/d#e" ]
 }
+
+@test "unit project parses on the FIRST hash" {
+  [ "$(pgms_unit_project "a/b#c/d#e")" = "a/b" ]
+}
