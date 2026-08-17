@@ -241,12 +241,15 @@ down. Detecting the no-op is cheap; skipping the fork is not, and is not attempt
 
 The short-circuit above covers the case where NOTHING was synced. The residual case
 is MIXED: `origin` had new commits for some repo, so Stage 2 really did rebase and
-the run is not a no-op, while a DIFFERENT repo's primary still carries locally
-landed but unpublished commits. A consumer pinning that second repo is stale
-against the target member's committed HEAD, the target is absent from
-`pnwf land-plan` (it is an ancestor of its primary — nothing to land), so step 5's
-exemption correctly does not apply and validate halts. The rev the pin must
-converge onto is not published yet, so again only the POST publish can converge it.
+the run is not a no-op, while a DIFFERENT repo's primary either still carries
+locally landed but unpublished commits, or is already fully published while a
+consumer's pin still lags it — e.g. left behind by an earlier `pn workspace push`
+that was rejected non-fast-forward partway through (bd `pg2-olk6c`). Either way the
+target is absent from `pnwf land-plan` (it is an ancestor of its primary — nothing
+to land), so step 5's exemption correctly does not apply and validate halts. When
+the target itself is unpublished, only the POST publish converges the pin (E-2's
+first case); when the target is already published, only POST's relock half does
+(E-2's second case).
 
 This is the ONE sanctioned deviation from "do not work around a broken validate",
 and it is bounded:
@@ -256,24 +259,42 @@ and it is bounded:
   from any other check, or a `pn workspace build` failure, and there is NO escape —
   HALT and report.
 - **E-2** For each such finding's TARGET you MUST prove the drift is
-  unpublished-local, and MUST record the readings:
+  convergeable by what remains of this run, and MUST record the readings:
 
   ```bash
   cd <CANONICAL_ROOT> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace doctor --json |
     jq -r '.findings[] | select(.check == "branch-synced") | "\(.repo)\t\(.message)"'
   ```
 
-  The target's `branch-synced` line MUST carry `ahead N` with `N > 0` and MUST NOT
-  carry `behind M`. `ahead` means the primary holds commits `origin` has not seen,
-  which is exactly what publishing fixes. A `behind`, a divergence, or no line at
-  all means publishing will NOT converge that pin — there is NO escape, HALT.
+  Two shapes are admissible. Either the target's `branch-synced` line carries
+  `ahead N` with `N > 0` and no `behind` — the UNPUBLISHED-LOCAL case: the primary
+  holds commits `origin` has not seen, and E-4's early publish is what converges
+  the pin. Or the target has NO `branch-synced` line at all — the FULLY-SYNCED
+  case (bd `pg2-olk6c`): `doctor` only emits this check when local HEAD differs
+  from the resolved remote ref, so a target absent from the output is `ahead 0`,
+  `behind 0`, already published. E-4's early publish has nothing new to push for
+  that target, but step 5's PUBLISH step always performs its relock half for
+  every repo in topological order regardless of whether that repo itself needed a
+  fresh push (see step 5's description above) — so the stale consumer pin still
+  converges, onto the tip the target already has. What converges it there is that
+  relock, not a publish.
+
+  Any other shape is NOT admissible — there is NO escape, HALT. In particular a
+  `behind M` line, whether or not paired with an `ahead`, MUST HALT: an
+  ahead-and-behind target is a separate, genuinely unhandled hazard elsewhere in
+  this pipeline (`land-workforest`/ff-merge-to-main, bd `pg2-xl9ez`), so its
+  `ahead` half MUST NOT be treated as the unpublished-local case above. A plain
+  `behind` (no `ahead`), a `Skipped` line (remote comparison skipped / remote rev
+  unresolved), or any other shape is the same: nothing here converges it.
   (`branch-synced` is primary-mode only, so this MUST be run from the canonical
   root, not from the set. It is READ-ONLY: you MUST NOT pass `--fix`.)
 
-- **E-3** You MUST announce the escape in one line before acting — naming that the
-  publish runs EARLY, and which repos' unpublished commits it publishes. This is an
-  announcement, NOT a new approval gate: the repos, the remote and the push are the
-  ones the invocation already authorized, and only the ORDER changes.
+- **E-3** You MUST announce the escape in one line before acting — naming that
+  step 5 runs EARLY, which repos' unpublished commits it publishes, and which
+  already-published targets (E-2's fully-synced case) it is relying on step 5's
+  relock to converge instead. This is an announcement, NOT a new approval gate:
+  the repos, the remote and the push are the ones the invocation already
+  authorized, and only the ORDER changes.
 - **E-4** The sequence is publish, re-sync, re-validate:
   1. Run step 5 (POST) now, from the canonical root. It publishes the already-landed
      backlog and relocks each consumer's sibling inputs against the newly published
