@@ -129,7 +129,61 @@ EOF
 
 @test "pgm_require_engine skips the comparison when no version is pinned" {
   make_version_stub dev
+  # Both seams absent -- the raw-source and bats case, which has no build-time
+  # pin either (the nix check for the LIBRARY injects no mkBashScript config).
+  unset PG_GO_MUTATE_GOMU_VERSION PGM_PINNED_GOMU_VERSION
+  run pgm_require_engine
+  [ "$status" -eq 0 ]
+}
+
+# The gap this closes: a consumer who installs pkgs.pg-go-mutate directly sets
+# NEITHER env var, so before the build-time pin existed the E1 comparison skipped
+# itself on exactly the install path that also lacks the W9 store-path binding.
+@test "pgm_require_engine falls back to the build-time pin when the env var is unset (spec E1)" {
+  make_version_stub dev
   unset PG_GO_MUTATE_GOMU_VERSION
+  # NOT exported, deliberately: the assembled script assigns it as a plain shell
+  # variable (mkBashScript's `config`, not `exportedConfig`), so these cases
+  # reproduce that shape rather than a stronger one. pgm_require_engine reads it
+  # through bash's dynamic scoping from the sourced library, which is a separate
+  # file shellcheck cannot follow from here.
+  # shellcheck disable=SC2034  # read by the sourced pg-go-mutate-lib
+  PGM_PINNED_GOMU_VERSION=0.2.1
+  run pgm_require_engine
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"version mismatch"* ]]
+  [[ "$output" == *0.2.1* ]]
+}
+
+@test "pgm_require_engine accepts the build-time pin when the engine matches it" {
+  make_version_stub 0.2.1
+  unset PG_GO_MUTATE_GOMU_VERSION
+  # shellcheck disable=SC2034  # ditto
+  PGM_PINNED_GOMU_VERSION=0.2.1
+  run pgm_require_engine
+  [ "$status" -eq 0 ]
+}
+
+# The escape hatch survives, but it is now EXPLICIT rather than a side effect of
+# an unset variable -- which is what let it coincide with the unprotected install
+# path in the first place.
+@test "pgm_require_engine treats an empty PG_GO_MUTATE_GOMU_VERSION as a deliberate opt-out" {
+  make_version_stub dev
+  export PG_GO_MUTATE_GOMU_VERSION=
+  # shellcheck disable=SC2034  # ditto
+  PGM_PINNED_GOMU_VERSION=0.2.1
+  run pgm_require_engine
+  [ "$status" -eq 0 ]
+}
+
+# The home-manager module's value is the tighter check (it is read from the
+# store-path-bound package's own derivation), so it MUST win over the pin baked
+# into the script at build time.
+@test "pgm_require_engine prefers PG_GO_MUTATE_GOMU_VERSION over the build-time pin" {
+  make_version_stub 0.3.0
+  export PG_GO_MUTATE_GOMU_VERSION=0.3.0
+  # shellcheck disable=SC2034  # ditto
+  PGM_PINNED_GOMU_VERSION=0.2.1
   run pgm_require_engine
   [ "$status" -eq 0 ]
 }

@@ -39,6 +39,22 @@ WRAPPER
     SCRIPT="$TEST_DIR/pg-go-mutate-wrapper"
   fi
   export SCRIPT
+
+  # The version every stub engine below reports, and the value driven through the
+  # PG_GO_MUTATE_GOMU_VERSION seam. Read from the environment rather than
+  # hardcoded: mkBashScript exports every `config` entry into this check's env
+  # (lib/bash-builders.nix), so this IS the string the derivation baked in, and
+  # gomu-pin.nix stays the single source. That matters beyond tidiness — the baked
+  # pin makes the E1 comparison fire in every end-to-end case here, so a hardcoded
+  # literal would make a legitimate pin bump break six cases that are not about
+  # the pin at all. Exported because the stubs are child processes.
+  #
+  # The fallback is reached only on a raw-source run, which carries no baked pin:
+  # there both E1 seams are absent, so pgm_require_engine skips the comparison
+  # outright and the value is immaterial — it need only be non-empty and unequal
+  # to what the negative cases' stubs report.
+  PGM_TEST_PINNED_VERSION="${PGM_PINNED_GOMU_VERSION:-0.0.0-raw-source}"
+  export PGM_TEST_PINNED_VERSION
 }
 
 teardown() {
@@ -165,7 +181,7 @@ write_survivor_stub() {
   cat >"$stub" <<EOF
 #!/usr/bin/env bash
 if [ "\${1:-}" = version ]; then
-  printf 'gomu version 0.2.1\n'
+  printf 'gomu version %s\n' "\$PGM_TEST_PINNED_VERSION"
   exit 0
 fi
 cat >mutation-report.json <<JSON
@@ -258,7 +274,7 @@ touch "$PGM_TEST_RAN_MARKER"
 EOF
   chmod +x "$stub"
   export PG_GO_MUTATE_GOMU="$stub"
-  export PG_GO_MUTATE_GOMU_VERSION=0.2.1
+  export PG_GO_MUTATE_GOMU_VERSION="$PGM_TEST_PINNED_VERSION"
   PGM_TEST_RAN_MARKER="$TEST_DIR/engine-ran"
   export PGM_TEST_RAN_MARKER
   run "$SCRIPT" "$target"
@@ -272,10 +288,89 @@ EOF
   target="$(make_module pinnedengine)"
   PG_GO_MUTATE_GOMU="$(write_survivor_stub "$target")"
   export PG_GO_MUTATE_GOMU
-  export PG_GO_MUTATE_GOMU_VERSION=0.2.1
+  export PG_GO_MUTATE_GOMU_VERSION="$PGM_TEST_PINNED_VERSION"
   run "$SCRIPT" "$target"
   [ "$status" -eq 0 ]
   [[ "$output" == *"surviving mutants"* ]]
+}
+
+# The bead's scenario, driven through the SHIPPED artifact: a consumer who
+# installs pkgs.pg-go-mutate (or takes it from overlays.default) instead of
+# importing homeModules.pg-go-mutate sets NEITHER PG_GO_MUTATE_GOMU_VERSION nor
+# the store-path binding, so this run has only the build-time pin to protect it.
+#
+# `env -u PGM_PINNED_GOMU_VERSION` is load-bearing, not hygiene: mkBashScript
+# exports every `config` entry into this check's environment
+# (lib/bash-builders.nix:417), so without it the script would find the pin
+# AMBIENTLY and this case would pass just as well against an artifact that baked
+# nothing in. Unsetting it leaves the assignment rendered into the shipped script
+# as the only place the expectation can come from.
+#
+# What each half proves, claimed no higher than it goes:
+#
+#   * negative -- with the home-manager seam absent AND the ambient copy removed,
+#     an unpinned engine is refused and never invoked. Only the baked assignment
+#     can have supplied the expectation.
+#   * positive -- the same artifact still ACCEPTS an engine reporting the pinned
+#     version, so the refusal is a pin and not a blanket abort. This fixture's
+#     reported version and the baked assignment both derive from the single
+#     `config` entry, so what it establishes is that the assignment really is IN
+#     the artifact rather than only in the check environment.
+#
+# Neither half says anything about the OVERLAY, and no bats case here can: the
+# engine is a stub this file writes, and pkgs.phillipgreenii.gomu is not
+# resolvable in this flake at all. Agreement between the pin and the engine the
+# overlay ships is checked at EVAL, by the assertion in
+# home/pg-go-mutate/default.nix -- the only place both values are visible at once.
+# Skipped on raw source, which has no build-time pin by construction.
+@test "the build-time pin makes a direct install of the package reject an unpinned engine (spec E1)" {
+  [ -n "${SCRIPT_UNDER_TEST:-}" ] || skip "assembled-artifact case: a raw-source run carries no build-time pin"
+  target="$(make_module bakedpin)"
+  stub="$TEST_DIR/stub-gomu-dev-nopin"
+  cat >"$stub" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then
+  printf 'gomu version dev\n  commit: none\n  built:  unknown\n'
+  exit 0
+fi
+touch "$PGM_TEST_RAN_MARKER"
+EOF
+  chmod +x "$stub"
+  export PG_GO_MUTATE_GOMU="$stub"
+  # The whole point: the home-manager module's seam is ABSENT here.
+  unset PG_GO_MUTATE_GOMU_VERSION
+  PGM_TEST_RAN_MARKER="$TEST_DIR/engine-ran"
+  export PGM_TEST_RAN_MARKER
+  run env -u PGM_PINNED_GOMU_VERSION "$SCRIPT" "$target"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"version mismatch"* ]]
+  [ ! -e "$PGM_TEST_RAN_MARKER" ]
+
+  # ... and the assignment baked into the artifact still ACCEPTS the version it
+  # pins, so the protection is a pin and not a blanket refusal. The stub reports
+  # $PGM_TEST_PINNED_VERSION, which this test process still holds even though the
+  # child no longer does.
+  PG_GO_MUTATE_GOMU="$(write_survivor_stub "$target")"
+  export PG_GO_MUTATE_GOMU
+  run env -u PGM_PINNED_GOMU_VERSION "$SCRIPT" "$target"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"surviving mutants"* ]]
+}
+
+# The EXPECTATION is read from the environment, not hardcoded: mkBashScript
+# exports every `config` value into this check's env, so this compares the help
+# text against the very value the derivation baked in rather than a third copy.
+# The script under test, though, is run with that variable UNSET -- otherwise the
+# ambient copy would satisfy the --help branch and the test would pass against an
+# artifact that baked nothing in. The two directions are the point: the value
+# comes from the check environment, the behaviour from the artifact.
+@test "--help discloses the pinned engine version to a direct installer" {
+  [ -n "${SCRIPT_UNDER_TEST:-}" ] || skip "assembled-artifact case: a raw-source run carries no build-time pin"
+  [ -n "${PGM_PINNED_GOMU_VERSION:-}" ]
+  run env -u PGM_PINNED_GOMU_VERSION "$SCRIPT" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *ENGINE* ]]
+  [[ "$output" == *"pinned to gomu $PGM_PINNED_GOMU_VERSION"* ]]
 }
 
 @test "aborts when the engine is missing entirely rather than reporting an empty report" {
@@ -304,7 +399,7 @@ import "testing"
 func TestContract(t *testing.T) { t.Fatal("deliberately failing") }
 EOF
   export PG_GO_MUTATE_GOMU="$TEST_DIR/must-not-run"
-  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version 0.2.1\\n"; exit 0; fi\ntouch "%s/ran"\n' "$TEST_DIR" >"$PG_GO_MUTATE_GOMU"
+  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version %%s\\n" "$PGM_TEST_PINNED_VERSION"; exit 0; fi\ntouch "%s/ran"\n' "$TEST_DIR" >"$PG_GO_MUTATE_GOMU"
   chmod +x "$PG_GO_MUTATE_GOMU"
 
   run "$SCRIPT" --tags contract "$target"
@@ -331,7 +426,7 @@ func TestContract(t *testing.T) {
 EOF
   # Without --tags the guard genuinely cannot see any test file.
   export PG_GO_MUTATE_GOMU="$TEST_DIR/stub-unused"
-  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version 0.2.1\\n"; exit 0; fi\n' >"$PG_GO_MUTATE_GOMU"
+  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version %%s\\n" "$PGM_TEST_PINNED_VERSION"; exit 0; fi\n' >"$PG_GO_MUTATE_GOMU"
   chmod +x "$PG_GO_MUTATE_GOMU"
   run "$SCRIPT" "$target"
   [ "$status" -ne 0 ]
@@ -361,7 +456,7 @@ EOF
   cat >"$stub" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = version ]; then
-  printf 'gomu version 0.2.1\n'
+  printf 'gomu version %s\n' "$PGM_TEST_PINNED_VERSION"
   exit 0
 fi
 mkdir -p "${TMPDIR:-/tmp}/gomu_overlay_$$_1"
@@ -408,7 +503,7 @@ EOF
   target="$TEST_DIR/notamodule"
   mkdir -p "$target"
   export PG_GO_MUTATE_GOMU="$TEST_DIR/stub-unused-2"
-  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version 0.2.1\\n"; exit 0; fi\n' >"$PG_GO_MUTATE_GOMU"
+  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version %%s\\n" "$PGM_TEST_PINNED_VERSION"; exit 0; fi\n' >"$PG_GO_MUTATE_GOMU"
   chmod +x "$PG_GO_MUTATE_GOMU"
   run "$SCRIPT" "$target"
   [ "$status" -ne 0 ]

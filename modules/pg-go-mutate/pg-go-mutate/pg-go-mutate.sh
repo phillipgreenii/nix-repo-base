@@ -36,6 +36,25 @@ NOTES
   Cost is roughly (number of mutants) x (the package's test-suite runtime), so
   scope the run by passing a narrow PATH.
 EOF
+  # Printed OUTSIDE the quoted heredoc so the pinned version is the real baked
+  # one. Disclosed in --help, not only in the design doc, because this is the
+  # only place a consumer who installed the package DIRECTLY -- via
+  # pkgs.pg-go-mutate or overlays.default rather than homeModules.pg-go-mutate --
+  # will ever read it. Empty in a raw-source run, which has no build-time pin.
+  printf '\nENGINE\n'
+  if [ -n "${PGM_PINNED_GOMU_VERSION:-}" ]; then
+    printf '  This build is pinned to gomu %s and refuses to run against any other\n' "$PGM_PINNED_GOMU_VERSION"
+    # Backticks would trip SC2016 inside a single-quoted string, so the build
+    # name is quoted rather than code-fenced.
+    printf '  version, including a "dev" build (no release ldflags, so its results are\n'
+    printf '  unattributable). Installing via homeModules.pg-go-mutate additionally\n'
+    printf '  binds the engine by store path, so an ambient gomu cannot be used at all.\n'
+    printf '  PG_GO_MUTATE_GOMU overrides the binary; PG_GO_MUTATE_GOMU_VERSION\n'
+    printf '  overrides the expected version, and an EMPTY value skips the check.\n'
+  else
+    printf '  Running from raw source, so no engine version is pinned: whatever gomu\n'
+    printf '  resolves from PG_GO_MUTATE_GOMU or PATH is used unchecked.\n'
+  fi
 }
 
 target="."

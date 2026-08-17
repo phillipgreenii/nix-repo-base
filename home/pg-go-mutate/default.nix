@@ -20,6 +20,11 @@ let
     getExe
     ;
   cfg = config.phillipgreenii.pg-go-mutate;
+  # The SAME string the script derivation bakes in as PGM_PINNED_GOMU_VERSION.
+  # Imported rather than restated: two hand-maintained copies of a pinned version
+  # is a second source of truth, and the copy nobody exercises is the one that
+  # rots. See that file for the full contract.
+  pinnedGomuVersion = import ../../modules/pg-go-mutate/pg-go-mutate/gomu-pin.nix;
   # --set, not --suffix: the pin must be authoritative, so an ambient
   # ~/go/bin/gomu cannot substitute itself for the engine.
   wrapped = pkgs.symlinkJoin {
@@ -54,6 +59,42 @@ in
 
   config = mkIf cfg.enable {
     home.packages = [ wrapped ];
+
+    # The mechanism that keeps this module and the script's baked-in pin
+    # AGREEING. repo-base cannot check it itself: pkgs.phillipgreenii.gomu lives
+    # in phillipgreenii-nix-overlay, which consumes repo-base, so an input edge
+    # back would be a cycle -- this module, evaluated in a consumer's pkgs, is the
+    # only place both values are visible at once.
+    #
+    # Failing EVAL is deliberate, and it is the cheap direction. Left
+    # unenforced, a gomu bump in the overlay would move the version this module
+    # injects while the version baked into the shipped script stayed behind, and
+    # the drift would surface only as a runtime abort for whoever installed
+    # pkgs.pg-go-mutate directly -- the one consumer with no way to see why.
+    # Both halves are one string in one file, so the fix is a one-line
+    # coordinated change (that file, plus the overlay's sources.gomu).
+    #
+    # Compared with the `v` prefix normalized off both sides, which tolerates it
+    # on the gomuPackage side ONLY: the overlay strips the prefix off the fetched
+    # tag today, but that is its choice, not a contract. It does NOT make this
+    # assertion tolerant of a v-prefixed PIN, and MUST NOT be read that way --
+    # gomu-pin.nix rejects one at eval precisely because this normalization would
+    # otherwise hide it. The runtime check strips `v` from the version the ENGINE
+    # REPORTS and never from the expectation, so a pin written "v0.3.0" passes
+    # here and then aborts every run on BOTH install paths. That failure would
+    # not be spurious: it would be the only warning anyone gets, and it would
+    # arrive after the artifact shipped.
+    assertions = [
+      {
+        assertion = lib.removePrefix "v" cfg.gomuPackage.version == lib.removePrefix "v" pinnedGomuVersion;
+        message =
+          "phillipgreenii.pg-go-mutate: the pinned engine version disagrees with the one pg-go-mutate was built against. "
+          + "gomuPackage (${cfg.gomuPackage.name}) reports version '${cfg.gomuPackage.version}', but the script bakes in '${pinnedGomuVersion}' "
+          + "(modules/pg-go-mutate/pg-go-mutate/gomu-pin.nix in phillipg-nix-repo-base). "
+          + "Bump that file to match the engine and relock, or point gomuPackage at the engine the tool is pinned to; "
+          + "leaving them apart would make a direct install of pkgs.pg-go-mutate abort at runtime (spec E1).";
+      }
+    ];
 
     # Without this the tldr page is built into the store and reaches nobody:
     # `tldr pg-go-mutate` fails (spec T3). Sourced from cfg.package rather than

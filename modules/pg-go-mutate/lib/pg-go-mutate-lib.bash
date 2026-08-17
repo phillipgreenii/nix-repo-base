@@ -35,11 +35,25 @@ pgm_require_go() {
 #     that path never sets PG_GO_MUTATE_GOMU, so the store-path binding (W9) is
 #     bypassed and whatever `gomu` is on PATH is used.
 #
-# The expectation comes from the one place that knows it -- the home-manager
-# module, which sets PG_GO_MUTATE_GOMU_VERSION from the pinned package's
-# `version` beside the PG_GO_MUTATE_GOMU binding. When the var is UNSET the
-# comparison is skipped, because a raw-source run and the bats suites have no
-# pinned version to compare against (they stub the engine entirely).
+# The expectation is resolved from two seams, and which one answers decides how
+# tight the check is:
+#
+#   * PG_GO_MUTATE_GOMU_VERSION -- set by the home-manager module beside the
+#     PG_GO_MUTATE_GOMU binding, from the pinned package's own `version`. This is
+#     the tightest form available: it compares the engine at a KNOWN store path
+#     against what that very derivation claims, so a build whose release ldflags
+#     never ran is caught even if it is not the version this source expects.
+#   * PGM_PINNED_GOMU_VERSION -- baked into the shipped script at BUILD time from
+#     modules/pg-go-mutate/pg-go-mutate/gomu-pin.nix (mkBashScript `config`).
+#     This is what protects the DIRECT-install path described above: with no
+#     home-manager module in the picture neither env var is set, so the
+#     comparison used to skip itself on exactly the install path that also lacks
+#     the W9 binding -- the escape hatch coincided with the unprotected path.
+#
+# `${VAR-default}` without the colon: only an UNSET PG_GO_MUTATE_GOMU_VERSION
+# falls back to the baked pin, so setting it EMPTY is the deliberate opt-out. A
+# raw-source run and the bats suites need no opt-out -- they have no baked pin
+# either, so both seams are absent and the comparison is skipped as before.
 pgm_require_engine() {
   local bin raw first expected field
   local -a fields
@@ -49,7 +63,7 @@ pgm_require_engine() {
     return 1
   }
 
-  expected="${PG_GO_MUTATE_GOMU_VERSION:-}"
+  expected="${PG_GO_MUTATE_GOMU_VERSION-${PGM_PINNED_GOMU_VERSION-}}"
   [ -n "$expected" ] || return 0
 
   # Not `| head -1`: under the injected `pipefail` a SIGPIPE'd engine would fail
@@ -66,7 +80,7 @@ pgm_require_engine() {
   for field in "${fields[@]}"; do
     [ "${field#v}" = "$expected" ] && return 0
   done
-  pgm_die "engine version mismatch: expected gomu ${expected} (the pinned build), but ${bin} reports '${first}'. A 'dev' build has no release ldflags, so its results are unattributable (spec E1). Unset PG_GO_MUTATE_GOMU to use the pinned engine, or PG_GO_MUTATE_GOMU_VERSION to skip this check deliberately."
+  pgm_die "engine version mismatch: expected gomu ${expected} (the pinned build), but ${bin} reports '${first}'. A 'dev' build has no release ldflags, so its results are unattributable (spec E1). Unset PG_GO_MUTATE_GOMU to use the pinned engine, install via homeModules.pg-go-mutate to get it bound by store path, or set PG_GO_MUTATE_GOMU_VERSION to the EMPTY string to skip this check deliberately."
   return 1
 }
 

@@ -94,6 +94,15 @@ all five repos verified clean afterwards. The alternatives rewrite files in plac
   `gomu version dev`** — a `go install` build whose release ldflags never ran —
   so this spec's measurements are attributed to that build, not to a pinned
   release. The assertion in **E1** exists so this can never recur silently.
+- **E2** The expected version MUST be resolvable on EVERY install path, not only
+  the documented one. The wrapper therefore reads two seams: the home-manager
+  module's `PG_GO_MUTATE_GOMU_VERSION` when set, otherwise the version baked into
+  the script at build time (**W15**). An UNSET `PG_GO_MUTATE_GOMU_VERSION` MUST
+  NOT be the way the check is skipped: an unset variable is also the state of a
+  consumer who installed `pkgs.pg-go-mutate` directly, so a skip-when-unset
+  escape hatch coincides exactly with the install path that has no store-path
+  binding either (**W9**) and is therefore the one most in need of the assertion.
+  The deliberate opt-out MUST be an EXPLICITLY EMPTY `PG_GO_MUTATE_GOMU_VERSION`.
 
 ## 5. Architecture
 
@@ -303,6 +312,24 @@ buildGoModule rec {
   **releases**. `src.github` is nvchecker's `CheckGitHubRelease` and 404s on a
   tags-only repo; the documented fallback is `src.github_tag` +
   `src.include_regex`.
+- **W16** A bump of `sources.gomu` MUST be a COORDINATED cross-repo change: the
+  pinned version string in
+  `phillipg-nix-repo-base/modules/pg-go-mutate/pg-go-mutate/gomu-pin.nix` MUST be
+  moved in the same change, and both halves MUST land together. The two repos are
+  in LOCKSTEP and neither can be relocked alone — the wrapper module asserts at
+  EVAL that `gomuPackage.version` equals the pin (see "Wrapper and feature module
+  (repo-base)", **W15**), so either bump on its own fails eval for every consumer
+  that enables the feature: the overlay bump breaks whoever relocks the overlay,
+  and the pin bump breaks them until the overlay is relocked. Regenerating
+  `_sources` (**W2**) is therefore not the end of a gomu bump.
+  The version recorded in `gomu-pin.nix` MUST be the tag WITHOUT its leading
+  `v` — `sources.gomu.version` keeps the v-prefixed tag verbatim, whereas the
+  runtime check normalizes the prefix off the version the ENGINE REPORTS and never
+  off the expectation, so a v-prefixed pin passes the eval assertion and then
+  aborts every run on both install paths. `gomu-pin.nix` MUST assert its own
+  shape (non-empty, no leading `v`, a string) rather than leave that to a
+  reviewer, because both malformations are silent at eval and fatal at runtime,
+  and an EMPTY pin additionally reopens the unwrapped-package gap **W15** closes.
 
 ### 9.2 Wrapper and feature module (repo-base)
 
@@ -377,7 +404,30 @@ in
   `pkgs.phillipgreenii.gomu` at package build time inside repo-base, where that
   attribute does not exist. The script MUST read
   `"${PG_GO_MUTATE_GOMU:-gomu}"`, so the env var is simultaneously the
-  production binding, the escape hatch, and the bats stub seam (**T7**).
+  production binding, the escape hatch, and the bats stub seam (**T7**). W9
+  constrains the engine BINARY only; the expected VERSION is a plain string and
+  needs no overlay attribute, so it is baked at build time instead (**W15**).
+- **W15** The expected engine version MUST be baked into the script derivation
+  via `mkBashScript`'s `config` (as `PGM_PINNED_GOMU_VERSION`), so the unwrapped
+  package satisfies **E1** with no home-manager module in the picture. It MUST
+  have exactly ONE source — the `gomu-pin.nix` beside the script's `default.nix`
+  — read by both the script derivation and the home-manager module; a second
+  hand-maintained copy of the version string MUST NOT be introduced. That file
+  MUST live inside the script's `src` so a bump moves the per-source digest in
+  the derivation version (ADR 0006/0011); held outside `src` it would change the
+  shipped artifact while reporting an unchanged version. The home-manager module
+  MUST assert at eval time that `gomuPackage.version` equals that pinned string,
+  with the `v` prefix normalized off both sides — which tolerates the prefix on
+  the `gomuPackage` side only, and MUST NOT be read as licence to record a
+  v-prefixed PIN, whose shape **W16** constrains and `gomu-pin.nix` enforces:
+  repo-base cannot check the
+  agreement itself (`pkgs.phillipgreenii.gomu` exists only in a consumer's
+  `pkgs`, and the overlay flake consumes repo-base, so an input edge back would
+  be a cycle), and an unenforced agreement rots in the direction only a direct
+  installer can observe. The module MUST keep injecting
+  `PG_GO_MUTATE_GOMU_VERSION` from `gomuPackage.version` rather than from the
+  pinned string: read from the package actually bound by store path, it also
+  catches a mis-built package at that path.
 - **W14** The option namespace MUST be `phillipgreenii.pg-go-mutate`, matching
   `home/pjira` (`phillipgreenii.pjira`) and `home/pn` — **not**
   `phillipgreenii.programs.*`. The `programs.` prefix is required only by
@@ -468,16 +518,17 @@ phillipgreenii.pg-go-mutate.enable = true;
 
 ## 12. Risks
 
-| Risk                                                                            | Severity | Mitigation                                                                                                                                                                             |
-| ------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A package's tests already fail or do not compile ⇒ 100%, zero survivors, exit 0 | **High** | The link-and-pass guard plus the **C6** symmetric check. This is the most dangerous failure mode found.                                                                                |
-| gomu is pre-1.0 (v0.2.1), effectively single-maintainer, 42 stars               | Medium   | Pinned, MIT, small. The wrapper is a Facade, so the engine is replaceable without changing the developer- or agent-facing contract — which is why the command is not named after gomu. |
-| Pin defeated by an ambient `gomu` on PATH                                       | Medium   | **W9** store-path injection plus the **E1** version assertion.                                                                                                                         |
-| A `replace` directive pointing at a nix-materialized path                       | Medium   | The build guard. Live today: `pg-pr-zr`.                                                                                                                                               |
-| No `--tags` upstream                                                            | Low      | Fixed via `GOFLAGS` (**W11**), not merely warned about.                                                                                                                                |
-| Worklist instability run-to-run (±1 mutant, including viability)                | Low      | Per-mutant verification (**A4**) rather than count comparison.                                                                                                                         |
-| ~7.2% of mutants non-viable on modules that build                               | Low      | Inherent; no configuration avoids it. Accepted. Rev 1 claimed ~21%, which was an artifact of including the build-broken `pg-pr-zr`.                                                    |
-| Cost makes a module uncompletable                                               | Medium   | Scope-by-path is the only mode (**C7**), and **A6** puts the cost model in front of agents.                                                                                            |
+| Risk                                                                                                   | Severity | Mitigation                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A package's tests already fail or do not compile ⇒ 100%, zero survivors, exit 0                        | **High** | The link-and-pass guard plus the **C6** symmetric check. This is the most dangerous failure mode found.                                                                                                                                                                                                                                                                                |
+| gomu is pre-1.0 (v0.2.1), effectively single-maintainer, 42 stars                                      | Medium   | Pinned, MIT, small. The wrapper is a Facade, so the engine is replaceable without changing the developer- or agent-facing contract — which is why the command is not named after gomu.                                                                                                                                                                                                 |
+| Pin defeated by an ambient `gomu` on PATH                                                              | Medium   | **W9** store-path injection plus the **E1** version assertion, which **E2**/**W15** extend to the unwrapped package via a build-time pin — the direct-install path has no store-path binding, so the assertion is all it has.                                                                                                                                                          |
+| A `replace` directive pointing at a nix-materialized path                                              | Medium   | The build guard. Live today: `pg-pr-zr`.                                                                                                                                                                                                                                                                                                                                               |
+| No `--tags` upstream                                                                                   | Low      | Fixed via `GOFLAGS` (**W11**), not merely warned about.                                                                                                                                                                                                                                                                                                                                |
+| Worklist instability run-to-run (±1 mutant, including viability)                                       | Low      | Per-mutant verification (**A4**) rather than count comparison.                                                                                                                                                                                                                                                                                                                         |
+| ~7.2% of mutants non-viable on modules that build                                                      | Low      | Inherent; no configuration avoids it. Accepted. Rev 1 claimed ~21%, which was an artifact of including the build-broken `pg-pr-zr`.                                                                                                                                                                                                                                                    |
+| Cost makes a module uncompletable                                                                      | Medium   | Scope-by-path is the only mode (**C7**), and **A6** puts the cost model in front of agents.                                                                                                                                                                                                                                                                                            |
+| A gomu bump lands on one side only — `sources.gomu` without the pin, or the pin without `sources.gomu` | Medium   | **W16** records the coordinated-bump obligation in the overlay section, where a bumper reads it, rather than only beside the pin. The **W15** eval assertion makes the mismatch an EVAL failure with a named message instead of a runtime abort reaching only a direct installer, and the pin's own shape assertions reject the v-prefixed tag a bumper is most likely to copy across. |
 
 ## 13. Rejected alternatives
 
@@ -500,7 +551,38 @@ phillipgreenii.pg-go-mutate.enable = true;
 - **Homing the tool in agent-support.** Rejected: its capability leaves
   deliberately do not subscribe to `bundles.development`, and it sits downstream
   of repo-base, so repo-base and `support-apps` could not consume the tool.
-- **Pinning gomu in repo-base.** Rejected: **W6**.
+- **Pinning gomu in repo-base.** Rejected: **W6** — the PACKAGE, i.e. a
+  third-party fetch, stays in the overlay. Recording the expected VERSION string
+  in repo-base is not that alternative and is required by **W15**; it adds no
+  fetch, no `_sources`, and no third-party derivation.
+- **Withdrawing the unwrapped package** (`packages.pg-go-mutate` and the
+  `overlays.default` entry) so no unprotected install path exists. Rejected: they
+  are public flake outputs, an out-of-workspace consumer cannot be proven absent,
+  and **W15** makes the unwrapped package self-protecting instead — which is the
+  outcome the withdrawal was for.
+  Recorded because the reasoning above accounts for only half of it: **W15** is
+  itself a BEHAVIOUR BREAK for that same unprovable consumer, not merely a new
+  guard. `pkgs.pg-go-mutate` plus an ambient `gomu` previously RAN — wrongly and
+  silently, which is the defect — and now aborts with the E1 mismatch. Breaking
+  loudly is the required direction (**E1**: an unattributable build MUST NOT be
+  used as if it were the pinned one), and it is strictly gentler than withdrawing
+  the output, which would break the same consumer at eval with no diagnostic and
+  no override. The only candidate consumer is off this machine
+  (`twistcone/homelab`), so the blast radius is UNVERIFIABLE from here rather than
+  known to be nil. Mitigations, both reaching exactly that consumer: an
+  explicitly EMPTY `PG_GO_MUTATE_GOMU_VERSION` restores the old behaviour
+  deliberately (**E2**), and `--help` discloses the pin on the one install path
+  that reads no other documentation.
+- **Accepting the gap and documenting it** — stating in this spec that the
+  unwrapped package is unsupported for direct installation, and leaving the E1
+  assertion inert on that path. Rejected: it does not hold. The output stays
+  public and installable, so "unsupported" is a claim in a document the consumer
+  who needs it never reads, and the behaviour it permits is the SILENT failure —
+  an unattributable `gomu version dev` producing results that look valid, which is
+  the single outcome **E1** exists to prevent. It is also not cheaper: the pin
+  costs one string in one file plus one eval assertion, adds no fetch and no
+  third-party derivation (**W6**), and needs no new install path, so the
+  document-only option forgoes the enforcement and buys nothing in exchange.
 - **`go-gremlins/gremlins`.** Velocity collapsed — 13 commits in 12 months, none
   in the last 8 weeks; CI-gate flags broken from the CLI (#216); `--diff` broken
   in multi-module monorepos (#296), with subdirectory arguments (#278), and on
