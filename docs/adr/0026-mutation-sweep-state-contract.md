@@ -10,8 +10,9 @@
 `pg-go-mutate` mutation-testing diagnostic once per Go package across this workspace's six repos
 (design: `docs/superpowers/specs/2026-08-17-pg-go-mutate-sweep-design.md`, companion to
 `2026-08-14-pg-go-mutate-design.md`). A single invocation costs roughly `mutants x that package's
-test-suite runtime`; measured on this workspace on 2026-08-17, the smallest of the six repos alone
-took 38 minutes, and the two largest carry over a thousand test functions apiece across three
+test-suite runtime`; measured on this workspace on 2026-08-17, `pb` — a package inside
+`phillipgreenii-nix-agent-support`, 13 non-test `.go` files across 8 package dirs — took 38
+minutes, while the two heaviest modules carry over a thousand test functions apiece across three
 dozen package directories. Sweeping the whole workspace — roughly 216 units — cannot happen in one
 sitting.
 
@@ -87,21 +88,22 @@ unambiguously even though both halves contain `/`.
 | `14` | Target path is absent or not a directory.                                        |
 
 This is the only one of the four decisions that amends a SHIPPED, public command rather than
-introducing new state, which is why it is the most compatibility-relevant of the four. It is safe
-because the change is strictly additive: `10`–`14` are unused today, and every existing consumer
-(the tool's bats cases, `pg-go-mutate.md`, the `go-test-gaps` skill, the companion design spec)
-asserts only the `0`/non-zero dichotomy, never a specific non-zero value. `13` exists because it
-fails IDENTICALLY for every unit in a sweep and must abort the whole run rather than record 216
-failures for the same cause; `14` exists so a package directory that vanishes mid-sweep — a live
-workspace can have branches switched under it while a multi-hour sweep runs — is distinguishable
-from the sweep having built a malformed invocation.
+introducing new state, which is why it is the most compatibility-relevant of the four. The new
+codes MUST be strictly additive and MUST NOT break any existing consumer: `10`–`14` are unused
+today, and every existing consumer (the tool's bats cases, `pg-go-mutate.md`, the `go-test-gaps`
+skill, the companion design spec) asserts only the `0`/non-zero dichotomy, never a specific
+non-zero value. `13` exists because it fails IDENTICALLY for every unit in a sweep, so the sweep
+MUST abort the whole run on it rather than record 216 failures for the same cause; `14` exists so
+a package directory that vanishes mid-sweep — a live workspace can have branches switched under it
+while a multi-hour sweep runs — is distinguishable from the sweep having built a malformed
+invocation.
 
 ### 4. One triage bead per project, never an epic
 
-On finishing a project, the sweep files (or amends) exactly ONE bead carrying that project's
-findings and the triage protocol needed to act on them — never an epic. Rationale: an open epic
-sits in `bd ready` permanently, so an epic-shaped bead for each of 16 long-lived projects would
-never leave the ready queue.
+On finishing a project, the sweep MUST file (or amend) exactly ONE bead carrying that project's
+findings and the triage protocol needed to act on them, and MUST NOT file an epic. Rationale: an
+open epic sits in `bd ready` permanently, so an epic-shaped bead for each of 16 long-lived
+projects would never leave the ready queue.
 
 ### Rejected alternatives
 
