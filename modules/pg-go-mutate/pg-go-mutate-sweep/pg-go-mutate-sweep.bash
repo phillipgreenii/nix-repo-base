@@ -48,13 +48,17 @@ _pgms_is_pruned() { # <relative-path>
 
 # Project keys are workspace-root-relative paths, not basenames: a basename is
 # not unique across six repos, and the key's first component is the repo label
-# a project's bead carries.
+# a project's bead carries. Normalized via dirname, matching _pgms_candidates:
+# a go.mod AT the workspace root must key as "." rather than the literal string
+# "go.mod" (stripping "/go.mod" off a bare "go.mod" is a no-op suffix removal).
 pgms_find_projects() {
-  local root="$1" f rel
+  local root="$1" f rel d
   [ -d "$root" ] || return 0
   while IFS= read -r f; do
-    rel="${f#"$root"/}"
-    rel="${rel%/go.mod}"
+    d="$(dirname "$f")"
+    rel="${d#"$root"}"
+    rel="${rel#/}"
+    [ -z "$rel" ] && rel="."
     _pgms_is_pruned "$rel" && continue
     printf '%s\n' "$rel"
   done < <(find "$root" -type f -name go.mod 2>/dev/null) | sort
@@ -76,6 +80,18 @@ _pgms_candidates() { # <project-abs-dir>
   done < <(find "$dir" -type f -name '*.go' 2>/dev/null) | sort -u
 }
 
+# True if <candidate> lies strictly beneath <ancestor>. The repo-root ancestor
+# "." is a special case: _pgms_candidates normalizes the root dir's own relative
+# path to "." (never "./"), so an ordinary "$ancestor/*" glob can never match a
+# root ancestor — every other candidate is unconditionally beneath it.
+_pgms_is_nested() { # <candidate> <ancestor>
+  local x="$1" y="$2"
+  [ "$x" = "$y" ] && return 1
+  [ "$y" = "." ] && return 0
+  case "$x" in "$y"/*) return 0 ;; esac
+  return 1
+}
+
 pgms_find_units() { # <root> <project-key>
   local root="$1" proj="$2" dirs x y keep
   dirs="$(_pgms_candidates "$root/$proj")"
@@ -85,12 +101,10 @@ pgms_find_units() { # <root> <project-key>
     keep=1
     while IFS= read -r y; do
       [ -n "$y" ] || continue
-      [ "$x" = "$y" ] && continue
-      case "$x" in "$y"/*)
+      if _pgms_is_nested "$x" "$y"; then
         keep=0
         break
-        ;;
-      esac
+      fi
     done <<<"$dirs"
     [ "$keep" -eq 1 ] && printf '%s\n' "$x"
   done <<<"$dirs"
@@ -101,8 +115,7 @@ pgms_find_units() { # <root> <project-key>
 _pgms_is_subtree() { # <project-abs-dir> <pkg-rel>
   local dir="$1" pkg="$2" c
   while IFS= read -r c; do
-    [ "$c" = "$pkg" ] && continue
-    case "$c" in "$pkg"/*) return 0 ;; esac
+    _pgms_is_nested "$c" "$pkg" && return 0
   done < <(_pgms_candidates "$dir")
   return 1
 }

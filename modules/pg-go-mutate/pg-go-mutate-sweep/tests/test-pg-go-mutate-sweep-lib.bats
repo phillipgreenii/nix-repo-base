@@ -119,3 +119,30 @@ _mkmod() { # <dir> <module-path>
   [[ "$output" == *"a/b__c"* ]]
   [[ "$output" == *"a__b/c"* ]]
 }
+
+@test "root package plus a subdir yields only the root unit" {
+  _mkmod "$TEST_DIR/ws/p" example.com/p
+  mkdir -p "$TEST_DIR/ws/p/sub"
+  printf 'package p\n' >"$TEST_DIR/ws/p/root.go"
+  printf 'package sub\n' >"$TEST_DIR/ws/p/sub/s.go"
+  run pgms_find_units "$TEST_DIR/ws" p
+  [ "$output" = "." ]
+}
+
+@test "project key is '.' when go.mod sits at the workspace root" {
+  _mkmod "$TEST_DIR/ws" example.com/root
+  run pgms_find_projects "$TEST_DIR/ws"
+  [ "$output" = "." ]
+}
+
+@test "plan tie-breaks equal-count projects by project key" {
+  _mkmod "$TEST_DIR/ws/zproj" example.com/z
+  mkdir -p "$TEST_DIR/ws/zproj/one"
+  printf 'package one\n' >"$TEST_DIR/ws/zproj/one/o.go"
+  _mkmod "$TEST_DIR/ws/aproj" example.com/a
+  mkdir -p "$TEST_DIR/ws/aproj/one"
+  printf 'package one\n' >"$TEST_DIR/ws/aproj/one/o.go"
+  run pgms_plan "$TEST_DIR/ws"
+  [ "$(printf '%s\n' "$output" | head -1)" = "aproj#one" ]
+  [ "$(printf '%s\n' "$output" | sed -n 2p)" = "zproj#one" ]
+}
