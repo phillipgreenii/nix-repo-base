@@ -326,12 +326,46 @@ EOF
 }
 
 @test "a leftover lock.stale directory does not corrupt the reclaim" {
-  mkdir -p "$(pgms_state_root)/lock" "$(pgms_state_root)/lock.stale.leftover"
+  mkdir -p "$(pgms_state_root)/lock"
   printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgms_state_root)/lock/holder"
+
+  # Force the collision deterministically, two ways at once, so it lands
+  # wherever the ACTUAL implementation under test looks:
+  #   (a) "pinned" -- a bash `mktemp` shadowing the binary the shipped
+  #       mktemp-d+rmdir dance calls. Faithful to the real contract (fails,
+  #       prints nothing, if the target already exists) but pinned to a known
+  #       name instead of a random one, so a leftover can be planted at it.
+  #   (b) "guessable" -- the literal "$root/lock.stale.$$" name a regression
+  #       to a naive `mv lock lock.stale.$$` (the exact defect the design's
+  #       atomic-rename comment warns about) would compute directly, with no
+  #       mktemp call to intercept. `$$` is stable across `run` (verified: the
+  #       PID printed inside a `run`-invoked function matches the PID printed
+  #       in the test body outrightly), so this name is predictable up front.
+  # Each carries a sentinel that must never be silently destroyed by someone
+  # else's cleanup -- the design's own warning: a plain `mv` onto an existing
+  # directory nests silently and returns 0, so only the FOLLOW-UP `rm -rf`
+  # actually destroys anything, and only if the destination was reused.
+  local pinned guessable
+  pinned="$(pgms_state_root)/lock.stale.pinned"
+  guessable="$(pgms_state_root)/lock.stale.$$"
+  # shellcheck disable=SC2317  # invoked indirectly via mktemp -d from the sourced library
+  mktemp() {
+    [ -e "$pinned" ] && return 1
+    mkdir "$pinned"
+    printf '%s\n' "$pinned"
+  }
+  mkdir -p "$pinned" "$guessable"
+  printf 'sentinel\n' >"$pinned/sentinel"
+  printf 'sentinel\n' >"$guessable/sentinel"
+
   run pgms_lock_acquire
-  [ "$status" -eq 0 ]
-  # the reclaimed directory is removed, not accumulated
-  [ -z "$(find "$(pgms_state_root)" -maxdepth 1 -name 'lock.stale.*' -newer "$(pgms_state_root)/lock" 2>/dev/null)" ]
+  if [ "$status" -eq 0 ]; then
+    # Neither racer's directory was silently absorbed.
+    [ -f "$pinned/sentinel" ]
+    [ -f "$guessable/sentinel" ]
+  else
+    [ "$status" -eq 3 ]
+  fi
 }
 
 @test "classification maps every exit code" {
