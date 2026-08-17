@@ -30,3 +30,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0023](0023-workspace-push-owns-sibling-propagation.md)          | `pn workspace push` owns sibling propagation; `update` never pushes        | Accepted (amends 0009)                                |
 | [0024](0024-build-tagged-suites-need-their-own-check.md)         | Build-tagged suites need their own check; per-scenario capability markers  | Accepted (amends 0021)                                |
 | [0025](0025-applied-state-records-the-terminal-locked-revs.md)   | Applied-state records the terminal's locked revs at apply time             | Accepted (amends 0012)                                |
+| [0026](0026-mutation-sweep-state-contract.md)                    | Mutation-sweep durable state: layout, ledger schema, exit-code allocation  | Accepted                                              |
