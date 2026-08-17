@@ -48,3 +48,74 @@ teardown() {
 @test "unit project parses on the FIRST hash" {
   [ "$(pgms_unit_project "a/b#c/d#e")" = "a/b" ]
 }
+
+_mkmod() { # <dir> <module-path>
+  mkdir -p "$1"
+  printf 'module %s\n\ngo 1.25.0\n' "$2" >"$1/go.mod"
+}
+
+@test "projects exclude vendor, node_modules, worktrees, workforests, fixtures and testdata" {
+  _mkmod "$TEST_DIR/ws/repo/a" example.com/a
+  _mkmod "$TEST_DIR/ws/repo/vendor/v" example.com/v
+  _mkmod "$TEST_DIR/ws/repo/node_modules/n" example.com/n
+  _mkmod "$TEST_DIR/ws/repo/.worktrees/w" example.com/w
+  _mkmod "$TEST_DIR/ws/repo/.workforests/f" example.com/f
+  _mkmod "$TEST_DIR/ws/repo/lib/tests/fixtures/x" example.com/x
+  _mkmod "$TEST_DIR/ws/repo/pkg/testdata/t" example.com/t
+  run pgms_find_projects "$TEST_DIR/ws"
+  [ "$output" = "repo/a" ]
+}
+
+@test "units exclude dirs nested under another candidate" {
+  _mkmod "$TEST_DIR/ws/p" example.com/p
+  mkdir -p "$TEST_DIR/ws/p/outer/inner" "$TEST_DIR/ws/p/leaf"
+  printf 'package outer\n' >"$TEST_DIR/ws/p/outer/o.go"
+  printf 'package inner\n' >"$TEST_DIR/ws/p/outer/inner/i.go"
+  printf 'package leaf\n' >"$TEST_DIR/ws/p/leaf/l.go"
+  run pgms_find_units "$TEST_DIR/ws" p
+  [ "$(printf '%s\n' "$output" | sort | tr '\n' ' ')" = "leaf outer " ]
+}
+
+@test "a dir holding only _test.go files is not a candidate" {
+  _mkmod "$TEST_DIR/ws/p" example.com/p
+  mkdir -p "$TEST_DIR/ws/p/only"
+  printf 'package only\n' >"$TEST_DIR/ws/p/only/o_test.go"
+  run pgms_find_units "$TEST_DIR/ws" p
+  [ -z "$output" ]
+}
+
+@test "plan orders cheap projects first and subtree units last" {
+  _mkmod "$TEST_DIR/ws/big" example.com/big
+  mkdir -p "$TEST_DIR/ws/big/aaa" "$TEST_DIR/ws/big/sub/deep"
+  printf 'package big\n' >"$TEST_DIR/ws/big/aaa/a.go"
+  printf 'package sub\n' >"$TEST_DIR/ws/big/sub/s.go"
+  printf 'package deep\n' >"$TEST_DIR/ws/big/sub/deep/d.go"
+  _mkmod "$TEST_DIR/ws/small" example.com/small
+  mkdir -p "$TEST_DIR/ws/small/one"
+  printf 'package one\n' >"$TEST_DIR/ws/small/one/o.go"
+  run pgms_plan "$TEST_DIR/ws"
+  # small (1 candidate) precedes big (2 kept); within big, leaf aaa precedes subtree sub
+  [ "$(printf '%s\n' "$output" | head -1)" = "small#one" ]
+  [ "$(printf '%s\n' "$output" | sed -n 2p)" = "big#aaa" ]
+  [ "$(printf '%s\n' "$output" | sed -n 3p)" = "big#sub" ]
+}
+
+@test "plan is deterministic across invocations" {
+  _mkmod "$TEST_DIR/ws/p" example.com/p
+  mkdir -p "$TEST_DIR/ws/p/b" "$TEST_DIR/ws/p/a"
+  printf 'package b\n' >"$TEST_DIR/ws/p/b/b.go"
+  printf 'package a\n' >"$TEST_DIR/ws/p/a/a.go"
+  first="$(pgms_plan "$TEST_DIR/ws")"
+  [ "$first" = "$(pgms_plan "$TEST_DIR/ws")" ]
+}
+
+@test "slug collision aborts naming both paths" {
+  _mkmod "$TEST_DIR/ws/p" example.com/p
+  mkdir -p "$TEST_DIR/ws/p/a/b__c" "$TEST_DIR/ws/p/a__b/c"
+  printf 'package x\n' >"$TEST_DIR/ws/p/a/b__c/x.go"
+  printf 'package y\n' >"$TEST_DIR/ws/p/a__b/c/y.go"
+  run pgms_check_slug_collisions "$TEST_DIR/ws"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"a/b__c"* ]]
+  [[ "$output" == *"a__b/c"* ]]
+}
