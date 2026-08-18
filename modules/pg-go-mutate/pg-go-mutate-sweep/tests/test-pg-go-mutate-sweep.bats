@@ -1,5 +1,8 @@
 #!/usr/bin/env bats
 
+# Required by the `run !` form below (bats >= 1.5.0); without it bats emits BW02.
+bats_require_minimum_version 1.5.0
+
 setup() {
   TEST_DIR="$(mktemp -d)"
   export TEST_DIR
@@ -238,4 +241,72 @@ _ws_one_unit() {
   _stub bd 'echo pg2-stub'
   run "$SCRIPT" --root "$TEST_DIR/ws" --only p
   [ "$(grep -c . "$TEST_DIR/calls")" -eq 1 ]
+}
+
+@test "the bead is filed exactly once per project" {
+  _ws_one_unit
+  _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'echo "$@" >>"$TEST_DIR/bdcalls"; echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ "$(grep -c 'create' "$TEST_DIR/bdcalls")" -eq 1 ]
+  : >"$TEST_DIR/bdcalls"
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ ! -s "$TEST_DIR/bdcalls" ]
+}
+
+@test "a resumed run with ZERO units left still files the pending bead" {
+  # The lost-project regression at script level: the ledger has every unit but
+  # no bead record, exactly as a crash between the two would leave it.
+  _ws_one_unit
+  mkdir -p "$TEST_DIR/state/pg-go-mutate-sweep"
+  cat >"$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl" <<'EOF'
+{"kind":"unit","unit":"p#a","project":"p","pkg":"a","status":"done","finished":"2026-08-17T10:00:00-04:00"}
+EOF
+  _stub pg-go-mutate 'echo RAN >>"$TEST_DIR/calls"; exit 0'
+  _stub bd 'echo "$@" >>"$TEST_DIR/bdcalls"; echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ ! -f "$TEST_DIR/calls" ]
+  [ "$(grep -c 'create' "$TEST_DIR/bdcalls")" -eq 1 ]
+}
+
+@test "a --retry that produces a newer record AMENDS by comment" {
+  _ws_one_unit
+  mkdir -p "$TEST_DIR/state/pg-go-mutate-sweep"
+  cat >"$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl" <<'EOF'
+{"kind":"unit","unit":"p#a","project":"p","pkg":"a","status":"failed","finished":"2026-08-17T10:00:00-04:00"}
+{"kind":"bead","project":"p","bead":"pg2-existing","action":"filed","finished":"2026-08-17T10:01:00-04:00"}
+EOF
+  _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'echo "$@" >>"$TEST_DIR/bdcalls"; echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws" --retry failed
+  grep -q 'comment pg2-existing' "$TEST_DIR/bdcalls"
+  ! grep -q 'create' "$TEST_DIR/bdcalls"
+}
+
+@test "a failing bd does not abort the sweep and leaves no bead record" {
+  _ws_one_unit
+  _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'exit 7'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ "$status" -eq 0 ]
+  ! grep -q '"kind":"bead"' "$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl"
+}
+
+@test "--no-beads files nothing" {
+  _ws_one_unit
+  _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'echo "$@" >>"$TEST_DIR/bdcalls"; echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws" --no-beads
+  [ ! -f "$TEST_DIR/bdcalls" ]
+}
+
+@test "the bead body carries the protocol and no mutant count" {
+  _ws_one_unit
+  _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":7,\"survived\":3,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'while [ $# -gt 0 ]; do [ "$1" = "--body-file" ] && cp "$2" "$TEST_DIR/body.md"; shift; done; echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  grep -q 'tags_withheld' "$TEST_DIR/body.md"
+  grep -q 'Record NO scores' "$TEST_DIR/body.md"
+  # N1: the body must not leak the engine's survivor count
+  ! grep -qE '(^|[^0-9])3 surviv' "$TEST_DIR/body.md"
 }
