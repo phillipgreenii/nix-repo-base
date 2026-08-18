@@ -207,3 +207,23 @@ func TestMerge_fullOverWinsEverywhere(t *testing.T) {
 		t.Errorf("a fully populated over must win outright;\n got %+v\nwant %+v", got, over)
 	}
 }
+
+// TestMerge_negativeDefaultLimitStillWins pins the ONE Merge guard whose
+// comparison is over an int rather than a string or a slice length. Every other
+// DefaultLimit assertion in this file uses positive values, and for those
+// `over.DefaultLimit != 0` and `over.DefaultLimit > 0` are indistinguishable —
+// only a NEGATIVE override separates the two rules. Merge's contract is "every
+// NON-ZERO field of over applied on top", so a negative override is non-zero and
+// must win outright rather than fall back to base.
+//
+// The string and slice guards need no equivalent row: for a Go string "" is the
+// minimum value, so `s != ""` and `s > ""` are the same predicate, and
+// len(x) >= 0 always holds, so `len(x) != 0` and `len(x) > 0` are the same
+// predicate too. No input can separate those, which is why DefaultLimit is the
+// only field where the distinction is observable at all.
+func TestMerge_negativeDefaultLimitStillWins(t *testing.T) {
+	got := Config{DefaultLimit: 100}.Merge(Config{DefaultLimit: -1})
+	if got.DefaultLimit != -1 {
+		t.Errorf("a negative over.DefaultLimit is non-zero and must win; DefaultLimit = %d, want -1", got.DefaultLimit)
+	}
+}

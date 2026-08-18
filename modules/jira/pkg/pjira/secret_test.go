@@ -49,8 +49,22 @@ func TestSecret_Command_TrimsAndErrors(t *testing.T) {
 	if err != nil || got != "tk" {
 		t.Fatalf("command ok: got %q err %v", got, err)
 	}
-	if _, err := tok(t, SecretConfig{Source: "command", Command: []string{"x"}}, fakeRunner{err: errors.New("exit 1")}); err == nil {
-		t.Fatal("command non-zero exit must error")
+	// The runner's OWN failure must be surfaced as such, and the partial stdout a
+	// failing command may still have written must never be handed back as a token.
+	// The stdout on this fixture is what makes both halves load-bearing: with the
+	// err != nil guard gone, the trim-then-reject path below accepts
+	// "dummy-partial-token" and returns it with a nil error, so a test that only
+	// asserted "some error" could not tell the two apart.
+	failed, err := tok(t, SecretConfig{Source: "command", Command: []string{"x"}},
+		fakeRunner{out: []byte("dummy-partial-token"), err: errors.New("exit 1")})
+	if err == nil {
+		t.Fatalf("command non-zero exit must error, got token %q", failed)
+	}
+	if !strings.Contains(err.Error(), "secret command failed") {
+		t.Errorf("error = %v, want it to mention %q", err, "secret command failed")
+	}
+	if failed != "" {
+		t.Errorf("a failed secret command must not yield its partial stdout as a token, got %q", failed)
 	}
 }
 
@@ -186,6 +200,13 @@ func TestSecret_File_MissingFileErrors(t *testing.T) {
 // than silently returning an empty token (bead pg2-9f5v3) — mirroring the
 // commandSecret guard and now sharing the same trim-then-reject contract as
 // envSecret and commandSecret.
+//
+// No test can pin a `t <= ""` reading of this guard, and none should be
+// contrived: for a Go string "" is the minimum value, so `t <= ""` is true
+// exactly when `t == ""` and no input separates them. The same holds for the
+// other four empty-token guards in secret.go and for the three field
+// comparisons in rawUser.toUser. A `t < ""` reading IS distinguishable (it is
+// never true) and the rows below are what assert it.
 func TestSecret_File_BlankTokenErrors(t *testing.T) {
 	cases := []struct {
 		name    string
