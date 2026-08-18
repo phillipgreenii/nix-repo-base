@@ -118,6 +118,12 @@ func TestSecret_EmptyAndMissingGuards(t *testing.T) {
 			wantMsg: "env " + emptyVar + " is empty",
 		},
 		{
+			name:    "env var set to whitespace only",
+			setup:   func(t *testing.T) { t.Setenv(emptyVar, " \t\r\n ") },
+			cfg:     SecretConfig{Source: "env", EnvVar: emptyVar},
+			wantMsg: "env " + emptyVar + " is empty",
+		},
+		{
 			name:    "secret command emits only whitespace",
 			cfg:     SecretConfig{Source: "command", Command: []string{"x"}},
 			runner:  fakeRunner{out: []byte(" \t\r\n ")},
@@ -171,5 +177,42 @@ func TestSecret_File_MissingFileErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "read token file") {
 		t.Errorf("error = %v, want it to mention %q", err, "read token file")
+	}
+}
+
+// TestSecret_File_BlankTokenErrors extends TestSecret_File_MissingFileErrors
+// to the two blank-content cases: a token file that exists but is empty, and
+// one that contains only whitespace. Both must error naming the file rather
+// than silently returning an empty token (bead pg2-9f5v3) — mirroring the
+// commandSecret guard and now sharing the same trim-then-reject contract as
+// envSecret and commandSecret.
+func TestSecret_File_BlankTokenErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "empty file", content: ""},
+		{name: "whitespace-only file", content: " \t\r\n "},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "tok")
+			if err := os.WriteFile(p, []byte(c.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := tok(t, SecretConfig{Source: "file", Path: p}, nil)
+			if err == nil {
+				t.Fatalf("a blank token file must error, got token %q", got)
+			}
+			if !strings.Contains(err.Error(), p) {
+				t.Errorf("error = %v, want it to name the file path %q", err, p)
+			}
+			if !strings.Contains(err.Error(), "is empty") {
+				t.Errorf("error = %v, want it to mention %q", err, "is empty")
+			}
+			if got != "" {
+				t.Errorf("a rejected token file must yield an empty token, got %q", got)
+			}
+		})
 	}
 }

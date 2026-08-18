@@ -27,10 +27,15 @@ type SecretSource interface {
 	Token(ctx context.Context) (string, error)
 }
 
+// All three sources below share ONE empty-token contract: trim whitespace,
+// then reject an empty result. Keeping the trim-then-reject order identical
+// across env/file/command means a whitespace-only token is rejected the same
+// way regardless of source, rather than only file and command catching it.
+
 type envSecret struct{ varName string }
 
 func (e envSecret) Token(context.Context) (string, error) {
-	v := os.Getenv(e.varName)
+	v := strings.TrimSpace(os.Getenv(e.varName))
 	if v == "" {
 		return "", fmt.Errorf("pjira: env %s is empty", e.varName)
 	}
@@ -44,7 +49,11 @@ func (f fileSecret) Token(context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("pjira: read token file: %w", err)
 	}
-	return strings.TrimSpace(string(b)), nil
+	t := strings.TrimSpace(string(b))
+	if t == "" {
+		return "", fmt.Errorf("pjira: token file %s is empty", f.path)
+	}
+	return t, nil
 }
 
 type commandSecret struct {
