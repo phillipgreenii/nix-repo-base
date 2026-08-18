@@ -102,8 +102,9 @@ func (ws *Workspace) gitStatusPorcelain(ctx context.Context, dir string) (string
 // the directory holding the terminal's flake.nix/flake.lock for THIS apply, so an
 // override-path apply reads the lock it actually ran against.
 //
-// AppliedRef stays exactly what it always was (this checkout's local HEAD): it is
-// the evidence that an apply RAN. What it does NOT prove is that the applied
+// AppliedRef stays exactly what it always was (this checkout's local HEAD, at
+// the eval-time moment captured by preBuildHeads — see below): it is the
+// evidence that an apply RAN. What it does NOT prove is that the applied
 // system CONTAINS that commit — for a repo the terminal consumes as a flake input
 // (a `github:` pin), the commit reaches the built system only once it is pushed and
 // the terminal relocked, so a commit landed on local main resolved a `pn:applied`
@@ -133,7 +134,21 @@ func (ws *Workspace) gitStatusPorcelain(ctx context.Context, dir string) (string
 // eval-time HEAD, so its LockedRevs entry is NOT what the build carries and a
 // consumer must not test against it; see AppliedState.OverriddenInputs. It is
 // written into every record for the same reason LockedRevs is.
-func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir, terminal, terminalNixDir string, overridden map[string]string, out io.Writer) error {
+//
+// preBuildHeads is the FOURTH fact, and it is a parameter for the identical reason
+// overridden is (bead pg2-0782j, the same class of bug as pg2-14yqh but for
+// AppliedRef instead of OverriddenInputs/LockedRevs): AppliedRef must be each
+// repo's HEAD at the moment nix evaluated it — eval-time HEAD, captured by
+// Apply's captureHeads call IMMEDIATELY BEFORE the build invocation — not
+// whatever HEAD that clone happens to have when markApplied runs, which is
+// AFTER the build and can be minutes later. Re-reading HEAD here (as this
+// function used to) would record any commit that landed in the local clone
+// during that window as applied, even though the activated system was
+// evaluated before that commit existed and cannot contain it. preBuildHeads
+// MUST be derived from the same repoDirs slice this loop iterates (Apply's
+// allDirs), so a missing entry is an invariant violation, not a normal "not
+// present" map miss the way overridden's absence is.
+func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir, terminal, terminalNixDir string, overridden map[string]string, preBuildHeads map[string]string, out io.Writer) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	tl, lockErr := ws.terminalLockedRevs(terminal, terminalNixDir)
 	if lockErr != nil {
@@ -141,11 +156,17 @@ func (ws *Workspace) markApplied(ctx context.Context, repoDirs []repoDir, termin
 			terminal, terminalNixDir, lockErr)
 	}
 	for _, rd := range repoDirs {
-		res, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "rev-parse", "HEAD"}, exec.RunOptions{})
-		if err != nil {
-			return fmt.Errorf("git rev-parse in %s: %w", rd.gitDir, err)
+		head, ok := preBuildHeads[rd.name]
+		if !ok {
+			// Unlike overridden (whose absence for a repo legitimately means "not
+			// overridden"), HEAD is not optional: every repoDir markApplied is asked
+			// to record MUST have had its HEAD captured before the build ran. A miss
+			// here means preBuildHeads was built from a different repo set than
+			// repoDirs — a programming error, not a state to fail-closed-record.
+			return fmt.Errorf("markApplied: no pre-build HEAD captured for repo %q (gitDir %s); "+
+				"preBuildHeads must be derived from the same repoDirs slice markApplied iterates",
+				rd.name, rd.gitDir)
 		}
-		head := strings.TrimSpace(string(res.Stdout))
 		porcelain, err := ws.gitStatusPorcelain(ctx, rd.gitDir)
 		if err != nil {
 			return fmt.Errorf("git status in %s: %w", rd.gitDir, err)

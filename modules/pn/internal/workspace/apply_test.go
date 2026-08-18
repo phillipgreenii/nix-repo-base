@@ -508,3 +508,70 @@ func TestApply_StatusProbesDisableFsmonitor(t *testing.T) {
 		t.Errorf("all %d git status --porcelain probes must disable fsmonitor (-c core.fsmonitor=false); only %d did; calls:\n%+v", all, off, f.Calls())
 	}
 }
+
+// TestApply_CapturesHeadBeforeBuild is the regression test for bead pg2-0782j:
+// each repo's HEAD recorded into applied-state (AppliedRef) MUST be captured
+// BEFORE the build invocation runs (eval-time HEAD — the HEAD nix actually
+// evaluated when it resolved this repo's --override-input from its local
+// clone), never by re-reading git AFTER the build completes. A commit landing
+// in the local clone during the build window (which can be minutes wide) must
+// not be recorded as applied when the activated system was evaluated before
+// that commit existed.
+//
+// Force: true makes needsRebuild return immediately without touching git (see
+// its early `if force { return true, nil }`), so across the whole Apply call
+// there is exactly ONE `git -C leafDir rev-parse HEAD` invocation either way —
+// this test does not change how many times that call happens, only WHEN. That
+// is deliberate: a value-only assertion (AppliedRef == the scripted value)
+// would pass against BOTH the pre-fix and post-fix code, since the
+// FakeRunner's single queued response for that exact (name, args) is consumed
+// by whichever single call reaches it, regardless of that call's position in
+// the sequence. Only the call's INDEX relative to the build command's index
+// distinguishes "before the build" (fixed) from "after the build" (the bug).
+func TestApply_CapturesHeadBeforeBuild(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
+	leafDir := filepath.Join(root, "leaf")
+
+	f, _ := applyTestRunner(t, root)
+	// git --exec-path identical before/after ⇒ no fsmonitor daemon restart, and
+	// no extra `git` calls to confuse the index search below.
+	execPath := "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.54.0/libexec/git-core\n"
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(execPath)}, nil)
+	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(execPath)}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	calls := f.Calls()
+	headIdx, buildIdx := -1, -1
+	for i, c := range calls {
+		if c.Name == "git" && len(c.Args) == 4 && c.Args[0] == "-C" && c.Args[1] == leafDir &&
+			c.Args[2] == "rev-parse" && c.Args[3] == "HEAD" {
+			headIdx = i
+		}
+		if c.Name == "sudo" {
+			buildIdx = i
+		}
+	}
+	if headIdx == -1 {
+		t.Fatalf("expected a `git -C %s rev-parse HEAD` call; calls:\n%+v", leafDir, calls)
+	}
+	if buildIdx == -1 {
+		t.Fatalf("expected the apply (sudo darwin-rebuild) call; calls:\n%+v", calls)
+	}
+	if headIdx > buildIdx {
+		t.Errorf("`git rev-parse HEAD` for %s ran AFTER the build (call index %d vs build's index %d) — "+
+			"AppliedRef must be captured BEFORE the build runs (eval-time HEAD), not by re-reading HEAD "+
+			"once the build has already completed; calls:\n%+v", leafDir, headIdx, buildIdx, calls)
+	}
+}

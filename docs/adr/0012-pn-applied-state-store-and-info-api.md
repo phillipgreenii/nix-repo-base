@@ -176,3 +176,16 @@ user data).
   `[workspace].id` field (the `wsid` source) to the documented schema.
 - See also: phillipgreenii-nix-agent-support docs/adr/0018-… — the `pb` tool and `pn:applied` gate
   contract; `pb gate check` consumes the `pn workspace info --json` schema defined here.
+
+## Amendment: `applied_ref` is sampled immediately before the build, not "at apply time" generically (bd pg2-0782j)
+
+Decision section 1's "`applied_ref` — the output of `git rev-parse HEAD` at apply time" left WHEN
+during the apply unspecified. In practice `markApplied` read it AFTER the build completed, which —
+for a repo built via `--override-input` from a local clone (ADR [0025](0025-applied-state-records-the-terminal-locked-revs.md))
+— could disagree with the commit nix actually evaluated if something landed in that clone during
+the build window. See ADR 0025's "`applied_ref` is sampled BEFORE the build, not after" amendment
+for the fix and its regression tests. `applied_ref` is now always the HEAD captured immediately
+before the build's nix invocation runs, for every repo in `allRepoDirs` (including the terminal,
+with no special case). This is a timing clarification only; the store's shape, the field name, and
+its meaning here ("evidence an apply ran over a checkout that contained this commit") are
+unchanged.

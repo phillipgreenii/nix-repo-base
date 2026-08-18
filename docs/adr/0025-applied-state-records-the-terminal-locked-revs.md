@@ -269,3 +269,42 @@ The `markApplied` TOCTOU (bead `pg2-0782j`) is **not** addressed here and was th
 declined the alternative of comparing against the overridden eval-time HEAD: that is exactly the value
 `markApplied` mis-samples. Recording WHICH inputs were overridden does not depend on any HEAD reading,
 so it is unaffected.
+
+## Amendment: `applied_ref` is sampled BEFORE the build, not after (bd pg2-0782j)
+
+The TOCTOU the previous amendment named and the previous note left open — `markApplied` reading
+`git rev-parse HEAD` AFTER the rebuild, so a commit landing during the (potentially minutes-wide)
+build window was recorded as `applied_ref` even though the activated system was evaluated before
+that commit existed — is now closed. Decision section 1 above ("`applied_ref` is UNCHANGED") stated
+WHAT the field means but never said WHEN it is sampled relative to the build; that gap is exactly
+how this bug went unnoticed. This amendment states it precisely.
+
+**`applied_ref` is now captured immediately before the build's nix invocation, from each repo's
+local clone — never by re-reading `git rev-parse HEAD` after the build completes.** `Apply`
+(`apply.go`) calls a new `captureHeads` helper over every workspace repo — the same `allDirs` slice
+`markApplied` iterates, which INCLUDES the terminal's own entry with no special case, since
+`workspace.terminal` is required to be a declared `[repos.<key>]` entry (`config.go`) — as the last
+step before the build's `ws.runner.Run`. The resulting `map[string]string` (repo key → HEAD) is
+passed into `markApplied` as a new `preBuildHeads` parameter. `markApplied` no longer calls
+`git rev-parse HEAD` itself; it looks the value up in that map. A repo present in `repoDirs` but
+absent from `preBuildHeads` is now a hard error (an invariant violation — the two are always derived
+from the same slice), not a silent skip.
+
+This closes exactly the gap measured for generation `795` in the "the Context measurement was
+invalid" amendment above: a commit landing in a repo's local clone during the build window can no
+longer be recorded as `applied_ref`, because the value was already fixed before the build started
+evaluating that clone.
+
+The fix follows the SAME pattern `overridden_inputs` (schema 3, bd pg2-14yqh) already established
+for this exact class of bug: capture the fact at the moment `Apply` has it (not markApplied, which
+runs after the build), pass it in as a parameter, and never let `markApplied` resample anything
+itself post-build. No schema bump was needed — `applied_ref`'s on-disk shape and meaning are
+unchanged; only WHEN the value is sampled changed.
+
+Regression coverage: `TestApply_CapturesHeadBeforeBuild` (`apply_test.go`) asserts the CALL ORDER —
+the `git -C <dir> rev-parse HEAD` call must occur at a lower index in the FakeRunner's recorded call
+log than the build command's — because a value-only assertion cannot distinguish "before" from
+"after" once there is exactly one such call either way (moving the call does not duplicate it).
+`TestMarkApplied_RecordsHandedHeadNotAFreshRead` (`updatecache_test.go`) is the unit-level companion,
+proving `markApplied` records the handed map rather than a value it reads itself, for both a
+non-terminal repo and the terminal.

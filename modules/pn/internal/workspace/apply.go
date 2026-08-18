@@ -111,6 +111,20 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	// Capture the git binary identity before the rebuild so we can tell,
 	// afterwards, whether this apply swapped in a new git binary.
 	oldGitID := ws.gitBinaryID(ctx)
+	// Capture each repo's HEAD as late as possible, immediately before the
+	// build invocation below — this is the concrete meaning of "eval-time
+	// HEAD": nix resolves each --override-input from the repo's local clone at
+	// whatever HEAD that clone has the instant the build reads it, so this is
+	// the last moment the recorded value can still match what was actually
+	// evaluated. markApplied (after the build) must record THIS map rather
+	// than re-reading HEAD itself, or a commit landing during the build
+	// window — which can be minutes wide — would be recorded as applied even
+	// though the activated system was evaluated before that commit existed
+	// (bead pg2-0782j).
+	preBuildHeads, err := ws.captureHeads(ctx, allDirs)
+	if err != nil {
+		return err
+	}
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
 	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{
 		Dir:    terminalRepoDir,
@@ -135,7 +149,26 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	// markApplied is reached ONLY here, after a real rebuild — the !rebuild early
 	// return above skips it. So a record (its locked_revs and its overridden_inputs)
 	// is written exactly when a build actually happened, never on a skipped apply.
-	return ws.markApplied(ctx, allDirs, terminal, terminalNixDir, overriddenInputs(resolvedOverrides), out)
+	return ws.markApplied(ctx, allDirs, terminal, terminalNixDir, overriddenInputs(resolvedOverrides), preBuildHeads, out)
+}
+
+// captureHeads resolves each repo's local HEAD, keyed by [repos.<key>] name, at
+// the moment it is called. Apply calls this IMMEDIATELY BEFORE the build
+// invocation so the recorded value is eval-time HEAD (see the call site's
+// comment); markApplied then consumes this map instead of re-reading HEAD
+// itself after the build (bead pg2-0782j). A `git rev-parse HEAD` failure is
+// returned as an error, matching how the pre-fix in-loop call in markApplied
+// handled it — not silently skipped.
+func (ws *Workspace) captureHeads(ctx context.Context, repoDirs []repoDir) (map[string]string, error) {
+	heads := make(map[string]string, len(repoDirs))
+	for _, rd := range repoDirs {
+		res, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "rev-parse", "HEAD"}, exec.RunOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("git rev-parse in %s: %w", rd.gitDir, err)
+		}
+		heads[rd.name] = strings.TrimSpace(string(res.Stdout))
+	}
+	return heads, nil
 }
 
 // gitBinaryID returns a string identifying the installed git *binary*, via the

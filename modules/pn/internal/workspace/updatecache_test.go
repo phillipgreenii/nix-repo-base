@@ -70,11 +70,11 @@ func TestMarkApplied_WriteFailIsReturned(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", bad)
 	const dir = "/repo"
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
 	f.AddResponse("git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
 	w := &Workspace{runner: f}
 	dirs := []repoDir{{name: "leaf", keyPath: dir, gitDir: dir}}
-	if err := w.markApplied(context.Background(), dirs, "leaf", dir, nil, io.Discard); err == nil {
+	preBuildHeads := map[string]string{"leaf": "abc"}
+	if err := w.markApplied(context.Background(), dirs, "leaf", dir, nil, preBuildHeads, io.Discard); err == nil {
 		t.Fatal("markApplied must return the store-write error (fail-closed)")
 	}
 }
@@ -187,8 +187,16 @@ func runMarkApplied(t *testing.T, w *Workspace, terminalNixDir string) string {
 // evidence must describe the flags nix was actually given.
 func runMarkAppliedWith(t *testing.T, w *Workspace, terminalNixDir string, overridden map[string]string) string {
 	t.Helper()
+	dirs := w.allRepoDirs(nil)
+	// captureHeads consumes the fixture's scripted "git -C <dir> rev-parse HEAD"
+	// response for each repo, exactly as Apply would immediately before its build
+	// call — markApplied itself no longer issues that call (bead pg2-0782j).
+	preBuildHeads, err := w.captureHeads(context.Background(), dirs)
+	if err != nil {
+		t.Fatalf("captureHeads: %v", err)
+	}
 	var out bytes.Buffer
-	if err := w.markApplied(context.Background(), w.allRepoDirs(nil), "leaf", terminalNixDir, overridden, &out); err != nil {
+	if err := w.markApplied(context.Background(), dirs, "leaf", terminalNixDir, overridden, preBuildHeads, &out); err != nil {
 		t.Fatalf("markApplied: %v", err)
 	}
 	return out.String()
@@ -462,5 +470,40 @@ func TestMarkApplied_RecordsLockAtApplyTimeNotLater(t *testing.T) {
 			t.Fatalf("info dep: terminal_input=%v locked_rev=%q; want true/%q — info must publish the "+
 				"rev RECORDED with the apply, never the current lock", r.TerminalInput, r.LockedRev, "rev-t1")
 		}
+	}
+}
+
+// TestMarkApplied_RecordsHandedHeadNotAFreshRead is the markApplied-only unit
+// companion to TestApply_CapturesHeadBeforeBuild (bead pg2-0782j), mirroring
+// TestMarkApplied_RecordsLockAtApplyTimeNotLater's pattern but for AppliedRef
+// instead of LockedRevs: markApplied is handed a preBuildHeads map and MUST
+// record exactly the value in that map, never a value it reads itself. The
+// fixture's FakeRunner has a "git -C <dir> rev-parse HEAD" response queued
+// returning "<key>-head" for every repo (markAppliedFixture); this test
+// deliberately does NOT let markApplied consume it (it hands preBuildHeads
+// directly, as the fixed markApplied no longer calls git for HEAD at all), so
+// if the code regressed to re-reading HEAD itself, this would record
+// "dep-head"/"leaf-head" instead of the handed "dep-t1"/"leaf-t1" values and
+// fail. It cannot, on its own, prove WHEN preBuildHeads was populated relative
+// to the build — only the call-order test in apply_test.go proves that; this
+// test proves markApplied's half: what it does with the map once handed one.
+func TestMarkApplied_RecordsHandedHeadNotAFreshRead(t *testing.T) {
+	w, _, leafDir := markAppliedFixture(t, map[string]depSpec{
+		"dep": {alias: "depalias", rev: "locked000"},
+	})
+	dirs := w.allRepoDirs(nil)
+	preBuildHeads := map[string]string{"leaf": "leaf-t1", "dep": "dep-t1"}
+	var out bytes.Buffer
+	if err := w.markApplied(context.Background(), dirs, "leaf", leafDir, nil, preBuildHeads, &out); err != nil {
+		t.Fatalf("markApplied: %v", err)
+	}
+
+	if got := appliedStateOf(t, w, "dep").AppliedRef; got != "dep-t1" {
+		t.Fatalf("applied_ref = %q, want the HANDED pre-build value %q — markApplied must record the map "+
+			"it was given, not re-read HEAD itself (the fixture would have returned %q had it done so)",
+			got, "dep-t1", "dep-head")
+	}
+	if got := appliedStateOf(t, w, "leaf").AppliedRef; got != "leaf-t1" {
+		t.Fatalf("applied_ref = %q, want the HANDED pre-build value %q", got, "leaf-t1")
 	}
 }
