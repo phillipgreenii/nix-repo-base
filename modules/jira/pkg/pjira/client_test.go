@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,6 +15,67 @@ func testClient(srv *httptest.Server) *Client {
 	c := NewClient(srv.URL, "user@example.com", "tok")
 	c.HTTP = &http.Client{Timeout: 5 * time.Second}
 	return c
+}
+
+// TestRawUser_toUser_nilVsEmpty pins the nil-vs-empty collapse. Atlassian returns
+// a present-but-empty user object in places (an unassigned issue), and toUser is
+// what folds that back to a nil *User. Because the guard is an && chain over all
+// three fields, each SINGLE-field-populated row is separately load-bearing: flip
+// the chain to || and only those rows notice.
+func TestRawUser_toUser_nilVsEmpty(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *rawUser
+		want *User // nil means "must collapse to a nil *User"
+	}{
+		{"nil pointer", nil, nil},
+		{"present but every field empty", &rawUser{}, nil},
+		{"email only", &rawUser{EmailAddress: "e@x"}, &User{Email: "e@x"}},
+		{"accountID only", &rawUser{AccountID: "a1"}, &User{AccountID: "a1"}},
+		{"displayName only", &rawUser{DisplayName: "D"}, &User{DisplayName: "D"}},
+		{
+			"all three",
+			&rawUser{EmailAddress: "e@x", AccountID: "a1", DisplayName: "D"},
+			&User{Email: "e@x", AccountID: "a1", DisplayName: "D"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := c.in.toUser()
+			if c.want == nil {
+				if got != nil {
+					t.Fatalf("toUser() = %+v, want a nil *User", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("toUser() = nil, want %+v", *c.want)
+			}
+			if *got != *c.want {
+				t.Errorf("toUser() = %+v, want %+v", *got, *c.want)
+			}
+		})
+	}
+}
+
+// TestRawUser_toUserOrEmpty_alwaysNonNil pins the opposite convention for
+// changelog/comment authors, which are VALUES: every input — nil, empty, or
+// populated — must yield a non-nil *User, and a populated one must map through
+// rather than be flattened to the empty User.
+func TestRawUser_toUserOrEmpty_alwaysNonNil(t *testing.T) {
+	if got := (*rawUser)(nil).toUserOrEmpty(); got == nil || *got != (User{}) {
+		t.Errorf("nil author must map to an empty non-nil User, got %+v", got)
+	}
+	if got := (&rawUser{}).toUserOrEmpty(); got == nil || *got != (User{}) {
+		t.Errorf("empty author must map to an empty non-nil User, got %+v", got)
+	}
+	got := (&rawUser{DisplayName: "H"}).toUserOrEmpty()
+	if got == nil {
+		t.Fatal("populated author must not map to nil")
+	}
+	if got.DisplayName != "H" {
+		t.Errorf("populated author must map through, got %+v", *got)
+	}
 }
 
 func TestGetIssue_mapsFieldsAndAuth(t *testing.T) {
@@ -226,5 +288,54 @@ func TestSearchAll_respectsMaxPages(t *testing.T) {
 	}
 	if !got.Truncated || got.NextPageToken != "p3" {
 		t.Errorf("cap-hit must be truncated with the next token p3: %+v", got)
+	}
+}
+
+// TestSearchAll_propagatesPageError pins the per-page error propagation: a failing
+// page must ABORT the loop and surface the error, never be swallowed into a
+// silently short result set (which a caller would read as "that's all there is").
+func TestSearchAll_propagatesPageError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	got, err := testClient(srv).SearchAll(context.Background(), "project = ENG", 100, ExpandOpts{}, 3)
+	if err == nil {
+		t.Fatal("a failing page must abort SearchAll with an error")
+	}
+	if got != nil {
+		t.Errorf("no partial result may accompany the error: %+v", got)
+	}
+}
+
+// TestClient_requestConstructionErrorsSurface pins the request-construction error
+// paths of all three endpoints. An unparseable BaseURL fails inside
+// http.NewRequestWithContext, before any transport work, and that error must be
+// RETURNED — swallowing it hands the caller a nil result with a nil error.
+func TestClient_requestConstructionErrorsSurface(t *testing.T) {
+	// U+007F is a control character, which net/url rejects while parsing.
+	c := NewClient("http://bad\x7fhost.invalid", "u@x", "dummy-token")
+	const wantMsg = "invalid control character in URL"
+
+	if got, err := c.GetIssue(context.Background(), "ENG-1"); err == nil {
+		t.Errorf("GetIssue: want a request-construction error, got issue %+v", got)
+	} else if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("GetIssue error = %v, want it to mention %q", err, wantMsg)
+	}
+
+	if got, err := c.SearchPage(context.Background(), "project = ENG", 10, ExpandOpts{}, ""); err == nil {
+		t.Errorf("SearchPage: want a request-construction error, got result %+v", got)
+	} else if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("SearchPage error = %v, want it to mention %q", err, wantMsg)
+	}
+
+	state, err := c.AuthStatus(context.Background())
+	if err == nil {
+		t.Error("AuthStatus: want a request-construction error, got nil")
+	} else if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("AuthStatus error = %v, want it to mention %q", err, wantMsg)
+	}
+	if state != AuthError {
+		t.Errorf("AuthStatus state = %s, want %s", state, AuthError)
 	}
 }
