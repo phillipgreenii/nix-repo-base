@@ -258,10 +258,112 @@ in
         fi
         unset _pgii_git
       '';
+      # pg2-7g7yl: eliminate the LAST per-worktree dependency in hook
+      # invocation — the shim's `--config=` argument.
+      #
+      # git-hooks.nix's installer (`installationScript`, the same function that
+      # is `preCommit.shellHook` above; cachix/git-hooks.nix 43b3c1ab
+      # modules/pre-commit.nix:524,527,537) always calls
+      # `prek install -c ${cfg.configPath}` where `cfg.configPath` is the plain
+      # relative literal `.pre-commit-config.yaml` — confirmed against this
+      # repo's OWN installed shim (`.git/hooks/pre-commit`):
+      # `exec "$PREK" hook-impl … --config=".pre-commit-config.yaml" -- "$@"`.
+      # `prek` bakes whatever string it is given into the shim VERBATIM; it does
+      # not resolve it. That relative argument is then re-resolved by
+      # `prek hook-impl` against the INVOKING WORKTREE's cwd at commit/push
+      # time — NOT the canonical clone's — even though (post pg2-ohng1) the
+      # SHIM ITSELF is now found correctly from any worktree via the shared,
+      # corrected `core.hooksPath`. A fresh `git worktree add` worktree has no
+      # `.pre-commit-config.yaml` of its own (gitignored/untracked, ADR 0016),
+      # so `git commit` there aborts: "config file not found". Loud-and-closed
+      # (safe, unlike pg2-ohng1's silent skip) but still a usability blocker —
+      # exactly what this bead exists to remove, via the documented manual
+      # workaround (symlink the canonical clone's config target into the
+      # worktree) that this fix makes permanently unnecessary.
+      #
+      # THE FIX: rewrite each installed shim's `--config="…"` argument to the
+      # config's RESOLVED ABSOLUTE STORE PATH. `preCommit.shellHook` writes
+      # `.pre-commit-config.yaml` at the repo's TOP LEVEL as a symlink whose
+      # target IS that exact absolute path (git-hooks.nix line 506:
+      # `ln -fs ${cfg.configFile} "$GIT_WC/${cfg.configPath}"`), so a plain,
+      # single-hop `readlink` of it (no `-f`, no chained resolution needed)
+      # gives exactly the value every shim's `--config=` argument should carry.
+      # Once every shim carries that absolute value, hook invocation depends on
+      # NOTHING worktree-local — no per-worktree symlink, ever, for any current
+      # or future worktree — while still failing loudly (not silently) should
+      # the store path itself ever be missing.
+      #
+      # GENERAL, not special-cased to one stage: rather than hardcoding a list
+      # of stage names (which would drift the moment a consumer's `extraHooks`
+      # configures a new one, e.g. `commit-msg`), this scans every file in the
+      # resolved hooks directory and rewrites any that actually invoke
+      # `prek hook-impl … --config="…"` — i.e. every shim `prek install` ever
+      # wrote, for whichever stages are actually configured, pre-commit and
+      # pre-push alike, with zero hardcoded stage list. It never touches the
+      # `*.sample` hooks `git init` ships (they contain neither marker) or a
+      # hand-authored hook (which would not match the pattern either).
+      #
+      # TEXT-REWRITE, NOT A `prek install` RE-RUN — deliberately, and this is
+      # WHY IT MUST RUN LAST: `hardenPrePushHook` (above) re-installs the
+      # pre-push shim via its OWN hardcoded `prek install -c
+      # .pre-commit-config.yaml --allow-missing-config -t pre-push -f` call.
+      # If this step tried to fix the config path the SAME way — re-running
+      # `prek install` per stage — it would face a genuine ordering conflict:
+      # run before `hardenPrePushHook` and that step's hardcoded RELATIVE `-c`
+      # would immediately undo the absolutizing for pre-push; run after it
+      # using a plain `prek install` and it would DROP the
+      # `--skip-on-missing-config` flag `hardenPrePushHook` just baked in
+      # (that call carries no `--allow-missing-config` of its own), silently
+      # reintroducing the pg2-vqyw3 regression. Rewriting the ONE substring in
+      # place, after everything else has already written its shim, avoids ever
+      # needing to know or reproduce what flags a prior step baked in — every
+      # other byte of the shim is left exactly as the prior step wrote it.
+      #
+      # ENFORCEMENT IS UNCHANGED — the acceptance criterion that separates this
+      # from the `--allow-missing-config` anti-pattern: this only rewrites an
+      # ARGUMENT VALUE that already points at a real, present config. It never
+      # adds `--allow-missing-config`/`--skip-on-missing-config` to the general
+      # (pre-commit) path, and never touches which hooks run or their exit
+      # behaviour. A genuine violation is still REJECTED, with real hook
+      # output, from any worktree — the fix makes the config resolvable, not
+      # the gate optional.
+      #
+      # IDEMPOTENT / CHURN-FREE, same discipline as `correctRelativeHooksPath`
+      # and its "compare before it writes" rule (upstream's own line 484-487):
+      # each shim is only rewritten if its CURRENT `--config="…"` value differs
+      # from the freshly-`readlink`ed absolute path, so a repeat run over an
+      # already-correct shim performs no write (mtime and content untouched).
+      # The rewrite itself is write-to-temp-then-`mv`, never `sed -i` (whose
+      # in-place flag differs between BSD sed on macOS and GNU sed on Linux),
+      # so it is portable and atomic on both.
+      absolutizeHookConfigPath = ''
+        _pgii_git="${lib.getExe' pkgs.git "git"}"
+        if "$_pgii_git" rev-parse --git-dir >/dev/null 2>&1; then
+          _pgii_wc="$("$_pgii_git" rev-parse --show-toplevel)"
+          _pgii_config_abs="$(readlink "$_pgii_wc/.pre-commit-config.yaml" 2>/dev/null || true)"
+          _pgii_hooks_dir="$("$_pgii_git" rev-parse --path-format=absolute --git-path hooks 2>/dev/null || true)"
+          if [ -n "$_pgii_config_abs" ] && [ -d "$_pgii_hooks_dir" ]; then
+            for _pgii_shim in "$_pgii_hooks_dir"/*; do
+              [ -f "$_pgii_shim" ] || continue
+              grep -q -- 'hook-impl' "$_pgii_shim" 2>/dev/null || continue
+              grep -q -- '--config="' "$_pgii_shim" 2>/dev/null || continue
+              grep -q -- "--config=\"$_pgii_config_abs\"" "$_pgii_shim" 2>/dev/null && continue
+              _pgii_tmp="$_pgii_shim.pgii-tmp"
+              sed -E 's#--config="[^"]*"#--config="'"$_pgii_config_abs"'"#' \
+                "$_pgii_shim" >"$_pgii_tmp"
+              chmod 0755 "$_pgii_tmp"
+              mv "$_pgii_tmp" "$_pgii_shim"
+            done
+            unset _pgii_shim _pgii_tmp
+          fi
+          unset _pgii_wc _pgii_config_abs _pgii_hooks_dir
+        fi
+        unset _pgii_git
+      '';
       # Single source of truth consumed by BOTH the devShell (via
       # `_module.args.preCommitShellHook`) and `install-pre-commit-hooks`, so the
-      # corrected `core.hooksPath` and the tolerant pre-push shim are both applied on
-      # either entry point.
+      # corrected `core.hooksPath`, the tolerant pre-push shim, and the
+      # absolutized config path are all applied on either entry point.
       #
       # ORDER IS LOAD-BEARING. `correctRelativeHooksPath` must run BEFORE
       # `hardenPrePushHook`, because the latter locates the shim with
@@ -269,10 +371,19 @@ in
       # While the relative value is still in place that resolution fails in a linked
       # worktree ("Invalid path …/.git/hooks: Not a directory"), so the pre-push
       # hardening would silently skip exactly where it is needed.
+      #
+      # `absolutizeHookConfigPath` must run LAST, after `hardenPrePushHook`: it
+      # also needs the corrected `core.hooksPath` to locate shims (same reason
+      # as `hardenPrePushHook`), AND it must see the shim(s) in their FINAL
+      # state so it only ever touches the one `--config=` substring rather than
+      # racing a later step's own shim rewrite (see its own comment above for
+      # why re-running `prek install` instead, in a different order, would
+      # conflict with `hardenPrePushHook`'s hardcoded relative `-c` argument).
       preCommitShellHook = ''
         ${preCommit.shellHook}
         ${correctRelativeHooksPath}
         ${hardenPrePushHook}
+        ${absolutizeHookConfigPath}
       '';
 
       # Regression guard for pg2-ohng1, asserting the OBSERVABLE OUTCOME rather
@@ -433,6 +544,173 @@ in
 
             touch "$out"
           '';
+
+      # Regression guard for pg2-7g7yl, same shape as
+      # `hooksPathWorktreeSafeCheck` immediately above (assert the DEFECT first
+      # as a control, then THE FIX): does a genuine hook violation get
+      # REJECTED, with real output, from a linked worktree that has NEVER had
+      # `install-pre-commit-hooks` run inside it — zero per-worktree setup?
+      #
+      # Exercises the REAL `prek` binary end to end (not a hand-rolled shim),
+      # because the defect and the fix both live in the exact argument `prek
+      # install` bakes into the shim it writes — a hand-authored stand-in
+      # would not prove anything about that. Self-contained and sandbox-safe:
+      # `pkgs.git` and `pkgs.prek` only, no network, no reference to the
+      # consumer's own repo, so it runs unchanged in every consumer that
+      # imports this module.
+      absolutizeHookConfigPathCheck =
+        pkgs.runCommand "pre-commit-hooks-config-path-absolute"
+          {
+            nativeBuildInputs = [
+              pkgs.git
+              pkgs.prek
+            ];
+          }
+          ''
+            set -u
+            export HOME="$TMPDIR"
+            export GIT_CONFIG_GLOBAL="$TMPDIR/gitconfig"
+            export GIT_CONFIG_SYSTEM=/dev/null
+            export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t
+            export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+            : >"$GIT_CONFIG_GLOBAL"
+
+            canon="$TMPDIR/canon"
+            git init -q -b main "$canon"
+            cd "$canon"
+            echo seed >seed.txt
+            git add seed.txt
+            git commit -qm seed
+            seed_sha=$(git rev-parse HEAD)
+
+            # A minimal, REAL prek config: one always-run hook that fails, so
+            # its firing (HOOK-FIRED) is the whole signal — same technique as
+            # `hooksPathWorktreeSafeCheck`'s hand-rolled hook, but this time
+            # authored as a genuine prek/pre-commit-format config, since this
+            # check's subject IS the `--config=` argument prek itself bakes
+            # into the shim.
+            storeconfig="$TMPDIR/store-config.yaml"
+            cat >"$storeconfig" <<'PGII_EOF'
+            repos:
+              - repo: local
+                hooks:
+                  - id: reject
+                    name: reject
+                    entry: sh -c 'echo HOOK-FIRED; exit 1'
+                    language: system
+                    always_run: true
+                    pass_filenames: false
+            PGII_EOF
+            ln -s "$storeconfig" .pre-commit-config.yaml
+
+            # Reproduce exactly what git-hooks.nix's installer does for the
+            # pre-commit stage (its line 524/537): install with the RELATIVE
+            # configPath. This is the premise; if prek ever stops baking a
+            # relative `--config=` argument itself, the rest of this check
+            # would pass for the wrong reason.
+            prek install -c .pre-commit-config.yaml -t pre-commit
+            if ! grep -q -- '--config=".pre-commit-config.yaml"' .git/hooks/pre-commit; then
+              echo "PREMISE FAILED: prek no longer bakes a relative --config= argument" >&2
+              exit 1
+            fi
+
+            git worktree add -q "$TMPDIR/wt" -b wt
+
+            # CONTROL: from the linked worktree, with NO config symlink of its
+            # own and NO per-worktree setup, the commit must fail
+            # loud-and-closed (config not found) — this is the pg2-7g7yl
+            # defect this check exists to remove. A failure here means the
+            # defect is already gone and this check is no longer measuring
+            # anything.
+            cd "$TMPDIR/wt"
+            echo control >control.txt
+            git add control.txt
+            if commit_out=$(git commit -m control 2>&1); then
+              echo "CONTROL FAILED: commit succeeded despite the missing worktree config" >&2
+              exit 1
+            fi
+            case $commit_out in
+              *"config file not found"* | *"No such file or directory"* | *"not found"*) ;;
+              *)
+                echo "CONTROL FAILED: unexpected failure mode (not a missing-config error)" >&2
+                printf '%s\n' "$commit_out" >&2
+                exit 1
+                ;;
+            esac
+            git reset -q --hard "$seed_sha"
+            git clean -qfd
+
+            # THE FIX, byte-identical to what the shellHook and
+            # install-pre-commit-hooks run.
+            cd "$canon"
+            ${correctRelativeHooksPath}
+            ${absolutizeHookConfigPath}
+            if ! grep -q -- "--config=\"$storeconfig\"" .git/hooks/pre-commit; then
+              echo "FAIL: shim was not rewritten to the absolute config path" >&2
+              cat .git/hooks/pre-commit >&2
+              exit 1
+            fi
+
+            # THE ASSERTION: the SAME violating commit, from the SAME linked
+            # worktree, with ZERO worktree-local setup, is now REJECTED with
+            # real hook output, and HEAD does not move.
+            cd "$TMPDIR/wt"
+            echo violation >violation.txt
+            git add violation.txt
+            if commit_out=$(git commit -m violation 2>&1); then
+              echo "FAIL: worktree commit succeeded; the hook did not fire" >&2
+              exit 1
+            fi
+            case $commit_out in
+              *HOOK-FIRED*) ;;
+              *)
+                echo "FAIL: no hook output from the worktree commit" >&2
+                printf '%s\n' "$commit_out" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$(git rev-parse HEAD)" != "$seed_sha" ]; then
+              echo "FAIL: HEAD moved despite the rejected commit" >&2
+              exit 1
+            fi
+
+            # A CLEAN commit (no violation) must still succeed from the same
+            # worktree — the fix must reject only genuine violations, not
+            # everything.
+            cat >"$storeconfig" <<'PGII_EOF'
+            repos:
+              - repo: local
+                hooks:
+                  - id: allow
+                    name: allow
+                    entry: sh -c 'exit 0'
+                    language: system
+                    always_run: true
+                    pass_filenames: false
+            PGII_EOF
+            echo clean >clean.txt
+            git add clean.txt
+            if ! git commit -qm clean; then
+              echo "FAIL: a clean commit was rejected from the worktree" >&2
+              exit 1
+            fi
+            git reset -q --hard "$seed_sha"
+            git clean -qfd
+
+            # IDEMPOTENT + CHURN-FREE: a repeat run must neither fail nor
+            # rewrite an already-correct shim.
+            cd "$canon"
+            before=$(sha256sum .git/hooks/pre-commit | cut -d' ' -f1)
+            ${absolutizeHookConfigPath}
+            ${absolutizeHookConfigPath}
+            after=$(sha256sum .git/hooks/pre-commit | cut -d' ' -f1)
+            if [ "$before" != "$after" ]; then
+              echo "FAIL: re-running the absolutizer rewrote an already-correct shim" >&2
+              exit 1
+            fi
+
+            touch "$out"
+          '';
     in
     {
       _module.args.preCommitShellHook = preCommitShellHook;
@@ -440,6 +718,7 @@ in
         pre-commit = preCommit;
         pre-commit-config-gitignored = preCommitConfigGitignoredCheck;
         pre-commit-hooks-path-worktree-safe = hooksPathWorktreeSafeCheck;
+        pre-commit-hooks-config-path-absolute = absolutizeHookConfigPathCheck;
       };
       packages.install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
         ${preCommitShellHook}
