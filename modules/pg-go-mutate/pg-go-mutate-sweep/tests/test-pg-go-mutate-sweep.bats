@@ -125,3 +125,117 @@ _ws_one_unit() {
   run "$SCRIPT" --root "$TEST_DIR/ws" --force-unlock
   [ "$status" -eq 0 ]
 }
+
+@test "a failing unit records failed and the sweep CONTINUES" {
+  # The errexit regression: the builder injects set -euo pipefail, so the loop
+  # must capture the exit status with `rc=0; cmd || rc=$?`.
+  mkdir -p "$TEST_DIR/ws/p/a" "$TEST_DIR/ws/p/b"
+  printf 'module example.com/p\n\ngo 1.25.0\n' >"$TEST_DIR/ws/p/go.mod"
+  printf 'package a\n' >"$TEST_DIR/ws/p/a/a.go"
+  printf 'package b\n' >"$TEST_DIR/ws/p/b/b.go"
+  _stub pg-go-mutate 'echo "$@" >>"$TEST_DIR/calls"; exit 1'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c . "$TEST_DIR/calls")" -eq 2 ]
+  grep -q '"status":"failed"' "$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl"
+}
+
+@test "exit 13 aborts the whole sweep with exit 4" {
+  _ws_one_unit
+  _stub pg-go-mutate 'exit 13'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ "$status" -eq 4 ]
+}
+
+@test "exit 2 from the engine aborts as a sweep bug" {
+  _ws_one_unit
+  _stub pg-go-mutate 'exit 2'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ "$status" -eq 4 ]
+}
+
+@test "exit 14 records vanished and continues" {
+  _ws_one_unit
+  _stub pg-go-mutate 'exit 14'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ "$status" -eq 0 ]
+  grep -q '"status":"vanished"' "$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl"
+}
+
+@test "a high timed-out fraction records inconclusive, not done" {
+  _ws_one_unit
+  _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":0,\"survived\":0,\"notViable\":0,\"timedOut\":10,\"errors\":0}}\n"; exit 0'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  grep -q '"status":"inconclusive"' "$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl"
+}
+
+@test "the engine is invoked with --json and the report is stored" {
+  _ws_one_unit
+  _stub pg-go-mutate 'echo "$@" >>"$TEST_DIR/calls"; printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  grep -q -- '--json' "$TEST_DIR/calls"
+  [ -f "$TEST_DIR/state/pg-go-mutate-sweep/runs/p/a.json" ]
+}
+
+@test "--tags is passed ONLY when a tag is applied" {
+  _ws_one_unit
+  printf '//go:build contract\n\npackage a\n' >"$TEST_DIR/ws/p/a/a_test.go"
+  _stub pg-go-mutate 'echo "$@" >>"$TEST_DIR/calls"; printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  # `run !`, not a bare `!`: bash exempts a !-inverted pipeline from errexit, so a
+  # bare `! grep` mid-test asserts NOTHING (shellcheck SC2314).
+  run ! grep -q -- '--tags' "$TEST_DIR/calls"
+  : >"$TEST_DIR/calls"
+  run "$SCRIPT" --root "$TEST_DIR/ws" --redo 'p#a' --auto-tags contract
+  grep -q -- '--tags contract' "$TEST_DIR/calls"
+}
+
+@test "the watchdog kills the whole subtree" {
+  # This is the test that would have caught `timeout --foreground`, in which
+  # children of COMMAND are NOT timed out.
+  _ws_one_unit
+  _stub pg-go-mutate 'bash -c "sleep 300 & echo \$! >\"$TEST_DIR/grandchild\"; sleep 300"'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws" --unit-timeout 1 --unit-kill-grace 1
+  [ "$status" -eq 0 ]
+  grep -q '"status":"timeout"' "$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl"
+  gc="$(cat "$TEST_DIR/grandchild" 2>/dev/null || true)"
+  [ -n "$gc" ] && ! kill -0 "$gc" 2>/dev/null
+}
+
+@test "a resumed run redoes nothing" {
+  _ws_one_unit
+  _stub pg-go-mutate 'echo RAN >>"$TEST_DIR/calls"; printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ "$(grep -c . "$TEST_DIR/calls")" -eq 1 ]
+}
+
+@test "--retry re-attempts only the selected statuses" {
+  _ws_one_unit
+  _stub pg-go-mutate 'echo RAN >>"$TEST_DIR/calls"; exit 1'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  run "$SCRIPT" --root "$TEST_DIR/ws" --retry failed
+  [ "$(grep -c . "$TEST_DIR/calls")" -eq 2 ]
+}
+
+@test "--only restricts the run list but not the plan" {
+  mkdir -p "$TEST_DIR/ws/p/a" "$TEST_DIR/ws/q/b"
+  printf 'module example.com/p\n\ngo 1.25.0\n' >"$TEST_DIR/ws/p/go.mod"
+  printf 'module example.com/q\n\ngo 1.25.0\n' >"$TEST_DIR/ws/q/go.mod"
+  printf 'package a\n' >"$TEST_DIR/ws/p/a/a.go"
+  printf 'package b\n' >"$TEST_DIR/ws/q/b/b.go"
+  _stub pg-go-mutate 'echo "$PWD" >>"$TEST_DIR/calls"; printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws" --only p
+  [ "$(grep -c . "$TEST_DIR/calls")" -eq 1 ]
+}
