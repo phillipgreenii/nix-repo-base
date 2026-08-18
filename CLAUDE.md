@@ -131,12 +131,48 @@ NOT follows-override its nixpkgs or it rebuilds from source); `llm-agents` (own 
 
 ## pn workspace: building ONE repo from a worktree
 
-`pn workspace build` CANNOT target a single repo's worktree, and `PN_WORKSPACE_OVERRIDE_PATHS`
-does NOT affect it — the env var is read only by a function whose only callers are tests, despite
-being listed in `pn workspace --help` (verified against `modules/pn` @ main `e3dab58`, 2026-06-29;
-re-derive against current source before relying on this). pn builds against worktrees only via a
-coordinated workforest set (`pn workspace workforest add`), where ALL repos resolve to set
-worktrees on the same branch — it cannot mix one repo-from-worktree with canonical siblings.
-WORKAROUND: invoke `nix build .#darwinConfigurations.<host>.system` (or `darwin-rebuild build`)
-directly from the terminal repo, replicating pn's sibling `--override-input <alias>
-git+file://<path>` flags by hand with the target repo's path swapped to the worktree path.
+`pn workspace build`/`apply`/`info` CANNOT target a single repo's worktree: repo-path resolution
+always joins `<workspace_root>/<repo-name>` — that repo's CANONICAL clone — no matter which
+directory `pn` was invoked from. Running any of the three from inside a plain `git worktree` (not
+a coordinated workforest set) therefore silently validates the canonical checkout, never the
+worktree — so it is NOT a valid pre-land gate for worktree-based work on that repo (bead
+pg2-9ova0). Empirically confirmed 2026-08-18: a syntax-breaking edit made ONLY inside a throwaway
+worktree (which independently failed `nix flake metadata` run directly against that worktree) did
+not fail `pn workspace build`/`info` when run from inside that same worktree — see bead pg2-9ova0
+for the full transcript.
+
+RE-VERIFIED against `modules/pn` @ main `127bd5eb93a83d6edf5ed67bae88d5c5dd40c289` (2026-08-18,
+bead pg2-9ova0) — the prior claim below still holds, and is narrower than it may have sounded:
+
+- `PN_WORKSPACE_OVERRIDE_PATHS` does NOT affect `build`/`apply`/`info`.
+  `workspace.ParseOverridePaths`/`parseOverridePaths`
+  (`modules/pn/internal/workspace/overridepaths.go:15,53`) has exactly **three** callers
+  repo-wide, all in `internal/workspace/overridepaths_test.go` (confirmed via
+  `git grep -rn "ParseOverridePaths"` across the whole repo, not just `modules/pn`). No CLI `RunE`
+  handler calls it, and no command registers a `--override-path` (or any array/slice) flag:
+  `workspaceBuildCmd`/`workspaceApplyCmd` construct `workspace.BuildOptions{Terminal: *terminal}` /
+  `workspace.ApplyOptions{Terminal: *terminal}` with no `OverridePaths` field set
+  (`internal/cli/workspace.go:202,220`), and `workspaceInfoCmd` doesn't accept overrides at all —
+  `Info()` takes no options whatsoever.
+- This is narrower than "dead code" sounds: the `OverridePaths map[string]string` field on
+  `BuildOptions`/`ApplyOptions` IS real, tested, production logic — consumed by
+  `Workspace.Build`/`Workspace.Apply` and their helpers (`build.go:47,53`; `apply.go:38,49,101`;
+  `helpers.go:94`), and documented in-place as the "override-path apply / coordinated-worktree
+  flow" (`apply.go:212`, `info.go:87`, `updatecache.go:101,103`). It is ONLY the CLI _surface_ for
+  it — a flag, or reading the env var — that was never built. A 2026-06-01 design plan
+  (`docs/superpowers/plans/2026-06-01-pn-workspace-build-apply.md`, ~L1683-1751) shows a
+  `--override-path name=path` flag WAS designed for exactly this, wired through
+  `ParseOverridePaths`, but that step's own checkboxes are unchecked and it was never implemented
+  — the design apparently pivoted to the coordinated-workforest-set mechanism below instead.
+- Working as designed, not a separate bug: treat `PN_WORKSPACE_OVERRIDE_PATHS`/`--override-path`
+  as unsupported CLI surface until someone deliberately wires it up (a plausible, narrowly-scoped
+  follow-up — NOT attempted here: it touches CLI flag surface used workspace-wide, so pg2-9ova0
+  didn't do it speculatively; see bead pg2-9ova0 for the follow-up recommendation).
+
+pn builds against worktrees only via a coordinated workforest set (`pn workspace workforest add`),
+where ALL repos resolve to set worktrees on the same branch — it cannot mix one repo-from-worktree
+with canonical siblings. WORKAROUND: invoke `nix build .#darwinConfigurations.<host>.system` (or
+`darwin-rebuild build`) directly from the terminal repo, replicating pn's sibling
+`--override-input <alias> git+file://<path>` flags by hand with the target repo's path swapped to
+the worktree path — or simply run `nix flake check`/`nix build` directly INSIDE the worktree: that
+never routes through pn's repo-path resolution, so it is worktree-correct by construction.
