@@ -206,11 +206,56 @@ _ws_one_unit() {
   _ws_one_unit
   _stub pg-go-mutate 'bash -c "sleep 300 & echo \$! >\"$TEST_DIR/grandchild\"; sleep 300"'
   _stub bd 'echo pg2-stub'
-  run "$SCRIPT" --root "$TEST_DIR/ws" --unit-timeout 1 --unit-kill-grace 1
+  # --unit-timeout 2, not 1: the window has to be wide enough for the stub to fork
+  # the background sleep and record its pid, or there is no grandchild to kill and
+  # the run asserts nothing (the setup check below turns that into its own red).
+  # --unit-kill-grace stays 1 -- a `sleep` dies on the TERM, so the TERM->KILL
+  # escalation is not the mechanism this test depends on, and widening it would not
+  # have prevented the observed failure.
+  run "$SCRIPT" --root "$TEST_DIR/ws" --unit-timeout 2 --unit-kill-grace 1
   [ "$status" -eq 0 ]
   grep -q '"status":"timeout"' "$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl"
+
   gc="$(cat "$TEST_DIR/grandchild" 2>/dev/null || true)"
-  [ -n "$gc" ] && ! kill -0 "$gc" 2>/dev/null
+  # Its own assertion, NOT the old `[ -n "$gc" ] && ! kill -0 "$gc"`: an empty $gc is
+  # a SETUP failure -- the stub never established the subtree -- and the combined form
+  # reported it with the same red as a grandchild that SURVIVED, which is the opposite
+  # defect. A reader has to be able to tell those apart from the failure output.
+  if [ -z "$gc" ]; then
+    printf 'no grandchild pid recorded at %s: the stub never established the subtree, so this run asserts NOTHING about the watchdog\n' \
+      "$TEST_DIR/grandchild" >&2
+    return 1
+  fi
+
+  # POLL to a bounded deadline instead of probing once. `timeout` returns as soon as
+  # its DIRECT child is gone, while signal delivery to the rest of the process group
+  # and the reaping of the grandchild are asynchronous -- so a single `kill -0` right
+  # after `run` loses a race for which this package's own batsJobs=4 supplies the load
+  # (pg2-46lx6: the byte-identical check derivation failed, then passed on an immediate
+  # retry). The property asserted is unchanged, and is the one that matters -- the
+  # grandchild DOES die -- it is simply no longer pinned to a single instant.
+  #
+  # Residual risk, deliberately not chased: `kill -0` answers "some process holds this
+  # pid", not "the grandchild lives", so a recycled pid could keep the loop spinning.
+  # The loop exits on the first negative probe, so the observation window is
+  # milliseconds in the passing case and pids are handed out monotonically; every
+  # identity check available (ps, lsof) would be a new dependency the nix check
+  # environment does not carry, so this is accepted rather than hardened.
+  gc_started=$SECONDS
+  gc_deadline=$((gc_started + 20))
+  while kill -0 "$gc" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$gc_deadline" ]; then
+      printf 'grandchild %s STILL ALIVE %ss after the sweep exited (polled every 0.1s to a %ss deadline): the watchdog did not kill the whole subtree\n' \
+        "$gc" "$((SECONDS - gc_started))" "$((gc_deadline - gc_started))" >&2
+      # Diagnostics only -- `ps` is not guaranteed in the nix check environment, so it
+      # must never be the assertion itself.
+      if command -v ps >/dev/null 2>&1; then
+        ps -p "$gc" -o pid=,ppid=,stat=,command= >&2 || true
+      fi
+      return 1
+    fi
+    sleep 0.1
+  done
 }
 
 @test "a resumed run redoes nothing" {
