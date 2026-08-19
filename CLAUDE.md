@@ -89,12 +89,47 @@ package build. The per-source digest now ALSO appears in the derivation `version
 python builders (matching Go), so it surfaces in `nvd` / the darwin "Package changes" report
 (ADR [0011](docs/adr/0011-source-digest-in-derivation-version.md)).
 
-## Mutation testing (`pg-go-mutate`)
+## Mutation testing (`pg-go-mutate`, `pg-go-mutate-sweep`)
 
 `pg-go-mutate` reports which assertions a Go package's tests are missing. Every surviving mutant is
 an assertion the tests do not make. It is a diagnostic, not a gate: it always exits 0 on a completed
-analysis, records nothing, and tracks no score over time. Use it when strengthening tests; see the
-`go-test-gaps` skill for the workflow. Design: `docs/superpowers/specs/2026-08-14-pg-go-mutate-design.md`.
+analysis however many mutants survived, records nothing, and tracks no score over time. Use it when
+strengthening tests; see the `go-test-gaps` skill for the workflow. Design:
+`docs/superpowers/specs/2026-08-14-pg-go-mutate-design.md`.
+
+A completed analysis still exits 0, but a GUARD failure now identifies itself, so a caller can tell
+"this package needs assertions" from "this package never ran": `10` no test files, `11` not
+enumerable, `12` unhealthy (does not vet, or tests already fail on unmutated source), `13`
+environment precondition failed (`go` or the pinned engine absent or mismatched), `14` target path
+absent or not a directory. `2` remains usage error, and `1` stays reserved for generic/unexpected
+failure — callers MUST NOT give `1` a branchable meaning. The new codes are strictly additive:
+every prior consumer asserted only the 0/non-zero dichotomy. Allocation and rationale: ADR
+[0026](docs/adr/0026-mutation-sweep-state-contract.md).
+
+`pg-go-mutate-sweep` is the unattended sibling. It runs `pg-go-mutate` over every Go package in the
+workspace one `(project, package)` unit at a time, and is resumable — re-running the same command
+continues from where it stopped, and by default re-attempts no already-recorded unit, so a run
+always makes forward progress and cannot loop on a broken one. Unlike `pg-go-mutate` it DOES record
+durable state, under `${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-sweep/`: an append-only
+`ledger.jsonl`, replayed (last record per key) to derive what is done, plus one worklist JSON per
+unit. The ledger records unit STATUS only — `done`, `no-tests`, `failed`, `timeout`, … — and MUST
+NOT record a survivor count, a percentage, or any score. That prohibition is the family's, not the
+file format's: it binds beads, commit messages and docs equally, because a worklist is actionable
+and a score is not. On finishing a project the sweep files exactly ONE triage bead for it and MUST
+NOT file an epic — an open epic never leaves `bd ready`.
+
+Read `tags_withheld` on a unit's record before acting on its survivors: non-empty means that unit's
+tests were partly gated behind build tags that were not applied, so the survivors are UNANALYSED.
+Such a unit records `done` and is otherwise indistinguishable from a genuine gap.
+
+The sweep resolves `pg-go-mutate` and `bd` from `PATH`, and neither MUST be added as a nixpkgs
+`runtimeDep`: `runtimeDeps` are appended with `--suffix`, so listing them could not displace the
+machine's wrapper but WOULD supply a silent fallback to an unwrapped `pg-go-mutate` (no engine pin,
+no version assertion) or an unmanaged `bd` (losing `BEADS_DOLT_AUTO_START=0`, so it can spawn a
+competing dolt server). Neither command MUST be added to CI, a pre-commit hook, or any `checks.*`
+derivation that performs a mutation run — a sweep costs hours and gates nothing. Registering the
+sweep's bats check is the only `checks.*` entry in scope. Design:
+`docs/superpowers/specs/2026-08-17-pg-go-mutate-sweep-design.md`.
 
 ## treefmt markdown formatting (prettier)
 
