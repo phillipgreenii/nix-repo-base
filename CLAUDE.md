@@ -3,6 +3,35 @@
 Shared Nix infrastructure (builders, `pn` workspace tooling, lib helpers) imported by the other
 `nix-*` flakes in this workspace.
 
+## Beads Labels
+
+Every bead filed against this repo MUST carry the repo label `base`.
+
+If the bead concerns one specific project, it MUST also carry that project's label — the basename
+of the relevant directory. Two kinds of project roots exist here:
+
+- **Container roots** `home/` and `modules/`: each immediate subdirectory is one project (e.g.
+  `modules/pn` → `pn`, `home/pg-go-mutate` → `pg-go-mutate`).
+- **Standalone plugin directories** `pn-workspace-rules/` and `capability-model/`: each is itself
+  one project. Whatever internal structure either has (e.g. `skills/`, `commands/`, `agents/`,
+  `.claude-plugin/`) is plugin plumbing, not a separate project.
+
+Run `ls home modules` for the current valid set of container-root projects: that directory listing
+IS the source of truth, not an enumerated table here, so it cannot go stale as projects are added,
+removed, or renamed.
+
+A bead about repo-wide or cross-cutting concerns (flake-level, CI, docs shared across projects,
+`lib/` helpers used by everything) MUST carry only the repo label, no project label.
+
+**Known exceptions**: the same project is named differently depending on which root you look
+under, so the path rule cannot resolve one canonical label from the directory name alone. Tracked
+in `pg2-isnmv` (operator ruling 2026-08-19: leave the directory names as-is for now). Until that's
+resolved, either name is acceptable:
+
+- `pjira` or `jira` (`home/pjira` vs `modules/jira`)
+- `capability-framework` or `capability-model` (`home/capability-framework` vs top-level
+  `capability-model/`)
+
 ## Architecture Decision Records
 
 ADRs live in `docs/adr/` (`index.md` lists them). Read relevant ADRs before changing the area they
