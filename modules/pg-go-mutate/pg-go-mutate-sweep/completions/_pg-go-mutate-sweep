@@ -1,0 +1,21 @@
+#compdef pg-go-mutate-sweep
+
+# The --retry value set matches the bash completion exactly: 'transient' plus
+# every status pgms_classify can RECORD. 'fatal' is excluded from both because it
+# aborts the sweep (exit 4) and never reaches the ledger. No positional argument
+# is offered -- the command rejects bare words with exit 2.
+_arguments -s \
+  '--root[workspace root]:dir:_directories' \
+  '*--only[restrict the run list to one project]:project:' \
+  '--unit-timeout[per-unit wall-clock cap in seconds]:seconds:' \
+  '--unit-kill-grace[grace before escalating to KILL]:seconds:' \
+  '--mutant-timeout[per-mutant test timeout in seconds]:seconds:' \
+  '--workers[parallel workers within a unit]:count:' \
+  '--auto-tags[build tags eligible for automatic application]:tags:' \
+  '--retry[re-attempt units by status]:spec:(transient done no-tests failed timeout unhealthy not-enumerable vanished inconclusive)' \
+  '--redo[re-attempt one unit, keyed <project>#<package>]:key:' \
+  '--dry-run[print the plan and resume position]' \
+  '--no-beads[analyse and record; file no beads]' \
+  '--force-unlock[break a lock whose holder is gone or wedged]' \
+  '(-h --help)'{-h,--help}'[show help]' \
+  '(-v --version)'{-v,--version}'[show version information]'

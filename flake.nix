@@ -217,6 +217,13 @@
             # Mirrors how pnwf/wsplan expose their module's script above.
             pg-go-mutate = pgGoMutateScripts.pg-go-mutate.script;
 
+            # pg-go-mutate-sweep: resumable unattended mutation sweep, one
+            # (project, package) unit at a time, filing a triage bead per project.
+            # Needs no engine binding of its own -- it resolves pg-go-mutate and bd
+            # from PATH so the home-manager-wrapped ones are the only ones it can
+            # get (see the module's default.nix for why neither is a runtimeDep).
+            pg-go-mutate-sweep = pgGoMutateScripts.pg-go-mutate-sweep.script;
+
             # This repo's own Claude Code marketplace, bundled into the store with
             # content-derived per-plugin version stamping. Identity:
             # phillipg-nix-repo-base-marketplace-local. The fileset is NARROWED to
@@ -968,6 +975,7 @@
             pn-workspace-toml-enforce
             pjira
             pg-go-mutate
+            pg-go-mutate-sweep
             ;
         };
 

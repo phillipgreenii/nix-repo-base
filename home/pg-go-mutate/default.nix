@@ -55,10 +55,20 @@ in
     # Forced only under mkIf cfg.enable, so a consumer that never enables the
     # feature never evaluates this and needs no overlay input.
     gomuPackage = mkPackageOption pkgs [ "phillipgreenii" "gomu" ] { };
+    # The sweep is a SEPARATE package, not part of `wrapped`: it needs no engine
+    # binding of its own, and it must not be pulled inside the symlinkJoin, whose
+    # postBuild hard-codes `wrapProgram $out/bin/pg-go-mutate`. It resolves
+    # pg-go-mutate from PATH, which is exactly how it reaches the WRAPPED one
+    # installed below -- the only build carrying the store-path pin and the E1
+    # version assertion.
+    sweepPackage = mkPackageOption pkgs "pg-go-mutate-sweep" { };
   };
 
   config = mkIf cfg.enable {
-    home.packages = [ wrapped ];
+    home.packages = [
+      wrapped
+      cfg.sweepPackage
+    ];
 
     # The mechanism that keeps this module and the script's baked-in pin
     # AGREEING. repo-base cannot check it itself: pkgs.phillipgreenii.gomu lives
@@ -103,6 +113,17 @@ in
     programs.tldr.customPages.pg-go-mutate = mkIf config.programs.tldr.enable {
       platform = "common";
       source = "${cfg.package}/share/tldr/pages.common/pg-go-mutate.md";
+    };
+
+    # Same registration for the sweep, and for the same reason: without it the
+    # page is built into the store and reaches nobody. Note the two layouts are
+    # NOT the same -- the package SHIPS share/tldr/pages.common/<name>.md, which
+    # is what `source` reads, while the custom-pages registry installs it under
+    # the flat <name>.page.md name it derives from this attribute. Only the
+    # attribute name decides what `tldr <page>` resolves.
+    programs.tldr.customPages.pg-go-mutate-sweep = mkIf config.programs.tldr.enable {
+      platform = "common";
+      source = "${cfg.sweepPackage}/share/tldr/pages.common/pg-go-mutate-sweep.md";
     };
   };
 }
