@@ -7,10 +7,19 @@ setup() {
   # exported in this environment, so overriding HOME alone would append to the
   # operator's real ledger and contend for the real lock.
   export HOME="$TEST_DIR" XDG_STATE_HOME="$TEST_DIR/state"
-  LIB="${LIB_PATH:-$(cd "${BATS_TEST_DIRNAME}/.." && pwd)/pg-go-mutate-sweep.bash}"
-  [ -d "$LIB" ] && LIB="$LIB/pg-go-mutate-sweep.bash"
+  # SCRIPTS_DIR, never LIB_PATH. In a mkBashScript check LIB_PATH holds the
+  # composed DEPENDENCY libraries (here pg-go-mutate-lib), colon-separated -- not
+  # this command's own .bash. Reading it as the latter sourced pg-go-mutate-lib
+  # instead, so every pgms_* was command-not-found while the local run, where
+  # LIB_PATH is unset and the fallback applied, stayed green. SCRIPTS_DIR is the
+  # command's own source dir, which is what holds pg-go-mutate-sweep.bash.
+  #
+  # pg-go-mutate-lib is deliberately NOT sourced here: the only function it would
+  # supply, pgm_detect_tags, is stubbed by the two pgms_apply_tags cases below, so
+  # sourcing it would mask the stub rather than support it.
+  LIB="${SCRIPTS_DIR:-$(cd "${BATS_TEST_DIRNAME}/.." && pwd)}/pg-go-mutate-sweep.bash"
   # shellcheck disable=SC1090  # runtime-resolved library path
-  source "${LIB%%:*}"
+  source "$LIB"
 }
 
 teardown() {

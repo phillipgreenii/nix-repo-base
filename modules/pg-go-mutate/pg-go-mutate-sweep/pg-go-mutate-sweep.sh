@@ -213,8 +213,10 @@ _pgms_withheld_for() { # <unit-key>
 # mutant count (N1).
 _bead_body() { # <project>
   local proj="$1" u key st
+  # shellcheck disable=SC2016  # the backticks are literal markdown for the bead body, not command substitution -- single quotes are what KEEPS them literal
   printf 'pg-go-mutate has analysed every package in `%s`. The worklists are on this machine at:\n\n' "$proj"
   printf '    %s/%s/\n\n' "$(pgms_runs_dir)" "$(pgms_slug "$proj")"
+  # shellcheck disable=SC2016  # `.survivors` is a literal markdown code span in the bead body, not an expression to expand
   printf 'One JSON file per unit, overwritten in place on each attempt. `.survivors` is the\n'
   printf 'actionable worklist: each entry names a file, a line and the mutation operator.\n\n'
   printf 'Units by status:\n\n'
