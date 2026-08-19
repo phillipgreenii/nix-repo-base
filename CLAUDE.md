@@ -24,13 +24,19 @@ A bead about repo-wide or cross-cutting concerns (flake-level, CI, docs shared a
 `lib/` helpers used by everything) MUST carry only the repo label, no project label.
 
 **Known exceptions**: the same project is named differently depending on which root you look
-under, so the path rule cannot resolve one canonical label from the directory name alone. Tracked
-in `pg2-isnmv` (operator ruling 2026-08-19: leave the directory names as-is for now). Until that's
-resolved, either name is acceptable:
+under, so the path rule cannot resolve one canonical label from the directory name alone.
+`pg2-isnmv` audited the full `home/`/`modules/` layout end-to-end (2026-08-19) and confirmed these
+are the only two instances. Operator ruling 2026-08-19: leave the directory names as-is — these
+are deliberate, permanent aliases, not a pending rename. Either name is acceptable:
 
 - `pjira` or `jira` (`home/pjira` vs `modules/jira`)
 - `capability-framework` or `capability-model` (`home/capability-framework` vs top-level
   `capability-model/`)
+
+No other cross-root splits were found: `pg-go-mutate` and `pn` are spelled identically under both
+`home/` and `modules/`; `modules/pnwf` and `modules/ul` have no `home/` counterpart to conflict
+with (`pnwf`'s home-manager module lives in the `phillipgreenii-nix-agent-support` repo, not here);
+and `pn-workspace-rules/` is a distinct project from `pn`/`pnwf`, not an alias of either.
 
 ## Architecture Decision Records
 
