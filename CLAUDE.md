@@ -131,6 +131,36 @@ derivation that performs a mutation run — a sweep costs hours and gates nothin
 sweep's bats check is the only `checks.*` entry in scope. Design:
 `docs/superpowers/specs/2026-08-17-pg-go-mutate-sweep-design.md`.
 
+### Verifying the engine pin in a post-apply check
+
+The engine guard (`pgm_require_engine`, `modules/pg-go-mutate/lib/pg-go-mutate-lib.bash`) is
+observable on BOTH install paths, and the SAME substitution attempt MUST produce OPPOSITE outcomes
+on them — so a verification step MUST name which binary it drives:
+
+- **wrapped** — what `homeModules.pg-go-mutate` installs; on `PATH` after an apply, with
+  `command -v pg-go-mutate` resolving into a `…-wrapped` store path.
+- **unwrapped** — `packages.pg-go-mutate` / `overlays.default`, reached as
+  `nix run <repo-base>#pg-go-mutate` (equivalently the wrapper's inner `.pg-go-mutate-wrapped_`
+  sibling, which IS that same script — but that filename is `makeWrapper`'s, not a contract).
+
+| Substitution attempt against `pg-go-mutate <pkg>` | wrapped                                | unwrapped                  |
+| ------------------------------------------------- | -------------------------------------- | -------------------------- |
+| a fake `gomu` earlier on `PATH`                   | MUST still run the pinned store engine | MUST abort, naming the pin |
+| `PG_GO_MUTATE_GOMU=<fake gomu>`                   | MUST still run the pinned store engine | MUST abort, naming the pin |
+
+- A check driving the WRAPPED binary MUST expect BOTH attempts to SUCCEED. Expecting an abort there
+  is the CHECK's error, not a defect in the wiring: pg2-uk8wi's check 4b asked for one and is
+  unsatisfiable by construction (bead pg2-3x7xm).
+- The mismatch abort MUST therefore be asserted against the UNWRAPPED entry point, where both seams
+  are honoured — and MUST be asserted on the MESSAGE, which names the expected pin and what the
+  engine reported, rather than on an exit code alone: that code is `13` since the guard exit-code
+  allocation above and was plain `1` before it, so a code-only assertion silently dates the check.
+- WHY the wrapped column reads "still run": the wrapper binds `PG_GO_MUTATE_GOMU` and
+  `PG_GO_MUTATE_GOMU_VERSION` with `makeWrapper --set` (spec W9), an UNCONDITIONAL export, so it
+  closes the env-var vector as well as the `PATH` one — stronger than the check assumed. Should
+  either binding become `--suffix`, or stop being emitted, the wrapped column changes and this table
+  MUST be re-derived before it is trusted again.
+
 ## treefmt markdown formatting (prettier)
 
 treefmt formats markdown/yaml/json with prettier (version UNPINNED — it comes from

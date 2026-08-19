@@ -54,6 +54,16 @@ pgm_require_go() {
 # falls back to the baked pin, so setting it EMPTY is the deliberate opt-out. A
 # raw-source run and the bats suites need no opt-out -- they have no baked pin
 # either, so both seams are absent and the comparison is skipped as before.
+#
+# HOW THIS IS VERIFIED, and the trap in verifying it: the two install paths give
+# OPPOSITE outcomes for the SAME substitution attempt, so a check MUST name which
+# binary it drives. On the WRAPPED binary both seams are inert -- W9's --set emits
+# an unconditional export, closing the PG_GO_MUTATE_GOMU vector as well as the
+# PATH one -- so a substitution attempt MUST still complete on the pinned store
+# engine there, and a check expecting an abort is itself wrong. The mismatch abort
+# below MUST be asserted against the UNWRAPPED entry point, where both seams are
+# honoured, and on the MESSAGE rather than the exit code alone. The outcome-shaped
+# contract is in repo-base CLAUDE.md, "Mutation testing" (bead pg2-3x7xm).
 pgm_require_engine() {
   local bin raw first expected field
   local -a fields

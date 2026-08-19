@@ -11,6 +11,14 @@
 #     derives from the fetched tag) reports this same string, so the two halves
 #     cannot drift apart silently.
 #
+# WHICH install path OBSERVES this pin — and so how a verification step MUST be
+# written — is the outcome-shaped contract in repo-base CLAUDE.md, "Mutation
+# testing": the UNWRAPPED package is where a mismatched engine MUST abort naming
+# this string, while the WRAPPED home-manager binary MUST resist substitution
+# (by PATH and by PG_GO_MUTATE_GOMU alike) and complete instead of aborting. A
+# check that expects the abort from the wrapped binary is asking for the one
+# outcome the wrapper exists to prevent (bead pg2-3x7xm).
+#
 # The TEST SUITES are deliberately not a third copy, and the two differ:
 #
 #   * the script suite (../pg-go-mutate/tests/test-pg-go-mutate.bats) reads the
