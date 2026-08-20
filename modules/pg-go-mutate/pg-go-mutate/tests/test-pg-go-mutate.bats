@@ -10,6 +10,22 @@ setup() {
   # HOME/GOCACHE-under-TMPDIR convention lib/go-builders.nix uses.
   export HOME="$TEST_DIR" GOCACHE="$TEST_DIR/go-build"
 
+  # `go` also writes telemetry counters under
+  # "$HOME/Library/Application Support/go/telemetry" (the macOS
+  # os.UserConfigDir(), which is where nix's build-sandbox convention of
+  # setting a fresh $HOME lands too) -- a location GOCACHE above does
+  # nothing to redirect. That write can be done by a process that outlives
+  # the `go list`/`go vet`/`go test` invocation which triggered it, and since
+  # $TEST_DIR now IS $HOME, a still-running writer races teardown()'s
+  # `rm -rf "$TEST_DIR"` below: the directory gets repopulated under the
+  # delete, and the rm errors out (pg2-0uk00). `go telemetry off` writes only
+  # its own one-line "mode" file and nothing else (verified empirically
+  # 2026-08-20: a fresh $HOME running it gains exactly that one file), so
+  # doing it here, before the script under test ever invokes `go`, means no
+  # go process writes anywhere under $HOME afterward -- closing the race by
+  # removing its only remaining writer rather than timing around it.
+  go telemetry off >/dev/null 2>&1 || true
+
   if [ -n "${SCRIPT_UNDER_TEST:-}" ]; then
     SCRIPT="$SCRIPT_UNDER_TEST"
   else
@@ -63,7 +79,36 @@ teardown() {
   if [ -n "${PGM_TEST_PID_LOG:-}" ] && [ -s "${PGM_TEST_PID_LOG}" ]; then
     kill -KILL "$(cat "$PGM_TEST_PID_LOG")" 2>/dev/null || true
   fi
-  [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"
+  # The same interrupt test backgrounds the CLI itself and records its pid to
+  # "$TEST_DIR/.cli-pid" before making any assertion. If one of ITS OWN
+  # assertions fails first -- e.g. the wait for the engine's pid-log times
+  # out because the pre-engine `go vet`/`go test` guards ran long under a
+  # contended sandbox (observed under nix, pg2-0uk00) -- the test body never
+  # reaches its intended `kill -TERM "$cli_pid"`, so that backgrounded CLI
+  # (and whatever real `go` guard it may still be running) is orphaned into
+  # this teardown with nothing having told it to stop, and its write into
+  # "$TEST_DIR/go-build" (GOCACHE) races the rm -rf below exactly like the
+  # engine would. Best-effort kill it too, on every test (the file only
+  # exists for that one test).
+  if [ -n "${TEST_DIR:-}" ] && [ -s "$TEST_DIR/.cli-pid" ]; then
+    kill -KILL "$(cat "$TEST_DIR/.cli-pid")" 2>/dev/null || true
+    wait "$(cat "$TEST_DIR/.cli-pid")" 2>/dev/null || true
+  fi
+  if [ -n "${TEST_DIR:-}" ]; then
+    # A grandchild forked by either process just killed above (e.g. a `go`
+    # compile/link tool already spawned before the kill landed) can still
+    # hold a brief, in-flight write under $TEST_DIR after its parent is gone
+    # -- an `rm -rf` run against that instant can fail ENOTEMPTY. Retry
+    # briefly rather than failing the test on a race that resolves itself
+    # within a second or two; if it is still failing after that, let the
+    # last attempt's real failure surface rather than swallowing it.
+    ok=
+    for _ in 1 2 3 4 5; do
+      rm -rf "$TEST_DIR" 2>/dev/null && ok=1 && break
+      sleep 0.5
+    done
+    [ -n "$ok" ] || rm -rf "$TEST_DIR"
+  fi
 }
 
 @test "--help exits 0 and documents every flag" {
@@ -481,8 +526,20 @@ EOF
 
   "$SCRIPT" "$target" >"$TEST_DIR/cli.out" 2>&1 &
   cli_pid=$!
+  # Recorded for teardown() (pg2-0uk00): if this test's own assertions abort
+  # before the "kill -TERM $cli_pid" below runs, teardown reaps this
+  # backgrounded CLI too, rather than leaving it to keep writing under
+  # $TEST_DIR while the rm -rf races it.
+  printf '%s\n' "$cli_pid" >"$TEST_DIR/.cli-pid"
 
-  for _ in $(seq 1 300); do
+  # 120s: a pure liveness wait for the stub engine to start, which happens
+  # only after the CLI's real pre-engine `go vet`/`go test` guards finish
+  # against the fixture module -- normally near-instant, but observed to
+  # take long enough to blow a 30s window under a contended sandbox (nix
+  # build, batsJobs=4; pg2-0uk00). Widening this does not weaken what the
+  # test asserts: it is a has-it-started-yet check, not the timing-sensitive
+  # proof below (which stays tight on purpose, see its own comment).
+  for _ in $(seq 1 1200); do
     [ -s "$PGM_TEST_PID_LOG" ] && break
     sleep 0.1
   done
