@@ -85,6 +85,26 @@ _mkmod() { # <dir> <module-path>
   [ "$(printf '%s\n' "$output" | sort | tr '\n' ' ')" = "leaf outer " ]
 }
 
+@test "units exits 0 even when the lexicographically-last candidate is a dropped subtree duplicate" {
+  # Regression for pg2-uexl8: pgms_find_units's exit status used to be an
+  # accident of whichever candidate happened to sort last. A nested candidate
+  # is a superstring of its ancestor, so it ALWAYS sorts after it -- meaning
+  # the ordinary case (a project whose deepest package sits under an already-
+  # counted ancestor, e.g. internal/workspace/smoke under internal/workspace)
+  # left the last-evaluated `[ "$keep" -eq 1 ] && printf` false and the
+  # function returned 1, even though it enumerated and printed every real
+  # unit correctly. Under the sweep's `set -euo pipefail` that silently
+  # truncated the plan (pgms_plan's counting pass never reached later
+  # projects) with no error surfaced anywhere.
+  _mkmod "$TEST_DIR/ws/p" example.com/p
+  mkdir -p "$TEST_DIR/ws/p/internal/workspace/smoke"
+  printf 'package workspace\n' >"$TEST_DIR/ws/p/internal/workspace/w.go"
+  printf 'package smoke\n' >"$TEST_DIR/ws/p/internal/workspace/smoke/s.go"
+  run pgms_find_units "$TEST_DIR/ws" p
+  [ "$status" -eq 0 ]
+  [ "$output" = "internal/workspace" ]
+}
+
 @test "a dir holding only _test.go files is not a candidate" {
   _mkmod "$TEST_DIR/ws/p" example.com/p
   mkdir -p "$TEST_DIR/ws/p/only"

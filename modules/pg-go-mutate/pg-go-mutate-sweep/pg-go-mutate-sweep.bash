@@ -108,6 +108,14 @@ pgms_find_units() { # <root> <project-key>
     done <<<"$dirs"
     [ "$keep" -eq 1 ] && printf '%s\n' "$x"
   done <<<"$dirs"
+  # Explicit, deliberate: without this, the function's exit status is whatever
+  # the LAST candidate's `[ "$keep" -eq 1 ] && printf` happened to evaluate to --
+  # 1 (failure) whenever the lexicographically-last candidate is a dropped
+  # nested/subtree duplicate, even though every real unit was enumerated and
+  # printed correctly. Callers read this exit status unguarded (pgms_plan's
+  # counting pass, pgms_bead_due), and under the sweep's `set -euo pipefail`
+  # that accidental 1 silently truncates the plan (bead pg2-uexl8).
+  return 0
 }
 
 # A unit is a SUBTREE when another candidate lives beneath it. Subtree units sort
