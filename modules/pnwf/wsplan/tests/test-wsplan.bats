@@ -39,20 +39,24 @@ setup_file() {
   export LIB_PATH
 
   # Hermetic + fast git. A global core.fsmonitor=true would make every
-  # throwaway repo spawn a daemon that blocks each working-tree op for seconds;
-  # GIT_CONFIG_COUNT acts like a `-c` flag so it wins over the inherited global
-  # and is surgical. Performance-only, so behavior-neutral.
-  export GIT_CONFIG_COUNT=2
-  export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
-  export GIT_CONFIG_KEY_1=core.untrackedcache GIT_CONFIG_VALUE_1=false
+  # throwaway repo spawn a daemon that blocks each working-tree op for
+  # seconds. This used to be fixed surgically with a GIT_CONFIG_COUNT pin, but
+  # that is now redundant: GIT_CONFIG_GLOBAL/SYSTEM=/dev/null below already
+  # neutralizes core.fsmonitor/core.untrackedcache (and everything else) at
+  # the ambient global/system scope, which was the pin's only job here. The
+  # pin's one remaining edge -- it would still win over a REPO-LOCAL
+  # core.fsmonitor/untrackedcache override, which the /dev/null redirects do
+  # not touch -- is moot for this suite because no test here sets one
+  # (verified by grep); removed as redundant (pg2-zjcp6).
 
-  # Full hermeticity on top of that surgical pin (bead pg2-klyn6): the pin above
-  # covers only two keys, so EVERY other key still merged in from the developer's
-  # ~/.gitconfig, $XDG_CONFIG_HOME/git/config and /etc/gitconfig. /dev/null is the
-  # NEUTRAL setting for both scopes, so no test outcome depends on whose machine
-  # runs it. Safe here because this suite always pins what it needs explicitly —
-  # `git init -q -b <branch>` (never inheriting init.defaultBranch) and repo-local
-  # user.email/user.name. Mirrors the pg2-39rz2 Go fix's TestMain in
+  # Full hermeticity (bead pg2-klyn6): every git config key otherwise merged in
+  # from the developer's ~/.gitconfig, $XDG_CONFIG_HOME/git/config and
+  # /etc/gitconfig -- including core.fsmonitor/core.untrackedcache above -- is
+  # neutralized. /dev/null is the NEUTRAL setting for both scopes, so no test
+  # outcome depends on whose machine runs it. Safe here because this suite
+  # always pins what it needs explicitly — `git init -q -b <branch>` (never
+  # inheriting init.defaultBranch) and repo-local user.email/user.name. Mirrors
+  # the pg2-39rz2 Go fix's TestMain in
   # modules/pn/internal/workspace/realgit_test.go. Requires git >= 2.32.
   export GIT_CONFIG_GLOBAL=/dev/null
   export GIT_CONFIG_SYSTEM=/dev/null

@@ -42,24 +42,23 @@ setup_file() {
   # throwaway repo these tests `git init` spawn its own fsmonitor daemon that
   # blocks each working-tree op (commit/worktree/status) for 2-3s -- pushing the
   # full suite to ~20min locally (the nix-check sandbox is immune: clean HOME).
-  # Inject core.fsmonitor/untrackedcache=false into EVERY git invocation in this
-  # test process (GIT_CONFIG_COUNT works like a `-c` flag, so it wins over the
-  # inherited global and is surgical -- it does not replace the rest of git
-  # config), making the suite fast AND deterministic regardless of whose
-  # ~/.gitconfig runs it. Same class of fix as pg2-0sa8p (pn disabling fsmonitor
-  # on its own git status probes). Applies to real-git tests; git-mock tests are
-  # unaffected. Immutable across tests, so exported once here.
-  export GIT_CONFIG_COUNT=2
-  export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
-  export GIT_CONFIG_KEY_1=core.untrackedcache GIT_CONFIG_VALUE_1=false
+  # This used to be fixed surgically with a GIT_CONFIG_COUNT pin (same class of
+  # fix as pg2-0sa8p), but that is now redundant: GIT_CONFIG_GLOBAL/SYSTEM=
+  # /dev/null below already neutralizes core.fsmonitor/core.untrackedcache (and
+  # everything else) at the ambient global/system scope, which was the pin's
+  # only job here. The GIT_CONFIG_COUNT pin's one remaining edge -- it would
+  # still win over a REPO-LOCAL core.fsmonitor/untrackedcache override, which
+  # the /dev/null redirects do not touch -- is moot for this suite because no
+  # test here sets one (verified by grep); removed as redundant (pg2-zjcp6).
 
-  # Full hermeticity on top of that surgical pin (bead pg2-klyn6): the pin above
-  # covers only two keys, so EVERY other key still merged in from the developer's
-  # ~/.gitconfig, $XDG_CONFIG_HOME/git/config and /etc/gitconfig. /dev/null is the
-  # NEUTRAL setting for both scopes, so no test outcome depends on whose machine
-  # runs it. Safe here because this suite always pins what it needs explicitly —
-  # `git init -q -b <branch>` (never inheriting init.defaultBranch) and repo-local
-  # user.email/user.name. Mirrors the pg2-39rz2 Go fix's TestMain in
+  # Full hermeticity (bead pg2-klyn6): every git config key otherwise merged in
+  # from the developer's ~/.gitconfig, $XDG_CONFIG_HOME/git/config and
+  # /etc/gitconfig -- including core.fsmonitor/core.untrackedcache above -- is
+  # neutralized. /dev/null is the NEUTRAL setting for both scopes, so no test
+  # outcome depends on whose machine runs it. Safe here because this suite
+  # always pins what it needs explicitly — `git init -q -b <branch>` (never
+  # inheriting init.defaultBranch) and repo-local user.email/user.name. Mirrors
+  # the pg2-39rz2 Go fix's TestMain in
   # modules/pn/internal/workspace/realgit_test.go. Requires git >= 2.32.
   export GIT_CONFIG_GLOBAL=/dev/null
   export GIT_CONFIG_SYSTEM=/dev/null
@@ -1522,7 +1521,13 @@ _ur_set_upstream() {
   local member="$1"
   local wt="$SET_DIR/$member"
   local remote="$TEST_DIR/remotes/$member.git"
-  command git init -q --bare "$remote"
+  # -b main: pin the bare remote's HEAD explicitly rather than leaving it to
+  # follow init.defaultBranch (neutralized to /dev/null by GIT_CONFIG_GLOBAL
+  # above anyway) or git's compiled-in default. Harmless today (the push
+  # below creates the "$BRANCH" ref explicitly, so nothing reads the bare
+  # HEAD), but matches this repo's own precedent fix for the same latent
+  # shape (setupLocalBareRemote, commit 2adaca1).
+  command git init -q --bare -b main "$remote"
   command git -C "$wt" remote add origin "$remote"
   command git -C "$wt" push -q -u origin "$BRANCH"
 }
