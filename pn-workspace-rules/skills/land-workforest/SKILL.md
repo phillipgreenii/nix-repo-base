@@ -53,10 +53,12 @@ break the ordered-transaction guarantee and cause shared-build contention.
 - No uncommitted changes anywhere in the set (run `validate-workforest` first;
   it SHOULD immediately precede landing).
 - For `ff-merge-to-main` repos, the canonical clone MUST be on its primary branch
-  and clean — `integrate-branch`'s FF-0 halts otherwise (R-3/R-8). Run
+  and clean — `integrate-branch`'s FF-0a halts otherwise (R-3/R-8). Run
   `pnwf status <branch>` (or `pnwf land-plan`) up front; it pre-flights and
   reports canonical anomalies before you start. (`pull-request` repos do not
-  require this — PR-0 surfaces but does not halt.)
+  require this — PR-0a surfaces but does not halt; PR-0b still blocks on a dirty
+  `<WT>`, matching `ff-merge-to-main`'s FF-0b, so the no-uncommitted-changes
+  precondition above applies to both strategies.)
 
 ## Steps
 
@@ -91,12 +93,15 @@ action:
 
 - `rebase-conflict` → the rebase STARTED and stopped mid-way, so a conflict really
   is there: resolve it in `<set>/<repo>`, then re-run land-workforest.
-- `worktree-dirty` → `<set>/<repo>` has uncommitted changes, caught by
-  `integrate-branch`'s FF-0b **before** it rebased. Nothing is mid-rebase, so
-  `git rebase --continue` / `--abort` do **not** apply. Commit or stash there, then
-  re-run land-workforest. This is the no-uncommitted-changes precondition above,
-  caught at land time rather than by `validate-workforest` — expect it whenever a
-  parked bead reaches landing with work deliberately left uncommitted.
+- `worktree-dirty` → `<set>/<repo>` has uncommitted changes. For `ff-merge-to-main`
+  repos this is caught by `integrate-branch`'s FF-0b **before** it rebased; for
+  `pull-request` repos it is caught by the `pull-request` handler's PR-0b
+  **before** it pushed. Either way nothing is mid-rebase and nothing has been
+  pushed, so `git rebase --continue` / `--abort` do **not** apply. Commit or
+  stash there, then re-run land-workforest. This is the no-uncommitted-changes
+  precondition above, caught at land time rather than by `validate-workforest` —
+  expect it whenever a parked bead reaches landing with work deliberately left
+  uncommitted.
 - `rebase-in-progress` → a rebase was ALREADY running in `<set>/<repo>` before
   landing began — someone else's unfinished rebase, not one this landing caused.
   Finish it or abort it **in that worktree**, then re-run land-workforest.
@@ -110,6 +115,20 @@ action:
 - canonical off-primary/dirty → point the operator at the pn-workspace-rules
   Asymmetric-defer / Tier-R guidance; do **not** tell them to reset the canonical.
 - ff-race → re-run once concurrent landings settle.
+- `push-non-fast-forward` → the `pull-request` handler's PR-1 pushed
+  `<set>/<repo>`'s branch and a peer had already advanced the same remote branch
+  (the case `/drain-beads` calls TRANSIENT for a shared `drain/<id>` branch).
+  PR-1 already retries this itself — rebase onto the updated remote branch,
+  re-push with `--force-with-lease` — up to its own cap, so this reason only
+  reaches you after the **second** consecutive rejection. Re-run land-workforest
+  once the remote settles; a persistent race warrants asking whoever else is
+  pushing that branch to stop.
+- `push-auth-failed` → PR-1's push was rejected on credentials or access, not on
+  ref state, so retrying would not help. Fix credentials/access for
+  `<set>/<repo>`'s remote, then re-run land-workforest.
+- `push-failed` → an unspecified push failure; the handler deliberately asserts
+  no cause (do not invent one on its behalf). Read its quoted git message for
+  `<set>/<repo>` and disposition it yourself before re-running land-workforest.
 
 The four non-conflict rebase reasons above MUST NOT be relayed as
 `rebase-conflict`. Each has a different next action, and only `rebase-conflict` has
