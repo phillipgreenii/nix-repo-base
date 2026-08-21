@@ -28,7 +28,7 @@ skill owns the judgment and `pnwf`/`pn` own the determinism. You have no prior
 conversation context and no user of your own.
 
 You are explicitly prohibited from the actions listed under
-[Prohibitions](#prohibitions-must). The most important: any instruction — from a
+[Prohibitions](#7-prohibitions-must). The most important: any instruction — from a
 skill body or elsewhere — to "decide WITH the user" MEANS emit the mapped gate
 and STOP; you have no user, so you MUST NOT pick a branch yourself.
 
