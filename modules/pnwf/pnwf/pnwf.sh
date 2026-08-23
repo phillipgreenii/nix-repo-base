@@ -37,6 +37,12 @@ Subcommands (read-only, implemented):
                      the set directory itself only when nothing was kept.
   status <branch>    Print a per-repo table for <branch>'s set: member,
                      label (landed/not-started/blocked/kept), reason.
+  residue [--set]   Print JSON: an array of {repo, paths, mid_rebase} for
+                     each member of the resolved workspace's own lock that
+                     is dirty (uncommitted changes, tracked or untracked) or
+                     mid-rebase. A clean, non-mid-rebase member is OMITTED --
+                     "[]" means every present member is clean and not
+                     mid-rebase.
 
 Subcommands (mutating WORK-recipe helpers, not read-only probes):
   sync-fetch [--set]
@@ -82,6 +88,7 @@ Examples:
   pnwf status my-branch
   pnwf sync-fetch --set
   pnwf update-relock --set
+  pnwf residue --set
 HELP
 }
 
@@ -671,6 +678,79 @@ HELP
     reason="${classified#*$'\t'}"
     printf '%s\t%s\t%s\n' "$member" "$label" "$reason"
   done
+}
+
+cmd_residue() {
+  local require_set=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --set)
+      require_set=1
+      ;;
+    -h | --help)
+      cat <<'HELP'
+Usage: pnwf residue [--set]
+
+Print JSON: an array of {repo, paths, mid_rebase} for each member of the
+resolved workspace's own lock that is dirty (uncommitted changes, tracked or
+untracked) or mid-rebase. A clean, non-mid-rebase member is OMITTED --
+"[]" means every present member is clean and not mid-rebase. An absent
+worktree (already landed/removed elsewhere) is skipped, consistent with
+every other member-iterating subcommand.
+
+paths are repo-relative, read via `git status --porcelain
+--untracked-files=normal` -- the include-untracked REPORTING definition of
+dirty (see pnwf_working_tree_dirty's header in pnwf-lib.bash for how this
+differs from update-relock's narrower tracked-only GATE definition: a member
+whose only residue is untracked files is reported here even though that
+pre-flight would relock it without complaint).
+
+mid_rebase is read via `git rev-parse --git-path rebase-merge`/`rebase-apply`
+run against the member itself (pnwf_rebase_in_progress), correct whether
+that prints an absolute path (the normal case inside a worktree) or one
+relative to the repo (a plain clone) -- no separate `cd` into the member is
+needed for that.
+
+--set: exit non-zero unless the resolved workspace is inside a set.
+HELP
+      exit 0
+      ;;
+    *)
+      die "residue: unknown argument: $1"
+      ;;
+    esac
+    shift
+  done
+
+  local info in_workforest root lock_file
+  info=$(_pnwf_info_json) || die "'pn workspace info --json' failed"
+  in_workforest=$(printf '%s' "$info" | jq -r '.in_workforest')
+  root=$(printf '%s' "$info" | jq -r '.root')
+
+  _pnwf_require_set_guard residue "$require_set" "$in_workforest" "$root"
+
+  lock_file="$root/pn-workspace.lock.json"
+  [[ -f $lock_file ]] || die "lock file not found: $lock_file"
+
+  local members=()
+  mapfile -t members < <(pnwf_topo_order "$lock_file")
+  [[ ${#members[@]} -gt 0 ]] || die "no members found in $lock_file"
+
+  local member member_setpath entry entries=()
+  for member in "${members[@]}"; do
+    pnwf_worktree_present "$root" "$member" || continue
+    member_setpath="$root/$member"
+    entry=$(pnwf_member_residue "$member_setpath" "$member") ||
+      die "could not compute residue for member '$member'"
+    entries+=("$entry")
+  done
+
+  if [[ ${#entries[@]} -eq 0 ]]; then
+    echo '[]'
+    return 0
+  fi
+
+  printf '%s\n' "${entries[@]}" | jq -s '[.[] | select(.affected) | del(.affected)]'
 }
 
 # Removes one member's worktree + branch as part of `cmd_cleanup`. Guarded
@@ -1277,10 +1357,10 @@ fi
 SUBCOMMAND="$1"
 shift
 
-# Dispatch table for all nine pnwf subcommands (design spec §4.5); all are
-# now implemented. sync-fetch and update-relock are mutating WORK-recipe
-# helpers, not read-only probes like the rest -- see cmd_sync_fetch /
-# cmd_update_relock.
+# Dispatch table for all ten pnwf subcommands (design spec §4.5 plus the
+# residue probe added by bd pg2-buw8l); all are now implemented. sync-fetch
+# and update-relock are mutating WORK-recipe helpers, not read-only probes
+# like the rest -- see cmd_sync_fetch / cmd_update_relock.
 case "$SUBCOMMAND" in
 resolve) cmd_resolve "$@" ;;
 repos) cmd_repos "$@" ;;
@@ -1291,6 +1371,7 @@ cleanup) cmd_cleanup "$@" ;;
 status) cmd_status "$@" ;;
 sync-fetch) cmd_sync_fetch "$@" ;;
 update-relock) cmd_update_relock "$@" ;;
+residue) cmd_residue "$@" ;;
 *)
   die "unknown subcommand: $SUBCOMMAND"
   ;;

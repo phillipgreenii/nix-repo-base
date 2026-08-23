@@ -69,55 +69,40 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   is no later for you.
 - **R4** A killed Stage 2 leaves the set part-rebased, so before emitting that
   halt you MUST make the residue READABLE rather than leave the main session to
-  discover it. Run the read-only residue probe — enumerate the members, then ask
-  git what each one left behind and whether it is mid-rebase:
+  discover it. Run the deterministic residue probe from inside the set — it
+  owns the git probing itself, so you no longer assemble this by hand:
 
   ```bash
-  cd <SETDIR> && pnwf repos --set
+  cd <SETDIR> && pnwf residue --set
   ```
 
-  ```bash
-  git -C <SETDIR>/<member> status --porcelain --untracked-files=normal
-  ```
-
-  ```bash
-  cd <SETDIR>/<member> && { test -d "$(git rev-parse --git-path rebase-merge)" ||
-    test -d "$(git rev-parse --git-path rebase-apply)"; }
-  ```
-
-  `--untracked-files=normal` is passed EXPLICITLY and MUST NOT be dropped. This
-  probe REPORTS residue to a person, so it deliberately COUNTS untracked files;
-  without the flag its definition of "dirty" is whichever
-  `status.showUntrackedFiles` the operator's git config happens to pick, so the
-  same probe could answer either way on two machines (bd `pg2-xc9b7`). It is the
-  same REPORTING definition `pnwf sync-fetch`'s own exit-6 pre-check uses
-  (`pnwf_working_tree_dirty`'s default `include-untracked` scope), so what you
+  It prints a JSON array of `{repo, paths, mid_rebase}`, one entry per member
+  that is dirty or mid-rebase; a clean, non-mid-rebase set prints `[]`. `paths`
+  is the include-untracked REPORTING definition of dirty
+  (`pnwf_working_tree_dirty`'s default scope in `modules/pnwf/lib/pnwf-lib.bash`)
+  — the same one `pnwf sync-fetch`'s own exit-6 pre-check uses, so what you
   report and what `pnwf` refused agree. `pnwf update-relock`'s pre-flight — in
   the `/pn-workspace-update` flow, not this one — is pinned to `pn`'s narrower
-  GATE definition instead; there are exactly those two, both spelled in
-  `pnwf_working_tree_dirty`'s `scope` argument
-  (`modules/pnwf/lib/pnwf-lib.bash`).
+  tracked-only GATE definition instead; there are exactly those two, both
+  spelled in that same `scope` argument. `mid_rebase` is read via
+  `git rev-parse --git-path rebase-merge`/`rebase-apply` run against the
+  member itself, correct whether that answer is absolute (inside a worktree —
+  the normal case for a set member) or repo-relative (a plain clone); you no
+  longer need to reason about which form it takes or `cd` anywhere yourself —
+  `pnwf` already does.
 
-  The `--git-path` form is required and MUST be run from INSIDE the member: a set
-  member is a WORKTREE, so its rebase state lives in that worktree's entry under
-  the canonical clone's `.git/worktrees/`, not in `<member>/.git` — and git may
-  print that path relative to the repo, so a cwd elsewhere would test the wrong
-  one. Report every dirty or mid-rebase member as one `dirty` entry carrying its
-  repo key, its changed file paths, and `mid_rebase` (§8).
+  Copy the printed array VERBATIM into the halt's `dirty` field ([§8](#8-return-protocol))
+  — do not re-derive it, reshape its keys, or drop `mid_rebase`.
 
-  **NEITHER probe's own FAILURE is a finding, and you MUST NOT report it as
-  one.** `git status --porcelain` prints nothing when it fails, so a member whose
-  status probe exits non-zero and is simply omitted reads as "clean"; and if
-  `git rev-parse --git-path` fails the command substitution yields an empty
-  path, so `test -d ""` is false and the member reads as "not mid-rebase". Both
-  are the conflation of a probe FAILURE with its finding that `pnwf`'s own
-  guards were fixed for (bd `pg2-k3s0x` / `pg2-lgzcg` / `pg2-deonn`) — and it is
-  the shape `pnwf_fetch_and_rebase` already reports as its own sentinels 5 and 7
-  rather than as an answer. Name that member and the failing probe's exit code
-  in `detail` instead, and assert nothing about its contents or its rebase
-  state. All three probes are reads, so they do not breach the no-modify
-  prohibition; you MUST NOT reset, stash, commit, abort, or continue anything you
-  find.
+  **The probe's own FAILURE is not a finding of "clean", and you MUST NOT
+  report it as one.** If `pnwf residue --set` itself exits non-zero, `pnwf`
+  could not classify some member (the same conflation of a probe FAILURE with
+  its finding that `pnwf`'s own guards were fixed for elsewhere — bd
+  `pg2-k3s0x` / `pg2-lgzcg` / `pg2-deonn`). In that case you MUST NOT report
+  `dirty: []`; quote its stderr verbatim in `detail` instead, and name the
+  residue as unread rather than absent. The probe is read-only, so running it
+  does not breach the no-modify prohibition; you MUST NOT reset, stash,
+  commit, abort, or continue anything it reports.
 
 ## 1. Role
 

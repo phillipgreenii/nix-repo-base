@@ -333,6 +333,7 @@ _stage_init_member() {
   [[ "$output" == *"resolve"* ]]
   [[ "$output" == *"repos"* ]]
   [[ "$output" == *"stage"* ]]
+  [[ "$output" == *"residue"* ]]
 }
 
 @test "unknown subcommand exits non-zero with a message" {
@@ -1758,6 +1759,131 @@ _ur_set_upstream() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"PN_WORKSPACE_ROOT=<unset>"* ]]
   [[ "$output" != *"PN_WORKSPACE_ROOT=$CANONICAL_DIR"* ]]
+}
+
+# --- residue -----------------------------------------------------------
+# bd pg2-buw8l: the deterministic replacement for the pnwf-runner /
+# pnwf-update-runner agents' hand-rolled R4 git probes. Real git throughout
+# (incl. a real linked worktree, via _stage_init_member) -- the whole point
+# is to prove the dirty/mid-rebase classification against actual git state,
+# not a mock.
+
+# Leaves $member's SET_DIR worktree mid-rebase with a genuine content
+# conflict: advances the member's canonical `main` and its set worktree's
+# $BRANCH from the same base commit, both touching file.txt, then rebases
+# the worktree branch onto main. Mirrors
+# test-pnwf-lib.bats's _setup_conflicting_feature_branch, adapted to a
+# member already checked out on $BRANCH in its OWN linked worktree (rather
+# than a throwaway feature branch) -- exactly the shape a real workforest
+# set member has.
+_residue_leave_member_mid_rebase() {
+  local member="$1"
+  local canon="$CANONICAL_DIR/$member"
+  local wt="$SET_DIR/$member"
+  echo main-side >"$canon/file.txt"
+  command git -C "$canon" commit -q -am "main side"
+  echo feature-side >"$wt/file.txt"
+  command git -C "$wt" commit -q -am "feature side"
+  run bash -c "command git -C '$wt' rebase main"
+  [ "$status" -ne 0 ]
+}
+
+@test "residue --set: a clean set with no dirty or mid-rebase members reports an empty array" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  _stage_write_lock repoA repoB
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" residue --set
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
+}
+
+@test "residue --set: an uncommitted tracked change in one member is reported with its file path" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  _stage_write_lock repoA repoB
+  echo two >"$SET_DIR/repoA/file.txt"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" residue --set
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].repo')" = "repoA" ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].mid_rebase')" = "false" ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].paths[0]')" = "file.txt" ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].paths | length')" -eq 1 ]
+  # "affected" is an internal filter field pnwf_member_residue produces --
+  # cmd_residue MUST strip it before this reaches a consumer.
+  [ "$(printf '%s' "$output" | jq -r '.[0] | has("affected")')" = "false" ]
+}
+
+@test "residue --set: an untracked-only file is still reported (include-untracked REPORTING definition)" {
+  # Deliberately the WIDER of the two "dirty" definitions this codebase
+  # carries (pnwf_working_tree_dirty's header): update-relock's pre-flight
+  # ignores untracked files (matching pn's own isDirty), but residue's job is
+  # to make everything a killed job left behind READABLE, so it counts them.
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo scratch >"$SET_DIR/repoA/extra.txt"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" residue --set
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].repo')" = "repoA" ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].paths[0]')" = "extra.txt" ]
+}
+
+@test "residue --set: a member left mid-rebase is reported with mid_rebase true" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _residue_leave_member_mid_rebase repoA
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" residue --set
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].repo')" = "repoA" ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].mid_rebase')" = "true" ]
+}
+
+@test "residue --set: only the dirty member appears when a sibling is clean" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  _stage_write_lock repoA repoB
+  echo two >"$SET_DIR/repoB/file.txt"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" residue --set
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].repo')" = "repoB" ]
+}
+
+@test "residue --set: an absent worktree member is skipped without error" {
+  _stage_init_member repoA
+  _stage_write_lock repoA repoB
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" residue --set
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
+}
+
+@test "residue --set exits non-zero on a guard violation" {
+  _stage_write_lock repoA
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" residue --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not in_workforest"* ]]
+}
+
+@test "residue --help exits 0 and documents the JSON shape" {
+  run "$SCRIPT_UNDER_TEST" residue --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Usage: pnwf residue"* ]]
+  [[ "$output" == *"mid_rebase"* ]]
 }
 
 # --- harness hermeticity guard ----------------------------------------------

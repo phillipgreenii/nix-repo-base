@@ -741,3 +741,130 @@ pnwf_fetch_and_rebase() {
     esac
   fi
 }
+
+# Prints each repo-relative path from `git status --porcelain
+# --untracked-files=normal` in repo_dir, one per line (tracked or untracked,
+# staged or unstaged -- the REPORTING definition of dirty; see
+# pnwf_working_tree_dirty's header for how this differs from the narrower
+# tracked-only GATE definition cmd_update_relock's pre-flight uses). Backs
+# `pnwf residue` (pnwf_member_residue below), which is this bead's whole
+# point: the two runner agents' R4 residue probes used to assemble this list
+# BY HAND from a raw `git status --porcelain` in prose (bd pg2-buw8l).
+#
+# `--untracked-files=normal` is passed EXPLICITLY, matching every other
+# direct `git status` call in this file (pnwf_working_tree_dirty,
+# pnwf_fetch_and_rebase's pre-check): without it the effective definition is
+# whichever `status.showUntrackedFiles` the operator's ambient git config
+# picks, so the same probe could answer differently on two machines
+# (bd pg2-xc9b7).
+#
+# A rename/copy line ("R  old -> new" / "C  old -> new") prints BOTH halves,
+# one per line, rather than the single " -> "-joined literal porcelain
+# prints -- a caller reporting "the offending file paths" wants both paths,
+# not one string a person has to split themselves.
+#
+# On a guarded git failure (e.g. repo_dir is not a git repo), nothing is
+# printed to stdout and the captured rc is returned without aborting under
+# set -e; a first-party diagnostic goes to stderr, the same shape
+# pnwf_working_tree_dirty's own git-failure path uses.
+pnwf_dirty_paths() {
+  local repo_dir="$1" rc=0 status_output line rest
+  status_output=$(git -C "$repo_dir" status --porcelain --untracked-files=normal) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "pnwf_dirty_paths: git status failed (rc=$rc)" >&2
+    return "$rc"
+  fi
+  [ -n "$status_output" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    rest="${line:3}"
+    case "$rest" in
+    *" -> "*)
+      printf '%s\n' "${rest%% -> *}"
+      printf '%s\n' "${rest##* -> }"
+      ;;
+    *)
+      printf '%s\n' "$rest"
+      ;;
+    esac
+  done <<<"$status_output"
+}
+
+# Classifies ONE workforest member's residue for `pnwf residue` (never
+# aborts under set -e). Prints a single-line JSON object:
+#   {"repo": <member>, "affected": <bool>, "mid_rebase": <bool>, "paths": [...]}
+#
+# "affected" is true when the member is dirty OR mid-rebase. It exists so
+# this function hands its caller (cmd_residue) one boolean to filter and
+# report on, rather than making every caller re-derive "affected" from the
+# other two fields itself; cmd_residue strips it before printing, so it never
+# reaches a consumer of `pnwf residue`'s own output.
+#
+# Args: member_setpath member
+#
+# "dirty" is pnwf_working_tree_dirty's default (include-untracked) scope --
+# the REPORTING definition, the same one BOTH runner agents' hand-rolled R4
+# residue probes used before this subcommand existed to replace them. See
+# pnwf_working_tree_dirty's header for how this differs from
+# cmd_update_relock's narrower tracked-only GATE definition: a member whose
+# only residue is untracked files is "affected" here and would still be
+# relocked without complaint by that pre-flight -- a consumer MUST NOT infer
+# from a non-empty `pnwf residue` entry that update-relock's pre-flight will
+# refuse a re-run.
+#
+# "mid_rebase" is pnwf_rebase_in_progress, already correct whether
+# `git rev-parse --git-path` answers with an absolute path (inside a
+# worktree -- the normal case for a set member) or one relative to repo_dir
+# (a plain clone): pnwf_rebase_in_progress re-anchors a relative answer on
+# member_setpath itself (via `git -C`), so this function needs no separate
+# `cd` into the member to get that right.
+pnwf_member_residue() {
+  local member_setpath="$1" member="$2"
+  local dirty_rc=0 rebase_rc=0 paths=() paths_json mid_rebase affected
+
+  pnwf_working_tree_dirty "$member_setpath" || dirty_rc=$?
+  case "$dirty_rc" in
+  0 | 1) : ;;
+  *)
+    echo "pnwf_member_residue: could not determine whether '$member_setpath' is dirty (rc=$dirty_rc)" >&2
+    return "$dirty_rc"
+    ;;
+  esac
+
+  if [ "$dirty_rc" -eq 0 ]; then
+    mapfile -t paths < <(pnwf_dirty_paths "$member_setpath")
+    if [ "${#paths[@]}" -eq 0 ]; then
+      echo "pnwf_member_residue: '$member_setpath' was reported dirty but its changed paths could not be read" >&2
+      return 1
+    fi
+  fi
+
+  pnwf_rebase_in_progress "$member_setpath" || rebase_rc=$?
+  case "$rebase_rc" in
+  0) mid_rebase=true ;;
+  1) mid_rebase=false ;;
+  *)
+    echo "pnwf_member_residue: could not determine whether '$member_setpath' is mid-rebase (rc=$rebase_rc)" >&2
+    return "$rebase_rc"
+    ;;
+  esac
+
+  if [ "$dirty_rc" -eq 0 ] || [ "$mid_rebase" = true ]; then
+    affected=true
+  else
+    affected=false
+  fi
+
+  if [ "${#paths[@]}" -eq 0 ]; then
+    paths_json='[]'
+  else
+    paths_json=$(printf '%s\n' "${paths[@]}" | jq -R . | jq -s .)
+  fi
+
+  jq -n \
+    --arg repo "$member" \
+    --argjson affected "$affected" \
+    --argjson mid_rebase "$mid_rebase" \
+    --argjson paths "$paths_json" \
+    '{repo: $repo, affected: $affected, mid_rebase: $mid_rebase, paths: $paths}'
+}

@@ -1055,6 +1055,106 @@ _assert_member_untouched_by_refusal() {
   [[ "$stderr" == *"pnwf_fetch_and_rebase: git fetch origin failed in $CLONE"* ]]
 }
 
+# --- pnwf_dirty_paths ----------------------------------------------------
+# Backs `pnwf residue`. Real git throughout.
+
+@test "pnwf_dirty_paths: a clean repo prints nothing" {
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_dirty_paths '$REPO'"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pnwf_dirty_paths: an unstaged tracked change prints its path" {
+  echo two >"$REPO/file.txt"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_dirty_paths '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "file.txt" ]
+}
+
+@test "pnwf_dirty_paths: an untracked file prints its path (include-untracked)" {
+  echo scratch >"$REPO/extra.txt"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_dirty_paths '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "extra.txt" ]
+}
+
+@test "pnwf_dirty_paths: a staged rename prints BOTH the old and new path" {
+  command git -C "$REPO" mv file.txt renamed.txt
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_dirty_paths '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [ "${lines[0]}" = "file.txt" ]
+  [ "${lines[1]}" = "renamed.txt" ]
+}
+
+@test "pnwf_dirty_paths: multiple changed files each print their own path" {
+  echo two >"$REPO/file.txt"
+  echo scratch >"$REPO/extra.txt"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_dirty_paths '$REPO'"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [[ "$output" == *"file.txt"* ]]
+  [[ "$output" == *"extra.txt"* ]]
+}
+
+@test "pnwf_dirty_paths: an unreadable repo does not abort and prints a diagnostic" {
+  mkdir -p "$TEST_DIR/not-a-repo"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_dirty_paths '$TEST_DIR/not-a-repo'"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_dirty_paths: git status failed"* ]]
+}
+
+# --- pnwf_member_residue --------------------------------------------------
+# Backs `pnwf residue`. Real git throughout, including a real LINKED
+# WORKTREE for the mid-rebase case -- the same reason pnwf_rebase_in_progress
+# above needs one: a set member's rebase state lives under the canonical
+# clone's .git/worktrees/<name>/, never under <member>/.git.
+
+@test "pnwf_member_residue: a clean member is not affected, not mid-rebase, no paths" {
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_member_residue '$REPO' repoA"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.repo')" = "repoA" ]
+  [ "$(printf '%s' "$output" | jq -r '.affected')" = "false" ]
+  [ "$(printf '%s' "$output" | jq -r '.mid_rebase')" = "false" ]
+  [ "$(printf '%s' "$output" | jq -c '.paths')" = "[]" ]
+}
+
+@test "pnwf_member_residue: a dirty member is affected and reports its paths, not mid-rebase" {
+  echo two >"$REPO/file.txt"
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_member_residue '$REPO' repoA"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.affected')" = "true" ]
+  [ "$(printf '%s' "$output" | jq -r '.mid_rebase')" = "false" ]
+  [ "$(printf '%s' "$output" | jq -r '.paths[0]')" = "file.txt" ]
+}
+
+@test "pnwf_member_residue: a LINKED worktree left mid-rebase is affected and reports mid_rebase true" {
+  echo main-side >"$REPO/file.txt"
+  command git -C "$REPO" commit -q -am "main side"
+  command git -C "$REPO" branch feature HEAD~1
+  local wt="$TEST_DIR/member-wt"
+  command git -C "$REPO" worktree add -q "$wt" feature
+  echo feature-side >"$wt/file.txt"
+  command git -C "$wt" commit -q -am "feature side"
+  run bash -c "command git -C '$wt' rebase main"
+  [ "$status" -ne 0 ]
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_member_residue '$wt' member-wt"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.repo')" = "member-wt" ]
+  [ "$(printf '%s' "$output" | jq -r '.affected')" = "true" ]
+  [ "$(printf '%s' "$output" | jq -r '.mid_rebase')" = "true" ]
+}
+
+@test "pnwf_member_residue: an unreadable member does not abort and returns a nonzero rc" {
+  mkdir -p "$TEST_DIR/not-a-repo"
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_member_residue '$TEST_DIR/not-a-repo' repoX"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pnwf_member_residue: could not determine whether '$TEST_DIR/not-a-repo' is dirty"* ]]
+}
+
 # --- harness hermeticity guard --------------------------------------------
 
 @test "setup() relocates HOME off the developer's own (pg2-7hr6o regression guard)" {

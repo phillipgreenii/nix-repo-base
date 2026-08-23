@@ -70,43 +70,44 @@ into an operator-gated one (bd `pg2-es5nn`).
   arrives"): there is no later for you.
 - **R4** A killed Stage 2 leaves the set mid-relock, so before emitting that
   halt you MUST make the residue READABLE rather than leave the main session to
-  infer job death from `ps` and empty output files. Run the read-only residue
-  probe — enumerate the members, then ask git what each one left behind:
+  infer job death from `ps` and empty output files. Run the deterministic
+  residue probe from inside the set — it owns the git probing itself, so you
+  no longer assemble this by hand:
 
   ```bash
-  cd <SETDIR> && pnwf repos --set
+  cd <SETDIR> && pnwf residue --set
   ```
 
-  ```bash
-  git -C <SETDIR>/<member> status --porcelain --untracked-files=normal
-  ```
+  It prints a JSON array of `{repo, paths, mid_rebase}`, one entry per member
+  that is dirty (this recipe never rebases, so `mid_rebase` is always `false`
+  here — copy it through unchanged rather than stripping it); a clean set
+  prints `[]`. `paths` counts untracked files — they are exactly the residue a
+  killed relock leaves that no lock-file diff would show — because `pnwf`'s
+  default scope for "dirty" is the REPORTING definition
+  (`pnwf_working_tree_dirty`'s `include-untracked` scope in
+  `modules/pnwf/lib/pnwf-lib.bash`), deliberately WIDER than the GATE's.
 
-  `--untracked-files=normal` is passed EXPLICITLY and MUST NOT be dropped. This
-  probe REPORTS residue to a person, so it deliberately COUNTS untracked files —
-  they are exactly the residue a killed relock leaves that no lock-file diff
-  would show. Without the flag its definition of "dirty" is whichever
-  `status.showUntrackedFiles` the operator's git config happens to pick, so the
-  same probe could answer either way on two machines (bd `pg2-xc9b7`).
-
-  **That is the REPORTING definition of dirty, and it is deliberately WIDER than
-  the GATE's.** `pnwf update-relock`'s pre-flight uses `pn`'s own `isDirty` —
+  **That REPORTING definition is deliberately wider than the pre-flight's
+  GATE one.** `pnwf update-relock`'s pre-flight uses `pn`'s own `isDirty` —
   TRACKED changes only — because a guard must refuse exactly what `pn` would
   otherwise silently SKIP. Reporting ⊇ gate, so a member whose only residue is
-  untracked files appears in `dirty` here and is CLEAN to that pre-flight. You
-  MUST NOT infer from a non-empty `dirty` that the pre-flight will refuse a
-  re-run — [§9](#9-resume) states the consequence. There are exactly these two
-  definitions and both are spelled in one place, `pnwf_working_tree_dirty`'s
-  `scope` argument (`modules/pnwf/lib/pnwf-lib.bash`).
+  untracked files appears in this probe's output and is CLEAN to that
+  pre-flight. You MUST NOT infer from a non-empty `dirty` that the pre-flight
+  will refuse a re-run — [§9](#9-resume) states the consequence. There are
+  exactly these two definitions and both are spelled in one place, that same
+  `scope` argument.
 
-  Report every dirty member as one `dirty` entry carrying its repo key and its
-  changed file paths (§8). A member whose probe EXITS NON-ZERO is NOT clean and
-  MUST NOT simply be omitted: `git status --porcelain` prints nothing when it
-  fails, so an omitted entry reads as "clean" — the same conflation of a probe
-  FAILURE with its finding that `pnwf update-relock`'s own pre-flight guards were
-  fixed for (bd `pg2-deonn`). Name that member and its probe exit code in
-  `detail` instead, and assert nothing about its contents. Both probes are reads,
-  so they do not breach the no-modify prohibition; you MUST NOT reset, stash, or
-  commit what you find.
+  Copy the printed array VERBATIM into the halt's `dirty` field ([§8](#8-return-protocol))
+  — do not re-derive it or reshape its keys.
+
+  **The probe's own FAILURE is not a finding of "clean", and you MUST NOT
+  report it as one.** If `pnwf residue --set` itself exits non-zero, `pnwf`
+  could not classify some member (the same conflation of a probe FAILURE with
+  its finding that `pnwf update-relock`'s own pre-flight guards were fixed for
+  — bd `pg2-deonn`). In that case you MUST NOT report `dirty: []`; quote its
+  stderr verbatim in `detail` instead, and name the residue as unread rather
+  than absent. The probe is read-only, so running it does not breach the
+  no-modify prohibition; you MUST NOT reset, stash, or commit what it reports.
 
 ## 1. Role
 
@@ -382,7 +383,9 @@ after it. Use exactly one of these shapes:
   "stage": "fork|update|validate",
   "reason": "…",
   "detail": "…",
-  "dirty": [{ "repo": "<key>", "paths": ["<repo-relative path>"] }],
+  "dirty": [
+    { "repo": "<key>", "paths": ["<repo-relative path>"], "mid_rebase": false }
+  ],
   "model_env": "…"
 }
 ```
