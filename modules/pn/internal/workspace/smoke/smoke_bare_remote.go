@@ -35,7 +35,7 @@ func setupBareRemote(t *testing.T, dir, name string, files map[string]string) st
 	if err != nil {
 		t.Fatalf("setupBareRemote %s: create work dir: %v", name, err)
 	}
-	t.Cleanup(func() { os.RemoveAll(workDir) })
+	t.Cleanup(func() { _ = os.RemoveAll(workDir) })
 
 	bareURL := fmt.Sprintf("file://%s", bareDir)
 
@@ -140,36 +140,6 @@ func gitStashList(t *testing.T, repoDir string) []string {
 		return nil
 	}
 	return strings.Split(trimmed, "\n")
-}
-
-// addCommitInClone creates a new file and commits it in a workspace clone dir.
-// Returns the new HEAD SHA.
-func addCommitInClone(t *testing.T, cloneDir, filename, content string) string {
-	t.Helper()
-	path := filepath.Join(cloneDir, filename)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("addCommitInClone: write %s: %v", path, err)
-	}
-	if out, err := gitCmd(t, cloneDir, "add", filename); err != nil {
-		t.Fatalf("addCommitInClone: git add: %v\n%s", err, out)
-	}
-	if out, err := gitCmd(t, cloneDir, "commit", "-m", "smoke: add "+filename); err != nil {
-		t.Fatalf("addCommitInClone: git commit: %v\n%s", err, out)
-	}
-	return workspaceHead(t, cloneDir)
-}
-
-// gitResetHard resets a repo's HEAD to the given ref.
-func gitResetHard(t *testing.T, repoDir, ref string) {
-	t.Helper()
-	if out, err := gitCmd(t, repoDir, "reset", "--hard", ref); err != nil {
-		t.Fatalf("gitResetHard %s to %s: %v\n%s", repoDir, ref, err, out)
-	}
-}
-
-// bareRemoteURL returns the file:// URL for a bare repo under dir.
-func bareRemoteURL(dir, name string) string {
-	return fmt.Sprintf("file://%s", filepath.Join(dir, name+".git"))
 }
 
 // --- S18 extra: build marker exists ---

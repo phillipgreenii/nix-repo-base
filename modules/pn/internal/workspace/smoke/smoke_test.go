@@ -66,7 +66,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	// Clean up the pn binary temp dir(s) created by buildPNBinary.
 	for _, dir := range pnBinTmpDirs {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 	}
 	os.Exit(code)
 }

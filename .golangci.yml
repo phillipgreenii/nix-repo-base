@@ -4,6 +4,25 @@ version: "2"
 # golangci-lint pre-commit hook and any manual `golangci-lint run` agree.
 # Uses the "standard" default linters (errcheck, govet, ineffassign,
 # staticcheck, unused) explicitly.
+run:
+  # Custom (non-GOOS/GOARCH) build tags to activate so golangci-lint's
+  # go/build package resolution actually loads files gated behind them —
+  # without this, such files are invisible to golangci-lint (reported as
+  # "no go files to analyze"), not merely unlinted (bead pg2-sw6q2).
+  #
+  # NOT tag-generic: `run.build-tags` (equivalently the `--build-tags` CLI
+  # flag) forwards straight to Go's own `go/build.Context.BuildTags`, which
+  # has no "activate every custom tag" mode — Go's build-constraint system
+  # is an explicit allow-list by design, so each custom tag must be named
+  # here. This mirrors the equally-hardcoded `-tags smoke` `testFlags` on
+  # the `pn-smoke-tests` check in flake.nix (bead pg2-nuacd) — the next new
+  # custom tag needs a matching entry in BOTH places.
+  #
+  # `darwin` is a standard GOOS constraint, not a custom tag: Go (and thus
+  # golangci-lint) satisfies it automatically on a darwin host with no flag
+  # needed, so it is deliberately NOT listed here.
+  build-tags:
+    - smoke
 linters:
   default: standard
   settings:

@@ -116,12 +116,12 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 	_, err = io.Copy(out, in)
 	return err
 }
@@ -260,9 +260,9 @@ func checkSubset(scenarioName string, expected, actual map[string]interface{}, t
 		if !ok {
 			return fmt.Errorf("key %q missing from actual lock", key)
 		}
-		if !subsetMatch(scenarioName, key, expVal, actVal, t) {
-			// subsetMatch already called t.Errorf
-		}
+		// subsetMatch reports any mismatch itself via t.Errorf; its bool return
+		// (match vs. already-reported) has no further use here.
+		subsetMatch(scenarioName, key, expVal, actVal, t)
 	}
 	return nil
 }
