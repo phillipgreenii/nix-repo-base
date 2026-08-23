@@ -539,9 +539,12 @@ func runScenario(t *testing.T, name string) {
 		}
 		result := runCommand(t, pnBin, wsRoot, args, env)
 		lastResult = result
-		// If not the last command and exit != 0, log it but don't fail yet.
-		// The scenario is responsible for setting up the final state.
-		if i < len(commandLines)-1 && result.ExitCode != 0 {
+		// Log any failing command's output — the FINAL command included — so a
+		// failure never surfaces as a bare assertion mismatch with no diagnostic.
+		// Exit codes are still asserted only for the last command (below), and
+		// t.Logf output surfaces only on test failure (or -v), so passing runs
+		// stay quiet even for scenarios that expect a non-zero final exit.
+		if result.ExitCode != 0 {
 			t.Logf("command %d (%s) exited %d\nstdout: %s\nstderr: %s",
 				i+1, line, result.ExitCode, result.Stdout, result.Stderr)
 		}
