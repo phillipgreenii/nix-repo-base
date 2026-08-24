@@ -31,10 +31,14 @@ be able to classify a test by inspection.
   tokens, credentials, or money).
 
 A test without a label MUST be treated as `unit`. This default is a safety net, not a steady
-state: every suite SHOULD carry an explicit label (workstream 2). The vocabulary above is closed;
-extending it requires amending this design. Pre-existing repo-specific Go build tags (e.g.
-`hostile`) remain valid non-unit markers — any build tag disqualifies a Go test from the unit
-tier — but new labeling MUST use the core vocabulary.
+state: every suite SHOULD carry an explicit label (workstream 2). The vocabulary above is the
+COMMON set — new labeling SHOULD use it for consistency — but it is not mechanically closed: the
+runner treats labels as OPAQUE strings and passes unknown labels through to the per-language
+selection mechanisms (section 2.1). A repo-specific label (e.g. the pre-existing Go build tag
+`hostile`) therefore works without any runner change. The one obligation: every non-unit label
+actually in use MUST be registered in the configuration's `nonUnitLabels` set, so the unit tier's
+exclusion stays correct where the mechanism needs an enumerated negation (bats). In Go, any build
+tag already disqualifies mechanically, registered or not.
 
 Parallelism is a DERIVED property: because `unit` tests have no shared context by definition, the
 runner MAY always parallelize the unit tier, and MUST NOT assume parallel safety for any other
@@ -45,7 +49,56 @@ kind (non-unit kinds run serially unless a suite declares otherwise).
 `pg-test-runner` is a repo-base module (`mkBashScript`-built, bats-tested), installed on PATH via
 the home-manager profile. The tool is nix-managed but nix-free at runtime.
 
-### 2.1 CLI
+### 2.1 Configuration (nix-generated JSON)
+
+The runner contains NO hardcoded language knowledge. It is a data-driven engine over a
+configuration file — a registry of language strategies. Adding a language, changing a command, or
+registering a label is a configuration change, never a code change.
+
+- **Declared in nix, rendered to JSON.** A repo-base module option
+  (`phillipgreenii.pg-test-runner.config`, an attrset) is rendered via `pkgs.formats.json` and
+  baked into the installed wrapper as the default configuration. Consumers extend or override the
+  attrset in nix; the JSON is always generated, never hand-written.
+- **Resolution precedence:** `--config <path>` flag, else `PG_TEST_RUNNER_CONFIG` env var, else
+  the baked-in default.
+- **Schema (version 1), illustrated with the Go entry:**
+
+```json
+{
+  "version": 1,
+  "nonUnitLabels": ["integration", "smoke", "contract", "hostile"],
+  "languages": [
+    {
+      "name": "go",
+      "markers": ["go.mod"],
+      "tools": ["go"],
+      "run": {
+        "unit": ["go", "test", "-race", "-run", "^(Test|Example)", "./..."],
+        "labels": ["go", "test", "-tags", "{labels}", "./..."],
+        "all": ["go", "test", "./..."]
+      }
+    }
+  ]
+}
+```
+
+- `nonUnitLabels` — every non-unit label in use anywhere in the workspace. Where a language's
+  unit selection needs an enumerated negation (bats `--filter-tags`), it is generated from this
+  list — never hardcoded in a command template.
+- `languages[]` — ORDERED: during project discovery, marker precedence is array order.
+- `markers` — glob patterns evaluated relative to a candidate project root (e.g. `go.mod`,
+  `tests/*.bats`).
+- `tools` — commands that MUST resolve from PATH before the entry runs (exit `11` otherwise).
+- `run.unit` / `run.all` — argv templates for the two RESERVED selection modes.
+- `run.labels` — argv template for every other selection. Placeholders: `{labels}` expands to the
+  requested labels joined in the language's native form; `{label}` instead repeats the invocation
+  once per requested label (directory-style languages like python use this); `{unitExclusion}`
+  expands to the negation list derived from `nonUnitLabels` (with the entry's optional
+  `labelPrefix`, e.g. `type:` for bats); `{jobs}` expands to the parallelism width. The exact
+  placeholder set is part of the config `version` contract. Unknown labels are NOT validated —
+  they pass through these templates verbatim.
+
+### 2.2 CLI
 
 ```bash
 pg-test-runner [--labels <csv>] --files <file>...   # prek mode: staged files in, touched projects' tests run
@@ -53,47 +106,54 @@ pg-test-runner [--labels <csv>] <project-dir>...    # ad hoc: run named projects
 pg-test-runner [--labels <csv>] --all               # every project under the repo
 ```
 
-- `--labels` takes a comma-separated subset of the vocabulary, or `all` (no filtering). Omitted,
-  it defaults to `unit`. The prek hook passes `--labels unit` explicitly for self-documentation.
+- `--labels` takes a comma-separated label list, or `all` (no filtering). Omitted, it defaults to
+  `unit`. Values are NOT validated against the common vocabulary — unknown labels pass through to
+  the language strategies (section 2.1). Only `unit` and `all` carry reserved semantics.
+- `--config <path>` overrides the configuration; normally the baked-in default is used.
+- The prek hook passes `--labels unit` explicitly for self-documentation.
 
-### 2.2 Project discovery
+### 2.3 Project discovery
 
 For each input file, walk up to the nearest ancestor directory holding a recognized project
-marker, stopping at the git toplevel; nearest marker wins. Markers, checked in this order within
-a directory: `go.mod`, `pyproject.toml`, `package.json`, a `tests/` directory containing
-`*.bats` files. Projects are deduplicated; deleted files map by path string. A file matching no
-project contributes nothing. Paths under generated/vendored trees (e.g. `_sources/`) are ignored.
+marker, stopping at the git toplevel; nearest marker wins. The marker set and its within-directory
+precedence come from the configuration's `languages[]` order (defaults: `go.mod`,
+`pyproject.toml`, `package.json`, `tests/*.bats`). Projects are deduplicated; deleted files map by
+path string. A file matching no project contributes nothing. Paths under generated/vendored trees
+(e.g. `_sources/`) are ignored.
 
-### 2.3 Per-language execution (Strategy pattern: one selection semantics, per-ecosystem strategies)
+### 2.4 Per-language execution (Strategy pattern: one selection semantics, per-ecosystem strategies)
 
-Run from the project root in every case. Selection uses NEGATION (exclude known non-unit labels)
-so the unlabeled-means-unit default holds mechanically.
+Run from the project root in every case. The table below is the DEFAULT configuration content —
+the shipped nix attrset renders exactly these strategies (section 2.1). Unit selection uses
+NEGATION (exclude the registered non-unit labels) so the unlabeled-means-unit default holds
+mechanically; the bats negation list shown is the rendering of the default `nonUnitLabels`, not a
+hardcoded string.
 
-| Language | Label mechanism                                                                                                                      | `--labels unit` command                                                               | Notes                                                                                                                                                                                   |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| bats     | `# bats file_tags=type:<label>` per file; `# bats test_tags=type:<label>` per-test override                                          | `bats --jobs <N> --filter-tags '!type:integration,!type:smoke,!type:contract' tests/` | `--jobs` always on for the unit tier (requires GNU `parallel`)                                                                                                                          |
-| Go       | build tags on non-unit test files; untagged = unit (the Go idiom — unit cannot be positively tagged without breaking default builds) | `go test -race -run '^(Test\|Example)' ./...`                                         | `-race` is part of the unit contract (it checks the parallel-safety claim). `Fuzz*` targets are excluded entirely — no seed-corpus replay in the unit tier, and `-fuzz` is never passed |
-| Python   | directory is the label: `tests/unit/` = unit, `tests/<label>/` = that label; files directly under `tests/` = unlabeled ⇒ unit        | `uv run pytest tests/unit` plus any root-level `tests/*.py`                           | Uses the project's committed `uv.lock`; no nix                                                                                                                                          |
-| JS/TS    | package-script split                                                                                                                 | `npm run test:unit` when the script is declared; absent script = no unit tier         | vitest defaults                                                                                                                                                                         |
+| Language | Label mechanism                                                                                                                      | `--labels unit` command                                                                             | Notes                                                                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| bats     | `# bats file_tags=type:<label>` per file; `# bats test_tags=type:<label>` per-test override                                          | `bats --jobs <N> --filter-tags '!type:integration,!type:smoke,!type:contract,!type:hostile' tests/` | `--jobs` always on for the unit tier (requires GNU `parallel`)                                                                                                                          |
+| Go       | build tags on non-unit test files; untagged = unit (the Go idiom — unit cannot be positively tagged without breaking default builds) | `go test -race -run '^(Test\|Example)' ./...`                                                       | `-race` is part of the unit contract (it checks the parallel-safety claim). `Fuzz*` targets are excluded entirely — no seed-corpus replay in the unit tier, and `-fuzz` is never passed |
+| Python   | directory is the label: `tests/unit/` = unit, `tests/<label>/` = that label; files directly under `tests/` = unlabeled ⇒ unit        | `uv run pytest tests/unit` plus any root-level `tests/*.py`                                         | Uses the project's committed `uv.lock`; no nix                                                                                                                                          |
+| JS/TS    | package-script split                                                                                                                 | `npm run test:unit` when the script is declared; absent script = no unit tier                       | vitest defaults                                                                                                                                                                         |
 
 For non-unit labels the same strategies invert the selection (e.g. bats
 `--filter-tags 'type:integration'`, Go `-tags integration`, pytest `tests/integration`). The
 runner only RUNS them; providing the fixtures/credentials such tests need is out of scope.
 
-### 2.4 Environment guarantees
+### 2.5 Environment guarantees
 
 - The runner MUST NOT invoke `nix build`, `nix develop`, `nix run`, or any flake evaluation.
 - The runner sets no test environment. A unit test MUST self-resolve its source under test (the
   `SCRIPTS_DIR`-unset fallback the bash test helper already provides). This is what makes the
   same test runnable in and out of nix.
-- Tools (`bats`, `parallel`, `go`, `uv`, `npm`) resolve from PATH only. A missing tool is a
-  distinct failure naming the tool and the provisioning fix (add to the HM profile) — never a
-  silent skip, never a nix fallback.
+- Tools (each language entry's `tools` list — by default `bats`, `parallel`, `go`, `uv`, `npm`)
+  resolve from PATH only. A missing tool is a distinct failure naming the tool and the
+  provisioning fix (add to the HM profile) — never a silent skip, never a nix fallback.
 - **Parity requirement:** a `unit` test MUST pass both via this runner from the working tree and
   inside its project's nix `checks.*` derivation. The hermetic `checks.*` tier remains the
   authoritative thorough tier; this runner never replaces it.
 
-### 2.5 Exit codes
+### 2.6 Exit codes
 
 Per workspace policy, exit 1 stays generic and branchable meanings are >= 2:
 
@@ -104,8 +164,10 @@ Per workspace policy, exit 1 stays generic and branchable meanings are >= 2:
 - `10` — test failures
 - `11` — required tool missing from PATH
 - `12` — an explicitly named directory is not a recognizable project
+- `13` — configuration missing, unreadable, or invalid (bad JSON, unsupported `version`, unknown
+  placeholder)
 
-### 2.6 Output
+### 2.7 Output
 
 One summary line per project run: project path, language, pass/fail counts, duration. Silent on
 vacuous prek runs.
@@ -146,7 +208,8 @@ flowchart LR
 
 - Never runs integration/smoke/contract kinds in the commit path.
 - No git introspection (the caller supplies files or project dirs).
-- No per-project configuration file; convention only, until a real case demands otherwise.
+- No per-project in-tree configuration file; the runner's configuration (section 2.1) is
+  nix-owned and generated, never hand-written or carried by individual projects.
 - Not a replacement for the hermetic `checks.*` tier or for the evaluation doc's Phase-3
   affected-scope landing gate (this runner is a natural seed for that gate, but the gate is a
   separate design).
@@ -163,8 +226,9 @@ discipline: supersede in place, cite this file).
 
 ## 6. Workstreams
 
-1. **Runner + provisioning (repo-base, size M):** build `pg-test-runner`; add `bats` and
-   `parallel` to the HM profile (`go`, `uv` already present).
+1. **Runner + provisioning (repo-base, size M):** build `pg-test-runner` as a data-driven engine
+   plus the nix module option that renders the default configuration JSON (section 2.1); add
+   `bats` and `parallel` to the HM profile (`go`, `uv` already present).
 2. **Bats labeling pass (all six repos, size M):** every bats suite gets an explicit
    `# bats file_tags=type:<label>`, unit included — classification by inspection per section 1.
    Priority: labeling everything avoids confusion even though unlabeled defaults to unit.
