@@ -742,6 +742,160 @@ pnwf_fetch_and_rebase() {
   fi
 }
 
+# Publishes canonical_dir's local <primary> to origin IF it is locally ahead
+# of origin/<primary> -- the PREVENTION half of bd pg2-xl9ez. Backs `pnwf
+# sync-fetch`'s new pre-step, called once per member on that member's
+# CANONICAL clone (never the member's own set worktree -- a DIFFERENT
+# directory; see cmd_sync_fetch), BEFORE pnwf_fetch_and_rebase fetches+
+# rebases the member onto origin.
+#
+# THE HAZARD THIS PREVENTS (bd pg2-xl9ez, full history in the bead): sync-fetch
+# rebases each member onto origin/<primary>, so the member branch ends up
+# CONTAINING origin/<primary> as an ancestor. If the CANONICAL clone's local
+# <primary> was ALSO ahead of origin (locally landed, unpushed commits) when
+# that rebase ran, the rebase necessarily REPLAYS those commits onto origin
+# with NEW shas -- so by land time, canonical primary's old-sha history and
+# the member branch's new-sha (replayed) history have diverged at the sha
+# level even though the content is equivalent, and `git merge --ff-only`
+# (which `ff-merge-to-main` uses to land) checks sha ancestry only, so it
+# fails by construction. The operator ruling that authorizes this function
+# (bd pg2-xl9ez comment, 2026-08-24): PREVENT the state from arising by
+# publishing canonical's unpushed commits before sync-fetch's rebase-onto-
+# origin step ever runs, rather than teaching `land-workforest` to recognise
+# the state after the fact and auto-reset canonical to the member branch --
+# that alternative was rejected as an R-3/R-8 violation (baking an automated
+# `git reset --hard` of the canonical primary into unattended shared tooling).
+#
+# Returns:
+#   0  Clean pass. EITHER canonical's local <primary> was NOT ahead of
+#      origin/<primary> (the overwhelmingly common case: nothing pushed,
+#      NOTHING printed to stdout, no extra network call beyond the local
+#      'origin' remote check and a rev-list) OR it WAS ahead and the push to
+#      origin succeeded (exactly one line is printed to stdout naming
+#      canonical_dir, <primary>, and how many commits were pushed). Safe for
+#      the caller to proceed to pnwf_fetch_and_rebase.
+#   2  Canonical is NOT in the Tier R steady state required before publishing
+#      its commits: either its working-tree root could not even be confirmed
+#      (a bare repo, or a redirected core.worktree -- see
+#      pnwf_worktree_root_state), or it IS confirmed but is off its <primary>
+#      branch, dirty, or the on-primary/clean probe itself could not be read
+#      (see pnwf_canonical_on_primary_and_clean). NOTHING was pushed. This is
+#      a Tier R halt-and-report case (R-3/R-8): the caller MUST NOT reset,
+#      check out, or stash canonical to fix it -- and this function never
+#      does either. Folded into ONE code because, exactly as
+#      pnwf_worktree_root_state's own header argues for its two causes, all
+#      three demand the IDENTICAL caller action (halt and report, never
+#      auto-fix); the printed detail says which occurred.
+#   3  Whether canonical's <primary> is ahead of origin/<primary> could not be
+#      determined: an 'origin' remote IS configured, but
+#      'origin/<primary>..<primary>' does not resolve (rev-list rc != 0) --
+#      'origin' may have been added but never fetched, or <primary> may never
+#      have been published under this name. NOTHING was pushed.
+#   4  The push itself (`git push origin <primary>`, never --force) failed --
+#      a non-fast-forward rejection (a peer already advanced origin/<primary>
+#      first), an auth failure, a network failure, or anything else git
+#      reports. git's own message is relayed VERBATIM in the stderr
+#      diagnostic rather than pattern-matched, matching this file's
+#      established rule (pnwf_rebase_in_progress's header, the ff-merge-to-
+#      main skill's FF-1) that git's wording is localized and version-
+#      dependent, never a safe match target.
+#
+# Skips CLEANLY (return 0, prints nothing, no push attempted) when
+# canonical_dir has NO 'origin' remote configured at all: there is nothing
+# this function could push to, and this check runs FIRST (before any rev-list
+# or Tier R health check) so a repo with no remote costs exactly one local,
+# no-network `git remote get-url` call regardless of its ahead/health state --
+# this only concerns repos that DO publish to origin.
+#
+# ORDERING IS DELIBERATE, and it is what keeps the common cases cheap and
+# side-effect-free: (1) does 'origin' exist at all -- if not, done; (2) is
+# <primary> ahead of origin/<primary> -- if not (or indeterminate), done
+# without ever asking whether canonical is healthy; (3) ONLY once there is
+# something to push does this function ask whether canonical is in the Tier R
+# steady state, and only then does it push. A canonical that is off-primary or
+# dirty but has NOTHING to publish is therefore NOT halted by this function --
+# that R-3 anomaly, if genuine, is fork-preflight's/ff-merge-to-main's own
+# concern, not a new blanket health gate this bead was not asked to add.
+#
+# Never passes --force. Never mutates canonical_dir's WORKING TREE (no reset,
+# checkout, or stash) -- the only mutation is advancing its local <primary>
+# ref's remote copy via an ordinary `git push origin <primary>`, which does
+# not require <primary> to be checked out (though the Tier R check above
+# requires it to be, before this function will attempt it).
+#
+# stderr carries a first-party diagnostic for every non-zero return, naming
+# which check stopped it; git's own chatter (the push rejection text, a
+# network error) is included verbatim in the code-4 diagnostic rather than
+# summarized, same shape as every other guarded relay in this file.
+pnwf_push_canonical_primary_if_ahead() {
+  local canonical_dir="$1" primary="$2"
+
+  # (1) No 'origin' remote at all: nothing to push to. This is a plain local
+  # config read (no network), so it costs nothing extra for a repo this bead
+  # does not concern.
+  if ! git -C "$canonical_dir" remote get-url origin >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # (2) Is <primary> ahead of origin/<primary>? Reuses the existing ahead
+  # primitive with the args swapped from its usual member-vs-primary sense:
+  # here "branch" is canonical's own LOCAL <primary> and "primary" is the
+  # REMOTE-TRACKING ref, so the printed count is commits reachable from local
+  # <primary> but not from origin/<primary> -- exactly "ahead of origin".
+  # stderr is discarded on this call (2>/dev/null): an unresolvable
+  # 'origin/<primary>..<primary>' is an EXPECTED case here (reported below as
+  # code 3, not a generic error), same rationale as pnwf_classify_member
+  # discarding pnwf_ahead_of_primary's own diagnostic on its expected 128.
+  local ahead ahead_rc=0
+  ahead=$(pnwf_ahead_of_primary "$canonical_dir" "$primary" "origin/$primary" 2>/dev/null) || ahead_rc=$?
+  if [ "$ahead_rc" -ne 0 ]; then
+    echo "pnwf_push_canonical_primary_if_ahead: could not determine whether $canonical_dir's '$primary' is ahead of 'origin/$primary' (rev-list rc=$ahead_rc) -- 'origin' is configured but 'origin/$primary' does not resolve there; it may never have been fetched, or '$primary' may never have been published under this name. Nothing was pushed." >&2
+    return 3
+  fi
+  [ "$ahead" -gt 0 ] || return 0
+
+  # (3) Something to publish: NOW confirm canonical is in the Tier R steady
+  # state before touching origin. Root confirmed first (pnwf_worktree_root_
+  # state's own header: a caller MUST do this before asking
+  # pnwf_canonical_on_primary_and_clean, or a bare/redirected canonical
+  # answers healthy about the wrong tree).
+  local root_line root_state root_detail
+  root_line=$(pnwf_worktree_root_state "$canonical_dir")
+  root_state=${root_line%%$'\t'*}
+  root_detail=${root_line#*$'\t'}
+  if [ "$root_state" != "confirmed" ]; then
+    echo "pnwf_push_canonical_primary_if_ahead: refusing to push -- $canonical_dir's working-tree root could not be confirmed ($root_detail). This is a Tier R halt (R-3/R-8): nothing is reset, checked out, or stashed to work around it. $ahead commit(s) on '$primary' remain unpushed." >&2
+    return 2
+  fi
+
+  local healthy_rc=0
+  pnwf_canonical_on_primary_and_clean "$canonical_dir" "$primary" || healthy_rc=$?
+  case "$healthy_rc" in
+  0) : ;;
+  1)
+    echo "pnwf_push_canonical_primary_if_ahead: refusing to push -- $canonical_dir is not checked out on '$primary' and clean. This is a Tier R halt (R-3/R-8): pnwf will not reset, check out, or stash the canonical clone to fix it. Inspect 'git -C $canonical_dir status' and 'git -C $canonical_dir rev-parse --abbrev-ref HEAD'; $ahead commit(s) on '$primary' remain unpushed until it is." >&2
+    return 2
+    ;;
+  *)
+    echo "pnwf_push_canonical_primary_if_ahead: refusing to push -- whether $canonical_dir is checked out on '$primary' and clean could not be determined (probe rc=$healthy_rc). Failing CLOSED rather than treating 'could not tell' as safe to push; $ahead commit(s) on '$primary' remain unpushed." >&2
+    return 2
+    ;;
+  esac
+
+  # (4) Push. Never --force -- a non-fast-forward rejection is a real signal
+  # (a peer already advanced origin/<primary>) that this function MUST
+  # surface, not paper over.
+  local push_out push_rc=0
+  push_out=$(git -C "$canonical_dir" push origin "$primary" 2>&1) || push_rc=$?
+  if [ "$push_rc" -ne 0 ]; then
+    echo "pnwf_push_canonical_primary_if_ahead: git push origin $primary failed in $canonical_dir (rc=$push_rc); $ahead commit(s) remain unpushed and NOTHING else was attempted. git said:
+$push_out" >&2
+    return 4
+  fi
+
+  echo "pnwf_push_canonical_primary_if_ahead: pushed $canonical_dir's '$primary' to origin ($ahead commit(s) ahead)"
+}
+
 # Prints each repo-relative path from `git status --porcelain
 # --untracked-files=normal` in repo_dir, one per line (tracked or untracked,
 # staged or unstaged -- the REPORTING definition of dirty; see

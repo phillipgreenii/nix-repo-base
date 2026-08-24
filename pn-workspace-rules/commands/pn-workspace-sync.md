@@ -280,12 +280,26 @@ and it is bounded:
   relock, not a publish.
 
   Any other shape is NOT admissible — there is NO escape, HALT. In particular a
-  `behind M` line, whether or not paired with an `ahead`, MUST HALT: an
-  ahead-and-behind target is a separate, genuinely unhandled hazard elsewhere in
-  this pipeline (`land-workforest`/ff-merge-to-main, bd `pg2-xl9ez`), so its
-  `ahead` half MUST NOT be treated as the unpublished-local case above. A plain
-  `behind` (no `ahead`), a `Skipped` line (remote comparison skipped / remote rev
-  unresolved), or any other shape is the same: nothing here converges it.
+  `behind M` line, whether or not paired with an `ahead`, MUST HALT: its `ahead`
+  half MUST NOT be treated as the unpublished-local case above. An
+  ahead-and-behind reading here USED TO be expected fallout from a genuinely
+  unhandled hazard in `land-workforest`/ff-merge-to-main: `pnwf sync-fetch`'s own
+  fetch+rebase would rebase a member onto `origin/<primary>`, and if the
+  CANONICAL clone's local primary was ALSO ahead of `origin` when that ran, the
+  rebase replayed those commits onto `origin` with NEW shas — leaving canonical
+  both ahead (of the replay's pre-image) and behind (the replay itself) by the
+  time this check ran. Bd `pg2-xl9ez` closed that mechanism: Stage 2
+  (`pnwf sync-fetch`) now publishes a canonical clone's ahead commits to
+  `origin` BEFORE its own rebase-onto-origin step ever runs (never `--force`;
+  a no-op when canonical is not ahead, or has no remote), so by the time THIS
+  check runs, every canonical primary Stage 2 touched should already read
+  `ahead 0` — the routine cause of an ahead-and-behind finding is gone. An
+  ahead-and-behind finding reaching this check now is therefore NOT the known,
+  tolerated case it once was: treat it as a genuinely NEW anomaly (e.g. a
+  concurrent landing race per R-7, or a canonical mutated outside this
+  pipeline) and HALT and report rather than assume the old cause. A plain
+  `behind` (no `ahead`), a `Skipped` line (remote comparison skipped / remote
+  rev unresolved), or any other shape is unchanged: nothing here converges it.
   (`branch-synced` is primary-mode only, so this MUST be run from the canonical
   root, not from the set. It is READ-ONLY: you MUST NOT pass `--fix`.)
 

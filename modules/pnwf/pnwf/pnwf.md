@@ -43,7 +43,7 @@
 
 `pnwf status {{branch}}`
 
-- Fetch + rebase every member of the current set onto its remote primary branch (refuses a member whose working tree is dirty; stops and reports on the first failure):
+- Fetch + rebase every member of the current set onto its remote primary branch. First publishes each member's canonical clone's primary branch to origin if it is locally ahead (never `--force`; a no-op if not ahead or the canonical has no remote — prevents the rebase from orphaning unpushed canonical commits, bd `pg2-xl9ez`). Refuses a member whose working tree or canonical clone is dirty/off-primary, or a rejected canonical push; stops and reports on the first failure:
 
 `pnwf sync-fetch --set`
 

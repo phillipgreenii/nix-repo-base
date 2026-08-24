@@ -310,6 +310,25 @@ faithfully propagated the claim (bd `pg2-k3s0x`). Read stderr only for the
   `reason: "dirtiness-indeterminate"`, quoting `pnwf`'s stderr in `detail`. You
   MUST NOT pick the `worktree-dirty` gate: whether there is any work to dispose of
   is exactly what could not be read.
+- **exit 8/9/10 — the member's CANONICAL clone, not its set worktree** (bd
+  `pg2-xl9ez`: before the fetch+rebase above, `pnwf sync-fetch` now publishes
+  that member's canonical clone's primary branch to origin if it is locally
+  ahead — see [`pnwf sync-fetch --help`](../../modules/pnwf/pnwf/pnwf.sh) for
+  the full per-code text). All three are `halt`, never a `gate`: none of them
+  is a state on the set worktree you are standing in, so there is no
+  `resume_hint` you could run there.
+  - **exit 8 — canonical anomaly** (not confirmed as a working-tree root, or
+    off its primary branch, or dirty — Tier R, R-3/R-8) → `halt` with
+    `stage: "sync-fetch"`, `reason: "canonical-anomaly"`, quoting `pnwf`'s
+    stderr (it names the canonical path and which check failed) in `detail`.
+    You MUST NOT reset, check out, or stash the canonical clone yourself.
+  - **exit 9 — canonical ahead-status unknown** (`origin` is configured on the
+    canonical clone but `origin/<primary>` does not resolve there) → `halt`
+    with `stage: "sync-fetch"`, `reason: "canonical-ahead-indeterminate"`.
+  - **exit 10 — canonical push failed** (rejected non-fast-forward, auth,
+    network — git's own message is in `pnwf`'s stderr) → `halt` with
+    `stage: "sync-fetch"`, `reason: "canonical-push-failed"`, quoting git's
+    message verbatim in `detail`.
 - **any other non-zero exit** → you MUST return `halt` with
   `stage: "sync-fetch"`, `reason: "sync-fetch-unrecognised"`, the exit status and
   `pnwf`'s stderr in `detail`. Do NOT map it onto the nearest gate above.
@@ -333,6 +352,17 @@ still sits exactly on its canonical primary — the set is identical to the
 workspace it was forked from. "Workspace ahead of `origin`, `origin` with nothing
 new" is the NORMAL steady state after a `/drain-beads` run (drain lands locally
 and never pushes), so this is the common case, not an edge case.
+
+Since bd `pg2-xl9ez`, a clean exit 0 has ALREADY published any canonical clone
+that was locally ahead of `origin` (the new pre-step above) — so the classic
+"ahead of `origin`, nothing new from `origin`" shape below now typically means
+canonical was published moments ago by this very Stage 2 run, not that it is
+still unpublished. This section is about `origin` having nothing NEW to give a
+member's rebase, which is orthogonal to whether canonical's own commits reached
+`origin` — the classification below is unaffected, but do not read "ahead of
+origin" here as "still needs a publish": Stage 2 already attempted that per
+member, and a member it could not publish would have halted at exit 8/9/10
+above rather than reaching this exit-0 classification at all.
 
 Running Stage 3 anyway DEAD-ENDS (bd `pg2-6gjcy`). In `worktree` mode
 `flake-lock-fresh` compares each consumer's pin against the target member's

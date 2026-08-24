@@ -46,13 +46,19 @@ Subcommands (read-only, implemented):
 
 Subcommands (mutating WORK-recipe helpers, not read-only probes):
   sync-fetch [--set]
-                     Per present member (topo order): `git fetch origin`,
-                     then rebase onto the remote primary. Pre-flight refuses
-                     a member whose working tree is dirty -- with
-                     `rebase.autoStash` on, git would NOT refuse but could
-                     leave a conflicted autostash behind while reporting
-                     success. Stops on the FIRST failure, reporting the
-                     member + worktree path; recovery is agent-owned.
+                     Per present member (topo order): first publishes the
+                     member's CANONICAL clone's primary branch to origin if
+                     it is locally ahead (never --force; no-op for the
+                     common not-ahead case, and for a canonical with no
+                     remote) -- bd pg2-xl9ez, prevents that canonical's
+                     unpushed commits from being replayed with new shas by
+                     the rebase below. Then `git fetch origin`, then rebase
+                     onto the remote primary. Pre-flight refuses a member
+                     whose working tree is dirty -- with `rebase.autoStash`
+                     on, git would NOT refuse but could leave a conflicted
+                     autostash behind while reporting success. Stops on the
+                     FIRST failure, reporting the member + worktree/
+                     canonical path; recovery is agent-owned.
   update-relock [--set]
                      Relock every present member's flake inputs (nixpkgs +
                      third-party + workspace siblings) IN PLACE, by shelling
@@ -961,22 +967,32 @@ Usage: pnwf sync-fetch [--set]
 
 For each member of the resolved workspace's own lock, in topo order (an
 absent worktree -- already landed/cleaned up elsewhere -- is skipped):
-refuse the member outright if its working tree is DIRTY, else `git fetch
-origin`, then attempt to rebase the member's current branch onto the remote
-primary (origin/<primary>, resolved via integrate-branch-support).
 
-The dirtiness PRE-CHECK is pnwf's own, and it is load-bearing rather than a
-courtesy: `git rebase` refuses on a dirty tree only while `rebase.autoStash`
-is OFF. With it ON, git stashes, rebases, pops -- and reports SUCCESS even
-when that pop CONFLICTS (verified git 2.54: both "Applying autostash
-resulted in conflicts" and "Successfully rebased", exit 0, tree left at
-`UU <file>` with an orphaned autostash). Without the pre-check a dirty
-member is therefore reported as a clean pass while its worktree holds
-unresolved conflicts, and case 4 below cannot catch it because git never
-refused anything.
+  0. PUBLISH: if the member's CANONICAL clone's local primary branch is
+     ahead of origin (locally landed, unpushed commits), push it to origin
+     BEFORE anything below runs (bd pg2-xl9ez) -- see codes 8/9/10. A
+     canonical that is not ahead (the common case) is untouched: no push, no
+     extra output, no extra network call. This prevents step 2's rebase from
+     replaying canonical's unpushed commits onto origin with new shas, which
+     would otherwise diverge canonical's history from the member branch's at
+     the sha level `git merge --ff-only` checks at land time.
+  1. refuse the member outright if its working tree is DIRTY (see 6/7);
+  2. else `git fetch origin`, then attempt to rebase the member's current
+     branch onto the remote primary (origin/<primary>, resolved via
+     integrate-branch-support).
 
-Stops on the FIRST failure, reporting which member and worktree path
-stopped it, then exits non-zero WITH THE EXIT CODE THAT IDENTIFIES THE
+The dirtiness PRE-CHECK (step 1) is pnwf's own, and it is load-bearing rather
+than a courtesy: `git rebase` refuses on a dirty tree only while
+`rebase.autoStash` is OFF. With it ON, git stashes, rebases, pops -- and
+reports SUCCESS even when that pop CONFLICTS (verified git 2.54: both
+"Applying autostash resulted in conflicts" and "Successfully rebased", exit
+0, tree left at `UU <file>` with an orphaned autostash). Without the
+pre-check a dirty member is therefore reported as a clean pass while its
+worktree holds unresolved conflicts, and case 4 below cannot catch it
+because git never refused anything.
+
+Stops on the FIRST failure, reporting which member and worktree/canonical
+path stopped it, then exits non-zero WITH THE EXIT CODE THAT IDENTIFIES THE
 CASE. Recovery is agent-owned and depends on which step failed and, for a
 failed rebase, on whether a rebase is actually in progress afterwards:
   2  fetch failed        check the remote/network/auth, then re-run `pnwf
@@ -1006,10 +1022,29 @@ failed rebase, on whether a rebase is actually in progress afterwards:
                           repo), so whether a rebase is safe to attempt is
                           unknown and NO recovery is asserted: inspect the
                           member first.
+  8  canonical anomaly   the member's CANONICAL clone is not confirmed as a
+                          working-tree root, or is off its primary branch,
+                          or is dirty -- a Tier R anomaly (R-3/R-8). NOTHING
+                          was pushed and nothing was fetched/rebased for
+                          this member. Inspect and resolve the canonical
+                          clone by hand, then re-run `pnwf sync-fetch`.
+  9  ahead status        whether the member's CANONICAL clone's primary is
+     unknown             ahead of origin could not be determined ('origin'
+                          is configured but 'origin/<primary>' does not
+                          resolve there). Nothing was pushed or
+                          fetched/rebased for this member: fetch origin in
+                          the canonical clone to establish it, then re-run.
+  10 canonical push      publishing the member's CANONICAL clone's primary
+     failed              to origin failed (rejected non-fast-forward, auth,
+                          network -- git's own message is above). Nothing
+                          was fetched/rebased for this member: reconcile the
+                          canonical clone, then re-run `pnwf sync-fetch`.
 Exits 0 once every member has fetched and rebased clean.
 
 This is a MUTATING WORK-recipe helper, not a read-only probe like
-resolve/repos/stage/etc. -- it changes each member's branch tip.
+resolve/repos/stage/etc. -- it changes each member's branch tip, and may
+also advance the member's CANONICAL clone's primary branch on origin (step
+0 above; never --force).
 
 --set: exit non-zero unless the resolved workspace is inside a set.
 HELP
@@ -1051,6 +1086,41 @@ HELP
 
     primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
       die "could not resolve primary branch for member '$member'"
+
+    # PREVENTION step for bd pg2-xl9ez, on the member's CANONICAL clone --
+    # a DIFFERENT directory than $member_setpath below. If canonical's local
+    # <primary> is ahead of origin (locally landed, unpushed commits),
+    # publish it BEFORE the fetch+rebase below ever runs: that fetch+rebase
+    # rebases $member_setpath onto origin/<primary>, and if canonical were
+    # ahead when it ran, those commits would get replayed onto origin with
+    # NEW shas -- diverging canonical's old-sha history from the member
+    # branch's new-sha one at the sha level `git merge --ff-only` checks at
+    # land time, which is exactly the hazard this bead exists to close. The
+    # common case (canonical NOT ahead) is a silent no-op: no push, no extra
+    # output, no extra network call beyond the guarded checks themselves.
+    #
+    # Guarded (never a bare call), same discipline as pnwf_fetch_and_rebase
+    # below: every sentinel this function documents is enumerated explicitly,
+    # `*)` asserts NO cause, and the exit code it maps to is chosen to NOT
+    # collide with pnwf_fetch_and_rebase's own 2-7 range below (this
+    # subcommand's exit-code contract is per-cause across BOTH steps).
+    local push_rc=0
+    pnwf_push_canonical_primary_if_ahead "$member_canonical" "$primary" || push_rc=$?
+    case "$push_rc" in
+    0) : ;;
+    2)
+      die "sync-fetch: stopped on member '$member' -- its CANONICAL clone ($member_canonical) is not in the steady state required before publishing its unpushed commits (must be confirmed as a working-tree root, checked out on '$primary', and clean). This is a Tier R anomaly (R-3/R-8): pnwf will NOT reset, check out, or stash the canonical clone to fix it -- see the diagnostic above for which check failed. Inspect 'git -C $member_canonical status' and 'git -C $member_canonical rev-parse --abbrev-ref HEAD', resolve it by hand, then re-run 'pnwf sync-fetch'. Nothing was pushed and nothing was fetched/rebased for this member." "8"
+      ;;
+    3)
+      die "sync-fetch: stopped on member '$member' -- whether its canonical clone's '$primary' ($member_canonical) is ahead of 'origin/$primary' could not be determined ('origin' is configured there but 'origin/$primary' does not resolve -- it may never have been fetched, or '$primary' may never have been published under this name). Nothing was pushed and nothing was fetched/rebased for this member. Run 'git -C $member_canonical fetch origin' to establish it, then re-run 'pnwf sync-fetch'." "9"
+      ;;
+    4)
+      die "sync-fetch: stopped on member '$member' -- publishing its canonical clone's '$primary' ($member_canonical) to origin failed (see git's own message above); nothing was fetched/rebased for this member. A non-fast-forward rejection means a peer already advanced 'origin/$primary' -- reconcile by hand (e.g. 'git -C $member_canonical fetch origin && git -C $member_canonical status') before retrying; other causes (auth, network) need their own fix. Re-run 'pnwf sync-fetch' once resolved." "10"
+      ;;
+    *)
+      die "sync-fetch: stopped on member '$member' -- pnwf_push_canonical_primary_if_ahead returned the UNRECOGNISED code $push_rc for canonical clone $member_canonical, so this subcommand cannot say which check stopped it; inspect 'git -C $member_canonical status' rather than acting on a guessed cause." "$push_rc"
+      ;;
+    esac
 
     # Guarded (never a bare call): a dirtiness refusal, a fetch failure, or
     # any rebase failure exits nonzero, and MUST NOT abort this loop via

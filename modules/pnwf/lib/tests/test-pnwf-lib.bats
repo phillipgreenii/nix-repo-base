@@ -1055,6 +1055,184 @@ _assert_member_untouched_by_refusal() {
   [[ "$stderr" == *"pnwf_fetch_and_rebase: git fetch origin failed in $CLONE"* ]]
 }
 
+# --- pnwf_push_canonical_primary_if_ahead --------------------------------
+# The PREVENTION half of bd pg2-xl9ez: publish a canonical clone's ahead
+# commits to origin BEFORE sync-fetch's own fetch+rebase (pnwf_fetch_and_
+# rebase above) can replay them onto origin with new shas. Real git
+# throughout -- a real bare "origin" plus $REPO acting as the canonical
+# clone, mirroring _setup_fetch_and_rebase_origin's own pattern above.
+
+# Adds a real bare "origin" seeded from $REPO's CURRENT history and points
+# $REPO at it with an established (fetched) refs/remotes/origin/<branch> --
+# the realistic starting point for "ahead": local knowledge of origin exists
+# and is a strict ancestor of what local history will become.
+_setup_push_test_origin() {
+  ORIGIN="$TEST_DIR/origin.git"
+  command git clone -q --bare "$REPO" "$ORIGIN"
+  command git -C "$REPO" remote add origin "$ORIGIN"
+  command git -C "$REPO" fetch -q origin
+  export ORIGIN
+}
+
+# Adds one commit to $REPO's current branch, making it locally ahead of the
+# already-fetched origin/<branch> by exactly one commit.
+_add_local_commit() {
+  local marker="$1"
+  echo "$marker" >"$REPO/$marker.txt"
+  command git -C "$REPO" add "$marker.txt"
+  command git -C "$REPO" commit -q -m "$marker"
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: NOT ahead of origin is a silent no-op" {
+  _setup_push_test_origin
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  # No push means origin's main is untouched, still exactly what was cloned.
+  run bash -c "command git -C '$ORIGIN' rev-parse main"
+  [ "$output" = "$(command git -C "$REPO" rev-parse main)" ]
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: no 'origin' remote at all is a silent no-op" {
+  # $REPO deliberately has NO remote configured -- this only concerns repos
+  # that publish to origin (task requirement: skip cleanly).
+  run bash -c "command git -C '$REPO' remote"
+  [ -z "$output" ]
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: ahead of origin pushes, prints exactly one line, and origin advances" {
+  _setup_push_test_origin
+  local before_origin
+  before_origin=$(command git -C "$ORIGIN" rev-parse main)
+  _add_local_commit ahead-one
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pushed $REPO's 'main' to origin (1 commit(s) ahead)"* ]]
+  [ "${#lines[@]}" -eq 1 ]
+
+  # origin's main moved to $REPO's new tip, and it is no longer the pre-push sha.
+  run bash -c "command git -C '$ORIGIN' rev-parse main"
+  [ "$output" = "$(command git -C "$REPO" rev-parse main)" ]
+  [ "$output" != "$before_origin" ]
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: multiple ahead commits are all pushed and the count is exact" {
+  _setup_push_test_origin
+  _add_local_commit first
+  _add_local_commit second
+  _add_local_commit third
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(3 commit(s) ahead)"* ]]
+
+  run bash -c "command git -C '$ORIGIN' rev-parse main"
+  [ "$output" = "$(command git -C "$REPO" rev-parse main)" ]
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: 'origin' configured but never fetched is INDETERMINATE, nothing pushed" {
+  # remote added, but no `git fetch` was ever run: refs/remotes/origin/main
+  # does not exist, so 'origin/main..main' cannot resolve.
+  ORIGIN="$TEST_DIR/origin.git"
+  command git clone -q --bare "$REPO" "$ORIGIN"
+  command git -C "$REPO" remote add origin "$ORIGIN"
+  _add_local_commit ahead-one
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"could not determine whether $REPO's 'main' is ahead of 'origin/main'"* ]]
+
+  # Nothing was pushed: origin's main is still the bare clone's original tip.
+  run bash -c "command git -C '$ORIGIN' rev-parse main"
+  [ "$output" != "$(command git -C "$REPO" rev-parse main)" ]
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: canonical DIRTY refuses with a Tier R halt, nothing pushed" {
+  _setup_push_test_origin
+  _add_local_commit ahead-one
+  echo untracked >"$REPO/untracked.txt"
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"refusing to push"* ]]
+  [[ "$stderr" == *"not checked out on 'main' and clean"* ]]
+  [[ "$stderr" == *"R-3/R-8"* ]]
+
+  run bash -c "command git -C '$ORIGIN' rev-parse main"
+  [ "$output" != "$(command git -C "$REPO" rev-parse main)" ]
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: canonical OFF-PRIMARY refuses with a Tier R halt, nothing pushed" {
+  _setup_push_test_origin
+  _add_local_commit ahead-one
+  command git -C "$REPO" checkout -q -b some-other-branch
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"not checked out on 'main' and clean"* ]]
+
+  run bash -c "command git -C '$ORIGIN' rev-parse main"
+  [ "$output" != "$(command git -C "$REPO" rev-parse main)" ]
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: a canonical whose working-tree root cannot be confirmed refuses, nothing pushed" {
+  # Same redirected-core.worktree scenario as pnwf_worktree_root_state's own
+  # tests above -- this proves the wiring (this function MUST confirm the
+  # root before trusting pnwf_canonical_on_primary_and_clean's answer), not
+  # the underlying probe again.
+  _setup_push_test_origin
+  _add_local_commit ahead-one
+  _redirect_worktree_to_decoy >/dev/null
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"working-tree root could not be confirmed"* ]]
+
+  run bash -c "command git -C '$ORIGIN' rev-parse main"
+  [ "$output" != "$(command git -C "$REPO" rev-parse main)" ]
+}
+
+@test "pnwf_push_canonical_primary_if_ahead: push REJECTED (non-fast-forward) halts, relays git's own message, nothing else attempted" {
+  _setup_push_test_origin
+
+  # A peer publishes directly to origin, independent of $REPO's (now stale)
+  # knowledge of it -- via a THIRD clone, never through $REPO.
+  local peer="$TEST_DIR/peer-clone"
+  command git clone -q "$ORIGIN" "$peer"
+  command git -C "$peer" config user.email "test@example.com"
+  command git -C "$peer" config user.name "Test"
+  echo peer-advance >"$peer/peer.txt"
+  command git -C "$peer" add peer.txt
+  command git -C "$peer" commit -q -m "peer advance"
+  command git -C "$peer" push -q origin main
+
+  # $REPO independently gains a local commit too, so it is (by its own,
+  # now-stale knowledge of origin/main) "ahead" -- exactly the state that
+  # makes this function attempt the push in the first place.
+  _add_local_commit ahead-one
+
+  run --separate-stderr bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
+  [ "$status" -eq 4 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"git push origin main failed in $REPO"* ]]
+  # git's OWN rejection text is relayed verbatim, not paraphrased.
+  [[ "$stderr" == *"rejected"* || "$stderr" == *"non-fast-forward"* || "$stderr" == *"fetch first"* ]]
+
+  # origin's main is the peer's tip, untouched by the failed push attempt.
+  run bash -c "command git -C '$ORIGIN' rev-parse main"
+  [ "$output" = "$(command git -C "$peer" rev-parse main)" ]
+}
+
 # --- pnwf_dirty_paths ----------------------------------------------------
 # Backs `pnwf residue`. Real git throughout.
 
