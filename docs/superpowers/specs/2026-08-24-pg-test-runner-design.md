@@ -126,8 +126,8 @@ registering a label is a configuration change, never a code change.
 
 ```bash
 pg-test-runner [--labels <csv>] --files <file>...   # prek mode: staged files in, touched projects' tests run
-pg-test-runner [--labels <csv>] <project-dir>...    # ad hoc: run named projects
-pg-test-runner [--labels <csv>] --all               # every project under the repo
+pg-test-runner [--labels <csv>] [<path>...]         # ad hoc: resolve each path (default: cwd) per section 2.3
+pg-test-runner [--labels <csv>] --all               # every project under the repo toplevel
 ```
 
 - `--labels` takes a comma-separated label list, or `all` (no filtering). Omitted, it defaults to
@@ -138,15 +138,32 @@ pg-test-runner [--labels <csv>] --all               # every project under the re
 
 ### 2.3 Project discovery
 
-For each input file, walk up to the nearest ancestor directory holding a recognized project
-marker, stopping at — and INCLUDING — the git toplevel; nearest marker wins. Root inclusion is
-deliberate: two repos keep real bats suites at the repo root (agent-support's conformance suites,
-overlay's `tests/verify-provenance.bats`), and labeling (workstream 2), not discovery, is what
-keeps non-unit root suites out of the commit tier. The marker set and its within-directory
-precedence come from the configuration's `languages[]` order (defaults: `go.mod`,
-`pyproject.toml`, `package.json`, `tests/*.bats`). Projects are deduplicated; deleted files map by
-path string. A file matching no project contributes nothing. Paths matching the configuration's
-`ignore` globs are excluded from discovery and from `--all`.
+The marker set and its within-directory precedence come from the configuration's `languages[]`
+order (defaults: `go.mod`, `pyproject.toml`, `package.json`, `tests/*.bats`). Discovered projects
+are deduplicated. Paths matching the configuration's `ignore` globs are excluded from every mode.
+
+Resolution has two modes:
+
+- **`--files` (prek mode):** for each input file, walk UP from its containing directory to the
+  nearest ancestor holding a marker — checking each directory including the git toplevel — and
+  nearest marker wins. Deleted files map by path string. A file matching no project contributes
+  NOTHING, deliberately: there is no downward fallback in this mode, or a commit touching only an
+  unowned root-level file (README, `flake.nix`) would run every project in the repo.
+- **Path arguments (ad hoc; default `cwd`):** starting AT the given directory, check it for
+  markers, then walk UP — stopping when a marker is found, otherwise at the repo toplevel
+  (checked as a candidate) when inside a repo, or at the filesystem root when not. If the upward
+  walk finds nothing, FALL BACK to a downward scan of the subtree rooted at the ORIGINAL path,
+  discovering every project beneath it. A path that yields no project in either direction exits
+  `12`.
+- **`--all`:** the downward scan forced from the repo toplevel — every project under the repo,
+  regardless of whether the toplevel itself carries a marker. Requires being inside a repo.
+
+The toplevel is a legitimate candidate in the upward walk: two repos keep real bats suites at the
+repo root (agent-support's conformance suites, overlay's `tests/verify-provenance.bats`), and
+labeling (workstream 2), not discovery, is what keeps non-unit root suites out of the commit
+tier. One consequence to know: at a repo root that itself carries a marker, a bare
+`pg-test-runner` resolves to the ROOT project only (the upward walk finds it immediately) — use
+`--all` for the whole-repo sweep.
 
 ### 2.4 Per-language execution (Strategy pattern: one selection semantics, per-ecosystem strategies)
 
@@ -201,7 +218,8 @@ Per workspace policy, exit 1 stays generic and branchable meanings are >= 2:
   the probes (section 2.1) keep vacuous cases from ever invoking a tool, so tool exit codes need
   no finer interpretation
 - `11` — required tool missing from PATH
-- `12` — an explicitly named directory is not a recognizable project
+- `12` — an explicitly named path yields no project in either direction (no marker on the upward
+  walk, none in its subtree)
 - `13` — configuration missing, unreadable, or invalid (bad JSON, unsupported `version`, unknown
   placeholder)
 
