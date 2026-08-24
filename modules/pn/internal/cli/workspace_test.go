@@ -617,6 +617,20 @@ func TestWorkspacePush_NoSiblingsFlagAccepted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// push --no-verify flag (pg2-03dtl)
+// ---------------------------------------------------------------------------
+
+func TestWorkspacePush_NoVerifyFlagAccepted(t *testing.T) {
+	// --no-verify (passed through to the underlying git push) must be accepted
+	// without an "unknown flag" error.
+	withFakeWorkspace(t, minimalToml)
+	_, _, err := runCobraCmd(t, []string{"push", "--no-verify"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("push --no-verify: flag not wired: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // push --remote flag (tc-perh.16)
 // ---------------------------------------------------------------------------
 

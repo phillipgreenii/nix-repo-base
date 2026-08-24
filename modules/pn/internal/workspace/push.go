@@ -28,6 +28,9 @@ type PushOptions struct {
 	// default — a programmatic caller that wants the documented `push` behavior
 	// need not set anything.
 	NoSiblings bool
+	// NoVerify, when true, passes `--no-verify` through to every `git push`
+	// invocation, skipping each repo's pre-push hook.
+	NoVerify bool
 }
 
 // hasUpstream checks whether the branch at repoDir has a configured upstream.
@@ -296,7 +299,11 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 		}
 		if ws.hasUpstream(ctx, repoDir) {
 			fmt.Fprintf(out, "  --== push %s ==--  \n", name)
-			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+			args := []string{"-C", repoDir, "push"}
+			if opts.NoVerify {
+				args = append(args, "--no-verify")
+			}
+			if _, err := ws.runner.Run(ctx, "git", args, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 				return fmt.Errorf("git push in %s: %w", name, err)
 			}
 			continue
@@ -314,7 +321,12 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 			continue
 		}
 		fmt.Fprintf(out, "  --== push %s ==--  \n", name)
-		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "push", "-u", remote, branch}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+		args := []string{"-C", repoDir, "push"}
+		if opts.NoVerify {
+			args = append(args, "--no-verify")
+		}
+		args = append(args, "-u", remote, branch)
+		if _, err := ws.runner.Run(ctx, "git", args, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
 			return fmt.Errorf("git push -u %s %s in %s: %w", remote, branch, name, err)
 		}
 	}

@@ -215,6 +215,106 @@ url = "github:owner/foo"
 }
 
 // ---------------------------------------------------------------------------
+// Push with NoVerify flag
+// ---------------------------------------------------------------------------
+
+// TestPush_NoVerify_PlainPush verifies that a repo with an existing upstream
+// gets `git push --no-verify` when NoVerify is set.
+func TestPush_NoVerify_PlainPush(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "--no-verify"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{NoVerify: true}); err != nil {
+		t.Fatalf("Push --no-verify: %v", err)
+	}
+	var foundNoVerifyPush bool
+	for _, c := range f.Calls() {
+		if len(c.Args) > 0 && c.Args[len(c.Args)-1] == "--no-verify" {
+			foundNoVerifyPush = true
+		}
+	}
+	if !foundNoVerifyPush {
+		t.Errorf("expected git push --no-verify; calls: %v", f.Calls())
+	}
+}
+
+// TestPush_NoVerifyUnset_PlainPushOmitsFlag verifies that the default
+// (NoVerify false) does NOT add --no-verify to the git push argv.
+func TestPush_NoVerifyUnset_PlainPushOmitsFlag(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	for _, c := range f.Calls() {
+		for _, a := range c.Args {
+			if a == "--no-verify" {
+				t.Errorf("--no-verify must NOT be passed when NoVerify is unset; got %v", c.Args)
+			}
+		}
+	}
+}
+
+// TestPush_NoVerify_SetUpstreamPush verifies that a repo with no upstream gets
+// `git push --no-verify -u <remote> <branch>` when both NoVerify and
+// SetUpstream are set.
+func TestPush_NoVerify_SetUpstreamPush(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("my-feature\n")}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\n")}, nil)
+	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "--no-verify", "-u", "origin", "my-feature"}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{SetUpstream: true, NoVerify: true}); err != nil {
+		t.Fatalf("Push --set-upstream --no-verify: %v", err)
+	}
+	var found bool
+	for _, c := range f.Calls() {
+		args := c.Args
+		if len(args) >= 7 && args[len(args)-5] == "push" && args[len(args)-4] == "--no-verify" &&
+			args[len(args)-3] == "-u" && args[len(args)-2] == "origin" && args[len(args)-1] == "my-feature" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected git push --no-verify -u origin my-feature; calls: %v", f.Calls())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // resolvePushRemote unit tests
 // ---------------------------------------------------------------------------
 

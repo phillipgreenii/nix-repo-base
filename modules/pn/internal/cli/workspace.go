@@ -265,6 +265,7 @@ func workspacePushCmd(terminal *string) *cobra.Command {
 	var setUpstream bool
 	var remoteFlag string
 	var noSiblings bool
+	var noVerify bool
 	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "Publish each workspace repo: relock its workspace-sibling inputs, then git push",
@@ -283,6 +284,9 @@ in a commit, so it refuses to run on a repo with uncommitted changes; commit or
 stash them, or use --no-siblings. Inside a coordinated workforest set the relock
 is skipped altogether (it is a canonical-clone operation) and push just publishes
 the set's branches.
+
+Pass --no-verify to pass --no-verify through to every 'git push' invocation,
+skipping each repo's pre-push hook.
 
 For repos that already have a configured upstream, runs plain 'git push'.
 For repos with no upstream, the --set-upstream/-u flag is required; pn then
@@ -312,6 +316,7 @@ To configure a default push remote for a multi-remote repo:
 					SetUpstream: setUpstream,
 					Remote:      remoteFlag,
 					NoSiblings:  noSiblings,
+					NoVerify:    noVerify,
 				})
 			})
 		},
@@ -319,6 +324,7 @@ To configure a default push remote for a multi-remote repo:
 	cmd.Flags().BoolVarP(&setUpstream, "set-upstream", "u", false, "push with -u <remote> <branch> for repos that have no upstream yet; remote is resolved via convention chain")
 	cmd.Flags().StringVar(&remoteFlag, "remote", "", "override remote name for all repos when --set-upstream is set (skip repo if remote absent)")
 	cmd.Flags().BoolVar(&noSiblings, "no-siblings", false, "push only: skip the workspace-sibling relock, publishing without propagating flake locks")
+	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "push only: pass --no-verify through to the underlying git push, skipping each repo's pre-push hook")
 	return cmd
 }
 
