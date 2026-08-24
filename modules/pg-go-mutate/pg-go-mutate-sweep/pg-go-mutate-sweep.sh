@@ -24,7 +24,9 @@ Options:
   --unit-timeout <sec>    Per-unit wall-clock cap. Default 3600.
   --unit-kill-grace <sec> Grace before escalating to KILL. Default 60.
   --mutant-timeout <sec>  Passed to pg-go-mutate --timeout. Default 60.
-  --workers <n>           Passed to pg-go-mutate --workers. Default 2.
+  --workers <n>           Passed to pg-go-mutate --workers. Default 1 (above 1,
+                          pg-go-mutate's per-mutant verdicts are not
+                          reproducible against the same source).
   --auto-tags <list>      Build tags eligible for automatic application.
                           Default: none. A tag-gated suite runs once per mutant.
   --retry <spec>          Re-attempt units by status, or 'transient' for the cohort.
@@ -44,7 +46,7 @@ root="${PN_WORKSPACE_ROOT:-$PWD}"
 unit_timeout=3600
 kill_grace=60
 mutant_timeout=60
-workers=2
+workers=1
 auto_tags=""
 retry_spec=""
 redo_key=""

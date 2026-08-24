@@ -13,7 +13,7 @@ _pg_go_mutate() {
     # accepts both: -h/--help in the script, -v/--version reserved and
     # smoke-tested by the builder. Flags, completions and the tldr page are a
     # hard coupling (spec T2), and the zsh completion offers the same four.
-    mapfile -t COMPREPLY < <(compgen -W "--tags --json --timeout --workers --help -h --version -v" -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W "--tags --json --timeout --workers --keep-report --help -h --version -v" -- "$cur")
     return 0
   fi
   mapfile -t COMPREPLY < <(compgen -d -- "$cur")

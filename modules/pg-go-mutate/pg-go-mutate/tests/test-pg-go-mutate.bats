@@ -118,6 +118,12 @@ teardown() {
   [[ "$output" == *--json* ]]
   [[ "$output" == *--timeout* ]]
   [[ "$output" == *--workers* ]]
+  [[ "$output" == *--keep-report* ]]
+}
+
+@test "--help documents that the workers default is 1" {
+  run "$SCRIPT" --help
+  [[ "$output" == *"Default 1"* ]]
 }
 
 @test "--help states that ./... is not accepted" {
@@ -299,6 +305,28 @@ EOF
   [[ "$first" != *killed* ]]
   # Paths are target-relative (spec O4/O1).
   [[ "$out" != *"$target/fixture.go"* ]]
+}
+
+@test "--keep-report preserves the harvested report and prints its path (rather than the default rm)" {
+  target="$(make_module keepreport)"
+  PG_GO_MUTATE_GOMU="$(write_survivor_stub "$target")"
+  export PG_GO_MUTATE_GOMU
+  rc=0
+  "$SCRIPT" --keep-report "$target" >"$TEST_DIR/out" 2>"$TEST_DIR/err" || rc=$?
+  [ "$rc" -eq 0 ]
+  # The worklist contract is untouched -- same stdout as the plain run.
+  out="$(cat "$TEST_DIR/out")"
+  [[ "$out" == *"surviving mutants"* ]]
+  err="$(cat "$TEST_DIR/err")"
+  [[ "$err" == *"report kept at"* ]]
+  # The path must be on stderr, not mixed into stdout -- stdout is a machine
+  # consumer's surface under --json and must stay parseable.
+  [[ "$out" != *"report kept at"* ]]
+  report_path="$(printf '%s\n' "$err" | sed -n 's/^pg-go-mutate: report kept at //p')"
+  [ -n "$report_path" ]
+  [ -s "$report_path" ]
+  jq -e . "$report_path" >/dev/null
+  rm -f -- "$report_path"
 }
 
 @test "--json exits 0 with target-relative paths and no mutation score" {

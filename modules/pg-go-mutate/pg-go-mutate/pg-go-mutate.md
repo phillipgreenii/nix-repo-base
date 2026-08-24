@@ -20,13 +20,17 @@
 
 `pg-go-mutate --json ./internal/collect`
 
-- Widen parallelism on an idle machine:
+- Widen parallelism on an idle machine (default is 1; above 1, per-mutant verdicts are not reproducible against the same source):
 
 `pg-go-mutate --workers {{4}} ./internal/collect`
 
 - Raise the per-mutant test timeout for a slow suite (does NOT bound the compile phase):
 
 `pg-go-mutate --timeout {{180}} ./internal/collect`
+
+- Keep the harvested engine report instead of deleting it on exit, and print its path (the worklist output is unchanged; this only preserves the underlying per-mutant report file):
+
+`pg-go-mutate --keep-report ./internal/collect`
 
 - Show usage:
 

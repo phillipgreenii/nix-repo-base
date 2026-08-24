@@ -24,7 +24,13 @@ OPTIONS
   --json            Emit the machine-readable worklist instead of the human one.
   --timeout <sec>   Per-mutant TEST timeout. Default 60. Does NOT bound the
                     compile phase, which the engine runs unbounded.
-  --workers <n>     Parallel workers. Default 2.
+  --workers <n>     Parallel workers. Default 1. Above 1, per-mutant verdicts
+                    are NOT reproducible against the same source (measured: a
+                    non-compiling mutant reported KILLED or SURVIVED, and a
+                    viable one reported NOT_VIABLE, across repeats).
+  --keep-report     Do not delete the harvested engine report on exit; print
+                    its path instead. The worklist output above is unchanged --
+                    this only preserves the underlying per-mutant report file.
   -h, --help        Show this help.
 
 NOTES
@@ -58,10 +64,11 @@ EOF
 }
 
 target="."
-workers=2
+workers=1
 timeout=60
 tags=""
 as_json=0
+keep_report=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -71,6 +78,10 @@ while [ $# -gt 0 ]; do
     ;;
   --json)
     as_json=1
+    shift
+    ;;
+  --keep-report)
+    keep_report=1
     shift
     ;;
   --tags)
@@ -223,9 +234,29 @@ report="${PGM_REPORT_PATH:-}"
 # the EXIT trap, so the harvested report file leaked. The signal handlers exit
 # rather than fall through, because a handler that merely returns resumes the
 # pipeline it interrupted and would print a worklist for a run the user killed.
-trap 'rm -f -- "$report"' EXIT
-trap 'rm -f -- "$report"; exit 130' INT
-trap 'rm -f -- "$report"; exit 143' TERM HUP
+#
+# --keep-report suppresses the rm and prints the path instead of removing it.
+# report_cleanup is invoked from every trap below (matching this script's
+# existing pgm_run_engine/pgm-go-mutate-sweep convention of calling the same
+# cleanup function from the signal traps AND letting the eventual `exit` also
+# fire the EXIT trap) but guards against running its visible side effect
+# twice: an INT/TERM/HUP trap's own `exit N` triggers the EXIT trap a second
+# time, and `rm -f` tolerates that for free, but printing the kept-report
+# path would otherwise print twice for one interrupted run.
+report_cleanup_done=0
+# shellcheck disable=SC2329  # invoked only via the trap strings below, never a direct call
+report_cleanup() {
+  [ "$report_cleanup_done" -eq 0 ] || return 0
+  report_cleanup_done=1
+  if [ "$keep_report" -eq 1 ]; then
+    printf 'pg-go-mutate: report kept at %s\n' "$report" >&2
+  else
+    rm -f -- "$report"
+  fi
+}
+trap 'report_cleanup' EXIT
+trap 'report_cleanup; exit 130' INT
+trap 'report_cleanup; exit 143' TERM HUP
 
 pgm_report_sane "$report" || exit 1
 
