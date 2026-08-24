@@ -68,8 +68,9 @@ break the ordered-transaction guarantee and cause shared-build contention.
    earlier landing already removed are skipped; subset sets enumerate from the
    set's own lock). Any non-zero `pnwf` exit → halt and report.
 2. **Land each repo in order (MUST be topological).** For each repo the plan
-   lists, `cd` into that repo's worktree and **invoke the `integrate-branch`
-   skill** (an agent action via the Skill tool — NOT a shell command). MUST NOT
+   lists, `cd` into that repo's worktree and **invoke the
+   `integrate-branch:integrate-branch` skill** (an agent action via the Skill
+   tool — NOT a shell command). MUST NOT
    land a repo ahead of a dependency it consumes. Handle the full outcome
    vocabulary:
    - **`landed`** → continue to the next repo.
