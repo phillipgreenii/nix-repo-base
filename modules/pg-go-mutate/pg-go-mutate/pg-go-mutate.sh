@@ -151,17 +151,31 @@ case "$target" in
   ;;
 esac
 
-# Directories only. A single .go file was documented but has never worked: every
-# guard runs `cd "$target"`, so for a file target the cd fails, `go list` never
-# runs, and the command aborts with "has no test files. Write a test first" —
-# which sends an agent off to write a test that already exists. Rejecting it
-# outright is the honest behaviour until the mode is actually implemented.
-[ -d "$target" ] || {
-  printf 'pg-go-mutate: %s is not a directory. Pass a directory (it is walked recursively, so a single package works); single-file targets are not supported.\n' "$target" >&2
+# A directory, or a single .go file. The health guard (go vet / go test) is
+# inherently package-scoped, so a lone file target still resolves to its
+# containing directory for guard purposes -- pgm_resolve_guard_target does
+# that resolution. $target itself keeps its KIND (file stays a file, directory
+# stays a directory) -- only $guard_target is what the guard section below,
+# and pgm_run_engine's private workdir, cd into.
+guard_target="$(pgm_resolve_guard_target "$target")" || {
+  printf 'pg-go-mutate: %s is not a directory or a .go file\n' "$target" >&2
   exit 14
 }
-# shellcheck disable=SC2164  # cd failure here would mean $target (already confirmed a directory above) vanished in the interim; nothing safer to fall back to
-target="$(cd "$target" && pwd)"
+# $target must be made absolute here, not left relative (the default is "."):
+# pgm_run_engine cds into a private workdir before invoking the engine with
+# "$target" as an argument, so a relative target would resolve against that
+# workdir instead of the caller's original directory.
+if [ -d "$target" ]; then
+  # shellcheck disable=SC2164  # cd failure here would mean $target (already confirmed a directory above) vanished in the interim; nothing safer to fall back to
+  target="$(cd "$target" && pwd)"
+else
+  # shellcheck disable=SC2164  # ditto, for the containing directory of a file target pgm_resolve_guard_target already confirmed exists
+  target="$(cd "$(dirname -- "$target")" && pwd)/$(basename -- "$target")"
+fi
+# guard_target is what the health guard cds into; $target (now absolute, but
+# still a file target if it started as one) is what gets passed to
+# `gomu run` below -- a file target stays a file target there.
+guard_target="$(cd "$guard_target" && pwd)"
 
 pgm_validate_flags "$workers" "$timeout" || exit 2
 
@@ -224,7 +238,7 @@ if [ -n "$tags" ]; then
 fi
 
 has_tests_rc=0
-pgm_has_tests "$target" || has_tests_rc=$?
+pgm_has_tests "$guard_target" || has_tests_rc=$?
 case "$has_tests_rc" in
 0) ;;
 2)
@@ -237,9 +251,9 @@ case "$has_tests_rc" in
   ;;
 esac
 
-pgm_tests_healthy "$target" || exit 12
+pgm_tests_healthy "$guard_target" || exit 12
 
-detected_tags="$(pgm_detect_tags "$target")"
+detected_tags="$(pgm_detect_tags "$guard_target")"
 if [ -z "$tags" ] && [ -n "$detected_tags" ]; then
   printf 'pg-go-mutate: NOTE %s has tests behind build tags (%s) that are not enabled.\n' "$target" "$detected_tags" >&2
   printf '              Mutants covered only by those tests will appear as survivors.\n' >&2

@@ -186,6 +186,28 @@ pgm_validate_flags() {
   return 0
 }
 
+# pgm_resolve_guard_target <target>
+# Echoes the directory the health guard must run against: <target> itself if
+# it is a directory, or its containing directory if it is a .go file. The
+# guard (go vet / go test) is inherently package-scoped -- a lone file cannot
+# be vetted or tested in isolation from its package.
+pgm_resolve_guard_target() {
+  local target="$1"
+  if [ -d "$target" ]; then
+    printf '%s\n' "$target"
+    return 0
+  fi
+  case "$target" in
+  *.go)
+    if [ -f "$target" ]; then
+      dirname -- "$target"
+      return 0
+    fi
+    ;;
+  esac
+  return 1
+}
+
 # Three-valued on purpose: 0 = tests exist, 1 = a loadable module with zero test
 # files, 2 = `go list` could not enumerate the target at all (not a Go module, a
 # module that fails to load, or an unreadable directory). Collapsing 2 into 1

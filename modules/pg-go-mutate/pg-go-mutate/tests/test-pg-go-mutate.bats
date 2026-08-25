@@ -178,19 +178,52 @@ teardown() {
   [ "$status" -eq 14 ]
 }
 
-@test "exits 14 when the target is a file, not a directory" {
-  : >"$TEST_DIR/afile.go"
-  run "$SCRIPT" "$TEST_DIR/afile.go"
+@test "exits 14 when the target is a file that is neither a directory nor a .go file" {
+  : >"$TEST_DIR/afile.txt"
+  run "$SCRIPT" "$TEST_DIR/afile.txt"
   [ "$status" -eq 14 ]
 }
 
-@test "rejects a single .go file target instead of misdiagnosing it as untested" {
-  printf 'package fixture\n' >"$TEST_DIR/a.go"
-  run "$SCRIPT" "$TEST_DIR/a.go"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not a directory"* ]]
-  # The old message sent an agent off to write a test that already exists.
-  [[ "$output" != *"Write a test first"* ]]
+@test "rejects a target path that is absent, even with a .go suffix" {
+  run "$SCRIPT" --json "$TEST_DIR/does-not-exist.go"
+  [ "$status" -eq 14 ]
+}
+
+# Supersedes the old "rejects a single .go file target instead of
+# misdiagnosing it as untested" case: a single .go file is now an ACCEPTED
+# target (pg-go-mutate: accept a single .go file as a target), so a file with
+# no test files must reach the real has-tests guard -- resolved against its
+# CONTAINING package, per pgm_resolve_guard_target -- rather than being
+# rejected outright as "not a directory".
+@test "a single .go file target with no tests reports the real guard failure, not a directory rejection" {
+  mkdir -p "$TEST_DIR/notested"
+  cat >"$TEST_DIR/notested/go.mod" <<'EOF'
+module notested
+
+go 1.22
+EOF
+  printf 'package fixture\n\nfunc Add(a, b int) int { return a + b }\n' >"$TEST_DIR/notested/fixture.go"
+  # A version-only stub: pgm_require_engine must be satisfied before the
+  # has-tests guard runs, but this case is about guard-target resolution, not
+  # the engine itself, so the stub aborts loudly if ever asked to actually run.
+  stub="$TEST_DIR/stub-gomu-versiononly"
+  cat >"$stub" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = version ]; then
+  printf 'gomu version %s\n' "$PGM_TEST_PINNED_VERSION"
+  exit 0
+fi
+echo "must not run" >&2
+exit 1
+EOF
+  chmod +x "$stub"
+  export PG_GO_MUTATE_GOMU="$stub"
+  run "$SCRIPT" "$TEST_DIR/notested/fixture.go"
+  [ "$status" -eq 10 ]
+  [[ "$output" == *"has no test files"* ]]
+  # The old message rejected the file target outright as "not a directory" --
+  # this now reaches the real (and correct) has-tests guard instead.
+  [[ "$output" != *"not a directory"* ]]
 }
 
 @test "-- does not discard the target that follows it" {
@@ -351,6 +384,15 @@ EOF
   jq -e '.statistics.survivedNoOp == 1' "$TEST_DIR/out.json"
   jq -e '.statistics | has("mutationScore") == false' "$TEST_DIR/out.json"
   jq -e '.buildTagsNotRun == null' "$TEST_DIR/out.json"
+}
+
+@test "accepts a single .go file as target (guard resolves to its containing package)" {
+  target="$(make_module singlefile)"
+  PG_GO_MUTATE_GOMU="$(write_survivor_stub "$target")"
+  export PG_GO_MUTATE_GOMU
+  run "$SCRIPT" --json "$target/fixture.go"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"file"'* ]]
 }
 
 @test "aborts when the engine reports a version other than the pinned one (spec E1)" {
