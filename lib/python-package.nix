@@ -44,16 +44,6 @@
       hasCompletions ? true,
       hasTldr ? true,
       extraPostInstall ? "",
-      # --- Accepted NO-OPS (ADR 0022): retained so base can land BEFORE the
-      # support-apps consumer cleanup without an unknown-arg eval error (the arg
-      # set has no `...`). uv2nix resolves everything from uv.lock, so these do
-      # nothing now; removal is a separate follow-up bead once consumer usage is
-      # gone. DO NOT drop these params in this repo before the consumers stop
-      # passing them, or agent-support/support-apps fail to evaluate.
-      customDeps ? { },
-      pypiToNixNameMappings ? { },
-      allowMissingDeps ? false,
-      extraNativeBuildInputs ? [ ],
     }:
     let
       python = pkgs.python3;
@@ -119,80 +109,66 @@
     #     the completions/man/tldr postInstall and consumer extraPostInstall keep
     #     using the same relative paths as the previous builder. runtimeDeps are
     #     wired onto PATH over the venv console script.
-    # Deprecation nudge for the accepted no-op args (ADR 0022). Referencing them
-    # here also keeps them "used" for deadnix without changing the arg contract.
-    # Fires only when a consumer still passes a non-default value (support-apps
-    # pre-cleanup); base's own fixtures pass none, so base stays quiet.
-    lib.warnIf
-      (
-        customDeps != { }
-        || pypiToNixNameMappings != { }
-        || allowMissingDeps
-        || extraNativeBuildInputs != [ ]
-      )
-      "mkPythonPackage(${name}): customDeps/pypiToNixNameMappings/allowMissingDeps/extraNativeBuildInputs are accepted no-ops under uv2nix (ADR 0022) and will be removed — drop them from this package's default.nix."
-      (
-        pkgs.stdenvNoCC.mkDerivation {
-          inherit pname src;
-          version = "${baseVersion}-${srcDigest}";
+    pkgs.stdenvNoCC.mkDerivation {
+      inherit pname src;
+      version = "${baseVersion}-${srcDigest}";
 
-          dontConfigure = true;
-          dontBuild = true;
+      dontConfigure = true;
+      dontBuild = true;
 
-          nativeBuildInputs = [
-            pkgs.makeWrapper
-            pkgs.help2man
-          ];
+      nativeBuildInputs = [
+        pkgs.makeWrapper
+        pkgs.help2man
+      ];
 
-          installPhase = ''
-            runHook preInstall
-            mkdir -p $out/bin
-            makeWrapper ${venv}/bin/${name} $out/bin/${name} ${
-              lib.optionalString (runtimeDeps != [ ]) "--prefix PATH : ${lib.makeBinPath runtimeDeps}"
-            }
-            runHook postInstall
-          '';
-
-          # Install completion scripts and generate a man page — unchanged from the
-          # previous builder; cwd is the unpacked src.
-          postInstall = ''
-            mkdir -p $out/share/man/man1
-            ${lib.optionalString hasCompletions ''
-              mkdir -p $out/share/bash-completion/completions
-              mkdir -p $out/share/zsh/site-functions
-            ''}
-            ${lib.optionalString hasTldr ''
-              mkdir -p $out/share/tldr/pages.common
-            ''}
-
-            ${lib.optionalString hasCompletions ''
-              if [ -f completions/${name}.bash ]; then
-                cp completions/${name}.bash $out/share/bash-completion/completions/${name}
-              fi
-              if [ -f completions/_${name} ]; then
-                cp completions/_${name} $out/share/zsh/site-functions/_${name}
-              fi
-            ''}
-
-            export SOURCE_DATE_EPOCH=$(date +%s)
-            ${pkgs.help2man}/bin/help2man --no-info \
-              --name="${pyproject.project.description}" \
-              $out/bin/${name} > $out/share/man/man1/${name}.1
-
-            ${lib.optionalString hasTldr ''
-              if [ -f ${name}.md ]; then
-                cp ${name}.md $out/share/tldr/pages.common/
-              fi
-            ''}
-
-            ${extraPostInstall}
-          '';
-
-          meta = with lib; {
-            inherit (pyproject.project) description;
-            platforms = platforms.darwin ++ platforms.linux;
-            mainProgram = name;
-          };
+      installPhase = ''
+        runHook preInstall
+        mkdir -p $out/bin
+        makeWrapper ${venv}/bin/${name} $out/bin/${name} ${
+          lib.optionalString (runtimeDeps != [ ]) "--prefix PATH : ${lib.makeBinPath runtimeDeps}"
         }
-      );
+        runHook postInstall
+      '';
+
+      # Install completion scripts and generate a man page — unchanged from the
+      # previous builder; cwd is the unpacked src.
+      postInstall = ''
+        mkdir -p $out/share/man/man1
+        ${lib.optionalString hasCompletions ''
+          mkdir -p $out/share/bash-completion/completions
+          mkdir -p $out/share/zsh/site-functions
+        ''}
+        ${lib.optionalString hasTldr ''
+          mkdir -p $out/share/tldr/pages.common
+        ''}
+
+        ${lib.optionalString hasCompletions ''
+          if [ -f completions/${name}.bash ]; then
+            cp completions/${name}.bash $out/share/bash-completion/completions/${name}
+          fi
+          if [ -f completions/_${name} ]; then
+            cp completions/_${name} $out/share/zsh/site-functions/_${name}
+          fi
+        ''}
+
+        export SOURCE_DATE_EPOCH=$(date +%s)
+        ${pkgs.help2man}/bin/help2man --no-info \
+          --name="${pyproject.project.description}" \
+          $out/bin/${name} > $out/share/man/man1/${name}.1
+
+        ${lib.optionalString hasTldr ''
+          if [ -f ${name}.md ]; then
+            cp ${name}.md $out/share/tldr/pages.common/
+          fi
+        ''}
+
+        ${extraPostInstall}
+      '';
+
+      meta = with lib; {
+        inherit (pyproject.project) description;
+        platforms = platforms.darwin ++ platforms.linux;
+        mainProgram = name;
+      };
+    };
 }

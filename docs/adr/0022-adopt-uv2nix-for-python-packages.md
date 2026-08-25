@@ -164,7 +164,11 @@ pyproject-build-systems; };`. Every `self.lib.mkPythonBuilders { pkgs; lib; mkSr
    signature as accepted no-ops** so base can land BEFORE consumer cleanup without an unknown-arg eval
    error (the arg set has no `...`). As shipped, a `lib.warnIf` emits a deprecation nudge when a consumer
    still passes a non-default value (and keeps the four args "used" for `deadnix`). Their removal is a
-   separate later bead (tracked under `pg2-wun6b`) once consumer usage is gone.
+   separate later bead once consumer usage is gone.
+
+   > **Update (bead `pg2-kawbn`):** the four no-op args and the `lib.warnIf` deprecation nudge have
+   > since been removed from `lib/python-package.nix` outright, once a workspace-wide grep confirmed
+   > no consumer (including support-apps, post `pg2-wun6b`) still passed any of them.
 
 7. **Land base-first; support-apps cleanup is a separate follow-up.** As shipped, base landed alone
    (commit `8c22b00`); the consumer cleanup — work-activity-tracker drops its hand-packaged
@@ -336,5 +340,6 @@ src`. `demo-py` therefore needs **no** `uv.lock`.
   closes; add a note there that the nix build now consumes `uv.lock` via base uv2nix.
 - Implements the reviewed plan on bead `pg2-gjwpl` (closed) → owner decision/implementation `pg2-r4cfy`.
 - Consumer-cutover follow-up: `pg2-wun6b` — support-apps bump + cleanup, Tier-2/3 on both systems, the
-  sdist fixture, the fail-loud negative check, and the eventual removal of the no-op args.
+  sdist fixture, the fail-loud negative check, and the eventual removal of the no-op args (the removal
+  itself landed as bead `pg2-kawbn`, once `pg2-wun6b` closed).
 - Decision brief: support-apps `docs/superpowers/specs/2026-07-15-uv2nix-lock-driven-python-builds-design.md`.

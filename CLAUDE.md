@@ -114,9 +114,11 @@ Rules for this family:
 - Refresh dependencies with **`uv lock`** (or `uv add`) and commit the lock. There is **no** generate
   step and **no** second lock artifact (unlike gomod2nix) — uv2nix reads `uv.lock` directly, so
   `update-locks.sh` needs no uv2nix-specific step.
-- Do **not** hand-package deps via `fetchPypi`/`customDeps` or add `pypiToNixNameMappings` — the lock
-  resolves everything, including deps absent from nixpkgs by name. (These args are retained as accepted
-  **no-ops** only until the support-apps consumers are cleaned up; do not rely on them.)
+- Do **not** hand-package deps via `fetchPypi` or add ad-hoc PyPI-name-to-nixpkgs mappings — the lock
+  resolves everything, including deps absent from nixpkgs by name. (`mkPythonPackage`'s legacy
+  `customDeps`/`pypiToNixNameMappings`/`allowMissingDeps`/`extraNativeBuildInputs` args were accepted
+  no-ops under ADR 0022 during the support-apps cutover window; they have since been removed — bead
+  `pg2-kawbn` — now that no consumer passes them.)
 - The interpreter stays `pkgs.python3`; per-source-digest versioning (ADR 0006/0011) is preserved — the
   nvd-visible `version` (`0.0.0-<digest>`) is stamped on the wrapper and the runtime `--version`
   (`YY.MM.DD.SSSSS+<digest>`) is stamped on the root package's build.
