@@ -117,14 +117,25 @@ func renderProjectNode(b *strings.Builder, n ProjectNode, depth int) {
 	}
 }
 
+// Screen identifies which screen/popup the Model is currently displaying.
+type Screen int
+
+const (
+	ScreenPrimary Screen = iota
+	ScreenQueue
+	ScreenHistory
+	ScreenBeads
+)
+
 // Model is the bubbletea model for the primary screen. Its View method is a
 // thin wrapper that calls RenderPrimary; a later task's integration wiring
-// populates its State from the live Queue/Pool/Ledger. This task's Model
-// only needs to compile and route key events for the primary screen's own
-// keys — Task 15 gives Q/H/B real meaning (popup switching), and Task 16
-// wires real state (live pool pause/resume, concurrency, force reload) in.
+// populates its State from the live Queue/Pool/Ledger. Screen tracks which
+// screen/popup is currently displayed — Q/H/B switch to the Queue/History/
+// Beads popups and esc returns to the primary screen; Task 16 wires real
+// state (live pool pause/resume, concurrency, force reload) in.
 type Model struct {
-	State PrimaryState
+	State  PrimaryState
+	Screen Screen
 }
 
 // NewModel constructs a Model from an initial PrimaryState.
@@ -165,11 +176,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.State.Projects[0].Included = !m.State.Projects[0].Included
 		}
 		return m, nil
-	case "tab", "R", "Q", "H", "B", "c":
+	case "Q":
+		m.Screen = ScreenQueue
+		return m, nil
+	case "H":
+		m.Screen = ScreenHistory
+		return m, nil
+	case "B":
+		m.Screen = ScreenBeads
+		return m, nil
+	case "esc":
+		m.Screen = ScreenPrimary
+		return m, nil
+	case "tab", "R", "c":
 		// Routed but intentionally inert here: expand/collapse (tab) and
 		// force reload (R) need a live queue/tree the Model doesn't hold
-		// yet; Q/H/B popup switching is Task 15's Screen field; c's
-		// concurrency adjustment needs Task 16's live worker.Pool.
+		// yet; c's concurrency adjustment needs Task 16's live worker.Pool.
 		return m, nil
 	default:
 		return m, nil
