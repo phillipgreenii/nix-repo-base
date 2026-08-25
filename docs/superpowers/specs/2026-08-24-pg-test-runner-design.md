@@ -72,7 +72,17 @@ registering a label is a configuration change, never a code change.
   "version": 1,
   "jobs": 0,
   "timeoutSeconds": 300,
-  "ignore": ["_sources/**", "node_modules/**", "dist/**", ".venv/**"],
+  "ignore": [
+    ".git/",
+    ".worktrees/",
+    ".direnv/",
+    "_sources/",
+    "node_modules/",
+    "dist/",
+    ".venv/",
+    "fixtures/",
+    "testdata/"
+  ],
   "nonUnitLabels": ["integration", "smoke", "contract", "hostile"],
   "languages": [
     {
@@ -92,9 +102,16 @@ registering a label is a configuration change, never a code change.
 - `jobs` — parallelism width substituted for `{jobs}`; `0` means the CPU count.
 - `timeoutSeconds` — wall-clock cap per project invocation; expiry reports as a test failure
   (exit `10`) naming the project and the cap, so a hung suite is never waited on indefinitely.
-- `ignore` — glob list applied to project discovery and `--all` (generated/vendored trees; the
-  defaults cover `_sources/`, in-tree `node_modules/`, build output, and `.venv`). Part of the
-  schema so extending it stays a configuration change.
+- `ignore` — gitignore-style patterns matched against the path RELATIVE to the repo toplevel (or
+  the scan root outside a repo), so a bare `node_modules/` prunes at ANY depth (support-apps
+  carries a nested in-tree `node_modules/`). Applied in every mode. The defaults prune
+  VCS/worktree internals (`.git/`, `.worktrees/` — every repo here has an on-disk worktree tree
+  holding full project copies — and `.direnv/`), generated/vendored trees, and test-fixture trees
+  (`fixtures/`, `testdata/`): fixture projects are exercised BY their owning project's tests,
+  never run as projects themselves (repo-base's `lib/tests/fixtures/patternb/moda/` has a real
+  `go.mod` and test file). Repo-specific additions (repo-base: `lib/bash-builders-tests/`) go in
+  that repo's threaded `--config`. Part of the schema so extending it stays a configuration
+  change.
 - `nonUnitLabels` — every non-unit label in use anywhere in the workspace. Where a language's
   unit selection needs an enumerated negation (bats `--filter-tags`), it is generated from this
   list — never hardcoded in a command template.
@@ -134,36 +151,56 @@ pg-test-runner [--labels <csv>] --all               # every project under the re
   `unit`. Values are NOT validated against the common vocabulary — unknown labels pass through to
   the language strategies (sections 2.1 and 2.4). Only `unit` and `all` carry reserved semantics.
 - `--config <path>` overrides the configuration; normally the baked-in default is used.
+- The three input modes (`--files`, path arguments, `--all`) are mutually exclusive; combining
+  them is a usage error (exit `2`).
 - The prek hook passes `--labels unit` explicitly for self-documentation.
 
 ### 2.3 Project discovery
 
 The marker set and its within-directory precedence come from the configuration's `languages[]`
-order (defaults: `go.mod`, `pyproject.toml`, `package.json`, `tests/*.bats`). Discovered projects
-are deduplicated. Paths matching the configuration's `ignore` globs are excluded from every mode.
+order (defaults: `go.mod`, `pyproject.toml`, `package.json`, `tests/*.bats`). A directory
+matching SEVERAL languages' markers is several projects, one per language, and all of them run —
+nothing silently vanishes behind a one-wins rule. Discovered projects are deduplicated.
 
-Resolution has two modes:
+Mechanics shared by every mode:
+
+- The repo TOPLEVEL is the nearest ancestor containing a `.git` entry — file OR directory (a
+  linked worktree's `.git` is a file) — located by the runner's own upward walk, with no git
+  invocation.
+- The downward scan is a plain filesystem walk. It NEVER follows symlinks (nix `result` links,
+  store symlinks), and it does NOT stop at discovered project roots — real nesting requires
+  descent: ziprecruiter's `Scripts/` is a project with two more projects beneath it, and
+  agent-support's root project sits above everything.
+- `ignore` patterns prune both directions: an ignored directory is never a project root and is
+  never descended into, and on the UPWARD walk an ignored candidate is skipped with the walk
+  continuing past it — so a staged fixture file (e.g. `lib/tests/fixtures/goversion/go.mod`)
+  rolls up to the real project whose tests exercise that fixture.
+
+Resolution modes:
 
 - **`--files` (prek mode):** for each input file, walk UP from its containing directory to the
-  nearest ancestor holding a marker — checking each directory including the git toplevel — and
+  nearest ancestor holding a marker — checking each directory INCLUDING the repo toplevel — and
   nearest marker wins. Deleted files map by path string. A file matching no project contributes
   NOTHING, deliberately: there is no downward fallback in this mode, or a commit touching only an
   unowned root-level file (README, `flake.nix`) would run every project in the repo.
-- **Path arguments (ad hoc; default `cwd`):** starting AT the given directory, check it for
-  markers, then walk UP — stopping when a marker is found, otherwise at the repo toplevel
-  (checked as a candidate) when inside a repo, or at the filesystem root when not. If the upward
-  walk finds nothing, FALL BACK to a downward scan of the subtree rooted at the ORIGINAL path,
-  discovering every project beneath it. A path that yields no project in either direction exits
-  `12`.
+- **Path arguments (ad hoc; default `cwd`):** a FILE argument resolves via its containing
+  directory. Starting AT that directory, check it for markers, then walk UP — stopping when a
+  marker is found, otherwise at the repo toplevel when inside a repo, or at the filesystem root
+  when not. The toplevel is an up-walk CANDIDATE only when the original path IS the toplevel: in
+  a repo whose root carries its own marker (agent-support), `pg-test-runner packages/x` must
+  reach the fallback and run the projects under `packages/x` — not silently resolve up to the
+  root suites and pass vacuously. If the upward walk finds nothing, FALL BACK to a downward scan
+  of the subtree rooted at the ORIGINAL path, discovering every project beneath it. All named
+  paths are resolved BEFORE anything runs: a nonexistent path is a usage error (exit `2`); a
+  path yielding no project in either direction exits `12` with nothing run.
 - **`--all`:** the downward scan forced from the repo toplevel — every project under the repo,
-  regardless of whether the toplevel itself carries a marker. Requires being inside a repo.
+  regardless of whether the toplevel itself carries a marker. Outside a repo, exit `2`.
 
-The toplevel is a legitimate candidate in the upward walk: two repos keep real bats suites at the
-repo root (agent-support's conformance suites, overlay's `tests/verify-provenance.bats`), and
+The toplevel is a legitimate project root: two repos keep real bats suites at the repo root
+(agent-support's conformance suites, overlay's `tests/verify-provenance.bats`), reachable in
+`--files` mode by root-file commits, ad hoc by naming the toplevel itself, and by `--all` — and
 labeling (workstream 2), not discovery, is what keeps non-unit root suites out of the commit
-tier. One consequence to know: at a repo root that itself carries a marker, a bare
-`pg-test-runner` resolves to the ROOT project only (the upward walk finds it immediately) — use
-`--all` for the whole-repo sweep.
+tier.
 
 ### 2.4 Per-language execution (Strategy pattern: one selection semantics, per-ecosystem strategies)
 
@@ -218,15 +255,20 @@ Per workspace policy, exit 1 stays generic and branchable meanings are >= 2:
   the probes (section 2.1) keep vacuous cases from ever invoking a tool, so tool exit codes need
   no finer interpretation
 - `11` — required tool missing from PATH
-- `12` — an explicitly named path yields no project in either direction (no marker on the upward
-  walk, none in its subtree)
+- `12` — a path argument (including the default `cwd`) yields no project in either direction (no
+  marker on the upward walk, none in its subtree); path resolution happens before any run, so
+  `12` means nothing executed
 - `13` — configuration missing, unreadable, or invalid (bad JSON, unsupported `version`, unknown
   placeholder)
+
+Precedence when classes mix: `2`/`13` preempt at startup and `12` at resolution (nothing runs);
+during execution the run continues across projects and the final exit is `10` if anything
+failed, else `11` if any tool was missing, else `0`.
 
 ### 2.7 Output
 
 One summary line per project run: project path, language, pass/fail counts, duration. Silent on
-vacuous prek runs.
+vacuous prek runs — probe notices (section 2.1) print in ad-hoc mode only.
 
 ## 3. prek integration
 
@@ -248,7 +290,8 @@ run-unit-tests = {
 ```
 
 - `pass_filenames = true` — prek's staged-file list drives which projects run; the runner never
-  introspects git.
+  reads git STATE (staged files, diffs, history) — it locates only the repo toplevel via the
+  `.git` entry.
 - `require_serial = true` — prek may chunk a large staged-file list into multiple CONCURRENT
   invocations of the entry; serial execution keeps per-project dedup effective and prevents one
   project's suite racing itself (e.g. `uv`'s venv sync).
@@ -271,7 +314,8 @@ flowchart LR
 ## 4. Non-goals
 
 - Never runs integration/smoke/contract kinds in the commit path.
-- No git introspection (the caller supplies files or project dirs).
+- No git STATE introspection — staged files, diffs, history (the caller supplies files or
+  paths); locating the repo toplevel by the `.git` entry (section 2.3) is not introspection.
 - No per-project in-tree configuration file; the runner's configuration (section 2.1) is
   nix-owned and generated, never hand-written or carried by individual projects.
 - Not a replacement for the hermetic `checks.*` tier or for the evaluation doc's Phase-3
@@ -325,10 +369,11 @@ discipline: supersede in place, cite this file).
    section at all, so the probe leaves it vacuous until tests exist.
 
 Workstreams 1–4 and 7 are mutually independent. 5 depends on 1 (the hook needs the runner on
-PATH) AND, per repo, on that repo's workstream-2 labeling — landing 5 in a repo whose
-artifact-coupled suites are still unlabeled would run them at every commit (unlabeled = unit),
-exactly the failure this design removes. 6 can proceed any time and simply upgrades which suites
-qualify for the commit tier.
+PATH) AND, per repo, on that repo's workstream-2 labeling AND workstream-3 Go audit — the hazard
+class is identical (unlabeled = unit, section 1): landing 5 in a repo whose artifact-coupled bats
+suites or untagged non-unit Go tests are still unlabeled would run them at every commit, exactly
+the failure this design removes. 6 can proceed any time and simply upgrades which suites qualify
+for the commit tier.
 
 ## 7. Provenance
 
