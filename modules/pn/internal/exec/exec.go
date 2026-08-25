@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // Runner runs external commands.
@@ -45,6 +46,19 @@ type Result struct {
 	Stderr   []byte
 }
 
+// syncWriter serializes concurrent Writes to an underlying io.Writer. See
+// the comment in Run for why this is needed.
+type syncWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // realRunner wraps os/exec.
 type realRunner struct{}
 
@@ -73,11 +87,23 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 	// the command runs rather than being withheld until completion.
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if opts.Stdout != nil {
-		cmd.Stdout = io.MultiWriter(&stdout, opts.Stdout)
-	}
-	if opts.Stderr != nil {
-		cmd.Stderr = io.MultiWriter(&stderr, opts.Stderr)
+	if opts.Stdout != nil || opts.Stderr != nil {
+		// os/exec runs the stdout and stderr copy loops on separate
+		// goroutines whenever cmd.Stdout and cmd.Stderr are not the exact
+		// same Writer value (which they never are here, since each gets
+		// wrapped in its own io.MultiWriter below). Callers routinely pass
+		// the SAME writer as both RunOptions.Stdout and RunOptions.Stderr
+		// (e.g. to combine a subprocess's stdout and stderr into one
+		// terminal/log sink) — most io.Writer implementations, including
+		// *bytes.Buffer, are not safe for concurrent use, so without this
+		// mutex that pattern races.
+		var liveMu sync.Mutex
+		if opts.Stdout != nil {
+			cmd.Stdout = io.MultiWriter(&stdout, &syncWriter{mu: &liveMu, w: opts.Stdout})
+		}
+		if opts.Stderr != nil {
+			cmd.Stderr = io.MultiWriter(&stderr, &syncWriter{mu: &liveMu, w: opts.Stderr})
+		}
 	}
 	err := cmd.Run()
 	res := Result{
