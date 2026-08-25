@@ -237,21 +237,38 @@ if [ -n "$tags" ]; then
   export GOFLAGS="-tags=$tags ${GOFLAGS:-}"
 fi
 
-has_tests_rc=0
-pgm_has_tests "$guard_target" || has_tests_rc=$?
-case "$has_tests_rc" in
-0) ;;
-2)
-  # pgm_has_tests already reported the enumeration failure in detail.
-  exit 11
-  ;;
-*)
-  printf 'pg-go-mutate: %s has no test files. Write a test first — mutation testing reports missing ASSERTIONS, and with no tests every mutant trivially survives.\n' "$target" >&2
-  exit 10
-  ;;
-esac
+# Per-package guard cache (bead pg2-1qcro.2): the guard below (pgm_has_tests +
+# pgm_tests_healthy) is package-scoped and pure of the package's *.go content,
+# so it is keyed on a content hash and skipped entirely on a hit. A cached
+# PASS short-circuits straight past both guard calls; a cached FAIL exits 12
+# without re-running pgm_tests_healthy. Only the healthy/unhealthy verdict is
+# cached -- the has-tests/exit-10/exit-11 diagnosis below is cheap and always
+# re-run so its message stays accurate.
+pkg_hash="$(pgm_pkg_hash "$guard_target")"
+if cached="$(pgm_guard_cache_get "$guard_target" "$pkg_hash")"; then
+  [ "$cached" = "PASS" ] || exit 12
+else
+  has_tests_rc=0
+  pgm_has_tests "$guard_target" || has_tests_rc=$?
+  case "$has_tests_rc" in
+  0) ;;
+  2)
+    # pgm_has_tests already reported the enumeration failure in detail.
+    exit 11
+    ;;
+  *)
+    printf 'pg-go-mutate: %s has no test files. Write a test first — mutation testing reports missing ASSERTIONS, and with no tests every mutant trivially survives.\n' "$target" >&2
+    exit 10
+    ;;
+  esac
 
-pgm_tests_healthy "$guard_target" || exit 12
+  if pgm_tests_healthy "$guard_target"; then
+    pgm_guard_cache_put "$guard_target" "$pkg_hash" "PASS"
+  else
+    pgm_guard_cache_put "$guard_target" "$pkg_hash" "FAIL"
+    exit 12
+  fi
+fi
 
 detected_tags="$(pgm_detect_tags "$guard_target")"
 if [ -z "$tags" ] && [ -n "$detected_tags" ]; then

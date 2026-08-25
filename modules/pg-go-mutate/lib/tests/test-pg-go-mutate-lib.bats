@@ -206,6 +206,67 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+# --- pgm_slug / pgm_pkg_hash / pgm_guard_cache_get / pgm_guard_cache_put ----
+# (Task 2, per-package guard cache: docs/superpowers/plans/2026-08-25-pg-go-mutate-tui.md)
+
+@test "pgm_slug produces a filesystem-safe, collision-free name" {
+  a="$(pgm_slug "/foo/bar")"
+  b="$(pgm_slug "/foo_bar")"
+  [ "$a" != "$b" ]
+  [[ "$a" != *"/"* ]]
+}
+
+@test "pgm_pkg_hash is deterministic for the same package contents" {
+  target="$(make_module hashstable)"
+  add_passing_test "$target"
+  h1="$(pgm_pkg_hash "$target")"
+  h2="$(pgm_pkg_hash "$target")"
+  [ -n "$h1" ]
+  [ "$h1" = "$h2" ]
+}
+
+@test "pgm_pkg_hash changes when any *.go file in the package is edited" {
+  target="$(make_module hashchanges)"
+  add_passing_test "$target"
+  before="$(pgm_pkg_hash "$target")"
+  echo '// changed' >>"$target/fixture_test.go"
+  after="$(pgm_pkg_hash "$target")"
+  [ "$before" != "$after" ]
+}
+
+@test "pgm_guard_cache_get misses when nothing has been cached for that hash" {
+  export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"
+  run pgm_guard_cache_get "$TEST_DIR/pkg" "somehash"
+  [ "$status" -eq 1 ]
+}
+
+@test "pgm_guard_cache_put then pgm_guard_cache_get round-trip PASS and FAIL" {
+  export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"
+  pgm_guard_cache_put "$TEST_DIR/pkg" "abc123" "PASS"
+  run pgm_guard_cache_get "$TEST_DIR/pkg" "abc123"
+  [ "$status" -eq 0 ]
+  [ "$output" = "PASS" ]
+
+  pgm_guard_cache_put "$TEST_DIR/pkg2" "def456" "FAIL"
+  run pgm_guard_cache_get "$TEST_DIR/pkg2" "def456"
+  [ "$status" -eq 0 ]
+  [ "$output" = "FAIL" ]
+}
+
+@test "pgm_guard_cache_get does not collide between paths that differ only by / vs _" {
+  export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"
+  pgm_guard_cache_put "/foo/bar" "h" "PASS"
+  run pgm_guard_cache_get "/foo_bar" "h"
+  [ "$status" -eq 1 ]
+}
+
+@test "pgm_guard_cache_get misses when the same package's hash has moved on" {
+  export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"
+  pgm_guard_cache_put "$TEST_DIR/pkg" "oldhash" "PASS"
+  run pgm_guard_cache_get "$TEST_DIR/pkg" "newhash"
+  [ "$status" -eq 1 ]
+}
+
 @test "pgm_has_tests reports an enumeration failure distinctly from zero tests" {
   # A directory that is not a Go module at all: `go list` fails, which must NOT
   # be reported as "no test files" (that sends the reader off to write a test

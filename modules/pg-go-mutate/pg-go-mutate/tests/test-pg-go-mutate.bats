@@ -317,6 +317,189 @@ EOF
   printf '%s\n' "$stub"
 }
 
+# A stub engine whose report's single survivor filePath is EXACTLY
+# $report_target, the caller's choice -- unlike write_survivor_stub, which
+# always names "$1/fixture.go". The guard-cache tests below pass a single
+# .go FILE as the CLI target (so pgm_assert_relative needs the reported
+# filePath to literally equal that file), and need two distinct stub
+# instances that don't clobber each other's binary path (hence the $2 tag).
+write_matching_survivor_stub() {
+  local report_target="$1" tag="$2"
+  local stub="$TEST_DIR/stub-gomu-match-$tag"
+  cat >"$stub" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = version ]; then
+  printf 'gomu version %s\n' "\$PGM_TEST_PINNED_VERSION"
+  exit 0
+fi
+cat >mutation-report.json <<JSON
+{
+  "totalMutants": 1,
+  "killedMutants": 0,
+  "results": [
+    { "mutant": { "id": "x", "filePath": "$report_target",
+        "line": 1, "column": 1, "type": "t",
+        "original": "a", "mutated": "b",
+        "description": "d" },
+      "status": "SURVIVED", "output": "", "error": "" }
+  ],
+  "statistics": { "killed": 0, "survived": 1, "timedOut": 0, "errors": 0, "notViable": 0 }
+}
+JSON
+EOF
+  chmod +x "$stub"
+  printf '%s\n' "$stub"
+}
+
+# --- per-package guard cache (Task 2) ----------------------------------------
+# docs/superpowers/plans/2026-08-25-pg-go-mutate-tui.md
+
+@test "guard cache: an unchanged second file in the same package skips re-running the guard" {
+  target="$TEST_DIR/pkg-two-files"
+  mkdir -p "$target"
+  cat >"$target/go.mod" <<'EOF'
+module example.com/pkgtwo
+
+go 1.25
+EOF
+  printf 'package pkgtwo\n\nfunc A() int { return 1 }\n' >"$target/a.go"
+  printf 'package pkgtwo\n\nfunc B() int { return 2 }\n' >"$target/b.go"
+  cat >"$target/a_test.go" <<'EOF'
+package pkgtwo
+
+import "testing"
+
+func TestA(t *testing.T) {
+  if A() != 1 {
+    t.Fatal("want 1")
+  }
+}
+EOF
+  cat >"$target/b_test.go" <<'EOF'
+package pkgtwo
+
+import "testing"
+
+func TestB(t *testing.T) {
+  if B() != 2 {
+    t.Fatal("want 2")
+  }
+}
+EOF
+  export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"
+
+  PG_GO_MUTATE_GOMU="$(write_matching_survivor_stub "$target/a.go" first)"
+  export PG_GO_MUTATE_GOMU
+  run "$SCRIPT" --json "$target/a.go"
+  [ "$status" -eq 0 ]
+  cache_files_before=$(find "$PGM_GUARD_CACHE_DIR" -type f | wc -l)
+
+  PG_GO_MUTATE_GOMU="$(write_matching_survivor_stub "$target/b.go" second)"
+  export PG_GO_MUTATE_GOMU
+  run "$SCRIPT" --json "$target/b.go"
+  [ "$status" -eq 0 ]
+  cache_files_after=$(find "$PGM_GUARD_CACHE_DIR" -type f | wc -l)
+
+  # A second file in the SAME unchanged package must not add a second cache
+  # entry -- it hits the one already written for the first file.
+  [ "$cache_files_before" -eq "$cache_files_after" ]
+}
+
+@test "guard cache: editing any file in the package invalidates the cache for the next invocation" {
+  target="$TEST_DIR/pkg-edit-invalidate"
+  mkdir -p "$target"
+  cat >"$target/go.mod" <<'EOF'
+module example.com/pkgedit
+
+go 1.25
+EOF
+  printf 'package pkgedit\n\nfunc Add(a, b int) int { return a + b }\n' >"$target/a.go"
+  printf 'package pkgedit\n\nfunc Sub(a, b int) int { return a - b }\n' >"$target/b.go"
+  cat >"$target/a_test.go" <<'EOF'
+package pkgedit
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+  if Add(2, 3) != 5 {
+    t.Fatal("bad")
+  }
+}
+EOF
+  cat >"$target/b_test.go" <<'EOF'
+package pkgedit
+
+import "testing"
+
+func TestSub(t *testing.T) {
+  if Sub(5, 3) != 2 {
+    t.Fatal("bad")
+  }
+}
+EOF
+  export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"
+
+  PG_GO_MUTATE_GOMU="$(write_matching_survivor_stub "$target/a.go" first)"
+  export PG_GO_MUTATE_GOMU
+  run "$SCRIPT" --json "$target/a.go"
+  [ "$status" -eq 0 ]
+  cache_files_before=$(find "$PGM_GUARD_CACHE_DIR" -type f | wc -l)
+
+  # Edit b.go: the package's content hash changes even though a.go itself did
+  # not, and the SAME target (a.go) must now re-run the guard rather than hit
+  # the stale cache entry keyed on the old hash.
+  echo '// changed' >>"$target/b.go"
+
+  PG_GO_MUTATE_GOMU="$(write_matching_survivor_stub "$target/a.go" second)"
+  export PG_GO_MUTATE_GOMU
+  run "$SCRIPT" --json "$target/a.go"
+  [ "$status" -eq 0 ]
+  cache_files_after=$(find "$PGM_GUARD_CACHE_DIR" -type f | wc -l)
+
+  [ "$cache_files_after" -eq "$((cache_files_before + 1))" ]
+}
+
+@test "guard cache: a cached FAIL entry exits 12 without ever re-running the tests-healthy guard" {
+  target="$TEST_DIR/pkg-preseeded-fail"
+  mkdir -p "$target"
+  cat >"$target/go.mod" <<'EOF'
+module example.com/pkgpreseeded
+
+go 1.25
+EOF
+  printf 'package pkgpreseeded\n\nfunc F() int { return 1 }\n' >"$target/f.go"
+  # This test GENUINELY PASSES -- the cached verdict below lies about it, so a
+  # run that actually re-executed the guard would find it healthy and reach
+  # the engine (touching must-not-run) rather than exiting 12.
+  cat >"$target/f_test.go" <<'EOF'
+package pkgpreseeded
+
+import "testing"
+
+func TestF(t *testing.T) {
+  if F() != 1 {
+    t.Fatal("should pass")
+  }
+}
+EOF
+  export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/must-not-run"
+  printf '#!/usr/bin/env bash\nif [ "${1:-}" = version ]; then printf "gomu version %%s\\n" "$PGM_TEST_PINNED_VERSION"; exit 0; fi\ntouch "%s/ran"\n' "$TEST_DIR" >"$PG_GO_MUTATE_GOMU"
+  chmod +x "$PG_GO_MUTATE_GOMU"
+
+  # Source the shared library into THIS bats process (a separate concern from
+  # $SCRIPT, which sources it again itself in its own subprocess) so the test
+  # can pre-seed a cache entry using the real pgm_pkg_hash of this fixture.
+  # shellcheck disable=SC1091
+  source "${BATS_TEST_DIRNAME}/../../lib/pg-go-mutate-lib.bash"
+  pkg_hash="$(pgm_pkg_hash "$target")"
+  pgm_guard_cache_put "$target" "$pkg_hash" "FAIL"
+
+  run "$SCRIPT" "$target"
+  [ "$status" -eq 12 ]
+  [ ! -e "$TEST_DIR/ran" ]
+}
+
 # The single most important behavioural promise on the tool (spec C2): it is a
 # diagnostic, so survivors are a FINDING, never a failure. Every other CLI case
 # is a rejection, so without this one nothing proved the success path end to end.

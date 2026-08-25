@@ -208,6 +208,54 @@ pgm_resolve_guard_target() {
   return 1
 }
 
+# pgm_slug <path>
+# Filesystem-safe encoding of an absolute path for use as a cache/state
+# subdirectory name. "/" becomes "__" so "/foo/bar" and "/foo_bar" cannot
+# collide (a bare "_"-for-"/" substitution could produce the same slug for
+# both). No shared slug helper exists elsewhere in this lib to reuse --
+# pg-go-mutate-sweep.bash's pgms_slug is a different function in a file
+# a later task (Task 20) deletes.
+pgm_slug() {
+  printf '%s\n' "$1" | sed 's#/#__#g'
+}
+
+# pgm_pkg_hash <pkg_dir>
+# Deterministic content hash over every *.go file in pkg_dir (non-recursive --
+# a package is one directory's files, never a subtree). Sorted order is
+# load-bearing: an unsorted `find` would make the hash order-dependent on the
+# filesystem, not the content. MUST match internal/pkghash.Compute's
+# algorithm exactly (a later task's Go test suite cross-checks this).
+pgm_pkg_hash() {
+  local pkg_dir="$1"
+  find "$pkg_dir" -maxdepth 1 -name '*.go' -type f -print0 |
+    sort -z |
+    xargs -0 cat |
+    sha256sum |
+    cut -d' ' -f1
+}
+
+# pgm_guard_cache_get <pkg_dir> <hash>
+# Prints PASS or FAIL and exits 0 if this (pkg_dir, hash) pair was already
+# guarded; exits 1 if not cached (caller must run the guard and pgm_guard_cache_put).
+pgm_guard_cache_get() {
+  local cache_root="${PGM_GUARD_CACHE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate/guard-cache}"
+  local key_file
+  key_file="$cache_root/$(pgm_slug "$1")/$2"
+  [ -f "$key_file" ] || return 1
+  cat "$key_file"
+}
+
+# pgm_guard_cache_put <pkg_dir> <hash> <PASS|FAIL>
+pgm_guard_cache_put() {
+  local cache_root="${PGM_GUARD_CACHE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate/guard-cache}"
+  local key_dir
+  key_dir="$cache_root/$(pgm_slug "$1")"
+  mkdir -p "$key_dir"
+  # Stale entries under other hashes for this package are harmless (keyed by
+  # hash, never read again once the hash moves on) -- no cleanup needed here.
+  printf '%s\n' "$3" >"$key_dir/$2"
+}
+
 # Three-valued on purpose: 0 = tests exist, 1 = a loadable module with zero test
 # files, 2 = `go list` could not enumerate the target at all (not a Go module, a
 # module that fails to load, or an unreadable directory). Collapsing 2 into 1
