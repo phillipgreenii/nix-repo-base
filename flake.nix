@@ -921,6 +921,58 @@
                   throw "pn darwin module did not register logSources.pn"
               );
 
+            # Hermetically verify home/pg-go-mutate-tui/default.nix actually
+            # renders its `settings` option to a config.json file, and that
+            # the configured keys survive into it. Narrow stub, mirroring
+            # pn-logsources-registration above: this repo has no home-manager
+            # flake input, so instead of a real activationPackage we declare
+            # just enough of the xdg.configFile/home.packages surface for the
+            # module to type-check and render standalone, then hand-realize
+            # its `xdg.configFile` entries under $out/home-files -- the same
+            # path a real home-manager build would produce.
+            pg-go-mutate-tui-config-rendered =
+              let
+                eval = pkgs.lib.evalModules {
+                  specialArgs = { inherit pkgs; };
+                  modules = [
+                    {
+                      options = {
+                        xdg.configHome = pkgs.lib.mkOption {
+                          type = pkgs.lib.types.str;
+                          default = ".config";
+                        };
+                        xdg.configFile = pkgs.lib.mkOption {
+                          type = pkgs.lib.types.attrsOf (
+                            pkgs.lib.types.submodule {
+                              options.source = pkgs.lib.mkOption { type = pkgs.lib.types.path; };
+                            }
+                          );
+                          default = { };
+                        };
+                        home.packages = pkgs.lib.mkOption {
+                          type = pkgs.lib.types.listOf pkgs.lib.types.package;
+                          default = [ ];
+                        };
+                      };
+                    }
+                    ./home/pg-go-mutate-tui/default.nix
+                    {
+                      config.phillipgreenii.pg-go-mutate-tui = {
+                        enable = true;
+                        settings.concurrency = 3;
+                      };
+                    }
+                  ];
+                };
+                renderedFile = eval.config.xdg.configFile."pg-go-mutate-tui/config.json".source;
+              in
+              pkgs.runCommand "pg-go-mutate-tui-config-rendered" { inherit renderedFile; } ''
+                mkdir -p "$out/home-files/.config/pg-go-mutate-tui"
+                ln -s "$renderedFile" "$out/home-files/.config/pg-go-mutate-tui/config.json"
+                cat "$out/home-files/.config/pg-go-mutate-tui/config.json"
+                grep -q '"concurrency": 3' "$out/home-files/.config/pg-go-mutate-tui/config.json"
+              '';
+
             # Eval-level check: the Light capability framework (Plan 5) behaves —
             # feature/isHuman gating, development subscription, bundle veto, and the
             # account-property typo→error guarantee.
@@ -1049,6 +1101,7 @@
           pn = import ./home/pn/default.nix;
           pjira = import ./home/pjira/default.nix;
           pg-go-mutate = import ./home/pg-go-mutate/default.nix;
+          pg-go-mutate-tui = import ./home/pg-go-mutate-tui/default.nix;
           pg-test-runner = import ./home/pg-test-runner/default.nix;
           install-metadata = ./home-modules/install-metadata.nix;
           # Light capability model framework (Plan 5): declares the shared
@@ -1081,6 +1134,7 @@
             pjira
             pg-go-mutate
             pg-go-mutate-sweep
+            pg-go-mutate-tui
             pg-test-runner
             ;
         };
