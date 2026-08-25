@@ -146,6 +146,33 @@
           pgGoMutateScripts = import ./modules/pg-go-mutate/scripts.nix {
             inherit pkgs bashBuilders;
           };
+          # pg-test-runner (label-driven direct test runner) module: the
+          # data-driven engine + its default configuration registry (spec
+          # section 2.1). No extra threaded package -- it resolves every
+          # language tool from PATH only (section 2.5).
+          pgTestRunnerScripts = import ./modules/pg-test-runner/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
+          # This repo's OWN repo-specific pg-test-runner configuration: the
+          # shared default registry (modules/pg-test-runner/config.nix) plus
+          # an `ignore` entry for lib/bash-builders-tests/ -- the mkBashBuilders
+          # framework's own bats-suite fixtures (sample-cmd/, sample-lib/, ...),
+          # whose tests/*.bats exist to be driven by lib/bash-builders-tests's
+          # own check derivations (specific env vars, SCRIPTS_DIR/LIB_PATH
+          # wiring), never to be run standalone by pg-test-runner as if they
+          # were ordinary unit-tested projects. Not yet threaded into a prek
+          # hook (workstream 5, a separate bead) -- this is the config
+          # artifact + regression check that workstream depends on, plus
+          # proof it actually keeps pg-test-runner off that directory (bead
+          # pg2-jcqar acceptance criterion 4).
+          pgTestRunnerRepoConfig = (import ./modules/pg-test-runner/config.nix) // {
+            ignore = (import ./modules/pg-test-runner/config.nix).ignore ++ [
+              "lib/bash-builders-tests/"
+            ];
+          };
+          pgTestRunnerRepoConfigJson =
+            (pkgs.formats.json { }).generate "pg-test-runner-repo-config.json"
+              pgTestRunnerRepoConfig;
           # Go builders (mkGoApp / mkGoBinary / mkGoLint) over the gomod2nix engine.
           goBuilders = import ./lib/go-builders.nix { inherit pkgs self; };
           # Pattern-B (local `replace => ../sibling`) fixture source shared by the
@@ -223,6 +250,10 @@
             # from PATH so the home-manager-wrapped ones are the only ones it can
             # get (see the module's default.nix for why neither is a runtimeDep).
             pg-go-mutate-sweep = pgGoMutateScripts.pg-go-mutate-sweep.script;
+
+            # pg-test-runner: label-driven, nix-free-at-runtime direct test
+            # runner (spec docs/superpowers/specs/2026-08-24-pg-test-runner-design.md).
+            pg-test-runner = pgTestRunnerScripts.pg-test-runner.script;
 
             # This repo's own Claude Code marketplace, bundled into the store with
             # content-derived per-plugin version stamping. Identity:
@@ -918,10 +949,78 @@
                   ${pkgs.jq}/bin/jq -e '.nodes | has("nix-vscode-extensions")' ${./tests/consumer-fixture}/flake.lock >/dev/null
                   touch $out
                 '';
+
+            # Bead pg2-jcqar acceptance criterion 4: this repo's own
+            # repo-specific pg-test-runner config (pgTestRunnerRepoConfig,
+            # above) MUST keep pg-test-runner from misclassifying/choking on
+            # lib/bash-builders-tests/ -- the mkBashBuilders framework's own
+            # bats-suite fixtures, which exist to be driven by that
+            # directory's own check derivations, never run standalone. A
+            # synthetic fixture tree (not the real repo) proves the ignore
+            # entry is DECISIVE, differentially: the SAME binary, run with
+            # vs. without the repo config, discovers lib/bash-builders-tests
+            # only in the without-repo-config case, while a real project
+            # (realproj) is discovered either way.
+            pg-test-runner-repo-config-ignores-bash-builders-tests =
+              let
+                ptr = pgTestRunnerScripts.pg-test-runner.script;
+                fixtureGoMod = pkgs.writeText "pg-test-runner-fixture-go.mod" ''
+                  module example.com/realproj
+
+                  go 1.21
+                '';
+                fixtureBats = pkgs.writeText "pg-test-runner-fixture-sample.bats" ''
+                  #!/usr/bin/env bats
+                  @test "framework fixture" { true; }
+                '';
+              in
+              pkgs.runCommand "check-pg-test-runner-repo-config-ignores-bash-builders-tests"
+                {
+                  nativeBuildInputs = [
+                    pkgs.git
+                    pkgs.go
+                  ];
+                }
+                ''
+                  set -euo pipefail
+                  root="$TMPDIR/fixture"
+                  mkdir -p "$root"
+                  cd "$root"
+                  git init -q .
+
+                  mkdir -p realproj
+                  cp ${fixtureGoMod} realproj/go.mod
+
+                  mkdir -p lib/bash-builders-tests/sample-cmd/tests
+                  cp ${fixtureBats} lib/bash-builders-tests/sample-cmd/tests/test-sample-cmd.bats
+
+                  with_repo_config="$("${ptr}/bin/pg-test-runner" --config ${pgTestRunnerRepoConfigJson} --all 2>&1)" || true
+                  echo "-- with repo config --"
+                  echo "$with_repo_config"
+                  echo "$with_repo_config" | grep -q 'realproj' || {
+                    echo "FAIL: repo config's --all did not discover the real project" >&2
+                    exit 1
+                  }
+                  if echo "$with_repo_config" | grep -q 'bash-builders-tests'; then
+                    echo "FAIL: repo config's --all still discovered lib/bash-builders-tests/ (ignore entry not effective)" >&2
+                    exit 1
+                  fi
+
+                  with_default_config="$("${ptr}/bin/pg-test-runner" --all 2>&1)" || true
+                  echo "-- with bare default config (no repo override) --"
+                  echo "$with_default_config"
+                  echo "$with_default_config" | grep -q 'bash-builders-tests' || {
+                    echo "FAIL: expected the bare default config to still discover lib/bash-builders-tests/, proving the repo config's ignore entry -- not fixture structure -- is what excludes it" >&2
+                    exit 1
+                  }
+
+                  touch $out
+                '';
           }
           // ulScripts.checks
           // pnwfScripts.checks
           // pgGoMutateScripts.checks
+          // pgTestRunnerScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
           # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
           # never imported by any .nix (bead pg2-fqar3 / prior deep-dive T1).
@@ -945,6 +1044,7 @@
           pn = import ./home/pn/default.nix;
           pjira = import ./home/pjira/default.nix;
           pg-go-mutate = import ./home/pg-go-mutate/default.nix;
+          pg-test-runner = import ./home/pg-test-runner/default.nix;
           install-metadata = ./home-modules/install-metadata.nix;
           # Light capability model framework (Plan 5): declares the shared
           # phillipgreenii.account.* property namespace + phillipgreenii.bundles.*
@@ -976,6 +1076,7 @@
             pjira
             pg-go-mutate
             pg-go-mutate-sweep
+            pg-test-runner
             ;
         };
 

@@ -1,0 +1,10 @@
+#compdef pg-test-runner
+
+_arguments -s \
+  '--labels[comma-separated label list, or "all"]:labels:' \
+  '--files[prek mode: resolve staged files to their owning projects]' \
+  '--all[every project under the repo toplevel]' \
+  '--config[override the configuration]:config file:_files' \
+  '(-h --help)'{-h,--help}'[show help]' \
+  '(-v --version)'{-v,--version}'[show version information]' \
+  '*:path:_files -/'
