@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=type:unit
 # shellcheck disable=SC1090
 
 if [[ -n ${UL_LIB_SCRIPTS_DIR:-} ]]; then

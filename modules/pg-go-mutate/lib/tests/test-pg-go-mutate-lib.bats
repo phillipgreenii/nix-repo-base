@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=type:unit
 
 setup() {
   LIB_PATH="${LIB_PATH:-${BATS_TEST_DIRNAME}/../pg-go-mutate-lib.bash}"

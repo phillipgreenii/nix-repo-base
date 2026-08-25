@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=type:unit
 # shellcheck disable=SC1090
 
 SCRIPT_DIR="$BATS_TEST_DIRNAME"

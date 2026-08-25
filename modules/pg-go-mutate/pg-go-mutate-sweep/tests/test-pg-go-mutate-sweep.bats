@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=type:unit
 
 # Required by the `run !` form below (bats >= 1.5.0); without it bats emits BW02.
 bats_require_minimum_version 1.5.0

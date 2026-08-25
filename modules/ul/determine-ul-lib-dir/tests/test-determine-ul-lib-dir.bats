@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=type:unit
 
 if [[ -z ${SCRIPTS_DIR:-} ]]; then
   SCRIPTS_DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"

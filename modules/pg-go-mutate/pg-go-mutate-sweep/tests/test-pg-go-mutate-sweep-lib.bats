@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=type:unit
 
 setup() {
   TEST_DIR="$(mktemp -d)"
