@@ -424,6 +424,21 @@ rec {
   #   testDeps: tools the suite shells out to at test time (e.g. git, nix).
   #     Placed on nativeBuildInputs so they are on PATH during the sandboxed run.
   #   testFlags: extra flags for `go test` (e.g. [ "-count=1" ]).
+  #   enableRace: append `-race` to the effective flags (default true — race
+  #     detection ON by default). This is additive to `testFlags`, so a caller
+  #     already passing its own `testFlags` is unaffected in shape and simply
+  #     gets `-race` appended.
+  #
+  #     CGO note: the Go race detector's runtime needs cgo to link. gomod2nix's
+  #     buildGoApplication sets the top-level `CGO_ENABLED` derivation attribute
+  #     as `attrs.CGO_ENABLED or go.CGO_ENABLED` (builder/default.nix), and
+  #     mkGoTest never passes `CGO_ENABLED` itself, so it inherits whatever
+  #     `go.CGO_ENABLED` the pinned nixpkgs Go reports — verified `1` against
+  #     this repo's current pin (bead pg2-j7vgy). We nonetheless thread an
+  #     explicit `CGO_ENABLED = 1` whenever `enableRace` is true, mirroring
+  #     mkGoApp's hoist pattern above: it makes the requirement load-bearing in
+  #     this file rather than an implicit dependency on nixpkgs's current
+  #     default, which is free to change (e.g. under cross-compilation).
   mkGoTest =
     {
       src,
@@ -434,10 +449,12 @@ rec {
       modRoot ? null,
       testDeps ? [ ],
       testFlags ? [ ],
+      enableRace ? true,
     }:
     let
       version = "0.0.0-${(import ./version.nix).mkSrcDigest src}";
       pwd = if modRoot != null then src + "/" + modRoot else src;
+      effectiveTestFlags = testFlags ++ lib.optional enableRace "-race";
     in
     assert gomod2nixToml != null;
     pkgs.buildGoApplication (
@@ -465,7 +482,7 @@ rec {
           # tests resolving assets via runtime.Caller/source paths behave the same
           # as a developer's `go test ./...`. Safe: the $out (touch) has no binary.
           export GOFLAGS=''${GOFLAGS//-trimpath/}
-          go test ${lib.escapeShellArgs testFlags} ./...
+          go test ${lib.escapeShellArgs effectiveTestFlags} ./...
           runHook postBuild
         '';
         installPhase = "touch $out";
@@ -475,5 +492,8 @@ rec {
       # mkGoLint above; optionalAttrs keeps Pattern-A callers' derivation hash
       # unchanged (bead pg2-sjxhy).
       // lib.optionalAttrs (modRoot != null) { inherit modRoot; }
+      # Thread CGO_ENABLED=1 explicitly whenever the race detector is on (see
+      # the doc comment above) — the race runtime needs cgo to link.
+      // lib.optionalAttrs enableRace { CGO_ENABLED = 1; }
     );
 }
