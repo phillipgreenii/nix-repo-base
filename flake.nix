@@ -251,6 +251,11 @@
             # get (see the module's default.nix for why neither is a runtimeDep).
             pg-go-mutate-sweep = pgGoMutateScripts.pg-go-mutate-sweep.script;
 
+            # pg-go-mutate-tui: interactive, file-granular resumable
+            # mutation-testing TUI Go binary (replaces pg-go-mutate-sweep once
+            # fully wired; this task only scaffolds the buildable binary).
+            pg-go-mutate-tui = pkgs.callPackage ./modules/pg-go-mutate/pg-go-mutate-tui { inherit self; };
+
             # pg-test-runner: label-driven, nix-free-at-runtime direct test
             # runner (spec docs/superpowers/specs/2026-08-24-pg-test-runner-design.md).
             pg-test-runner = pgTestRunnerScripts.pg-test-runner.script;
