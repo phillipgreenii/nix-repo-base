@@ -280,40 +280,16 @@ pgms_bead_action() { # <root> <project> -> file | amend
   if [ -n "$bead" ] && [ -n "$id" ]; then printf 'amend\n'; else printf 'file\n'; fi
 }
 
-# flock(1) is absent on darwin, so the lock is an atomic mkdir stamped with the
-# holder's pid and start time.
-pgms_lock_acquire() {
-  local root lock pid stale
-  root="$(pgms_state_root)"
-  lock="$root/lock"
-  mkdir -p "$root"
-  if mkdir "$lock" 2>/dev/null; then
-    printf '%s %s\n' "$$" "$(date -Iseconds)" >"$lock/holder"
-    return 0
-  fi
-  pid="$(awk '{print $1}' "$lock/holder" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    printf 'pg-go-mutate-sweep: another sweep holds the lock (pid %s). Use --force-unlock if it is wedged.\n' "$pid" >&2
-    return 3
-  fi
-  # Reclaim by RENAME onto a unique, NON-EXISTENT destination. A plain
-  # `mv lock lock.stale.$$` would move `lock` INSIDE a leftover directory of that
-  # name and still return 0, so "proceed only if the rename succeeded" would stop
-  # meaning what it says. Exactly one racer can win an atomic rename(2).
-  stale="$(mktemp -d "$root/lock.stale.XXXXXX")"
-  rmdir "$stale"
-  if mv "$lock" "$stale" 2>/dev/null; then
-    rm -rf "$stale"
-    if mkdir "$lock" 2>/dev/null; then
-      printf '%s %s\n' "$$" "$(date -Iseconds)" >"$lock/holder"
-      return 0
-    fi
-  fi
-  printf 'pg-go-mutate-sweep: lost the lock-reclaim race\n' >&2
-  return 3
-}
-
-pgms_lock_release() { rm -rf -- "$(pgms_state_root)/lock"; }
+# Mutual-exclusion lock functions (formerly pgms_lock_acquire/pgms_lock_release
+# defined HERE) moved to the shared pg-go-mutate-lib.bash as pgm_lock_acquire/
+# pgm_lock_release (bead pg2-y3a8t): a bare `pg-go-mutate` invocation now takes
+# the same lock, so the implementation lives in the one library both commands
+# already share rather than being duplicated. pg-go-mutate-sweep.sh calls
+# `pgm_lock_acquire pg-go-mutate-sweep` / `pgm_lock_release` directly -- see
+# that file. The on-disk path is unchanged: pgm_lock_root() in the shared lib
+# still resolves to `${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-sweep`,
+# identically to this file's own pgms_state_root() above (which remains here
+# for the ledger/runs-dir state that IS sweep-specific).
 
 # Classification is by EXIT CODE, never by matching the child's prose: a TERM
 # inside pgm_run_engine makes pg-go-mutate report "the engine produced no report

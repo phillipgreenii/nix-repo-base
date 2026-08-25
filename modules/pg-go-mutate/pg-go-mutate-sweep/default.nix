@@ -29,13 +29,16 @@ mkBashScript {
   # is reached only through pgm_has_tests, which this command never calls. The
   # first half is true and the conclusion does not follow -- pg-go-mutate-sweep.bash
   # calls awk itself, in pgms_unit_status (the per-unit replay lookup, run for
-  # every unit in the plan and again inside pgms_bead_due) and in
-  # pgms_lock_acquire (reading the holder pid, run on every invocation). Both uses
+  # every unit in the plan and again inside pgms_bead_due) and, via the shared
+  # library, in pgm_lock_acquire (reading the holder pid, run on every
+  # invocation -- moved from this file to pg-go-mutate-lib.bash under bead
+  # pg2-y3a8t so a bare pg-go-mutate invocation can take the same lock, but the
+  # awk call and its rationale are unchanged). Both uses
   # are POSIX-clean, so an ambient /usr/bin/awk satisfies them and the omission
   # would go unnoticed on this machine; the failure it leaves open is silent and
   # expensive rather than loud. With awk absent pgms_unit_status returns empty for
   # every unit, so a resumed sweep reads its whole ledger as unrun and re-analyses
-  # a workspace that costs hours, and pgms_lock_acquire reads an empty holder pid
+  # a workspace that costs hours, and pgm_lock_acquire reads an empty holder pid
   # and takes the stale-reclaim path against a LIVE holder. Declaring it cannot
   # displace anything (--suffix, and there is no wrapper to defeat), so unlike
   # pg-go-mutate/bd/go there is no countervailing hazard.

@@ -16,6 +16,70 @@ pgm_die() {
   return 1
 }
 
+# Mutual exclusion for a mutation run. Both pg-go-mutate and pg-go-mutate-sweep
+# share this lock: cross-PROCESS concurrency reintroduces exactly the
+# contention --workers 1 already exists to prevent WITHIN one process (bead
+# pg2-y3a8t; measured: a real embedded-dolt-backed suite that alone completed
+# in ~67s instead timed out at Go's default 10-minute limit under two
+# concurrent pg-go-mutate runs).
+#
+# flock(1) is absent on darwin, so the lock is an atomic mkdir stamped with the
+# holder's pid and start time. Moved here from pg-go-mutate-sweep.bash
+# (formerly pgms_lock_acquire/pgms_lock_release, sweep-only) so a bare
+# pg-go-mutate invocation can take the SAME lock; pg-go-mutate-sweep.bash now
+# calls this shared copy instead of keeping its own.
+#
+# The on-disk path is UNCHANGED from the sweep-only original
+# (${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-sweep/lock) even though a
+# bare pg-go-mutate can be the holder now too: existing docs and the sweep's
+# own --force-unlock messaging already name that path, and nothing about this
+# change asks for a rename -- an agent mid-sweep on a peer machine should not
+# need to learn a new path for the exact same lock.
+pgm_lock_root() {
+  printf '%s/pg-go-mutate-sweep\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
+# <prog-name> (default "pg-go-mutate") names the CALLER in the printed
+# message, so a bare invocation and the sweep read distinctly even though they
+# contend for the identical lock. The remedy phrase always names
+# `pg-go-mutate-sweep --force-unlock` -- the one place that flag is actually
+# implemented; pg-go-mutate itself deliberately gains no matching public flag
+# (its own internal skip mechanism, PGM_LOCK_HELD, is undocumented on purpose
+# -- see pg-go-mutate.sh).
+pgm_lock_acquire() {
+  local prog="${1:-pg-go-mutate}" root lock pid stale
+  root="$(pgm_lock_root)"
+  lock="$root/lock"
+  mkdir -p "$root"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -Iseconds)" >"$lock/holder"
+    return 0
+  fi
+  pid="$(awk '{print $1}' "$lock/holder" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    printf '%s: another mutation run holds the lock (pid %s). Use pg-go-mutate-sweep --force-unlock if it is wedged.\n' "$prog" "$pid" >&2
+    return 3
+  fi
+  # Reclaim by RENAME onto a unique, NON-EXISTENT destination. A plain
+  # `mv lock lock.stale.$$` would move `lock` INSIDE a leftover directory of
+  # that name and still return 0, so "proceed only if the rename succeeded"
+  # would stop meaning what it says. Exactly one racer can win an atomic
+  # rename(2).
+  stale="$(mktemp -d "$root/lock.stale.XXXXXX")"
+  rmdir "$stale"
+  if mv "$lock" "$stale" 2>/dev/null; then
+    rm -rf "$stale"
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s %s\n' "$$" "$(date -Iseconds)" >"$lock/holder"
+      return 0
+    fi
+  fi
+  printf '%s: lost the lock-reclaim race\n' "$prog" >&2
+  return 3
+}
+
+pgm_lock_release() { rm -rf -- "$(pgm_lock_root)/lock"; }
+
 pgm_require_go() {
   command -v go >/dev/null 2>&1 && return 0
   pgm_die "the Go toolchain is required but 'go' is not on PATH. Enable the golang capability, or enter a devShell that provides it."

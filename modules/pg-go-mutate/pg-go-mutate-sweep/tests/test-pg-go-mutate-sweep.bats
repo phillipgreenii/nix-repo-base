@@ -116,6 +116,7 @@ _ws_one_unit() {
     >"$TEST_DIR/state/pg-go-mutate-sweep/lock/holder"
   run "$SCRIPT" --root "$TEST_DIR/ws"
   [ "$status" -eq 3 ]
+  [[ "$output" == *"pid $$"* ]]
 }
 
 @test "--force-unlock breaks a live-looking lock" {
@@ -127,6 +128,33 @@ _ws_one_unit() {
     >"$TEST_DIR/state/pg-go-mutate-sweep/lock/holder"
   run "$SCRIPT" --root "$TEST_DIR/ws" --force-unlock
   [ "$status" -eq 0 ]
+}
+
+# bead pg2-y3a8t: pg-go-mutate itself now takes this SAME lock on a bare
+# invocation, which the sweep's own inner subprocess call (pg-go-mutate-sweep.sh,
+# `pg-go-mutate "${args[@]}" "$dir"`) would otherwise self-refuse against --
+# the sweep already holds the lock for the unit's whole run. The stub below
+# behaves like the real command would if PGM_LOCK_HELD were NOT propagated:
+# it records that fact rather than actually re-implementing the lock, because
+# a real second acquire against the sweep's already-held lock is exactly the
+# failure this stub proves did not happen.
+@test "the sweep exports PGM_LOCK_HELD to its inner pg-go-mutate call, so it never self-refuses" {
+  _ws_one_unit
+  _stub pg-go-mutate '
+if [ -z "${PGM_LOCK_HELD:-}" ]; then
+  echo "PGM_LOCK_HELD was not propagated" >>"$TEST_DIR/lock-propagation-failures"
+  exit 3
+fi
+printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"
+exit 0
+'
+  _stub bd 'echo pg2-stub'
+  run "$SCRIPT" --root "$TEST_DIR/ws"
+  [ "$status" -eq 0 ]
+  [ ! -e "$TEST_DIR/lock-propagation-failures" ]
+  grep -q '"status":"done"' "$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl"
+  # The sweep's own OUTER lock is released once it finishes, exactly as before.
+  [ ! -d "$TEST_DIR/state/pg-go-mutate-sweep/lock" ]
 }
 
 @test "a failing unit records failed and the sweep CONTINUES" {

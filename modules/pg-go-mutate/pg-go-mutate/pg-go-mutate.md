@@ -83,6 +83,7 @@ never by comparing totals.
 | `0`  | Analysis completed, however many mutants survived.                               |
 | `1`  | Operational failure not covered by a more specific code below.                   |
 | `2`  | Usage error: invalid flags or arguments.                                         |
+| `3`  | Another mutation run (bare or under pg-go-mutate-sweep) holds the lock.          |
 | `10` | Target has no test files.                                                        |
 | `11` | Target not enumerable (not a Go module, or the module does not load).            |
 | `12` | Target unhealthy: does not vet, or tests already fail on unmutated source.       |

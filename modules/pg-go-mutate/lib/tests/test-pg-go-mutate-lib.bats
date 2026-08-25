@@ -13,6 +13,23 @@ setup() {
   # HOME/GOCACHE-under-TMPDIR convention lib/go-builders.nix already uses for
   # the same reason.
   export HOME="$TEST_DIR" GOCACHE="$TEST_DIR/go-build"
+  # BOTH are load-bearing, matching pg-go-mutate-sweep's own lock tests: the
+  # shared pgm_lock_root() reads XDG_STATE_HOME FIRST, and it IS commonly
+  # exported in this workspace's ambient environment, so overriding HOME alone
+  # would let a lock test append to (and contend for) the real machine-wide
+  # lock at the operator's actual state root.
+  export XDG_STATE_HOME="$TEST_DIR/state"
+
+  # `go` also writes telemetry counters under
+  # "$HOME/Library/Application Support/go/telemetry" (macOS os.UserConfigDir(),
+  # which is where the fresh $HOME above lands too) -- a location GOCACHE does
+  # nothing to redirect. That write can be done by a process outliving the
+  # go list/vet/test invocation that triggered it, and since $TEST_DIR now IS
+  # $HOME, a still-running writer races teardown()'s `rm -rf "$TEST_DIR"`
+  # below: the directory gets repopulated under the delete, and the rm errors
+  # out with "Directory not empty" (pg2-0uk00 -- the identical race this
+  # library's sibling test-pg-go-mutate.bats already closes the same way).
+  go telemetry off >/dev/null 2>&1 || true
 }
 
 teardown() {
@@ -734,4 +751,101 @@ EOF
   [ "$status" -eq 0 ]
   [ -e "$bin" ]
   rm -f -- "$output"  # the harvested report is the caller's to remove
+}
+
+# --- pgm_lock_acquire / pgm_lock_release (bead pg2-y3a8t) --------------------
+#
+# Ported/adapted from pg-go-mutate-sweep's own former test file
+# (test-pg-go-mutate-sweep-lib.bats, "lock acquires...", "lock reclaims...",
+# "a leftover lock.stale directory..."), which now delegates to these shared
+# functions rather than defining its own copy. XDG_STATE_HOME isolation is set
+# up once in setup() above, for the same reason that file isolated it.
+
+@test "pgm_lock_acquire acquires uncontended, stamping pid and time" {
+  run pgm_lock_acquire
+  [ "$status" -eq 0 ]
+  [ -d "$(pgm_lock_root)/lock" ]
+  holder="$(cat "$(pgm_lock_root)/lock/holder")"
+  [ "$(printf '%s\n' "$holder" | awk '{print $1}')" = "$$" ]
+  # Second field is an ISO-8601 timestamp, not empty.
+  [ -n "$(printf '%s\n' "$holder" | awk '{print $2}')" ]
+}
+
+@test "pgm_lock_acquire refuses a live holder, naming its pid, and releases cleanly" {
+  run pgm_lock_acquire
+  [ "$status" -eq 0 ]
+  run pgm_lock_acquire
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"pid $$"* ]]
+  pgm_lock_release
+  [ ! -d "$(pgm_lock_root)/lock" ]
+}
+
+@test "pgm_lock_acquire's message names the caller program" {
+  run pgm_lock_acquire caller-one
+  [ "$status" -eq 0 ]
+  run pgm_lock_acquire caller-two
+  [ "$status" -eq 3 ]
+  [[ "$output" == "caller-two:"* ]]
+}
+
+@test "pgm_lock_acquire defaults the caller-program label to pg-go-mutate" {
+  run pgm_lock_acquire
+  [ "$status" -eq 0 ]
+  run pgm_lock_acquire
+  [ "$status" -eq 3 ]
+  [[ "$output" == "pg-go-mutate:"* ]]
+}
+
+@test "pgm_lock_acquire reclaims a stale (dead-pid) holder" {
+  mkdir -p "$(pgm_lock_root)/lock"
+  # PID 99999 is not running; the stamp format is "<pid> <iso8601>".
+  printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgm_lock_root)/lock/holder"
+  run pgm_lock_acquire
+  [ "$status" -eq 0 ]
+  [ "$(awk '{print $1}' "$(pgm_lock_root)/lock/holder")" = "$$" ]
+}
+
+@test "a leftover lock.stale.\$\$ directory does not corrupt the reclaim" {
+  mkdir -p "$(pgm_lock_root)/lock"
+  printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgm_lock_root)/lock/holder"
+
+  # Force the collision deterministically, two ways at once, so it lands
+  # wherever the ACTUAL implementation under test looks:
+  #   (a) "pinned" -- a bash `mktemp` shadowing the binary the shipped
+  #       mktemp-d+rmdir dance calls. Faithful to the real contract (fails,
+  #       prints nothing, if the target already exists) but pinned to a known
+  #       name instead of a random one, so a leftover can be planted at it.
+  #   (b) "guessable" -- the literal "$root/lock.stale.$$" name a regression
+  #       to a naive `mv lock lock.stale.$$` (the exact defect the design's
+  #       atomic-rename comment warns about) would compute directly, with no
+  #       mktemp call to intercept. `$$` is stable across `run` (verified:
+  #       the PID printed inside a `run`-invoked function matches the PID
+  #       printed in the test body outright), so this name is predictable up
+  #       front.
+  # Each carries a sentinel that must never be silently destroyed by someone
+  # else's cleanup -- the design's own warning: a plain `mv` onto an existing
+  # directory nests silently and returns 0, so only the FOLLOW-UP `rm -rf`
+  # actually destroys anything, and only if the destination was reused.
+  local pinned guessable
+  pinned="$(pgm_lock_root)/lock.stale.pinned"
+  guessable="$(pgm_lock_root)/lock.stale.$$"
+  # shellcheck disable=SC2317  # invoked indirectly via mktemp -d from the sourced library
+  mktemp() {
+    [ -e "$pinned" ] && return 1
+    mkdir "$pinned"
+    printf '%s\n' "$pinned"
+  }
+  mkdir -p "$pinned" "$guessable"
+  printf 'sentinel\n' >"$pinned/sentinel"
+  printf 'sentinel\n' >"$guessable/sentinel"
+
+  run pgm_lock_acquire
+  if [ "$status" -eq 0 ]; then
+    # Neither racer's directory was silently absorbed.
+    [ -f "$pinned/sentinel" ]
+    [ -f "$guessable/sentinel" ]
+  else
+    [ "$status" -eq 3 ]
+  fi
 }

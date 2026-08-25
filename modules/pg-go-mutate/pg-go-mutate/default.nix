@@ -32,6 +32,18 @@ mkBashScript {
     pkgs.gnused
     pkgs.gnugrep
     pkgs.coreutils
+    # pgm_lock_acquire (pg-go-mutate-lib.bash, bead pg2-y3a8t) reads the lock
+    # holder's pid with awk, run on every bare invocation now that this
+    # command takes the same mutual-exclusion lock pg-go-mutate-sweep already
+    # used. Declared explicitly for the identical reason
+    # pg-go-mutate-sweep/default.nix already declares it: an ambient
+    # /usr/bin/awk satisfies this today, so the omission would go unnoticed
+    # on this machine, but the failure it would leave open is silent and
+    # dangerous rather than loud -- an awk-not-found reads the holder pid as
+    # empty, which pgm_lock_acquire treats as "no live holder" and takes the
+    # stale-reclaim path against a lock that is genuinely still held,
+    # defeating the whole point of this lock.
+    pkgs.gawk
   ];
   batsJobs = 4;
   testDeps = [

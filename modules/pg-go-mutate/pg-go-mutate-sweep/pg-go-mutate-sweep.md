@@ -45,11 +45,11 @@
 State is durable and lives under `${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-sweep/`
 (ADR-0026), deliberately outside any session-scoped directory a teardown could reclaim:
 
-| Path                                  | What it holds                                                 |
-| ------------------------------------- | ------------------------------------------------------------- |
-| `ledger.jsonl`                        | Append-only, one record per attempt. Replayed to resume.      |
-| `runs/<project-slug>/<pkg-slug>.json` | That unit's worklist, overwritten in place on each attempt.   |
-| `lock/`                               | Lock directory, stamped with the holder's PID and start time. |
+| Path                                  | What it holds                                                                                                                                |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ledger.jsonl`                        | Append-only, one record per attempt. Replayed to resume.                                                                                     |
+| `runs/<project-slug>/<pkg-slug>.json` | That unit's worklist, overwritten in place on each attempt.                                                                                  |
+| `lock/`                               | Lock directory, stamped with the holder's PID and start time. Shared with bare `pg-go-mutate` invocations — see that command's own doc page. |
 
 A unit is one `(project, package)` pair, keyed `<project>#<package>`. The ledger records unit
 **status only** — `done`, `no-tests`, `failed`, `timeout`, `unhealthy`, `not-enumerable`,
@@ -75,5 +75,5 @@ A unit's recorded failure never changes the exit status — that is the point of
 | ---- | ------------------------------------------------------------------------------------------------- |
 | `0`  | The sweep completed, or nothing was left to run.                                                  |
 | `2`  | Usage error, or a plan-time defect such as a slug collision.                                      |
-| `3`  | Another sweep holds the lock.                                                                     |
+| `3`  | Another sweep, or a bare `pg-go-mutate`, holds the lock.                                          |
 | `4`  | Fatal abort: a missing prerequisite, or a cause that would fail every remaining unit identically. |

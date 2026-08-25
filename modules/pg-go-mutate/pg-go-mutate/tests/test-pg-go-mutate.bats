@@ -9,6 +9,13 @@ setup() {
   # environment error. Same reason the library suite does this, and the same
   # HOME/GOCACHE-under-TMPDIR convention lib/go-builders.nix uses.
   export HOME="$TEST_DIR" GOCACHE="$TEST_DIR/go-build"
+  # BOTH are load-bearing, matching pg-go-mutate-sweep's own tests: pg-go-mutate
+  # now takes the SAME mutual-exclusion lock the sweep does (bead pg2-y3a8t),
+  # and pgm_lock_root() reads XDG_STATE_HOME first -- it IS commonly exported
+  # in this workspace's ambient environment, so overriding HOME alone would
+  # let a lock test contend for (or corrupt) the real machine-wide lock at the
+  # operator's actual state root.
+  export XDG_STATE_HOME="$TEST_DIR/state"
 
   # `go` also writes telemetry counters under
   # "$HOME/Library/Application Support/go/telemetry" (the macOS
@@ -676,4 +683,76 @@ EOF
   printf 'package m2\n' >"$TEST_DIR/m2/m.go"
   run env PG_GO_MUTATE_GOMU="$TEST_DIR/definitely-not-here" "$SCRIPT" "$TEST_DIR/m2"
   [ "$status" -eq 13 ]
+}
+
+# --- mutual-exclusion lock (bead pg2-y3a8t) ----------------------------------
+#
+# A bare `pg-go-mutate` invocation now takes the same lock pg-go-mutate-sweep
+# already used exclusively, sharing it via pg-go-mutate-lib.bash's
+# pgm_lock_acquire/pgm_lock_release. Fail-fast: the second contender exits 3
+# rather than blocking, naming the live holder's pid.
+
+@test "a bare invocation acquires the lock for the run and releases it on success" {
+  target="$(make_module lockheld)"
+  stub="$TEST_DIR/stub-gomu-lockcheck"
+  cat >"$stub" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = version ]; then
+  printf 'gomu version %s\n' "\$PGM_TEST_PINNED_VERSION"
+  exit 0
+fi
+if [ -d "\$XDG_STATE_HOME/pg-go-mutate-sweep/lock" ]; then
+  touch "$TEST_DIR/lock-was-held"
+fi
+cat >mutation-report.json <<JSON
+{"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"$target/fixture.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0}}
+JSON
+STUB
+  chmod +x "$stub"
+  export PG_GO_MUTATE_GOMU="$stub"
+  run "$SCRIPT" "$target"
+  [ "$status" -eq 0 ]
+  # The stub proves the lock existed WHILE the engine ran...
+  [ -e "$TEST_DIR/lock-was-held" ]
+  # ...and it must be gone again once the run finished successfully.
+  [ ! -d "$XDG_STATE_HOME/pg-go-mutate-sweep/lock" ]
+}
+
+@test "refuses with exit 3 naming the holder pid when another run already holds the lock" {
+  target="$(make_module lockcontended)"
+  mkdir -p "$XDG_STATE_HOME/pg-go-mutate-sweep/lock"
+  # $$ (this test process) is alive for the whole test, so kill -0 in
+  # pgm_lock_acquire reads it as a LIVE holder, not a stale one to reclaim.
+  printf '%s %s\n' "$$" "2026-08-17T10:00:00-04:00" \
+    >"$XDG_STATE_HOME/pg-go-mutate-sweep/lock/holder"
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/must-not-run"
+  printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "$TEST_DIR" >"$PG_GO_MUTATE_GOMU"
+  chmod +x "$PG_GO_MUTATE_GOMU"
+  run "$SCRIPT" "$target"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"pid $$"* ]]
+  # Refused before ever invoking the engine -- the whole point of taking the
+  # lock before pgm_require_go/pgm_require_engine, not after.
+  [ ! -e "$TEST_DIR/ran" ]
+  # A refusal must not release a lock this process never held.
+  [ -d "$XDG_STATE_HOME/pg-go-mutate-sweep/lock" ]
+}
+
+@test "PGM_LOCK_HELD skips the lock entirely, for pg-go-mutate-sweep's own inner call" {
+  target="$(make_module lockheldenv)"
+  mkdir -p "$XDG_STATE_HOME/pg-go-mutate-sweep/lock"
+  printf '%s %s\n' "$$" "2026-08-17T10:00:00-04:00" \
+    >"$XDG_STATE_HOME/pg-go-mutate-sweep/lock/holder"
+  PG_GO_MUTATE_GOMU="$(write_survivor_stub "$target")"
+  export PG_GO_MUTATE_GOMU
+  # Simulates pg-go-mutate-sweep's own inner subprocess call: the SWEEP holds
+  # this lock (recorded above, this test's own pid stands in for it), and this
+  # invocation must complete successfully rather than refuse itself.
+  run env PGM_LOCK_HELD=1 "$SCRIPT" "$target"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"surviving mutants"* ]]
+  # The pre-existing holder must be untouched: a run that skipped acquisition
+  # entirely must not release a lock it never took.
+  [ -d "$XDG_STATE_HOME/pg-go-mutate-sweep/lock" ]
+  [ "$(awk '{print $1}' "$XDG_STATE_HOME/pg-go-mutate-sweep/lock/holder")" = "$$" ]
 }

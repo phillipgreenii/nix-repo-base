@@ -6,7 +6,8 @@
 # builder). Exits 0 whenever it completed an analysis, however many mutants
 # survived (spec: this is a diagnostic, not a gate) -- non-zero is reserved
 # for operational failure (a guard failing, gomu/go absent, invalid flags, an
-# unreadable target, or a missing/insane report).
+# unreadable target, a missing/insane report, or another mutation run holding
+# the mutual-exclusion lock (exit 3, bead pg2-y3a8t)).
 
 usage() {
   cat <<'EOF'
@@ -163,6 +164,47 @@ esac
 target="$(cd "$target" && pwd)"
 
 pgm_validate_flags "$workers" "$timeout" || exit 2
+
+# Mutual exclusion with every other mutation run, bare or under
+# pg-go-mutate-sweep (bead pg2-y3a8t): cross-PROCESS concurrency reintroduces
+# exactly the contention --workers 1 already exists to prevent WITHIN one
+# process. Fail-fast, not block-and-wait -- matches pg-go-mutate-sweep's own
+# behavior and is friendlier to an agent session that should go do other work
+# rather than park on a lock.
+#
+# Skipped entirely when PGM_LOCK_HELD is set: pg-go-mutate-sweep exports it
+# around its own inner invocation of this command, because the SWEEP already
+# holds this identical lock for the unit's whole run, and a second acquire
+# here would refuse every unit the sweep tries (fail-fast, so not a deadlock,
+# but no less fatal to the sweep's ability to make progress). This is an
+# internal/undocumented mechanism for the sweep's own use, not a public flag
+# -- no human is meant to set it by hand, so it is deliberately absent from
+# --help.
+lock_held=0
+if [ -z "${PGM_LOCK_HELD:-}" ]; then
+  pgm_lock_acquire pg-go-mutate || exit 3
+  lock_held=1
+fi
+# Guarded by lock_held so a later, combined trap (installed once the harvested
+# report is known, see report_cleanup below) can call this unconditionally
+# without releasing twice or releasing a lock this process never took.
+# shellcheck disable=SC2329  # invoked only via the trap strings below, never a direct call
+_pgm_lock_release_once() {
+  [ "$lock_held" -eq 1 ] || return 0
+  lock_held=0
+  pgm_lock_release
+}
+# Installed NOW, before any guard below can exit, so every one of those exit
+# paths (pgm_require_go/pgm_require_engine/pgm_has_tests/pgm_tests_healthy,
+# and pgm_run_engine's own `|| exit 1`) still releases the lock via the EXIT
+# trap even though none of them calls cleanup explicitly. Superseded below,
+# once the harvested report is known, by a combined trap that ALSO runs
+# report_cleanup -- a later `trap ... EXIT` assignment REPLACES rather than
+# chains, so that later statement is written to call both.
+trap '_pgm_lock_release_once' EXIT
+trap '_pgm_lock_release_once; exit 130' INT
+trap '_pgm_lock_release_once; exit 143' TERM HUP
+
 pgm_require_go || exit 13
 # The engine must exist AND be the pinned build (spec E1). Checked here rather
 # than discovered as "the engine produced no report (exit 127)" after every
@@ -254,9 +296,16 @@ report_cleanup() {
     rm -f -- "$report"
   fi
 }
-trap 'report_cleanup' EXIT
-trap 'report_cleanup; exit 130' INT
-trap 'report_cleanup; exit 143' TERM HUP
+# Chained with _pgm_lock_release_once (never a second, independent `trap`
+# statement): a later `trap ... EXIT` assignment REPLACES the earlier one
+# installed above rather than adding to it, so writing these as
+# report_cleanup alone would silently stop releasing the lock from this point
+# on. _pgm_lock_release_once is a no-op if this process never held the lock
+# (PGM_LOCK_HELD case) or already released it, so chaining it here is safe on
+# every path.
+trap 'report_cleanup; _pgm_lock_release_once' EXIT
+trap 'report_cleanup; _pgm_lock_release_once; exit 130' INT
+trap 'report_cleanup; _pgm_lock_release_once; exit 143' TERM HUP
 
 pgm_report_sane "$report" || exit 1
 

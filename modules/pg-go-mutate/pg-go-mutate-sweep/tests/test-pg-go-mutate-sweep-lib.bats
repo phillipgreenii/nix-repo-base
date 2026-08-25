@@ -335,67 +335,15 @@ EOF
   [ "$status" -eq 1 ]
 }
 
-@test "lock acquires, refuses a live holder, and releases" {
-  run pgms_lock_acquire
-  [ "$status" -eq 0 ]
-  [ -d "$(pgms_state_root)/lock" ]
-  run pgms_lock_acquire
-  [ "$status" -eq 3 ]
-  pgms_lock_release
-  [ ! -d "$(pgms_state_root)/lock" ]
-}
-
-@test "lock reclaims a stale holder" {
-  mkdir -p "$(pgms_state_root)/lock"
-  # PID 99999 is not running; the stamp format is "<pid> <iso8601>"
-  printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgms_state_root)/lock/holder"
-  run pgms_lock_acquire
-  [ "$status" -eq 0 ]
-  [ "$(awk '{print $1}' "$(pgms_state_root)/lock/holder")" = "$$" ]
-}
-
-@test "a leftover lock.stale directory does not corrupt the reclaim" {
-  mkdir -p "$(pgms_state_root)/lock"
-  printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgms_state_root)/lock/holder"
-
-  # Force the collision deterministically, two ways at once, so it lands
-  # wherever the ACTUAL implementation under test looks:
-  #   (a) "pinned" -- a bash `mktemp` shadowing the binary the shipped
-  #       mktemp-d+rmdir dance calls. Faithful to the real contract (fails,
-  #       prints nothing, if the target already exists) but pinned to a known
-  #       name instead of a random one, so a leftover can be planted at it.
-  #   (b) "guessable" -- the literal "$root/lock.stale.$$" name a regression
-  #       to a naive `mv lock lock.stale.$$` (the exact defect the design's
-  #       atomic-rename comment warns about) would compute directly, with no
-  #       mktemp call to intercept. `$$` is stable across `run` (verified: the
-  #       PID printed inside a `run`-invoked function matches the PID printed
-  #       in the test body outrightly), so this name is predictable up front.
-  # Each carries a sentinel that must never be silently destroyed by someone
-  # else's cleanup -- the design's own warning: a plain `mv` onto an existing
-  # directory nests silently and returns 0, so only the FOLLOW-UP `rm -rf`
-  # actually destroys anything, and only if the destination was reused.
-  local pinned guessable
-  pinned="$(pgms_state_root)/lock.stale.pinned"
-  guessable="$(pgms_state_root)/lock.stale.$$"
-  # shellcheck disable=SC2317  # invoked indirectly via mktemp -d from the sourced library
-  mktemp() {
-    [ -e "$pinned" ] && return 1
-    mkdir "$pinned"
-    printf '%s\n' "$pinned"
-  }
-  mkdir -p "$pinned" "$guessable"
-  printf 'sentinel\n' >"$pinned/sentinel"
-  printf 'sentinel\n' >"$guessable/sentinel"
-
-  run pgms_lock_acquire
-  if [ "$status" -eq 0 ]; then
-    # Neither racer's directory was silently absorbed.
-    [ -f "$pinned/sentinel" ]
-    [ -f "$guessable/sentinel" ]
-  else
-    [ "$status" -eq 3 ]
-  fi
-}
+# The lock tests formerly here ("lock acquires, refuses a live holder, and
+# releases", "lock reclaims a stale holder", "a leftover lock.stale directory
+# does not corrupt the reclaim") moved to the shared library's own test file,
+# modules/pg-go-mutate/lib/tests/test-pg-go-mutate-lib.bats, alongside
+# pgms_lock_acquire/pgms_lock_release themselves being renamed to
+# pgm_lock_acquire/pgm_lock_release and relocated to pg-go-mutate-lib.bash
+# (bead pg2-y3a8t) -- this file's setup() deliberately does not source that
+# library (see its header comment), so those functions are no longer in scope
+# here to test.
 
 @test "classification maps every exit code" {
   [ "$(pgms_classify 10)"  = "no-tests" ]

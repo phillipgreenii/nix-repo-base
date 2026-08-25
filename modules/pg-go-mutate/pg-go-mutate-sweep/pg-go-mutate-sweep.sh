@@ -158,13 +158,22 @@ for cmd in pg-go-mutate bd; do
   }
 done
 
-[ "$force_unlock" -eq 1 ] && pgms_lock_release
-pgms_lock_acquire || exit 3
+[ "$force_unlock" -eq 1 ] && pgm_lock_release
+pgm_lock_acquire pg-go-mutate-sweep || exit 3
+# Exported for the rest of this process's life, INCLUDING the inner
+# pg-go-mutate subprocess invoked per unit below (bead pg2-y3a8t): that
+# subprocess would otherwise try to acquire this very lock a second time,
+# which this sweep process already holds -- fail-fast means it would refuse
+# every single unit rather than deadlock, but either way the sweep could never
+# make progress. pg-go-mutate.sh checks this and skips its own acquire/release
+# entirely when it is set; it is an internal mechanism, not a public flag, so
+# it is documented here rather than in --help.
+export PGM_LOCK_HELD=1
 # Released on EVERY path, not just the happy one: the lock is taken before the
 # plan is built, so a slug collision or a fatal abort would otherwise leave it held.
-trap 'pgms_lock_release' EXIT
-trap 'pgms_lock_release; exit 130' INT
-trap 'pgms_lock_release; exit 143' TERM HUP
+trap 'pgm_lock_release' EXIT
+trap 'pgm_lock_release; exit 130' INT
+trap 'pgm_lock_release; exit 143' TERM HUP
 
 pgms_check_slug_collisions "$root" || exit 2
 
