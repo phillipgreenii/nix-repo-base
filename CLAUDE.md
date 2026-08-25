@@ -70,6 +70,33 @@ Note: raw `buildGoModule` packages that do **not** go through these helpers (e.g
 repackages) keep their own `vendorHash` — this guidance is scoped to the `mkGoApp`/`mkGoBinary`
 family.
 
+## Go tests (`pg-test-runner` labels)
+
+The test-kind label vocabulary and the `pg-test-runner` design (labels, selection semantics, exit
+codes) are defined in full in the design spec:
+`docs/superpowers/specs/2026-08-24-pg-test-runner-design.md` (section 1, section 2.4). This
+section only states the Go-specific conventions; read the spec for the cross-language rules.
+
+- **Labels**: non-unit kinds (`integration`, `smoke`, `contract`, and repo-specific tags such as
+  the pre-existing `hostile`) carry a REGISTERED Go build tag on the test file. An untagged test
+  file is `unit` by default — the Go idiom, since unit cannot be positively tagged without
+  breaking the default build.
+- **Unit-only**: `go test -race -run '^(Test|Example)' ./...`. `Fuzz*` targets are excluded (the
+  `-run` anchor never matches them), and `-fuzz` MUST NOT be passed for the unit tier — no
+  seed-corpus replay in the commit-time run.
+- **All tests**: `go test -tags {allLabels} ./...`, where `{allLabels}` is every registered
+  `nonUnitLabels` entry comma-joined (currently `integration,smoke,contract,hostile`). Go's
+  `-tags` is a SUPERSET, not a filter — tagged files ADD to the default build rather than
+  replacing it, so "all" really means "unit plus every tagged kind", never a plain
+  `go test ./...`.
+- **Not a label**: platform/GOOS build constraints (`//go:build darwin`, `_darwin_test.go`
+  filenames) are a DIFFERENT axis from test-kind labels — a platform-gated test carrying no
+  non-unit tag is still `unit`. Don't conflate the two.
+- **Config surface**: the registered label set (`nonUnitLabels`) is defined by the nix option
+  `phillipgreenii.pg-test-runner.config` (default registry: `modules/pg-test-runner/config.nix`)
+  and rendered to JSON via `pkgs.formats.json`. Registering a new non-unit label — or changing
+  either command above — is a **configuration change**, never a `pg-test-runner` code change.
+
 ## Python packages (`mkPythonPackage`)
 
 Python apps built through `lib.mkPythonBuilders` → `mkPythonPackage` (`lib/python-package.nix`) use
@@ -94,6 +121,36 @@ Rules for this family:
   nvd-visible `version` (`0.0.0-<digest>`) is stamped on the wrapper and the runtime `--version`
   (`YY.MM.DD.SSSSS+<digest>`) is stamped on the root package's build.
 - Fixture locks under `lib/fixtures/` are intentionally pinned — never `uv lock --upgrade` them.
+
+## Python tests (`pg-test-runner` labels)
+
+The test-kind label vocabulary and the `pg-test-runner` design (labels, selection semantics, exit
+codes) are defined in full in the design spec:
+`docs/superpowers/specs/2026-08-24-pg-test-runner-design.md` (section 1, section 2.4). This
+section only states the Python-specific conventions; read the spec for the cross-language rules.
+
+- **Labels**: the label IS which directory a test file lives in — `tests/unit/` is `unit`,
+  `tests/<label>/` is that label — not a pytest marker or decorator applied to individual tests.
+  `labelAliases` maps a label to a project's native directory name where it diverges from the
+  standard vocabulary (e.g. `contract` → `contracts`, for a project's pre-existing
+  `tests/contracts/`). Support directories (`factories/`, `helpers/`, `fixtures/`) are not kinds.
+- **This was deliberate, not an oversight**: directory-over-markers is a considered decision —
+  pytest markers were evaluated and rejected in favor of directory structure, so classification
+  needs one mechanism (the directory a file lives in) and zero per-test marker migration.
+- **Unit-only**: `uv run --frozen --offline pytest tests/unit` (probed first — vacuous, exit `0`,
+  if `tests/unit` doesn't exist). Resolves from the committed `uv.lock`; `--offline` keeps the
+  no-network rule, so a cold `uv` cache fails loud rather than silently reaching the network (fix:
+  a manual `uv sync`).
+- **All tests**: `uv run --frozen --offline pytest tests` (the shipped default — no path
+  restriction, so every directory runs unfiltered). Selecting one non-unit label instead runs
+  `pytest tests/<label>` (alias-mapped); a multi-label request repeats the invocation once per
+  label rather than passing a single combined path, since there is no Go-style superset flag for
+  Python.
+- **Config surface**: the registered label set (`nonUnitLabels`) and `labelAliases` live under the
+  nix option `phillipgreenii.pg-test-runner.config` (default registry:
+  `modules/pg-test-runner/config.nix`), rendered to JSON via `pkgs.formats.json`. Registering a new
+  non-unit label, adding an alias, or changing either command above is a **configuration change**,
+  never a `pg-test-runner` code change.
 
 ## Pre-commit hooks (`.pre-commit-config.yaml`)
 
