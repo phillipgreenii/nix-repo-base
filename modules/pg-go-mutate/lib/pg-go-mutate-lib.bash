@@ -16,69 +16,92 @@ pgm_die() {
   return 1
 }
 
-# Mutual exclusion for a mutation run. Both pg-go-mutate and pg-go-mutate-sweep
-# share this lock: cross-PROCESS concurrency reintroduces exactly the
-# contention --workers 1 already exists to prevent WITHIN one process (bead
-# pg2-y3a8t; measured: a real embedded-dolt-backed suite that alone completed
-# in ~67s instead timed out at Go's default 10-minute limit under two
-# concurrent pg-go-mutate runs).
+# N-slot concurrency semaphore for a mutation run (pg2-1qcro.3). Generalizes
+# the single exclusive lock this replaces (formerly pgm_lock_acquire/
+# pgm_lock_release, bead pg2-y3a8t) to pgm_sem_capacity numbered slot
+# directories, so pg-go-mutate-tui's worker pool and a bare pg-go-mutate
+# invocation draw from the SAME shared concurrency budget instead of one
+# mutex (design §5.3/§11) -- capacity 1 (the default, when no
+# pg-go-mutate-tui config is rendered) behaves exactly like the old lock.
 #
-# flock(1) is absent on darwin, so the lock is an atomic mkdir stamped with the
-# holder's pid and start time. Moved here from pg-go-mutate-sweep.bash
-# (formerly pgms_lock_acquire/pgms_lock_release, sweep-only) so a bare
-# pg-go-mutate invocation can take the SAME lock; pg-go-mutate-sweep.bash now
-# calls this shared copy instead of keeping its own.
-#
-# The on-disk path is UNCHANGED from the sweep-only original
-# (${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-sweep/lock) even though a
-# bare pg-go-mutate can be the holder now too: existing docs and the sweep's
-# own --force-unlock messaging already name that path, and nothing about this
-# change asks for a rename -- an agent mid-sweep on a peer machine should not
-# need to learn a new path for the exact same lock.
-pgm_lock_root() {
-  printf '%s/pg-go-mutate-sweep\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
-}
+# flock(1) is absent on darwin, so each slot is an atomic mkdir stamped with
+# the holder's pid, exactly like the old lock's single directory was.
 
-# <prog-name> (default "pg-go-mutate") names the CALLER in the printed
-# message, so a bare invocation and the sweep read distinctly even though they
-# contend for the identical lock. The remedy phrase always names
-# `pg-go-mutate-sweep --force-unlock` -- the one place that flag is actually
-# implemented; pg-go-mutate itself deliberately gains no matching public flag
-# (its own internal skip mechanism, PGM_LOCK_HELD, is undocumented on purpose
-# -- see pg-go-mutate.sh).
-pgm_lock_acquire() {
-  local prog="${1:-pg-go-mutate}" root lock pid stale
-  root="$(pgm_lock_root)"
-  lock="$root/lock"
-  mkdir -p "$root"
-  if mkdir "$lock" 2>/dev/null; then
-    printf '%s %s\n' "$$" "$(date -Iseconds)" >"$lock/holder"
+# pgm_sem_capacity
+# Reads the total slot count from the static nix-rendered pg-go-mutate-tui
+# config. This tool has no config of its own -- it shares pg-go-mutate-tui's
+# `concurrency` value so both draw from one number (Task 17's nix wiring
+# fixes the path both this function and pg-go-mutate-tui's own loader read).
+# Read AFRESH on every call, never cached: the config is static and
+# nix-managed, but treating its value as long-lived in-process state would
+# let a stale capacity outlive a config change (design: never
+# runtime-mutable shared state). Tolerates the file being absent (default 1)
+# -- unknown keys are ignored elsewhere (Task 13's Go loader); this bash
+# reader only needs the one key it cares about.
+pgm_sem_capacity() {
+  local cfg="${PGM_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/pg-go-mutate-tui/config.json}"
+  [ -f "$cfg" ] || {
+    printf '1\n'
     return 0
-  fi
-  pid="$(awk '{print $1}' "$lock/holder" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    printf '%s: another mutation run holds the lock (pid %s). Use pg-go-mutate-sweep --force-unlock if it is wedged.\n' "$prog" "$pid" >&2
-    return 3
-  fi
-  # Reclaim by RENAME onto a unique, NON-EXISTENT destination. A plain
-  # `mv lock lock.stale.$$` would move `lock` INSIDE a leftover directory of
-  # that name and still return 0, so "proceed only if the rename succeeded"
-  # would stop meaning what it says. Exactly one racer can win an atomic
-  # rename(2).
-  stale="$(mktemp -d "$root/lock.stale.XXXXXX")"
-  rmdir "$stale"
-  if mv "$lock" "$stale" 2>/dev/null; then
-    rm -rf "$stale"
-    if mkdir "$lock" 2>/dev/null; then
-      printf '%s %s\n' "$$" "$(date -Iseconds)" >"$lock/holder"
-      return 0
-    fi
-  fi
-  printf '%s: lost the lock-reclaim race\n' "$prog" >&2
-  return 3
+  }
+  jq -r '.concurrency // 1' "$cfg"
 }
 
-pgm_lock_release() { rm -rf -- "$(pgm_lock_root)/lock"; }
+# pgm_sem_acquire <timeout_seconds>
+# Blocks (polling every 0.2s) until one of pgm_sem_capacity's numbered slot
+# directories under $PGM_SEM_DIR
+# (default ${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate/sem) can be
+# claimed by atomic mkdir, or <timeout_seconds> elapses, in which case it
+# returns 3 without exporting anything. On success it stamps the winning
+# slot with this process's pid and exports PGM_SEM_SLOT naming it -- the
+# caller releases with pgm_sem_release.
+pgm_sem_acquire() {
+  local timeout="$1" sem_dir cap i deadline pid stale
+  sem_dir="${PGM_SEM_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate/sem}"
+  cap="$(pgm_sem_capacity)"
+  mkdir -p "$sem_dir"
+  deadline=$(($(date +%s) + timeout))
+  while :; do
+    i=0
+    while [ "$i" -lt "$cap" ]; do
+      if mkdir "$sem_dir/$i" 2>/dev/null; then
+        printf '%s\n' "$$" >"$sem_dir/$i/pid"
+        export PGM_SEM_SLOT="$sem_dir/$i"
+        return 0
+      fi
+      # Stale-slot reclaim: a slot whose stamped pid is no longer alive was
+      # abandoned (crash, kill -9) rather than released, and would otherwise
+      # strand that slot's capacity forever. Reclaimed by RENAME onto a
+      # unique, NON-EXISTENT destination -- the identical atomic dance the
+      # old single lock used, and for the identical reason: a plain
+      # `mv "$i" "$i.stale.$$"` can land INSIDE a leftover directory of that
+      # exact name and still return 0, silently absorbing a concurrent
+      # racer's own reclaim attempt instead of failing it. Exactly one racer
+      # can win an atomic rename(2).
+      if [ -f "$sem_dir/$i/pid" ]; then
+        pid="$(cat "$sem_dir/$i/pid" 2>/dev/null || true)"
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+          stale="$(mktemp -d "$sem_dir/$i.stale.XXXXXX" 2>/dev/null)" && {
+            rmdir "$stale"
+            mv "$sem_dir/$i" "$stale" 2>/dev/null && rm -rf "$stale"
+          }
+        fi
+      fi
+      i=$((i + 1))
+    done
+    [ "$(date +%s)" -lt "$deadline" ] || return 3
+    sleep 0.2
+  done
+}
+
+# pgm_sem_release
+# Releases $PGM_SEM_SLOT (a no-op if unset or already removed -- rm -rf on a
+# missing path is silent, so calling this more than once for the same run,
+# e.g. from both a signal trap and the EXIT trap it re-triggers, is safe).
+pgm_sem_release() {
+  [ -n "${PGM_SEM_SLOT:-}" ] && rm -rf -- "$PGM_SEM_SLOT"
+  return 0
+}
 
 pgm_require_go() {
   command -v go >/dev/null 2>&1 && return 0

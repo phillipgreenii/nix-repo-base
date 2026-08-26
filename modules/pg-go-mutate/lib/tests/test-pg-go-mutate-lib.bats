@@ -837,99 +837,73 @@ EOF
   rm -f -- "$output"  # the harvested report is the caller's to remove
 }
 
-# --- pgm_lock_acquire / pgm_lock_release (bead pg2-y3a8t) --------------------
+# --- pgm_sem_capacity / pgm_sem_acquire / pgm_sem_release (pg2-1qcro.3) ------
 #
-# Ported/adapted from pg-go-mutate-sweep's own former test file
-# (test-pg-go-mutate-sweep-lib.bats, "lock acquires...", "lock reclaims...",
-# "a leftover lock.stale directory..."), which now delegates to these shared
-# functions rather than defining its own copy. XDG_STATE_HOME isolation is set
-# up once in setup() above, for the same reason that file isolated it.
+# Generalizes the old single exclusive lock (formerly pgm_lock_acquire/
+# pgm_lock_release, bead pg2-y3a8t, itself ported/adapted from
+# pg-go-mutate-sweep's own former test file) to pgm_sem_capacity numbered
+# slot directories, so pg-go-mutate-tui's worker pool and a bare
+# pg-go-mutate invocation draw from the SAME concurrency budget instead of a
+# single mutex (design §5.3/§11). XDG_STATE_HOME isolation is set up once in
+# setup() above, for the same reason the old lock tests needed it.
 
-@test "pgm_lock_acquire acquires uncontended, stamping pid and time" {
-  run pgm_lock_acquire
+@test "pgm_sem_capacity defaults to 1 when the config file is absent" {
+  export PGM_CONFIG_PATH="$TEST_DIR/no-such-config.json"
+  run pgm_sem_capacity
   [ "$status" -eq 0 ]
-  [ -d "$(pgm_lock_root)/lock" ]
-  holder="$(cat "$(pgm_lock_root)/lock/holder")"
-  [ "$(printf '%s\n' "$holder" | awk '{print $1}')" = "$$" ]
-  # Second field is an ISO-8601 timestamp, not empty.
-  [ -n "$(printf '%s\n' "$holder" | awk '{print $2}')" ]
+  [ "$output" = "1" ]
 }
 
-@test "pgm_lock_acquire refuses a live holder, naming its pid, and releases cleanly" {
-  run pgm_lock_acquire
+@test "pgm_sem_capacity reads concurrency from the static nix-rendered config" {
+  printf '{"concurrency": 4}\n' >"$TEST_DIR/config.json"
+  export PGM_CONFIG_PATH="$TEST_DIR/config.json"
+  run pgm_sem_capacity
   [ "$status" -eq 0 ]
-  run pgm_lock_acquire
+  [ "$output" = "4" ]
+}
+
+@test "pgm_sem_acquire acquires uncontended at default capacity 1, stamps the pid, and releases cleanly" {
+  export PGM_CONFIG_PATH="$TEST_DIR/no-such-config.json"
+  export PGM_SEM_DIR="$TEST_DIR/sem"
+  pgm_sem_acquire 1
+  [ -d "$PGM_SEM_DIR/0" ]
+  [ "$(cat "$PGM_SEM_DIR/0/pid")" = "$$" ]
+  [ "$PGM_SEM_SLOT" = "$PGM_SEM_DIR/0" ]
+  pgm_sem_release
+  [ ! -d "$PGM_SEM_DIR/0" ]
+}
+
+@test "pgm_sem_acquire: capacity-many concurrent acquires succeed, one more blocks and exits 3" {
+  printf '{"concurrency": 2}\n' >"$TEST_DIR/config.json"
+  export PGM_CONFIG_PATH="$TEST_DIR/config.json"
+  export PGM_SEM_DIR="$TEST_DIR/sem"
+  ( pgm_sem_acquire 5 && sleep 2 ) &
+  pid1=$!
+  ( pgm_sem_acquire 5 && sleep 2 ) &
+  pid2=$!
+  # 0.5s is far shorter than either backgrounded acquire's own 5s timeout, so
+  # this is a wait for slot creation, not a race against them.
+  sleep 0.5
+  [ -d "$PGM_SEM_DIR/0" ]
+  [ -d "$PGM_SEM_DIR/1" ]
+  run pgm_sem_acquire 1
   [ "$status" -eq 3 ]
-  [[ "$output" == *"pid $$"* ]]
-  pgm_lock_release
-  [ ! -d "$(pgm_lock_root)/lock" ]
+  wait "$pid1" "$pid2"
 }
 
-@test "pgm_lock_acquire's message names the caller program" {
-  run pgm_lock_acquire caller-one
+@test "pgm_sem_acquire reclaims a slot whose stamped pid is no longer alive" {
+  export PGM_CONFIG_PATH="$TEST_DIR/no-such-config.json"
+  export PGM_SEM_DIR="$TEST_DIR/sem"
+  mkdir -p "$PGM_SEM_DIR/0"
+  # PID 99999 is not running.
+  printf '99999\n' >"$PGM_SEM_DIR/0/pid"
+  pgm_sem_acquire 1
+  [ "$(cat "$PGM_SEM_DIR/0/pid")" = "$$" ]
+  pgm_sem_release
+}
+
+@test "pgm_sem_release tolerates being called with no slot acquired" {
+  unset PGM_SEM_SLOT
+  run pgm_sem_release
   [ "$status" -eq 0 ]
-  run pgm_lock_acquire caller-two
-  [ "$status" -eq 3 ]
-  [[ "$output" == "caller-two:"* ]]
-}
-
-@test "pgm_lock_acquire defaults the caller-program label to pg-go-mutate" {
-  run pgm_lock_acquire
-  [ "$status" -eq 0 ]
-  run pgm_lock_acquire
-  [ "$status" -eq 3 ]
-  [[ "$output" == "pg-go-mutate:"* ]]
-}
-
-@test "pgm_lock_acquire reclaims a stale (dead-pid) holder" {
-  mkdir -p "$(pgm_lock_root)/lock"
-  # PID 99999 is not running; the stamp format is "<pid> <iso8601>".
-  printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgm_lock_root)/lock/holder"
-  run pgm_lock_acquire
-  [ "$status" -eq 0 ]
-  [ "$(awk '{print $1}' "$(pgm_lock_root)/lock/holder")" = "$$" ]
-}
-
-@test "a leftover lock.stale.\$\$ directory does not corrupt the reclaim" {
-  mkdir -p "$(pgm_lock_root)/lock"
-  printf '99999 2026-08-17T10:00:00-04:00\n' >"$(pgm_lock_root)/lock/holder"
-
-  # Force the collision deterministically, two ways at once, so it lands
-  # wherever the ACTUAL implementation under test looks:
-  #   (a) "pinned" -- a bash `mktemp` shadowing the binary the shipped
-  #       mktemp-d+rmdir dance calls. Faithful to the real contract (fails,
-  #       prints nothing, if the target already exists) but pinned to a known
-  #       name instead of a random one, so a leftover can be planted at it.
-  #   (b) "guessable" -- the literal "$root/lock.stale.$$" name a regression
-  #       to a naive `mv lock lock.stale.$$` (the exact defect the design's
-  #       atomic-rename comment warns about) would compute directly, with no
-  #       mktemp call to intercept. `$$` is stable across `run` (verified:
-  #       the PID printed inside a `run`-invoked function matches the PID
-  #       printed in the test body outright), so this name is predictable up
-  #       front.
-  # Each carries a sentinel that must never be silently destroyed by someone
-  # else's cleanup -- the design's own warning: a plain `mv` onto an existing
-  # directory nests silently and returns 0, so only the FOLLOW-UP `rm -rf`
-  # actually destroys anything, and only if the destination was reused.
-  local pinned guessable
-  pinned="$(pgm_lock_root)/lock.stale.pinned"
-  guessable="$(pgm_lock_root)/lock.stale.$$"
-  # shellcheck disable=SC2317  # invoked indirectly via mktemp -d from the sourced library
-  mktemp() {
-    [ -e "$pinned" ] && return 1
-    mkdir "$pinned"
-    printf '%s\n' "$pinned"
-  }
-  mkdir -p "$pinned" "$guessable"
-  printf 'sentinel\n' >"$pinned/sentinel"
-  printf 'sentinel\n' >"$guessable/sentinel"
-
-  run pgm_lock_acquire
-  if [ "$status" -eq 0 ]; then
-    # Neither racer's directory was silently absorbed.
-    [ -f "$pinned/sentinel" ]
-    [ -f "$guessable/sentinel" ]
-  else
-    [ "$status" -eq 3 ]
-  fi
 }

@@ -911,24 +911,28 @@ EOF
   [ "$status" -eq 13 ]
 }
 
-# --- mutual-exclusion lock (bead pg2-y3a8t) ----------------------------------
+# --- N-slot semaphore, forced --workers 1, GOMAXPROCS capping (pg2-1qcro.3) -
 #
-# A bare `pg-go-mutate` invocation now takes the same lock pg-go-mutate-sweep
-# already used exclusively, sharing it via pg-go-mutate-lib.bash's
-# pgm_lock_acquire/pgm_lock_release. Fail-fast: the second contender exits 3
-# rather than blocking, naming the live holder's pid.
+# A bare `pg-go-mutate` invocation now acquires pg-go-mutate-lib.bash's
+# pgm_sem_acquire/pgm_sem_release semaphore instead of the single exclusive
+# lock (pgm_lock_acquire/pgm_lock_release, bead pg2-y3a8t) it replaces.
+# Default capacity (no pg-go-mutate-tui config rendered) is 1, so a second
+# concurrent invocation still refuses -- but now by BLOCKING until
+# PGM_SEM_TIMEOUT elapses rather than refusing instantly, so these tests set
+# a short timeout to keep the refusal case fast and bounded.
 
-@test "a bare invocation acquires the lock for the run and releases it on success" {
-  target="$(make_module lockheld)"
-  stub="$TEST_DIR/stub-gomu-lockcheck"
+@test "a bare invocation acquires a semaphore slot for the run and releases it on success" {
+  target="$(make_module semheld)"
+  export PGM_SEM_DIR="$TEST_DIR/sem"
+  stub="$TEST_DIR/stub-gomu-semcheck"
   cat >"$stub" <<STUB
 #!/usr/bin/env bash
 if [ "\${1:-}" = version ]; then
   printf 'gomu version %s\n' "\$PGM_TEST_PINNED_VERSION"
   exit 0
 fi
-if [ -d "\$XDG_STATE_HOME/pg-go-mutate-sweep/lock" ]; then
-  touch "$TEST_DIR/lock-was-held"
+if [ -d "\$PGM_SEM_DIR/0" ]; then
+  touch "$TEST_DIR/slot-was-held"
 fi
 cat >mutation-report.json <<JSON
 {"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"$target/fixture.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0}}
@@ -938,47 +942,87 @@ STUB
   export PG_GO_MUTATE_GOMU="$stub"
   run "$SCRIPT" "$target"
   [ "$status" -eq 0 ]
-  # The stub proves the lock existed WHILE the engine ran...
-  [ -e "$TEST_DIR/lock-was-held" ]
+  # The stub proves the slot existed WHILE the engine ran...
+  [ -e "$TEST_DIR/slot-was-held" ]
   # ...and it must be gone again once the run finished successfully.
-  [ ! -d "$XDG_STATE_HOME/pg-go-mutate-sweep/lock" ]
+  [ ! -d "$PGM_SEM_DIR/0" ]
 }
 
-@test "refuses with exit 3 naming the holder pid when another run already holds the lock" {
-  target="$(make_module lockcontended)"
-  mkdir -p "$XDG_STATE_HOME/pg-go-mutate-sweep/lock"
+@test "refuses with exit 3 once a full semaphore's timeout elapses" {
+  target="$(make_module semcontended)"
+  export PGM_SEM_DIR="$TEST_DIR/sem"
+  export PGM_SEM_TIMEOUT=1
+  mkdir -p "$PGM_SEM_DIR/0"
   # $$ (this test process) is alive for the whole test, so kill -0 in
-  # pgm_lock_acquire reads it as a LIVE holder, not a stale one to reclaim.
-  printf '%s %s\n' "$$" "2026-08-17T10:00:00-04:00" \
-    >"$XDG_STATE_HOME/pg-go-mutate-sweep/lock/holder"
+  # pgm_sem_acquire reads it as a LIVE holder, not a stale one to reclaim.
+  printf '%s\n' "$$" >"$PGM_SEM_DIR/0/pid"
   export PG_GO_MUTATE_GOMU="$TEST_DIR/must-not-run"
   printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "$TEST_DIR" >"$PG_GO_MUTATE_GOMU"
   chmod +x "$PG_GO_MUTATE_GOMU"
   run "$SCRIPT" "$target"
   [ "$status" -eq 3 ]
-  [[ "$output" == *"pid $$"* ]]
   # Refused before ever invoking the engine -- the whole point of taking the
-  # lock before pgm_require_go/pgm_require_engine, not after.
+  # semaphore before pgm_require_go/pgm_require_engine, not after.
   [ ! -e "$TEST_DIR/ran" ]
-  # A refusal must not release a lock this process never held.
-  [ -d "$XDG_STATE_HOME/pg-go-mutate-sweep/lock" ]
+  # A refusal must not release a slot this process never held.
+  [ -d "$PGM_SEM_DIR/0" ]
 }
 
-@test "PGM_LOCK_HELD skips the lock entirely, for pg-go-mutate-sweep's own inner call" {
-  target="$(make_module lockheldenv)"
-  mkdir -p "$XDG_STATE_HOME/pg-go-mutate-sweep/lock"
-  printf '%s %s\n' "$$" "2026-08-17T10:00:00-04:00" \
-    >"$XDG_STATE_HOME/pg-go-mutate-sweep/lock/holder"
-  PG_GO_MUTATE_GOMU="$(write_survivor_stub "$target")"
-  export PG_GO_MUTATE_GOMU
-  # Simulates pg-go-mutate-sweep's own inner subprocess call: the SWEEP holds
-  # this lock (recorded above, this test's own pid stands in for it), and this
-  # invocation must complete successfully rather than refuse itself.
-  run env PGM_LOCK_HELD=1 "$SCRIPT" "$target"
+@test "gomu is always invoked with --workers 1, even when the caller passes --workers 8" {
+  target="$(make_module semworkers)"
+  export PGM_SEM_DIR="$TEST_DIR/sem"
+  stub="$TEST_DIR/stub-gomu-semworkers"
+  cat >"$stub" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = version ]; then
+  printf 'gomu version %s\n' "\$PGM_TEST_PINNED_VERSION"
+  exit 0
+fi
+printf '%s\n' "\$*" >>"$TEST_DIR/gomu-argv.log"
+cat >mutation-report.json <<JSON
+{"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"$target/fixture.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0}}
+JSON
+STUB
+  chmod +x "$stub"
+  export PG_GO_MUTATE_GOMU="$stub"
+  run "$SCRIPT" --workers 8 "$target"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"surviving mutants"* ]]
-  # The pre-existing holder must be untouched: a run that skipped acquisition
-  # entirely must not release a lock it never took.
-  [ -d "$XDG_STATE_HOME/pg-go-mutate-sweep/lock" ]
-  [ "$(awk '{print $1}' "$XDG_STATE_HOME/pg-go-mutate-sweep/lock/holder")" = "$$" ]
+  # Even though the caller passed --workers 8, gomu itself must only ever
+  # have seen --workers 1 -- the outer semaphore is the sole concurrency
+  # dimension (design §5.3).
+  grep -q -- '--workers 1' "$TEST_DIR/gomu-argv.log"
+  ! grep -q -- '--workers 8' "$TEST_DIR/gomu-argv.log"
+}
+
+@test "GOMAXPROCS is exported before the engine runs, as nproc/concurrency floored at 1" {
+  target="$(make_module semgomaxprocs)"
+  export PGM_SEM_DIR="$TEST_DIR/sem"
+  stub="$TEST_DIR/stub-gomu-gomaxprocs"
+  cat >"$stub" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = version ]; then
+  printf 'gomu version %s\n' "\$PGM_TEST_PINNED_VERSION"
+  exit 0
+fi
+printf '%s\n' "\$GOMAXPROCS" >"$TEST_DIR/gomaxprocs-seen"
+cat >mutation-report.json <<JSON
+{"totalMutants":1,"killedMutants":0,"results":[{"mutant":{"id":"x","filePath":"$target/fixture.go","line":1,"column":1,"type":"t","original":"a","mutated":"b","description":"d"},"status":"SURVIVED"}],"statistics":{"killed":0,"survived":1,"notViable":0,"timedOut":0,"errors":0}}
+JSON
+STUB
+  chmod +x "$stub"
+  export PG_GO_MUTATE_GOMU="$stub"
+
+  # Default capacity (no pg-go-mutate-tui config rendered) is 1, so
+  # GOMAXPROCS should equal the whole machine's core count.
+  run "$SCRIPT" "$target"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TEST_DIR/gomaxprocs-seen")" = "$(nproc)" ]
+
+  # A capacity far larger than the machine's core count must floor to 1,
+  # never compute (and export) 0.
+  printf '{"concurrency": 999}\n' >"$TEST_DIR/config.json"
+  export PGM_CONFIG_PATH="$TEST_DIR/config.json"
+  run "$SCRIPT" "$target"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TEST_DIR/gomaxprocs-seen")" = "1" ]
 }

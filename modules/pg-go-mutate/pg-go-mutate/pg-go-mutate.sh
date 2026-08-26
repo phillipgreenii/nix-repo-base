@@ -6,8 +6,8 @@
 # builder). Exits 0 whenever it completed an analysis, however many mutants
 # survived (spec: this is a diagnostic, not a gate) -- non-zero is reserved
 # for operational failure (a guard failing, gomu/go absent, invalid flags, an
-# unreadable target, a missing/insane report, or another mutation run holding
-# the mutual-exclusion lock (exit 3, bead pg2-y3a8t)).
+# unreadable target, a missing/insane report, or every concurrency-semaphore
+# slot staying busy past its timeout (exit 3, beads pg2-y3a8t/pg2-1qcro.3)).
 
 usage() {
   cat <<'EOF'
@@ -25,10 +25,12 @@ OPTIONS
   --json            Emit the machine-readable worklist instead of the human one.
   --timeout <sec>   Per-mutant TEST timeout. Default 60. Does NOT bound the
                     compile phase, which the engine runs unbounded.
-  --workers <n>     Parallel workers. Default 1. Above 1, per-mutant verdicts
-                    are NOT reproducible against the same source (measured: a
-                    non-compiling mutant reported KILLED or SURVIVED, and a
-                    viable one reported NOT_VIABLE, across repeats).
+  --workers <n>     IGNORED. Still validated (must be >= 1), but every gomu
+                    invocation is now forced to --workers 1 regardless of this
+                    value -- concurrency comes solely from the semaphore slot
+                    count instead (pg-go-mutate-tui's own `concurrency`
+                    setting). Default 1. Kept for backward-compatible flag
+                    parsing.
   --keep-report     Do not delete the harvested engine report on exit; print
                     its path instead. The worklist output above is unchanged --
                     this only preserves the underlying per-mutant report file.
@@ -179,45 +181,33 @@ guard_target="$(cd "$guard_target" && pwd)"
 
 pgm_validate_flags "$workers" "$timeout" || exit 2
 
-# Mutual exclusion with every other mutation run, bare or under
-# pg-go-mutate-sweep (bead pg2-y3a8t): cross-PROCESS concurrency reintroduces
-# exactly the contention --workers 1 already exists to prevent WITHIN one
-# process. Fail-fast, not block-and-wait -- matches pg-go-mutate-sweep's own
-# behavior and is friendlier to an agent session that should go do other work
-# rather than park on a lock.
+# N-slot semaphore instead of a single exclusive lock (pg2-1qcro.3):
+# concurrency is now bounded by pg-go-mutate-tui's own `concurrency` setting
+# (pgm_sem_capacity), read fresh from the static nix-rendered config on every
+# acquisition -- never cached as runtime-mutable shared state (design
+# §5.3/§11). The common case -- no pg-go-mutate-tui config rendered at all,
+# so capacity defaults to 1 -- behaves exactly like the single exclusive lock
+# this replaces.
 #
-# Skipped entirely when PGM_LOCK_HELD is set: pg-go-mutate-sweep exports it
-# around its own inner invocation of this command, because the SWEEP already
-# holds this identical lock for the unit's whole run, and a second acquire
-# here would refuse every unit the sweep tries (fail-fast, so not a deadlock,
-# but no less fatal to the sweep's ability to make progress). This is an
-# internal/undocumented mechanism for the sweep's own use, not a public flag
-# -- no human is meant to set it by hand, so it is deliberately absent from
-# --help.
-lock_held=0
-if [ -z "${PGM_LOCK_HELD:-}" ]; then
-  pgm_lock_acquire pg-go-mutate || exit 3
-  lock_held=1
-fi
-# Guarded by lock_held so a later, combined trap (installed once the harvested
-# report is known, see report_cleanup below) can call this unconditionally
-# without releasing twice or releasing a lock this process never took.
-# shellcheck disable=SC2329  # invoked only via the trap strings below, never a direct call
-_pgm_lock_release_once() {
-  [ "$lock_held" -eq 1 ] || return 0
-  lock_held=0
-  pgm_lock_release
-}
+# Blocks up to PGM_SEM_TIMEOUT (default one hour) rather than the old lock's
+# instant fail-fast: unlike that lock, several concurrent callers up to the
+# configured capacity are now legitimate, so a caller should wait for a slot
+# to free rather than be refused the moment every slot is briefly busy.
+pgm_sem_acquire "${PGM_SEM_TIMEOUT:-3600}" || exit 3
 # Installed NOW, before any guard below can exit, so every one of those exit
 # paths (pgm_require_go/pgm_require_engine/pgm_has_tests/pgm_tests_healthy,
-# and pgm_run_engine's own `|| exit 1`) still releases the lock via the EXIT
+# and pgm_run_engine's own `|| exit 1`) still releases the slot via the EXIT
 # trap even though none of them calls cleanup explicitly. Superseded below,
 # once the harvested report is known, by a combined trap that ALSO runs
 # report_cleanup -- a later `trap ... EXIT` assignment REPLACES rather than
-# chains, so that later statement is written to call both.
-trap '_pgm_lock_release_once' EXIT
-trap '_pgm_lock_release_once; exit 130' INT
-trap '_pgm_lock_release_once; exit 143' TERM HUP
+# chains, so that later statement is written to call both. pgm_sem_release
+# needs no once-only wrapper (unlike the old lock's release): it is
+# naturally idempotent, so an INT/TERM/HUP handler's own `exit N`
+# re-triggering the EXIT trap, and so calling it twice for the same run, is
+# harmless.
+trap 'pgm_sem_release' EXIT
+trap 'pgm_sem_release; exit 130' INT
+trap 'pgm_sem_release; exit 143' TERM HUP
 
 pgm_require_go || exit 13
 # The engine must exist AND be the pinned build (spec E1). Checked here rather
@@ -290,6 +280,27 @@ while :; do
   ignore_dir="$(dirname "$ignore_dir")"
 done
 
+# Every semaphore-dispatched gomu invocation is forced to --workers 1: the
+# semaphore's slot count is now the SOLE concurrency dimension (design
+# §5.3) -- letting gomu additionally fan out across its own worker pool
+# would multiply concurrency by both dimensions at once, exactly the
+# cross-process contention the semaphore (and the exclusive lock it
+# replaces) exists to prevent. Any --workers value the caller passed on this
+# command's own line is still validated above (pgm_validate_flags) but never
+# reaches the engine -- there is no code path left that forwards it.
+#
+# GOMAXPROCS is capped to this run's fair share of the machine's cores
+# instead of Go's own default of "every core": with capacity-many gomu
+# invocations able to run at once, each defaulting to using every core would
+# multiply core contention by that same capacity. Floored at 1 -- a machine
+# with fewer cores than configured slots must still make forward progress,
+# one core each, rather than computing 0 and leaving GOMAXPROCS unset to
+# Go's uncapped default.
+sem_cap="$(pgm_sem_capacity)"
+gomaxprocs=$(($(nproc) / sem_cap))
+[ "$gomaxprocs" -ge 1 ] || gomaxprocs=1
+export GOMAXPROCS="$gomaxprocs"
+
 # NOT `report="$(pgm_run_engine …)"`. A command substitution would run the engine
 # supervisor in a SUBSHELL, and that subshell would own the private workdir, the
 # engine's pid and the INT/TERM/HUP trap that cleans both up — so a `kill` on THIS
@@ -297,7 +308,7 @@ done
 # That is the exact failure observed on this branch. Called plainly instead, with
 # the path read back from PGM_REPORT_PATH, the traps live in the process a user or
 # agent actually signals.
-pgm_run_engine "$target" "$workers" "$timeout" "$tags" >/dev/null || exit 1
+pgm_run_engine "$target" 1 "$timeout" "$tags" >/dev/null || exit 1
 report="${PGM_REPORT_PATH:-}"
 [ -n "$report" ] || {
   printf 'pg-go-mutate: the engine step reported success but produced no report path\n' >&2
@@ -327,16 +338,15 @@ report_cleanup() {
     rm -f -- "$report"
   fi
 }
-# Chained with _pgm_lock_release_once (never a second, independent `trap`
+# Chained with pgm_sem_release (never a second, independent `trap`
 # statement): a later `trap ... EXIT` assignment REPLACES the earlier one
 # installed above rather than adding to it, so writing these as
-# report_cleanup alone would silently stop releasing the lock from this point
-# on. _pgm_lock_release_once is a no-op if this process never held the lock
-# (PGM_LOCK_HELD case) or already released it, so chaining it here is safe on
-# every path.
-trap 'report_cleanup; _pgm_lock_release_once' EXIT
-trap 'report_cleanup; _pgm_lock_release_once; exit 130' INT
-trap 'report_cleanup; _pgm_lock_release_once; exit 143' TERM HUP
+# report_cleanup alone would silently stop releasing the semaphore slot from
+# this point on. pgm_sem_release is a no-op once the slot is already
+# removed, so chaining it here is safe on every path.
+trap 'report_cleanup; pgm_sem_release' EXIT
+trap 'report_cleanup; pgm_sem_release; exit 130' INT
+trap 'report_cleanup; pgm_sem_release; exit 143' TERM HUP
 
 pgm_report_sane "$report" || exit 1
 
