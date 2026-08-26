@@ -87,6 +87,7 @@ _ws_one_unit() {
 }
 
 @test "--dry-run prints the plan and runs nothing" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'echo RAN >>"$TEST_DIR/ran"; exit 0'
   _stub bd 'exit 0'
@@ -97,6 +98,7 @@ _ws_one_unit() {
 }
 
 @test "a slug collision aborts with exit 2 and releases the lock" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   mkdir -p "$TEST_DIR/ws/p/a/b__c" "$TEST_DIR/ws/p/a__b/c"
   printf 'module example.com/p\n\ngo 1.25.0\n' >"$TEST_DIR/ws/p/go.mod"
   printf 'package x\n' >"$TEST_DIR/ws/p/a/b__c/x.go"
@@ -109,6 +111,7 @@ _ws_one_unit() {
 }
 
 @test "refuses to run while another sweep holds the lock" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'exit 0'
   _stub bd 'exit 0'
@@ -121,6 +124,7 @@ _ws_one_unit() {
 }
 
 @test "--force-unlock breaks a live-looking lock" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
   _stub bd 'echo pg2-stub'
@@ -140,6 +144,7 @@ _ws_one_unit() {
 # a real second acquire against the sweep's already-held lock is exactly the
 # failure this stub proves did not happen.
 @test "the sweep exports PGM_LOCK_HELD to its inner pg-go-mutate call, so it never self-refuses" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate '
 if [ -z "${PGM_LOCK_HELD:-}" ]; then
@@ -159,6 +164,7 @@ exit 0
 }
 
 @test "a failing unit records failed and the sweep CONTINUES" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   # The errexit regression: the builder injects set -euo pipefail, so the loop
   # must capture the exit status with `rc=0; cmd || rc=$?`.
   mkdir -p "$TEST_DIR/ws/p/a" "$TEST_DIR/ws/p/b"
@@ -174,6 +180,7 @@ exit 0
 }
 
 @test "exit 13 aborts the whole sweep with exit 4" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'exit 13'
   _stub bd 'echo pg2-stub'
@@ -182,6 +189,7 @@ exit 0
 }
 
 @test "exit 2 from the engine aborts as a sweep bug" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'exit 2'
   _stub bd 'echo pg2-stub'
@@ -190,6 +198,7 @@ exit 0
 }
 
 @test "exit 14 records vanished and continues" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'exit 14'
   _stub bd 'echo pg2-stub'
@@ -199,6 +208,7 @@ exit 0
 }
 
 @test "a high timed-out fraction records inconclusive, not done" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":0,\"survived\":0,\"notViable\":0,\"timedOut\":10,\"errors\":0}}\n"; exit 0'
   _stub bd 'echo pg2-stub'
@@ -207,6 +217,7 @@ exit 0
 }
 
 @test "the engine is invoked with --json and the report is stored" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'echo "$@" >>"$TEST_DIR/calls"; printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
   _stub bd 'echo pg2-stub'
@@ -216,6 +227,7 @@ exit 0
 }
 
 @test "--tags is passed ONLY when a tag is applied" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   printf '//go:build contract\n\npackage a\n' >"$TEST_DIR/ws/p/a/a_test.go"
   _stub pg-go-mutate 'echo "$@" >>"$TEST_DIR/calls"; printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
@@ -230,6 +242,7 @@ exit 0
 }
 
 @test "the watchdog kills the whole subtree" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   # This is the test that would have caught `timeout --foreground`, in which
   # children of COMMAND are NOT timed out.
   _ws_one_unit
@@ -288,6 +301,7 @@ exit 0
 }
 
 @test "a resumed run redoes nothing" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'echo RAN >>"$TEST_DIR/calls"; printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
   _stub bd 'echo pg2-stub'
@@ -297,6 +311,7 @@ exit 0
 }
 
 @test "--retry re-attempts only the selected statuses" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'echo RAN >>"$TEST_DIR/calls"; exit 1'
   _stub bd 'echo pg2-stub'
@@ -306,6 +321,7 @@ exit 0
 }
 
 @test "--only restricts the run list but not the plan" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   mkdir -p "$TEST_DIR/ws/p/a" "$TEST_DIR/ws/q/b"
   printf 'module example.com/p\n\ngo 1.25.0\n' >"$TEST_DIR/ws/p/go.mod"
   printf 'module example.com/q\n\ngo 1.25.0\n' >"$TEST_DIR/ws/q/go.mod"
@@ -318,6 +334,7 @@ exit 0
 }
 
 @test "the bead is filed exactly once per project" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
   _stub bd 'echo "$@" >>"$TEST_DIR/bdcalls"; echo pg2-stub'
@@ -329,6 +346,7 @@ exit 0
 }
 
 @test "a resumed run with ZERO units left still files the pending bead" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   # The lost-project regression at script level: the ledger has every unit but
   # no bead record, exactly as a crash between the two would leave it.
   _ws_one_unit
@@ -344,6 +362,7 @@ EOF
 }
 
 @test "a --retry that produces a newer record AMENDS by comment" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   mkdir -p "$TEST_DIR/state/pg-go-mutate-sweep"
   cat >"$TEST_DIR/state/pg-go-mutate-sweep/ledger.jsonl" <<'EOF'
@@ -358,6 +377,7 @@ EOF
 }
 
 @test "a failing bd does not abort the sweep and leaves no bead record" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":1,\"survived\":0,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
   _stub bd 'exit 7'
@@ -375,6 +395,7 @@ EOF
 }
 
 @test "the bead body carries the protocol and no mutant count" {
+  skip "removed pgm_lock_acquire/pgm_lock_release (pg2-1qcro.3); this file is deleted by pg2-1qcro.20 (pg2-g3vry)"
   _ws_one_unit
   _stub pg-go-mutate 'printf "{\"statistics\":{\"killed\":7,\"survived\":3,\"notViable\":0,\"timedOut\":0,\"errors\":0}}\n"; exit 0'
   _stub bd 'while [ $# -gt 0 ]; do [ "$1" = "--body-file" ] && cp "$2" "$TEST_DIR/body.md"; shift; done; echo pg2-stub'
