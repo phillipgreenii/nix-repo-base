@@ -18,7 +18,7 @@ in
       metricsTargets.pg-go-mutate-tui = {
         port = 9464;
       };
-      alertRuleFiles = [ ../../modules/pg-go-mutate/pg-go-mutate-tui/alerting.yaml ];
+      alertRuleFiles = [ ../../../modules/pg-go-mutate/pg-go-mutate-tui/alerting.yaml ];
     };
   };
 }
