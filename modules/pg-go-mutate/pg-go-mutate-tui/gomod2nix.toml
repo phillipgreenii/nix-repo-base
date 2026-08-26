@@ -73,6 +73,10 @@ schema = 3
     version = 'v0.0.0-20191010083416-a7dc8b61c822'
     hash = 'sha256-79URDDFenmGc9JZu+5AXHToMrtTREHb3BC84b/gym9Q='
 
+  [mod.'github.com/phillipgreenii/x']
+    version = 'v0.0.0-20260826191330-f6859c12513d'
+    hash = 'sha256-Z7xGVeT6NxIbQmyI+hyaP2AiYdO1gIrdI0LsZSAenLE='
+
   [mod.'github.com/prometheus/client_golang']
     version = 'v1.24.1'
     hash = 'sha256-HAOFVYyPiU7hVS1XXMMjkbGgTT7/UN0zVHXYOnjr7is='
