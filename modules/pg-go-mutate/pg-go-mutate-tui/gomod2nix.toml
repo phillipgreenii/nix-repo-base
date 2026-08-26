@@ -74,8 +74,8 @@ schema = 3
     hash = 'sha256-79URDDFenmGc9JZu+5AXHToMrtTREHb3BC84b/gym9Q='
 
   [mod.'github.com/phillipgreenii/x']
-    version = 'v0.0.0-20260826191330-f6859c12513d'
-    hash = 'sha256-Z7xGVeT6NxIbQmyI+hyaP2AiYdO1gIrdI0LsZSAenLE='
+    version = 'v0.0.0-20260826194451-9df7481089ea'
+    hash = 'sha256-eCsBUtbDZ5We0B2icN02k069rZCntX5jObeMc4Elntg='
 
   [mod.'github.com/prometheus/client_golang']
     version = 'v1.24.1'
