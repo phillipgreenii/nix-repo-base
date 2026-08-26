@@ -1,0 +1,73 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: pg-go-mutate-tui
+    folder: pg-go-mutate-tui
+    interval: 1m
+    rules:
+      - uid: pg-go-mutate-tui-command-execution-errors
+        title: pg-go-mutate-tui command execution errors
+        condition: C
+        for: 5m
+        # An idle period between TUI sessions is normal, not a paging
+        # condition -- the exporter simply isn't running, which produces no
+        # samples at all, and that must never alert.
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "pg-go-mutate-tui failed to execute pg-go-mutate"
+          description: "pg-go-mutate-tui recorded a command-execution error (the pg-go-mutate binary could not be started, or exited abnormally) in the last 15 minutes."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: increase(pg_go_mutate_tui_command_execution_total{outcome="error"}[15m])
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+
+      - uid: pg-go-mutate-tui-unhealthy-burst
+        title: pg-go-mutate-tui burst of unhealthy packages
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "pg-go-mutate-tui is seeing a burst of unhealthy packages"
+          description: "More than 5 files were reported unhealthy (failing tests or vet before mutation) in the last 15 minutes -- likely an environment problem (go/gomu) rather than isolated per-package gaps."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: increase(pg_go_mutate_tui_run_result_total{status="unhealthy"}[15m])
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: gt, params: [5] }

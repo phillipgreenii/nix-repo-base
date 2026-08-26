@@ -891,15 +891,17 @@
             };
 
             # Hermetically verify the exported darwinModules.default (the aggregate
-            # the machine actually imports) registers logSources.pn.
+            # the machine actually imports) registers logSources.pn, and --
+            # since pg-go-mutate-tui's darwin module now shares this same
+            # aggregate -- its logSources/metricsTargets/alertRuleFiles too.
             pn-logsources-registration =
               let
                 eval = pkgs.lib.evalModules {
                   modules = [
                     # Narrow stub: declares just enough of the support-apps observability
-                    # surface for the pn module to type-check standalone (the real option
-                    # lives in phillipgreenii-nix-support-apps). Mirrors that flake's
-                    # crossFlakeOptionStubs.
+                    # surface for the pn and pg-go-mutate-tui modules to type-check
+                    # standalone (the real options live in phillipgreenii-nix-support-apps).
+                    # Mirrors that flake's crossFlakeOptionStubs.
                     {
                       options.phillipgreenii.observability = {
                         enable = pkgs.lib.mkEnableOption "observability (stub)";
@@ -907,19 +909,52 @@
                           type = pkgs.lib.types.attrsOf pkgs.lib.types.anything;
                           default = { };
                         };
+                        metricsTargets = pkgs.lib.mkOption {
+                          type = pkgs.lib.types.attrsOf (
+                            pkgs.lib.types.submodule {
+                              options.port = pkgs.lib.mkOption { type = pkgs.lib.types.port; };
+                            }
+                          );
+                          default = { };
+                        };
+                        alertRuleFiles = pkgs.lib.mkOption {
+                          type = pkgs.lib.types.listOf pkgs.lib.types.path;
+                          default = [ ];
+                        };
                       };
                       config.phillipgreenii.observability.enable = true;
                     }
                     ./darwin
                   ];
                 };
+                obs = eval.config.phillipgreenii.observability;
               in
               pkgs.runCommand "pn-logsources-registration" { } (
-                if eval.config.phillipgreenii.observability.logSources ? pn then
-                  "touch $out"
-                else
+                if !(obs.logSources ? pn) then
                   throw "pn darwin module did not register logSources.pn"
+                else if !(obs.logSources ? pg-go-mutate-tui) then
+                  throw "pg-go-mutate-tui darwin module did not register logSources.pg-go-mutate-tui"
+                else if (obs.metricsTargets.pg-go-mutate-tui or null) == null then
+                  throw "pg-go-mutate-tui darwin module did not register metricsTargets.pg-go-mutate-tui"
+                else if obs.metricsTargets.pg-go-mutate-tui.port != 9464 then
+                  throw "pg-go-mutate-tui darwin module registered the wrong metrics port"
+                else if obs.alertRuleFiles == [ ] then
+                  throw "pg-go-mutate-tui darwin module did not register an alertRuleFiles entry"
+                else
+                  "touch $out"
               );
+
+            # Regression guard: alerting.yaml's rules MUST set noDataState: OK
+            # explicitly (an idle period between TUI sessions is normal, not a
+            # paging condition).
+            pg-go-mutate-tui-alerting-nodata = pkgs.runCommand "pg-go-mutate-tui-alerting-nodata" { } ''
+              if grep -q 'noDataState: OK' ${./modules/pg-go-mutate/pg-go-mutate-tui/alerting.yaml}; then
+                touch $out
+              else
+                echo "modules/pg-go-mutate/pg-go-mutate-tui/alerting.yaml is missing 'noDataState: OK'" >&2
+                exit 1
+              fi
+            '';
 
             # Hermetically verify home/pg-go-mutate-tui/default.nix actually
             # renders its `settings` option to a config.json file, and that

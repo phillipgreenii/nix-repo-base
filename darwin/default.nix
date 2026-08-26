@@ -6,5 +6,6 @@
 {
   imports = [
     ./modules/pn
+    ./modules/pg-go-mutate-tui
   ];
 }
