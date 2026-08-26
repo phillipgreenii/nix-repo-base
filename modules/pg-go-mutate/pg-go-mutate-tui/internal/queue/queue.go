@@ -34,6 +34,7 @@ type Queue struct {
 	retryBackoff    time.Duration
 	pending         []entry
 	lastEmptyRefill time.Time
+	projectFilter   map[string]bool
 }
 
 // NewQueue returns a Queue whose NeedsRefill reports true whenever its
@@ -78,8 +79,15 @@ func (q *Queue) Refill(candidates []discover.Package, recency RecencyLookup, l *
 	sort.Slice(sorted, func(i, j int) bool {
 		return recency(sorted[i].PkgPath).After(recency(sorted[j].PkgPath))
 	})
+	q.mu.Lock()
+	filter := q.projectFilter
+	q.mu.Unlock()
+
 	added := 0
 	for _, pkg := range sorted {
+		if len(filter) > 0 && !filter[pkg.ProjectKey] {
+			continue
+		}
 		hash, err := pkghash.Compute(pkg.AbsPath)
 		if err != nil {
 			return added, err
@@ -112,6 +120,17 @@ func (q *Queue) Pop() (file, pkgHash string, ok bool) {
 	e := q.pending[0]
 	q.pending = q.pending[1:]
 	return e.file, e.pkgHash, true
+}
+
+// SetProjectFilter restricts future Refill calls to only the given
+// projects, keyed by discover.Package.ProjectKey -- for the primary
+// screen's per-project include/exclude checkboxes (debounced project-filter
+// wiring, Task 16). A nil or empty map means no restriction: every project
+// is eligible, matching Refill's behavior before this method existed.
+func (q *Queue) SetProjectFilter(included map[string]bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.projectFilter = included
 }
 
 // RecordEmptyRefill marks now as the start of the retry backoff window,

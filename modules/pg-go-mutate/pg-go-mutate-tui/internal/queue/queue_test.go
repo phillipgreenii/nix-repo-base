@@ -3,6 +3,7 @@ package queue
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,6 +95,36 @@ func TestRetryBackoffElapsed(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if !q.RetryBackoffElapsed() {
 		t.Fatal("must be elapsed after the backoff duration")
+	}
+}
+
+func TestSetProjectFilterExcludesNonIncludedProjectsFromRefill(t *testing.T) {
+	root := t.TempDir()
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	q := NewQueue(0, 10, time.Minute)
+	q.SetProjectFilter(map[string]bool{"keep": true})
+
+	kept := writePkg(t, root, "keeppkg", "package keeppkg\nfunc A() {}\n")
+	kept.ProjectKey = "keep"
+	skipped := writePkg(t, root, "skippkg", "package skippkg\nfunc B() {}\n")
+	skipped.ProjectKey = "skip"
+
+	added, err := q.Refill([]discover.Package{kept, skipped}, func(string) time.Time { return time.Now() }, l)
+	if err != nil {
+		t.Fatalf("Refill: %v", err)
+	}
+	if added != 1 {
+		t.Fatalf("expected 1 file added (the included project only), got %d", added)
+	}
+	file, _, ok := q.Pop()
+	if !ok {
+		t.Fatal("expected one queued file")
+	}
+	if !strings.Contains(file, "keeppkg") {
+		t.Fatalf("expected the queued file to be from the included project, got %q", file)
+	}
+	if _, _, ok := q.Pop(); ok {
+		t.Fatal("expected the excluded project's file to never be queued")
 	}
 }
 

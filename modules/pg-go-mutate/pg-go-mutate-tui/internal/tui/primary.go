@@ -83,7 +83,11 @@ func RenderPrimary(s PrimaryState) string {
 	}
 
 	b.WriteString("\n[↑↓] navigate  [tab] expand/collapse  [space] toggle selection  [R] force reload\n")
-	b.WriteString("[Q] queue  [H] history  [B] beads  [p] pause/resume  [c] concurrency  [q] quit\n")
+	// No [c] key here: concurrency has no live-resize implementation (design
+	// §5.3's "total slots come from static config, never inflated" holds for
+	// v1), and the header above already displays the configured value
+	// read-only -- a footer hint would imply an adjustable key that isn't.
+	b.WriteString("[Q] queue  [H] history  [B] beads  [p] pause/resume  [q] quit\n")
 
 	return b.String()
 }
