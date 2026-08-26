@@ -120,9 +120,26 @@ in
           # no-network `nix flake check` sandbox that runs checks.pre-commit
           # (bead pg2-6wly). It is instead a dedicated, sandbox-safe check per Go
           # module (checks.<module>-golangci) via gomod2nix's vendored dep env —
-          # see lib/go-builders.nix `mkGoLint`. Repos wanting local commit/push-time
-          # Go lint feedback can add their own hook via `extraHooks` (e.g. at
-          # stages = [ "pre-push" ] to keep it out of the sandboxed check).
+          # see lib/go-builders.nix `mkGoLint`.
+          #
+          # AMENDED HK-2 (design spec
+          # docs/superpowers/specs/2026-08-24-pg-test-runner-design.md, section 5,
+          # superseding the git-hook speed evaluation doc's blanket "no git hook
+          # may perform thorough verification" for the label-`unit` tier): a git
+          # hook MAY run label-`unit` tests directly via `pg-test-runner`. A git
+          # hook MUST NOT invoke nix (build, develop, run, or flake evaluation) or
+          # run any non-unit test kind -- REGARDLESS of which stage it runs at.
+          # Staging a `nix build`/`nix run` hook at `stages = [ "pre-push" ]`
+          # merely moves it outside the sandboxed `checks.pre-commit` run; it does
+          # NOT stop it from being a nix-invoking git hook, and that loophole is
+          # exactly what this amendment closes. (repo-base's own former
+          # `golangci-lint-prepush` `extraHooks` entry did precisely this -- a
+          # pre-push hook that shelled out to `nix build` -- and was removed for
+          # it; bead pg2-lxz3o.) A repo wanting local commit-time Go feedback
+          # short of the full `nix flake check` should add a `pg-test-runner`-based
+          # `extraHooks` entry instead (see repo-base's own `run-unit-tests` hook,
+          # top-level in this repo's flake.nix, for the shape) -- never one that
+          # invokes nix.
         }
         // resolvedExtraHooks;
       };

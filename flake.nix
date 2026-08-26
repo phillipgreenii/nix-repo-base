@@ -68,34 +68,67 @@
       # phillipgreenii.{src, pre-commit.src} default to inputs.self via the
       # checks and pre-commit modules; no explicit settings needed here.
 
-      # Local pre-push golangci-lint feedback (bead pg2-9xo3). repo-base ONLY:
-      # set via `extraHooks` so it (a) merges into repo-base's OWN hook set, not
-      # the shared standard set that other consumers of flake-modules/pre-commit.nix
-      # inherit, and (b) runs at the `pre-push` stage, so it is SKIPPED by the
-      # sandboxed `checks.pre-commit` derivation (which runs `pre-commit run
-      # --all-files` at the default `pre-commit` stage — git-hooks modules/
-      # pre-commit.nix) yet still fires on local `git push`, outside the sandbox.
-      # It reuses the offline gomod2nix checks (checks.<module>-golangci) that
-      # replaced the old network `-mod=mod` hook (pg2-6wly), so local feedback
-      # matches CI exactly with no drift. Function form (pkgs -> hooks) so the
-      # nix invocation follows the committing machine's system.
+      # prek rewiring (design spec
+      # docs/superpowers/specs/2026-08-24-pg-test-runner-design.md, section 3;
+      # bead pg2-lxz3o, workstream 5). This REPLACES the former
+      # `golangci-lint-prepush` hook (bead pg2-9xo3), which ran `nix build`
+      # from a `pre-push` git hook -- exactly what the amended HK-2 ruling
+      # (spec section 5; see also the rewritten NOTE in
+      # flake-modules/pre-commit.nix) now forbids, regardless of stage. The
+      # hermetic Go-lint checks that hook reused (checks.pn-golangci /
+      # checks.pjira-golangci, via lib/go-builders.nix `mkGoLint`) are
+      # untouched by this removal -- only the git-hook wrapper around them is
+      # gone; they remain reachable via `nix flake check` / `nix build`.
+      #
+      # Function form (pkgs -> hooks) so the runner-presence probe below
+      # follows the committing machine's own PATH/system, mirroring the
+      # removed hook's own rationale.
       phillipgreenii.pre-commit.extraHooks = pkgs: {
-        golangci-lint-prepush = {
+        run-unit-tests = {
           enable = true;
-          name = "golangci-lint (pre-push; offline gomod2nix checks)";
-          entry = "${pkgs.writeShellScript "golangci-lint-prepush" ''
-            set -euo pipefail
-            # Reuse the sandbox-safe offline checks (see checks.pn-golangci /
-            # checks.pjira-golangci in this flake). `.#` resolves this repo's
-            # flake against the working tree; both Go modules are linted.
-            exec nix build --no-link \
-              ".#checks.${pkgs.stdenv.hostPlatform.system}.pn-golangci" \
-              ".#checks.${pkgs.stdenv.hostPlatform.system}.pjira-golangci"
+          name = "unit tests (changed projects)";
+          # entry is a small wrapper script (spec section 3): inside the
+          # sandboxed `checks.pre-commit` derivation -- detected via the
+          # SANCTIONED positive indicator NIX_BUILD_TOP (ADR 0024: "nix sets
+          # it only inside a builder"; the design spec also names
+          # IN_NIX_BUILD, which does not appear anywhere in this repo's
+          # conventions as an actual nix-set variable -- modules/pn and ADR
+          # 0024 both key on NIX_BUILD_TOP alone -- so it is checked too as a
+          # harmless no-op belt-and-suspenders, but NIX_BUILD_TOP is what
+          # actually fires) -- the hermetic checks.* tier already covers
+          # every project's unit tests directly against source there, so
+          # this prints a skip notice and exits 0 rather than re-running
+          # them. Outside the sandbox it execs pg-test-runner against this
+          # repo's OWN rendered config, threaded via the
+          # packages.pg-test-runner-repo-config export below -- the exact
+          # same pgTestRunnerRepoConfigJson derivation the
+          # pg-test-runner-repo-config-ignores-bash-builders-tests check
+          # exercises, referenced rather than re-rendered here. The runner
+          # itself is resolved from the committer's PATH via `command -v`,
+          # never hardcoded to a /nix/store path: a prek hook's `entry` runs
+          # in the committer's actual shell PATH, not through this flake's
+          # own `pkgs`, and only the CONFIG is a static per-repo artifact
+          # safe to pin via Nix interpolation (spec section 3). A MISSING
+          # pg-test-runner MUST fail loudly, never silently skip -- an
+          # absence-keyed skip would let any PATH breakage no-op the only
+          # commit-time test gate, which this workspace treats as hook
+          # bypassing.
+          entry = "${pkgs.writeShellScript "run-unit-tests" ''
+            set -eo pipefail
+            if [[ -n "$IN_NIX_BUILD" || -n "$NIX_BUILD_TOP" ]]; then
+              echo "run-unit-tests: inside the nix sandbox; skipping (checks.* already covers this)"
+              exit 0
+            fi
+            if ! command -v pg-test-runner >/dev/null 2>&1; then
+              echo "run-unit-tests: pg-test-runner not found on PATH -- provision it via the HM profile before committing (see docs/superpowers/specs/2026-08-24-pg-test-runner-design.md)" >&2
+              exit 11
+            fi
+            exec pg-test-runner --config ${
+              self.packages.${pkgs.stdenv.hostPlatform.system}.pg-test-runner-repo-config
+            } --labels unit --files "$@"
           ''}";
-          files = "\\.go$";
-          pass_filenames = false;
+          pass_filenames = true;
           require_serial = true;
-          stages = [ "pre-push" ];
         };
       };
 
@@ -259,6 +292,15 @@
             # pg-test-runner: label-driven, nix-free-at-runtime direct test
             # runner (spec docs/superpowers/specs/2026-08-24-pg-test-runner-design.md).
             pg-test-runner = pgTestRunnerScripts.pg-test-runner.script;
+
+            # This repo's own rendered pg-test-runner config (pgTestRunnerRepoConfig
+            # above), exposed as a package SOLELY so the `run-unit-tests` prek hook
+            # (phillipgreenii.pre-commit.extraHooks, top-level in this file) can
+            # reference this EXACT derivation via `self.packages.${system}` --
+            # extraHooks is a top-level (non-perSystem) option, so it cannot see
+            # this `let` binding directly. Also exercised by the
+            # pg-test-runner-repo-config-ignores-bash-builders-tests check below.
+            pg-test-runner-repo-config = pgTestRunnerRepoConfigJson;
 
             # This repo's own Claude Code marketplace, bundled into the store with
             # content-derived per-plugin version stamping. Identity:
