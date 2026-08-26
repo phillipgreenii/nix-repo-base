@@ -234,6 +234,28 @@ EOF
   [ "$before" != "$after" ]
 }
 
+# Task 5, Step 6: cross-check the bash algorithm above against the Go
+# implementation (internal/pkghash.Compute) on the same fixture directory.
+# `go run` resolves its main module from the CURRENT WORKING DIRECTORY, not
+# from the target package's location, so it must be invoked with cwd inside
+# the pg-go-mutate-tui module -- running it from $BATS_TEST_DIRNAME (this
+# file's own directory, outside that module) fails with "cannot find main
+# module". The fixture itself lives under a `testdata/` directory so `go
+# build`/`go vet ./...` in that module never try to compile it.
+@test "pgm_pkg_hash matches the Go pkghash.Compute implementation on the same fixture" {
+  tui_module_dir="$BATS_TEST_DIRNAME/../../pg-go-mutate-tui"
+  fixture_dir="$tui_module_dir/internal/pkghash/testdata/fixture"
+
+  run pgm_pkg_hash "$fixture_dir"
+  [ "$status" -eq 0 ]
+  bash_hash="$output"
+
+  go_hash="$(cd "$tui_module_dir" && go run ./internal/pkghash/cmd/hashprint "$fixture_dir")"
+
+  [ -n "$bash_hash" ]
+  [ "$bash_hash" = "$go_hash" ]
+}
+
 @test "pgm_guard_cache_get misses when nothing has been cached for that hash" {
   export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"
   run pgm_guard_cache_get "$TEST_DIR/pkg" "somehash"
