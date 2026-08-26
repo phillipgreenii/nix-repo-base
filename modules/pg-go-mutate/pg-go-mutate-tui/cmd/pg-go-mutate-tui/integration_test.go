@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,4 +58,32 @@ func TestWiredProgramDiscoversAndAnalysesAFileEndToEnd(t *testing.T) {
 
 func TestNewTUIModelImplementsTeaModel(t *testing.T) {
 	var _ tea.Model = newTUIModel(&app{q: queue.NewQueue(1, 10, time.Minute)})
+}
+
+// TestNewAppErrorsWhenNeitherXDGNorHOMEIsSet guards against a silent
+// CWD-relative fallback: if XDG_CONFIG_HOME/XDG_STATE_HOME and HOME are all
+// unset, newApp must fail rather than resolve config/state paths relative
+// to whatever directory the process happens to be run from.
+func TestNewAppErrorsWhenNeitherXDGNorHOMEIsSet(t *testing.T) {
+	for _, v := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "HOME"} {
+		t.Setenv(v, "")
+		if err := os.Unsetenv(v); err != nil {
+			t.Fatalf("unset %s: %v", v, err)
+		}
+	}
+	if _, err := newApp(appOptions{Root: t.TempDir()}); err == nil {
+		t.Fatal("expected an error when neither XDG_CONFIG_HOME/XDG_STATE_HOME nor HOME is set")
+	}
+}
+
+// TestMetricsAddrIsLoopbackOnly guards against re-widening the /metrics
+// bind address to all interfaces.
+func TestMetricsAddrIsLoopbackOnly(t *testing.T) {
+	host, _, err := net.SplitHostPort(metricsAddr)
+	if err != nil {
+		t.Fatalf("metricsAddr %q: %v", metricsAddr, err)
+	}
+	if host != "127.0.0.1" && host != "localhost" {
+		t.Fatalf("metricsAddr %q binds host %q, want loopback only", metricsAddr, host)
+	}
 }

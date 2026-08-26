@@ -26,6 +26,13 @@ import (
 
 var version = "dev"
 
+// metricsAddr binds the /metrics endpoint to loopback only, matching every
+// other metricsTargets registration in this workspace ("Port of the app's
+// Prometheus /metrics endpoint (on 127.0.0.1)") -- a bare ":9464" binds all
+// interfaces, exposing operational data (queue depth, error rates) to
+// anything else on the local network.
+const metricsAddr = "127.0.0.1:9464"
+
 type appOptions struct {
 	Root        string
 	Concurrency int
@@ -44,26 +51,42 @@ type app struct {
 }
 
 // xdgConfigHome and xdgStateHome apply the same "${VAR:-default}" fallback
-// pg-go-mutate's bash side and design §11 both require -- a bare os.Getenv
-// with no fallback resolves to a bogus CWD-relative path on any machine that
-// hasn't explicitly exported these vars, which is common on macOS.
-func xdgConfigHome() string {
+// pg-go-mutate's bash side and design §11 both require. Both FAIL rather
+// than fall back to a bare os.Getenv("HOME") when HOME is also unset: an
+// empty HOME would silently resolve to a CWD-relative path ("./.config",
+// "./.local/state"), so wherever the binary happens to be invoked from
+// would decide where its config is read from and its state/logs are
+// written -- a caller-controlled relative path, not a hardened absolute
+// one.
+func xdgConfigHome() (string, error) {
 	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return v
+		return v, nil
 	}
-	return filepath.Join(os.Getenv("HOME"), ".config")
+	home := os.Getenv("HOME")
+	if home == "" {
+		return "", errors.New("pg-go-mutate-tui: neither XDG_CONFIG_HOME nor HOME is set")
+	}
+	return filepath.Join(home, ".config"), nil
 }
 
-func xdgStateHome() string {
+func xdgStateHome() (string, error) {
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
-		return v
+		return v, nil
 	}
-	return filepath.Join(os.Getenv("HOME"), ".local", "state")
+	home := os.Getenv("HOME")
+	if home == "" {
+		return "", errors.New("pg-go-mutate-tui: neither XDG_STATE_HOME nor HOME is set")
+	}
+	return filepath.Join(home, ".local", "state"), nil
 }
 
 func newApp(opts appOptions) (*app, error) {
 	logger := obslog.New()
-	cfgPath := filepath.Join(xdgConfigHome(), "pg-go-mutate-tui", "config.json")
+	configHome, err := xdgConfigHome()
+	if err != nil {
+		return nil, err
+	}
+	cfgPath := filepath.Join(configHome, "pg-go-mutate-tui", "config.json")
 	staticCfg, err := config.LoadStatic(cfgPath, logger)
 	if err != nil {
 		return nil, err
@@ -73,7 +96,11 @@ func newApp(opts appOptions) (*app, error) {
 		concurrency = opts.Concurrency
 	}
 
-	statePath := filepath.Join(xdgStateHome(), "pg-go-mutate-tui", "ledger.jsonl")
+	stateHome, err := xdgStateHome()
+	if err != nil {
+		return nil, err
+	}
+	statePath := filepath.Join(stateHome, "pg-go-mutate-tui", "ledger.jsonl")
 	l := ledger.New(statePath)
 	q := queue.NewQueue(staticCfg.LowWatermark, staticCfg.HighWatermark, staticCfg.RefillRetry)
 	m := metrics.New()
@@ -271,7 +298,7 @@ func run(args []string) int {
 		}
 	}()
 	go func() {
-		if err := http.ListenAndServe(":9464", a.metrics.Handler()); err != nil {
+		if err := http.ListenAndServe(metricsAddr, a.metrics.Handler()); err != nil {
 			obslog.New().Error("metrics server failed", "error", err)
 		}
 	}()
