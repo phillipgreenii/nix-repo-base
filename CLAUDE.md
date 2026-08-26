@@ -183,7 +183,7 @@ package build. The per-source digest now ALSO appears in the derivation `version
 python builders (matching Go), so it surfaces in `nvd` / the darwin "Package changes" report
 (ADR [0011](docs/adr/0011-source-digest-in-derivation-version.md)).
 
-## Mutation testing (`pg-go-mutate`, `pg-go-mutate-sweep`)
+## Mutation testing (`pg-go-mutate`, `pg-go-mutate-tui`)
 
 `pg-go-mutate` reports which assertions a Go package's tests are missing. Every surviving mutant is
 an assertion the tests do not make. It is a diagnostic, not a gate: it always exits 0 on a completed
@@ -191,39 +191,53 @@ analysis however many mutants survived, records nothing, and tracks no score ove
 strengthening tests; see the `go-test-gaps` skill for the workflow. Design:
 `docs/superpowers/specs/2026-08-14-pg-go-mutate-design.md`.
 
-A completed analysis still exits 0, but a GUARD failure now identifies itself, so a caller can tell
-"this package needs assertions" from "this package never ran": `10` no test files, `11` not
-enumerable, `12` unhealthy (does not vet, or tests already fail on unmutated source), `13`
-environment precondition failed (`go` or the pinned engine absent or mismatched), `14` target path
-absent or not a directory. `2` remains usage error, and `1` stays reserved for generic/unexpected
-failure — callers MUST NOT give `1` a branchable meaning. The new codes are strictly additive:
-every prior consumer asserted only the 0/non-zero dichotomy. Allocation and rationale: ADR
-[0026](docs/adr/0026-mutation-sweep-state-contract.md).
+The target is a single `.go` file or a package directory (walked recursively) — a file target
+guards its containing package. A GUARD failure identifies itself, so a caller can tell "this
+target needs assertions" from "it never ran": `10` no test files, `11` not enumerable, `12`
+unhealthy (does not vet, or tests already fail on unmutated source), `13` environment
+precondition failed (`go` or the pinned engine absent or mismatched), `14` target path absent or
+not a directory/file. `3` means every concurrency semaphore slot is held by another mutation run.
+`2` remains usage error, and `1` stays reserved for generic/unexpected failure — callers MUST NOT
+give `1` a branchable meaning.
 
-`pg-go-mutate-sweep` is the unattended sibling. It runs `pg-go-mutate` over every Go package in the
-workspace one `(project, package)` unit at a time, and is resumable — re-running the same command
-continues from where it stopped, and by default re-attempts no already-recorded unit, so a run
-always makes forward progress and cannot loop on a broken one. Unlike `pg-go-mutate` it DOES record
-durable state, under `${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-sweep/`: an append-only
-`ledger.jsonl`, replayed (last record per key) to derive what is done, plus one worklist JSON per
-unit. The ledger records unit STATUS only — `done`, `no-tests`, `failed`, `timeout`, … — and MUST
-NOT record a survivor count, a percentage, or any score. That prohibition is the family's, not the
-file format's: it binds beads, commit messages and docs equally, because a worklist is actionable
-and a score is not. On finishing a project the sweep files exactly ONE triage bead for it and MUST
-NOT file an epic — an open epic never leaves `bd ready`.
+Two mechanisms exist so repeated file-granular invocations against the same package stay cheap
+and bounded:
 
-Read `tags_withheld` on a unit's record before acting on its survivors: non-empty means that unit's
-tests were partly gated behind build tags that were not applied, so the survivors are UNANALYSED.
-Such a unit records `done` and is otherwise indistinguishable from a genuine gap.
+- A **per-package guard cache**, keyed on (slugged package dir, package content hash), under
+  `${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate/guard-cache/`: a second file in the same
+  unchanged package skips re-running the health guard; a cached `FAIL` exits `12` without
+  re-running it. Editing any file in the package invalidates the cache.
+- An **N-slot semaphore** (`${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate/sem/`, capacity from
+  the static config's `concurrency`) replacing a single exclusive lock. Every semaphore-dispatched
+  `gomu run` is forced to `--workers 1` and `GOMAXPROCS` is capped to `nproc / concurrency`
+  regardless of what the caller passed, so concurrent runs cannot oversubscribe the machine.
 
-The sweep resolves `pg-go-mutate` and `bd` from `PATH`, and neither MUST be added as a nixpkgs
+Schema and rationale for both, plus the ledger below: ADR
+[0027](docs/adr/0027-pg-go-mutate-tui-state-contract.md) (supersedes
+[0026](docs/adr/0026-mutation-sweep-state-contract.md)).
+
+`pg-go-mutate-tui` is the sole orchestrator for unattended and multi-file mutation sweeps — an
+interactive, file-granular, resumable Go TUI (project/file discovery, a durable ledger with
+replay/resume, a dynamic work queue, a concurrent worker pool, popups for the queue/history/beads).
+It resolves `pg-go-mutate` and `bd` from `PATH`, and neither MUST be added as a nixpkgs
 `runtimeDep`: `runtimeDeps` are appended with `--suffix`, so listing them could not displace the
 machine's wrapper but WOULD supply a silent fallback to an unwrapped `pg-go-mutate` (no engine pin,
 no version assertion) or an unmanaged `bd` (losing `BEADS_DOLT_AUTO_START=0`, so it can spawn a
-competing dolt server). Neither command MUST be added to CI, a pre-commit hook, or any `checks.*`
-derivation that performs a mutation run — a sweep costs hours and gates nothing. Registering the
-sweep's bats check is the only `checks.*` entry in scope. Design:
-`docs/superpowers/specs/2026-08-17-pg-go-mutate-sweep-design.md`.
+competing dolt server).
+
+Its own ledger, at `${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-tui/ledger.jsonl`, is an
+append-only JSON-lines log replayed (last record per file path) to derive what has already been
+analysed at what package hash; that hash is captured once, when a file is selected for work, not
+recomputed later. The ledger records STATUS only — `done`, `no-tests`, `failed`, … — and MUST NOT
+record a survivor count, a percentage, or any score; that prohibition is the family's, not the
+file format's, and binds beads, commit messages, and docs equally, because a worklist is
+actionable and a score is not. On finishing every file in a package it files (or amends) exactly
+ONE `P3` triage bead, labeled `go-test-gaps` plus the caller's repo label, carrying the file-status
+tally, and MUST NOT file an epic — an open epic never leaves `bd ready`. Its own `/metrics`
+endpoint (Prometheus, `127.0.0.1:9464`) and JSONL log likewise expose operational counters only,
+never a survivor/kill count. Neither `pg-go-mutate` nor `bd` MUST be added to CI, a pre-commit
+hook, or any `checks.*` derivation that performs a mutation run — a sweep costs hours and gates
+nothing. Design: `docs/superpowers/specs/2026-08-25-pg-go-mutate-tui-design.md`.
 
 ### Verifying the engine pin in a post-apply check
 

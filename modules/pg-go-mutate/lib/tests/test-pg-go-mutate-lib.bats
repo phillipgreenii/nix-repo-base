@@ -14,11 +14,12 @@ setup() {
   # HOME/GOCACHE-under-TMPDIR convention lib/go-builders.nix already uses for
   # the same reason.
   export HOME="$TEST_DIR" GOCACHE="$TEST_DIR/go-build"
-  # BOTH are load-bearing, matching pg-go-mutate-sweep's own lock tests: the
-  # shared pgm_lock_root() reads XDG_STATE_HOME FIRST, and it IS commonly
-  # exported in this workspace's ambient environment, so overriding HOME alone
-  # would let a lock test append to (and contend for) the real machine-wide
-  # lock at the operator's actual state root.
+  # BOTH are load-bearing: the semaphore dir defaults to
+  # ${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate/sem, and
+  # XDG_STATE_HOME IS commonly exported in this workspace's ambient
+  # environment, so overriding HOME alone would let a semaphore test append
+  # to (and contend for) the real machine-wide slot directory at the
+  # operator's actual state root.
   export XDG_STATE_HOME="$TEST_DIR/state"
 
   # `go` also writes telemetry counters under
@@ -840,8 +841,7 @@ EOF
 # --- pgm_sem_capacity / pgm_sem_acquire / pgm_sem_release (pg2-1qcro.3) ------
 #
 # Generalizes the old single exclusive lock (formerly pgm_lock_acquire/
-# pgm_lock_release, bead pg2-y3a8t, itself ported/adapted from
-# pg-go-mutate-sweep's own former test file) to pgm_sem_capacity numbered
+# pgm_lock_release, bead pg2-y3a8t) to pgm_sem_capacity numbered
 # slot directories, so pg-go-mutate-tui's worker pool and a bare
 # pg-go-mutate invocation draw from the SAME concurrency budget instead of a
 # single mutex (design §5.3/§11). XDG_STATE_HOME isolation is set up once in

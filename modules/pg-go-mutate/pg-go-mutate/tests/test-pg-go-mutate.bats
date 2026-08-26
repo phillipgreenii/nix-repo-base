@@ -10,12 +10,12 @@ setup() {
   # environment error. Same reason the library suite does this, and the same
   # HOME/GOCACHE-under-TMPDIR convention lib/go-builders.nix uses.
   export HOME="$TEST_DIR" GOCACHE="$TEST_DIR/go-build"
-  # BOTH are load-bearing, matching pg-go-mutate-sweep's own tests: pg-go-mutate
-  # now takes the SAME mutual-exclusion lock the sweep does (bead pg2-y3a8t),
-  # and pgm_lock_root() reads XDG_STATE_HOME first -- it IS commonly exported
-  # in this workspace's ambient environment, so overriding HOME alone would
-  # let a lock test contend for (or corrupt) the real machine-wide lock at the
-  # operator's actual state root.
+  # BOTH are load-bearing: pg-go-mutate draws from the shared concurrency
+  # semaphore (bead pg2-y3a8t), whose slot dir defaults to
+  # ${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate/sem -- XDG_STATE_HOME
+  # IS commonly exported in this workspace's ambient environment, so
+  # overriding HOME alone would let a semaphore test contend for (or corrupt)
+  # the real machine-wide slot directory at the operator's actual state root.
   export XDG_STATE_HOME="$TEST_DIR/state"
 
   # `go` also writes telemetry counters under
@@ -843,7 +843,7 @@ EOF
 # --- exit-code allocation 10-14 (ADR 0026 decision 3) ------------------------
 #
 # These tighten the `-ne 0` guard-failure assertions above into the specific
-# codes the sweep (pg-go-mutate-sweep, a later task) classifies on. Each stub
+# codes pg-go-mutate-tui classifies on. Each stub
 # engine below is created inline, matching the pattern the guard-related cases
 # above already use (e.g. "a target that is not a Go module says so...").
 

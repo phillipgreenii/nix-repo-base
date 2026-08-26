@@ -277,16 +277,9 @@
             # Mirrors how pnwf/wsplan expose their module's script above.
             pg-go-mutate = pgGoMutateScripts.pg-go-mutate.script;
 
-            # pg-go-mutate-sweep: resumable unattended mutation sweep, one
-            # (project, package) unit at a time, filing a triage bead per project.
-            # Needs no engine binding of its own -- it resolves pg-go-mutate and bd
-            # from PATH so the home-manager-wrapped ones are the only ones it can
-            # get (see the module's default.nix for why neither is a runtimeDep).
-            pg-go-mutate-sweep = pgGoMutateScripts.pg-go-mutate-sweep.script;
-
             # pg-go-mutate-tui: interactive, file-granular resumable
-            # mutation-testing TUI Go binary (replaces pg-go-mutate-sweep once
-            # fully wired; this task only scaffolds the buildable binary).
+            # mutation-testing TUI Go binary -- the sole orchestrator for
+            # unattended/multi-package mutation sweeps.
             pg-go-mutate-tui = pkgs.callPackage ./modules/pg-go-mutate/pg-go-mutate-tui { inherit self; };
 
             # pg-test-runner: label-driven, nix-free-at-runtime direct test
@@ -1210,7 +1203,6 @@
             pn-workspace-toml-enforce
             pjira
             pg-go-mutate
-            pg-go-mutate-sweep
             pg-go-mutate-tui
             pg-test-runner
             ;

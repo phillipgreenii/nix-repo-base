@@ -1,7 +1,7 @@
 # ADR-0026: Mutation-sweep durable state — layout, ledger schema, and exit-code allocation
 
 **Date:** 2026-08-17
-**Status:** Accepted
+**Status:** Superseded by [0027](0027-pg-go-mutate-tui-state-contract.md)
 **Deciders:** phillipgreenii
 
 ## Context

@@ -235,9 +235,7 @@ pgm_resolve_guard_target() {
 # Filesystem-safe encoding of an absolute path for use as a cache/state
 # subdirectory name. "/" becomes "__" so "/foo/bar" and "/foo_bar" cannot
 # collide (a bare "_"-for-"/" substitution could produce the same slug for
-# both). No shared slug helper exists elsewhere in this lib to reuse --
-# pg-go-mutate-sweep.bash's pgms_slug is a different function in a file
-# a later task (Task 20) deletes.
+# both).
 pgm_slug() {
   printf '%s\n' "$1" | sed 's#/#__#g'
 }
