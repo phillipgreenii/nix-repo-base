@@ -50,6 +50,12 @@ multiple independent ways of doing config loading, metrics emission, or any of t
 - MUST establish a repeatable **extract-then-migrate** pattern (copy the shared code out first;
   migrate each existing consumer onto it as a separate, later, independently-revertible step) so
   the remaining convergence work can proceed bead-by-bead rather than as one big-bang migration.
+- MUST make `exec`'s Runner/CLIRunner **hermetic by default**: a caller opts a variable IN, never
+  gets to opt one out, so ambient process environment cannot silently redirect what a subprocess
+  operates on. This is not a hypothetical hardening — it is the exact mechanism (see §8) that
+  corrupted the canonical `phillipgreenii-nix-agent-support` clone's own `.git/config` in production
+  before `x` existed to hold this code, and `gitclient` (§5) is precisely the kind of subprocess
+  wrapper that class of bug targets.
 
 ## 3. Non-goals
 
@@ -120,6 +126,22 @@ flowchart TB
   independently-identical designs (interface + real subprocess runner + a FIFO-scripted fake
   double for tests, "unscripted call fails loudly"). Zero business logic; every other package here
   is built on it.
+  **Hermetic-environment contract (hard requirement, not an open item):** `CLIRunner` MUST NOT let
+  a subprocess inherit the calling process's environment wholesale. Its default env MUST be either
+  empty or an explicit, documented allowlist (e.g. `PATH`, `HOME`); anything beyond that — and in
+  particular any `GIT_*` variable — MUST be passed only when a caller supplies it explicitly via
+  the Runner's own options, never picked up ambiently. Rationale, not speculative: production code
+  in `phillipgreenii-nix-agent-support/packages/pg-pr/internal/worktree/git.go` (`runGit`) built a
+  raw `exec.CommandContext` with no `cmd.Env` at all, so at commit time it inherited whatever
+  `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CEILING_DIRECTORIES`/etc. the invoking pre-commit hook's own `go
+test` process had exported — silently overriding that call's `-C <dir>` argument and corrupting
+  the CANONICAL clone's `.git/config` (`core.worktree`, `user.email`/`user.name`) during a routine
+  commit (root-caused and fixed in bead `pg2-5ek6b`, duplicate-tracked in `pg2-12795`/`pg2-3fz2s`).
+  `exec` is exactly the shared foundation that code should have been built on; it must not be
+  possible to reintroduce that bug through it. Acceptance test for the Phase 2 `exec` bead: set an
+  arbitrary `GIT_*`-shaped variable in the TEST PROCESS's own environment before invoking
+  `CLIRunner`, and assert the spawned subprocess does not see it unless the test explicitly passed
+  it through the Runner's options.
 - **`bdclient`** — the `bd` CLI client, built on `exec`: CLIRunner shape, the env-scrub
   (`BEADS_DIR`/`WORKSPACE_ROOT`, from `pr-pool`'s version), JSON-envelope (`{data:[...],
 schema_version:N}`) parsing, and the common verbs the three full implementations (`pg-pr`,
@@ -135,7 +157,13 @@ schema_version:N}`) parsing, and the common verbs the three full implementations
   `ChangedFiles` (`git diff --numstat` parsing), and `Locate` (the `rev-parse`
   toplevel/common-dir/branch trio, soft-fail like `gitfacet`). App-specific policy (`pg-pr`'s
   worktree/branch lifecycle rules, `activity-collector`'s day-window aggregation into `Activity`
-  records) stays local.
+  records) stays local — but "stays local" governs domain policy, not subprocess plumbing: that
+  local code (`pg-pr`'s `internal/worktree/git.go` among it — the exact site of the corruption
+  incident cited under `exec` above) MUST be built on `exec`'s `CLIRunner` like `gitclient` itself,
+  not a raw `exec.Command`/`exec.CommandContext` call with its own ad-hoc (or absent) environment
+  handling. `gitclient`'s own `Log`/`ChangedFiles`/`Locate` inherit `exec`'s hermetic default for
+  free; the risk this note exists to close is a _local_ git wrapper skipping `exec` entirely and
+  quietly reintroducing the same ambient-environment leak `exec`'s contract was written to prevent.
 - **`jsonllogger`** — the ADR-0038 bootstrap, relocated as-is from `support-apps`
   (`New(app) (*slog.Logger, error)`, appends to `${XDG_STATE_HOME}/<app>/<app>.jsonl`, normalizes
   level/time via `ReplaceAttr`), plus the small XDG state/config-dir-with-`$HOME`-fallback helper
@@ -219,9 +247,24 @@ tui` gets a real dependency to build Task 11 against.
   the migrated consumer's existing test suite MUST still pass unchanged (mechanically the same
   contract, different import), plus removal of the now-dead local duplicate is part of that same
   bead, not left dangling.
+- **`exec`'s Phase 2 bead specifically** MUST include the hermetic-environment acceptance test
+  described in §5 (`exec`) as part of its own test suite, not merely as a design note — a
+  `CLIRunner` that passes review without that test in place is not done, per §8's realized-risk
+  entry.
 
 ## 8. Risks
 
+- **Ambient-environment leak into a subprocess wrapper — CONFIRMED REALIZED, not theoretical.**
+  On 2026-08-27, `pg-pr`'s own git-wrapping code (`internal/worktree/git.go`'s `runGit`, a raw
+  `exec.CommandContext` call with no `cmd.Env`) inherited `GIT_DIR`/`GIT_WORK_TREE`/etc. leaked
+  from a commit-time `go test` run's own pre-commit-hook environment, and that leak redirected the
+  call's `-C <dir>` argument onto the CANONICAL clone, corrupting its `.git/config`
+  (`core.worktree`, `user.email`/`user.name`) — root-caused and fixed in `pg2-5ek6b`
+  (duplicate-tracked in `pg2-12795`/`pg2-3fz2s`). This is precisely the failure mode `exec`'s
+  hermetic-environment contract (§2, §5) exists to close off at the foundation, so it cannot be
+  reintroduced through `gitclient`, `bdclient`, or any local subprocess-wrapping code built on
+  `exec`. Mitigated by making that contract a hard requirement (with its own acceptance test, §5)
+  on the Phase 2 `exec` bead, rather than an implementation detail left to whoever writes it.
 - **Version drift.** Consumers pin `x` at different commits; unlike the current same-repo
   `replace` (always-HEAD), staying in sync now requires an active bump. Mitigated by the bump being
   a normal, reviewable one-line `go.mod` diff — the same cost already paid for every third-party
