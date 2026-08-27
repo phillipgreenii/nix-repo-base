@@ -86,6 +86,36 @@ MOCK
   export GIT_CONFIG_GLOBAL=/dev/null
   export GIT_CONFIG_SYSTEM=/dev/null
 
+  # HERMETIC GIT REPO LOCATION (bead pg2-5856n; same defect class and same shape
+  # as the fix landed in phillipgreenii-nix-ziprecruiter's
+  # modules/zm/test-support/test_helper.bash, commit 77231676). `git commit` FROM
+  # A LINKED WORKTREE exports GIT_DIR=<canonical>/.git/worktrees/<name> and
+  # GIT_INDEX_FILE into the hook environment, and every child process inherits
+  # them -- including the bats run that this repo's own `run-unit-tests`
+  # pre-commit hook launches. git's repo discovery consults those variables
+  # BEFORE honouring `cd`, `-C <dir>`, or an explicit path argument, so a leak
+  # silently redirects the `cd "$TEST_DIR"; git init` fixture below onto the
+  # canonical clone: `git init` re-inits the real repo, `git add`/`git commit`
+  # act on the real index and branch, and `git config user.email` writes into
+  # $GIT_COMMON_DIR/config -- the canonical .git/config SHARED by every worktree
+  # and by the operator (observed live: pg2-jjlm8, pg2-12795). The
+  # GIT_CONFIG_GLOBAL/SYSTEM redirects above close a DIFFERENT half: they
+  # neutralize the ambient global/system SCOPES, and are powerless against a
+  # redirected repo LOCATION. This suite has no setup_file, so the scrub lives
+  # here -- still before the first real git call.
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
+
+  # BY-CONSTRUCTION BACKSTOP for the same defect (bead pg2-8wnhc's ruling: env
+  # scrubbing is a partial mitigation; no fixture path should be ABLE to reach a
+  # real repo). The `unset` above enumerates variable names and so is only as
+  # good as that list; this does not depend on the list at all -- git physically
+  # refuses to chdir up out of the mktemp parent, which is the shared parent of
+  # TEST_DIR, STATE_DIR, MOCK_BIN and HOME_DIR alike. PHYSICAL path because git
+  # compares the ceiling against a getcwd() result (macOS's /var is a symlink
+  # into /private/var).
+  GIT_CEILING_DIRECTORIES="$(cd "$(dirname "$TEST_DIR")" && pwd -P)"
+  export GIT_CEILING_DIRECTORIES
+
   cd "$TEST_DIR" || return 1
   git init
   git config user.email "test@test.com"

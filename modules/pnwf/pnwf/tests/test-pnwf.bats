@@ -64,6 +64,29 @@ setup_file() {
   export GIT_CONFIG_GLOBAL=/dev/null
   export GIT_CONFIG_SYSTEM=/dev/null
 
+  # HERMETIC GIT REPO LOCATION (bead pg2-5856n; same defect class and same shape
+  # as the fix landed in phillipgreenii-nix-ziprecruiter's
+  # modules/zm/test-support/test_helper.bash, commit 77231676). `git commit` FROM
+  # A LINKED WORKTREE exports GIT_DIR=<canonical>/.git/worktrees/<name> and
+  # GIT_INDEX_FILE into the hook environment, and every child process inherits
+  # them -- including the bats run that this repo's own `run-unit-tests`
+  # pre-commit hook launches. git's repo discovery consults those variables
+  # BEFORE honouring `-C <dir>`, `cd`, or an explicit path argument, so a leak
+  # silently redirects every "isolated" fixture below onto the canonical clone:
+  # `git init` re-inits the real repo, `git add` stages into the real index, and
+  # `git config` writes to $GIT_COMMON_DIR/config -- the canonical .git/config
+  # SHARED by every worktree and by the operator.
+  #
+  # This suite is the highest-severity case in the workspace because it
+  # deliberately writes `core.worktree` to a decoy path it then deletes (the
+  # REDIRECTED / REMOVED negative fixtures below). Landed in the canonical
+  # config, that single key bricks every git command in the clone -- including
+  # the `git config --unset` needed to undo it (observed live: pg2-jjlm8,
+  # pg2-12795). Unset here, once, before any real git call in this file runs;
+  # setup()'s GIT_CEILING_DIRECTORIES is the by-construction backstop for a
+  # variable this enumeration misses.
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
+
   # Immutable mock TEMPLATE, seeded once. setup() copies these into each test's
   # own MOCK_BIN, so a test may still overwrite its own integrate-branch-support
   # (or drop in a `git` shim) without leaking into sibling tests.
@@ -163,6 +186,17 @@ WRAPPER
 setup() {
   TEST_DIR="$(mktemp -d)"
   export TEST_DIR
+
+  # BY-CONSTRUCTION BACKSTOP for the same defect (bead pg2-8wnhc's ruling: env
+  # scrubbing is a partial mitigation; no fixture path should be ABLE to reach a
+  # real repo). setup_file's `unset` enumerates variable names and so is only as
+  # good as that list; this does not depend on the list at all -- git physically
+  # refuses to chdir up out of the mktemp parent, so no fixture path can resolve
+  # to a repository outside the fixture tree. PHYSICAL path because git compares
+  # the ceiling against a getcwd() result (macOS's /var is a symlink into
+  # /private/var).
+  GIT_CEILING_DIRECTORIES="$(cd "$(dirname "$TEST_DIR")" && pwd -P)"
+  export GIT_CEILING_DIRECTORIES
 
   # Per-test MOCK_BIN seeded from the immutable per-file template (setup_file).
   # Copying rather than rebuilding keeps each test able to overwrite its own
