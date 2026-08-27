@@ -490,8 +490,17 @@ EOF
   # Source the shared library into THIS bats process (a separate concern from
   # $SCRIPT, which sources it again itself in its own subprocess) so the test
   # can pre-seed a cache entry using the real pgm_pkg_hash of this fixture.
-  # shellcheck disable=SC1091
-  source "${BATS_TEST_DIRNAME}/../../lib/pg-go-mutate-lib.bash"
+  # Resolve via the same lib_path/LIB_PATH-override pattern setup() uses above
+  # -- a hardcoded relative path here does not resolve inside the nix sandbox
+  # build directory layout.
+  lib_path="${LIB_PATH:-$(cd "${BATS_TEST_DIRNAME}/../../lib" && pwd)/pg-go-mutate-lib.bash}"
+  if [ -d "$lib_path" ]; then
+    resolved_lib="$lib_path/pg-go-mutate-lib.bash"
+  else
+    resolved_lib="${lib_path%%:*}"
+  fi
+  # shellcheck disable=SC1090  # runtime-resolved library path
+  source "$resolved_lib"
   pkg_hash="$(pgm_pkg_hash "$target")"
   pgm_guard_cache_put "$target" "$pkg_hash" "FAIL"
 
