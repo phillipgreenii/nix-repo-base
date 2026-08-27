@@ -1143,6 +1143,53 @@
 
                   touch $out
                 '';
+
+            # Cross-check `pgm_pkg_hash` (modules/pg-go-mutate/lib/pg-go-mutate-lib.bash) against
+            # the Go pkghash.Compute implementation (pg-go-mutate-tui/internal/pkghash) on the same
+            # fixture. Originally a bats test inside pg-go-mutate-lib's OWN check
+            # (modules/pg-go-mutate/lib/tests/test-pg-go-mutate-lib.bats, added by pg2-vsrkc), but
+            # that check packages pg-go-mutate-lib as a Pattern-A mkBashLibrary (`src = ./.;`), so
+            # the sibling pg-go-mutate-tui directory the test needed to `cd` into never existed in
+            # that check's sandbox -- deterministic "No such file or directory" (bead pg2-nwtf2).
+            # mkBashLibrary has no Pattern-B/modRoot equivalent of mkGoApp/mkGoBinary's fileset-union
+            # src (lib/bash-builders.nix hardcodes `sourceFile = src + "/${name}.bash"`), so rather
+            # than invent framework surface just for this one cross-check, it moved HERE: a
+            # top-level check where both the composed bash lib and the tui module's Go source are
+            # ordinary nix paths in the SAME derivation. `hashprint` needs no third-party Go module
+            # (internal/pkghash imports only stdlib), so `go run` needs no network in the sandbox.
+            pg-go-mutate-lib-pkghash-cross-check =
+              let
+                tuiModuleDir = ./modules/pg-go-mutate/pg-go-mutate-tui;
+                fixtureDir = tuiModuleDir + "/internal/pkghash/testdata/fixture";
+              in
+              pkgs.runCommand "check-pg-go-mutate-lib-pkghash-cross-check"
+                {
+                  nativeBuildInputs = [ pkgs.go ];
+                }
+                ''
+                  set -euo pipefail
+                  # HOME is read-only in the nix sandbox; go needs a writable build
+                  # cache (mirrors setup() in test-pg-go-mutate-lib.bats).
+                  export HOME="$TMPDIR" GOCACHE="$TMPDIR/go-build"
+                  export XDG_STATE_HOME="$TMPDIR/state"
+                  go telemetry off >/dev/null 2>&1 || true
+
+                  # shellcheck disable=SC1091
+                  source ${pgGoMutateScripts.pg-go-mutate-lib.lib}
+
+                  bash_hash="$(pgm_pkg_hash ${fixtureDir})"
+                  go_hash="$(cd ${tuiModuleDir} && go run ./internal/pkghash/cmd/hashprint ${fixtureDir})"
+
+                  if [ -z "$bash_hash" ]; then
+                    echo "FAIL: pgm_pkg_hash produced empty output" >&2
+                    exit 1
+                  fi
+                  if [ "$bash_hash" != "$go_hash" ]; then
+                    echo "FAIL: bash pgm_pkg_hash ($bash_hash) != Go pkghash.Compute ($go_hash)" >&2
+                    exit 1
+                  fi
+                  touch $out
+                '';
           }
           // ulScripts.checks
           // pnwfScripts.checks

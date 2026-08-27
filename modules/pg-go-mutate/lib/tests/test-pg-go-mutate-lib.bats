@@ -235,27 +235,19 @@ EOF
   [ "$before" != "$after" ]
 }
 
-# Task 5, Step 6: cross-check the bash algorithm above against the Go
-# implementation (internal/pkghash.Compute) on the same fixture directory.
-# `go run` resolves its main module from the CURRENT WORKING DIRECTORY, not
-# from the target package's location, so it must be invoked with cwd inside
-# the pg-go-mutate-tui module -- running it from $BATS_TEST_DIRNAME (this
-# file's own directory, outside that module) fails with "cannot find main
-# module". The fixture itself lives under a `testdata/` directory so `go
-# build`/`go vet ./...` in that module never try to compile it.
-@test "pgm_pkg_hash matches the Go pkghash.Compute implementation on the same fixture" {
-  tui_module_dir="$BATS_TEST_DIRNAME/../../pg-go-mutate-tui"
-  fixture_dir="$tui_module_dir/internal/pkghash/testdata/fixture"
-
-  run pgm_pkg_hash "$fixture_dir"
-  [ "$status" -eq 0 ]
-  bash_hash="$output"
-
-  go_hash="$(cd "$tui_module_dir" && go run ./internal/pkghash/cmd/hashprint "$fixture_dir")"
-
-  [ -n "$bash_hash" ]
-  [ "$bash_hash" = "$go_hash" ]
-}
+# Task 5, Step 6's cross-check against the Go implementation
+# (internal/pkghash.Compute) used to live here, but it `cd`s into the SIBLING
+# pg-go-mutate-tui module directory ($BATS_TEST_DIRNAME/../../pg-go-mutate-tui)
+# to run `go run`. This library packages as a Pattern-A mkBashLibrary
+# (default.nix: `src = ./.;`), so inside THIS check's nix sandbox that sibling
+# directory never exists at all -- a deterministic "No such file or directory"
+# unrelated to the guards under test (bead pg2-nwtf2). mkBashLibrary has no
+# Pattern-B/modRoot equivalent of mkGoApp/mkGoBinary's fileset-union src, so
+# rather than invent one (or weaken this into a skip/guard), the cross-check
+# moved to flake.nix's top-level
+# `checks.<system>.pg-go-mutate-lib-pkghash-cross-check`, which has both the
+# composed pg-go-mutate-lib and the pg-go-mutate-tui module tree available as
+# ordinary nix paths in the same derivation.
 
 @test "pgm_guard_cache_get misses when nothing has been cached for that hash" {
   export PGM_GUARD_CACHE_DIR="$TEST_DIR/cache"

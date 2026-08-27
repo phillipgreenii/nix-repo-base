@@ -1,8 +1,10 @@
 // Command hashprint prints the pkghash.Compute digest for a single package
 // directory. Its only purpose is to make the Go pkghash algorithm callable
-// from bats (via `go run`) so the bash pgm_pkg_hash implementation can be
-// cross-checked against it on the same fixture (Task 5, Step 6:
-// modules/pg-go-mutate/lib/tests/test-pg-go-mutate-lib.bats).
+// (via `go run`) so the bash pgm_pkg_hash implementation can be cross-checked
+// against it on the same fixture -- now the top-level nix check
+// `checks.<system>.pg-go-mutate-lib-pkghash-cross-check` (flake.nix; moved
+// there from a bats test by bead pg2-nwtf2, since this module is not present
+// in pg-go-mutate-lib's own Pattern-A check sandbox).
 package main
 
 import (
