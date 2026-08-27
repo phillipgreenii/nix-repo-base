@@ -11,11 +11,25 @@
 # substring "example.com" (e.g. "grexample.com", "notexample.com") does not
 # false-positive -- only "example.com" itself or a subdomain of it
 # ("mail.example.com") matches.
-PGCI_FAKE_DOMAIN_RE='(^|\.)example\.(com|org|net)$'
+#
+# The second alternative catches the `gittest`/`gitfixture` isolated-repo
+# fixture's identity scheme (gitclient design pg2-svfbb section 5 guarantee
+# 3: `<Suite>@gitfixture.invalid`) with the same `(^|\.)` left guard, so
+# "sub.gitfixture.invalid" matches but "notgitfixture.invalid" does not.
+# LOCK-STEP: this pattern and the fixture's identity scheme are defined
+# together (pg2-svfbb section 5 guarantee 3) and MUST be updated together.
+PGCI_FAKE_DOMAIN_RE='(^|\.)example\.(com|org|net)$|(^|\.)gitfixture\.invalid$'
 
 # Placeholder/test-fixture names, not a real person -- e.g. a test suite that
 # overrode git config and never restored it (the incident this exists for).
-PGCI_FAKE_NAME_RE='^(t|test|tester|testuser|test ?user)$'
+#
+# The second alternative catches the `gittest`/`gitfixture` isolated-repo
+# fixture's identity scheme (pg2-svfbb section 5 guarantee 3:
+# `gitfixture <Suite>`) -- prefix-anchored and space-or-end anchored rather
+# than a `\b` word boundary, since `\b` is a GNU grep extension and this
+# script's `grep` resolves from ambient PATH (only `git` is a pinned
+# runtimeDep), not a pinned GNU grep. LOCK-STEP: see the domain regex above.
+PGCI_FAKE_NAME_RE='^(t|test|tester|testuser|test ?user)$|^gitfixture( |$)'
 
 # Extracts the "Name" portion of a git ident string, e.g.
 # `Jane Doe <jane@example.com> 1700000000 -0500` -> `Jane Doe`.

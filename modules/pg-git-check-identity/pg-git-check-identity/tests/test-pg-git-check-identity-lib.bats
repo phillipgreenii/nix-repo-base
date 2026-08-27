@@ -71,6 +71,27 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "pgci_is_fake_domain: matches the gitfixture.invalid fixture domain and a subdomain of it" {
+  run pgci_is_fake_domain "gitfixture.invalid"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_domain "GITFIXTURE.INVALID"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_domain "some-suite.gitfixture.invalid"
+  [ "$status" -eq 0 ]
+}
+
+@test "pgci_is_fake_domain: does not false-positive on a domain merely ending in gitfixture.invalid" {
+  run pgci_is_fake_domain "notgitfixture.invalid"
+  [ "$status" -ne 0 ]
+}
+
+@test "pgci_is_fake_domain: still does not match the blanket .invalid carve-out for non-human accounts" {
+  run pgci_is_fake_domain "non-human.invalid"
+  [ "$status" -ne 0 ]
+  run pgci_is_fake_domain "otheragent.non-human.invalid"
+  [ "$status" -ne 0 ]
+}
+
 # -- pgci_is_fake_name ----------------------------------------------------------
 
 @test "pgci_is_fake_name: matches common test/placeholder names case-insensitively" {
@@ -106,6 +127,24 @@ setup() {
 
 @test "pgci_is_fake_name: an empty name does not match" {
   run pgci_is_fake_name ""
+  [ "$status" -ne 0 ]
+}
+
+@test "pgci_is_fake_name: matches the gitfixture <suite> fixture naming scheme" {
+  run pgci_is_fake_name "gitfixture"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_name "GITFIXTURE"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_name "gitfixture unit-test-suite"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_name "gitfixture some_suite_42"
+  [ "$status" -eq 0 ]
+}
+
+@test "pgci_is_fake_name: does not false-positive on a name merely starting with the substring gitfixture" {
+  run pgci_is_fake_name "gitfixtures-r-us"
+  [ "$status" -ne 0 ]
+  run pgci_is_fake_name "gitfixtureXYZ"
   [ "$status" -ne 0 ]
 }
 
