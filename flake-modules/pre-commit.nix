@@ -63,6 +63,7 @@ in
       config,
       pkgs,
       system,
+      inputs,
       ...
     }:
     let
@@ -74,6 +75,36 @@ in
           topLevelCfg.extraHooks pkgs
         else
           topLevelCfg.extraHooks;
+
+      # pg-git-check-identity (modules/pg-git-check-identity): rejects a
+      # commit whose author or committer identity looks like a test/
+      # placeholder account (e.g. "Test User <x@example.com>") -- the exact
+      # incident that motivated adding it to the BASE hook set rather than
+      # relying solely on phillipgreenii-nix-personal's global, per-user
+      # `programs.git.hooks.pre-commit`: that global hook sets git's
+      # *global* `core.hooksPath`, which git's own local > global > system
+      # precedence means is SILENTLY SHADOWED in every repo that has ever
+      # run `prek install`/entered this module's own devShell -- i.e. every
+      # repo that imports this exact flakeModule, including this one. Built
+      # SELF-CONTAINED here (its own bashBuilders instantiation, not a
+      # reference to `pkgs.pg-git-check-identity`) deliberately: a
+      # consumer's own perSystem `pkgs` is not guaranteed to have this
+      # repo's `overlays.default` applied (this repo's OWN perSystem `pkgs`
+      # doesn't either -- see flake.nix's `pgTestRunnerScripts` et al., the
+      # same reasoning), so the hook's `entry` must not depend on it.
+      # `inputs.self` here is whichever flake is CONSUMING this module (not
+      # necessarily this repo) -- harmless, since mkBashScript's `self` arg
+      # is retained only for a version stamp mkBashScript itself no longer
+      # uses (see lib/bash-builders.nix's own header comment).
+      pgGitCheckIdentityBashBuilders = (import ../nix/packages.nix { }).mkBashBuilders {
+        inherit pkgs;
+        inherit (pkgs) lib;
+        inherit (inputs) self;
+      };
+      pgGitCheckIdentityScripts = import ../modules/pg-git-check-identity/scripts.nix {
+        inherit pkgs;
+        bashBuilders = pgGitCheckIdentityBashBuilders;
+      };
       preCommit = producerInputs.git-hooks.lib.${system}.run {
         # `excludes` becomes a top-level pre-commit `exclude` regex applied to
         # every hook (git-hooks modules/pre-commit.nix). Single source of truth
@@ -115,6 +146,27 @@ in
             entry = "${pkgs.python3Packages.pre-commit-hooks}/bin/end-of-file-fixer";
           };
           check-case-conflicts.enable = true;
+          # Rejects a commit whose author or committer identity looks like a
+          # test/placeholder account (see pgGitCheckIdentityScripts above for
+          # the full rationale). Skips itself inside the nix build sandbox
+          # (checks.pre-commit) -- mirroring phillipgreenii-nix-personal's
+          # own `run-unit-tests` extraHooks entry -- since there is no real
+          # committer identity to protect in that throwaway sandbox repo,
+          # and this avoids depending on whatever synthetic identity
+          # git-hooks.nix's own sandbox setup happens to use.
+          check-git-identity = {
+            enable = true;
+            name = "check-git-identity";
+            entry = "${pkgs.writeShellScript "check-git-identity" ''
+              set -euo pipefail
+              if [ -n "''${IN_NIX_BUILD:-}" ] || [ -n "''${NIX_BUILD_TOP:-}" ]; then
+                echo "check-git-identity: inside the nix build sandbox (checks.pre-commit) -- skipping." >&2
+                exit 0
+              fi
+              exec ${pgGitCheckIdentityScripts.pg-git-check-identity.script}/bin/pg-git-check-identity
+            ''}";
+            pass_filenames = false;
+          };
           # NOTE: Go linting is intentionally NOT a pre-commit hook. golangci-lint
           # must load the full package graph, which cannot be done offline in the
           # no-network `nix flake check` sandbox that runs checks.pre-commit

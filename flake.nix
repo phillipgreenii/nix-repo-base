@@ -186,6 +186,22 @@
           pgTestRunnerScripts = import ./modules/pg-test-runner/scripts.nix {
             inherit pkgs bashBuilders;
           };
+          # pg-git-check-identity: rejects a commit whose author or
+          # committer identity looks like a test/placeholder account. No
+          # extra threaded package -- it resolves identity via `git var`
+          # only. Consumed two ways: (1) surfaced as pkgs.pg-git-check-
+          # identity via overlays.default, for phillipgreenii-nix-personal's
+          # GLOBAL home-manager pre-commit hook (any repo on the machine);
+          # (2) built independently, self-contained, directly inside
+          # flake-modules/pre-commit.nix's own perSystem (see there) for the
+          # shared BASE pre-commit hook set every consumer of that
+          # flakeModule gets for free -- deliberately NOT wired through this
+          # binding, since a consumer's own perSystem pkgs may not have
+          # overlays.default applied (this repo's own perSystem pkgs
+          # doesn't either; see pgTestRunnerScripts et al. above).
+          pgGitCheckIdentityScripts = import ./modules/pg-git-check-identity/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
           # This repo's OWN repo-specific pg-test-runner configuration: the
           # shared default registry (modules/pg-test-runner/config.nix) plus
           # an `ignore` entry for lib/bash-builders-tests/ -- the mkBashBuilders
@@ -285,6 +301,12 @@
             # pg-test-runner: label-driven, nix-free-at-runtime direct test
             # runner (spec docs/superpowers/specs/2026-08-24-pg-test-runner-design.md).
             pg-test-runner = pgTestRunnerScripts.pg-test-runner.script;
+
+            # pg-git-check-identity: rejects a commit whose author or
+            # committer identity looks like a test/placeholder account.
+            # Surfaced here so overlays.default (below) can expose it as
+            # pkgs.pg-git-check-identity.
+            pg-git-check-identity = pgGitCheckIdentityScripts.pg-git-check-identity.script;
 
             # This repo's own rendered pg-test-runner config (pgTestRunnerRepoConfig
             # above), exposed as a package SOLELY so the `run-unit-tests` prek hook
@@ -1195,6 +1217,7 @@
           // pnwfScripts.checks
           // pgGoMutateScripts.checks
           // pgTestRunnerScripts.checks
+          // pgGitCheckIdentityScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
           # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
           # never imported by any .nix (bead pg2-fqar3 / prior deep-dive T1).
@@ -1252,6 +1275,7 @@
             pg-go-mutate
             pg-go-mutate-tui
             pg-test-runner
+            pg-git-check-identity
             ;
         };
 
