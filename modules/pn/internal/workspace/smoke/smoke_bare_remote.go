@@ -80,6 +80,58 @@ func setupBareRemote(t *testing.T, dir, name string, files map[string]string) st
 	return bareURL
 }
 
+// gitDirEnvVars is the GIT_DIR-location family that git's own repo
+// discovery consults BEFORE -C, cmd.Dir, or an explicit path argument
+// (pg2-kersl, mechanism proven in pg2-67h4y's design field). It is the
+// single canonical list for this package: smoke_test.go's TestMain unsets
+// it process-wide, and hermeticInheritedEnv below strips it per-call from
+// every os.Environ()-derived cmd.Env this file builds, rather than each
+// site (or TestMain) keeping its own copy of the list. Defined here rather
+// than in smoke_test.go because this is a non-test file (go:build smoke,
+// but not _test.go) and hermeticInheritedEnv needs it at `go build` time,
+// not just `go test` time; smoke_test.go's TestMain still reads this same
+// var, since test files may reference non-test symbols in their package.
+var gitDirEnvVars = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES",
+	"GIT_COMMON_DIR", "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
+}
+
+// hermeticInheritedEnv returns a copy of os.Environ() with the GIT_DIR
+// family (gitDirEnvVars above) removed, for every git subprocess this file
+// spawns to build its cmd.Env from.
+//
+// TestMain's process-wide os.Unsetenv (pg2-kersl) already closes the leak
+// channel where a GIT_DIR-family var is present in the environment BEFORE
+// this test binary starts (e.g. inherited from a pre-commit hook running in
+// a linked worktree). It does NOT close a channel where such a var is
+// reintroduced into the process environment AFTER TestMain has already run
+// (e.g. t.Setenv, the idiom x/gitclient's own contract_envleak_test.go uses
+// to probe this exact defect class) -- every one of this file's 19 git-exec
+// sites builds cmd.Env from a live os.Environ() read at CALL time, so a
+// var reintroduced later would still reach them. Verified 2026-08-28
+// (pg2-9ctm4): a t.Setenv("GIT_DIR", <decoy repo's .git>) injected after
+// TestMain caused a commit meant for the intended fixture to land in the
+// decoy repo instead (the decisive signal here is `--git-dir` or an actual
+// mutation landing in the wrong place -- `rev-parse --show-toplevel` looks
+// isolated even under a real leak, per the original bug write-up, because
+// git falls back to the CURRENT DIRECTORY as the work-tree root when only
+// GIT_DIR, not GIT_WORK_TREE, is set).
+func hermeticInheritedEnv() []string {
+	blocked := make(map[string]bool, len(gitDirEnvVars))
+	for _, k := range gitDirEnvVars {
+		blocked[k] = true
+	}
+	base := os.Environ()
+	out := make([]string, 0, len(base))
+	for _, kv := range base {
+		if k, _, ok := strings.Cut(kv, "="); ok && blocked[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // gitCmd runs a git command in dir and returns (combined output, error).
 func gitCmd(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
@@ -88,7 +140,7 @@ func gitCmd(t *testing.T, dir string, args ...string) (string, error) {
 	// Use a minimal but functional env for git setup commands (no GIT_CONFIG_GLOBAL
 	// override since we need the user config to set name/email via git config).
 	cmd.Env = append(
-		os.Environ(),
+		hermeticInheritedEnv(),
 		"GIT_AUTHOR_NAME=smoke",
 		"GIT_AUTHOR_EMAIL=smoke@test.invalid",
 		"GIT_COMMITTER_NAME=smoke",
@@ -103,7 +155,7 @@ func gitCmd(t *testing.T, dir string, args ...string) (string, error) {
 func bareRemoteHead(t *testing.T, bareDir string) string {
 	t.Helper()
 	cmd := exec.Command("git", "-C", bareDir, "rev-parse", "HEAD")
-	cmd.Env = os.Environ()
+	cmd.Env = hermeticInheritedEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		t.Errorf("bareRemoteHead %s: git rev-parse HEAD: %v", bareDir, err)
@@ -116,7 +168,7 @@ func bareRemoteHead(t *testing.T, bareDir string) string {
 func workspaceHead(t *testing.T, repoDir string) string {
 	t.Helper()
 	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
-	cmd.Env = os.Environ()
+	cmd.Env = hermeticInheritedEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		t.Errorf("workspaceHead %s: git rev-parse HEAD: %v", repoDir, err)
@@ -129,7 +181,7 @@ func workspaceHead(t *testing.T, repoDir string) string {
 func gitStashList(t *testing.T, repoDir string) []string {
 	t.Helper()
 	cmd := exec.Command("git", "-C", repoDir, "stash", "list")
-	cmd.Env = os.Environ()
+	cmd.Env = hermeticInheritedEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		t.Errorf("gitStashList %s: %v", repoDir, err)
@@ -305,7 +357,7 @@ func assertS24WorkforestAdd(t *testing.T, wsRoot string) {
 			continue
 		}
 		cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD")
-		cmd.Env = os.Environ()
+		cmd.Env = hermeticInheritedEnv()
 		out, err := cmd.Output()
 		if err != nil {
 			t.Errorf("S24: git rev-parse HEAD in %s: %v", repoDir, err)
@@ -340,7 +392,7 @@ func assertS27WorkforestRemove(t *testing.T, wsRoot string) {
 	for _, repo := range []string{"producer", "consumer"} {
 		repoDir := filepath.Join(wsRoot, repo)
 		cmd := exec.Command("git", "-C", repoDir, "branch", "--list", "feature-x")
-		cmd.Env = os.Environ()
+		cmd.Env = hermeticInheritedEnv()
 		out, err := cmd.Output()
 		if err != nil {
 			t.Errorf("S27: git branch --list feature-x in %s: %v", repoDir, err)
@@ -381,7 +433,7 @@ func assertS28WorkforestPrune(t *testing.T, wsRoot, pnBin string, env []string) 
 	for _, repo := range []string{"producer", "consumer"} {
 		repoDir := filepath.Join(wsRoot, repo)
 		cmd := exec.Command("git", "-C", repoDir, "worktree", "list")
-		cmd.Env = os.Environ()
+		cmd.Env = hermeticInheritedEnv()
 		out, err := cmd.Output()
 		if err != nil {
 			t.Errorf("S28: git worktree list in %s: %v", repoDir, err)
@@ -418,7 +470,7 @@ func setEnv(env []string, key, val string) []string {
 func gitHeadSHA(t *testing.T, repoDir string) string {
 	t.Helper()
 	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
-	cmd.Env = os.Environ()
+	cmd.Env = hermeticInheritedEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		t.Errorf("S29: git rev-parse HEAD in %s: %v", repoDir, err)
@@ -431,7 +483,7 @@ func gitHeadSHA(t *testing.T, repoDir string) string {
 func gitStatusPorcelain(t *testing.T, repoDir string) string {
 	t.Helper()
 	cmd := exec.Command("git", "-C", repoDir, "status", "--porcelain")
-	cmd.Env = os.Environ()
+	cmd.Env = hermeticInheritedEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		t.Errorf("S29: git status --porcelain in %s: %v", repoDir, err)
@@ -527,7 +579,7 @@ func assertS30PushSetUpstream(t *testing.T, wsRoot string) {
 
 		// Determine which branch the clone is on.
 		branchCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "HEAD")
-		branchCmd.Env = os.Environ()
+		branchCmd.Env = hermeticInheritedEnv()
 		branchOut, err := branchCmd.Output()
 		if err != nil {
 			t.Errorf("S30: %s cannot determine current branch: %v", repo, err)
@@ -539,7 +591,7 @@ func assertS30PushSetUpstream(t *testing.T, wsRoot string) {
 		// (bare remote HEAD points to default branch; we check the feature branch ref)
 		bareRef := fmt.Sprintf("refs/heads/%s", branch)
 		bareCmd := exec.Command("git", "-C", bareDir, "rev-parse", bareRef)
-		bareCmd.Env = os.Environ()
+		bareCmd.Env = hermeticInheritedEnv()
 		bareOut, err := bareCmd.Output()
 		if err != nil {
 			t.Errorf("S30: %s bare remote has no ref %s after push --set-upstream: %v", repo, bareRef, err)
@@ -557,7 +609,7 @@ func assertS30PushSetUpstream(t *testing.T, wsRoot string) {
 
 		// 2. The workspace clone's branch must now track origin/<branch>.
 		upCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "@{u}")
-		upCmd.Env = os.Environ()
+		upCmd.Env = hermeticInheritedEnv()
 		upOut, err := upCmd.Output()
 		if err != nil {
 			t.Errorf("S30: %s branch %s has no upstream after push --set-upstream (git rev-parse @{u}: %v)", repo, branch, err)
@@ -600,7 +652,7 @@ func assertS31RebaseBranch(t *testing.T, wsRoot string) {
 
 		// Capture post-command reflog length.
 		cmd := exec.Command("git", "-C", bareDir, "reflog", "--all")
-		cmd.Env = os.Environ()
+		cmd.Env = hermeticInheritedEnv()
 		afterOut, afterErr := cmd.Output()
 		afterN := 0
 		if afterErr == nil {
@@ -728,7 +780,9 @@ func assertRelockLandedLocallyOnly(t *testing.T, tag, primary, bare string) {
 	t.Helper()
 	const relockSubject = "update-locks: bump locked.txt"
 
-	primLog, err := exec.Command("git", "-C", primary, "log", "--oneline", "-n", "5").Output()
+	primLogCmd := exec.Command("git", "-C", primary, "log", "--oneline", "-n", "5")
+	primLogCmd.Env = hermeticInheritedEnv()
+	primLog, err := primLogCmd.Output()
 	if err != nil {
 		t.Fatalf("%s: git log primary: %v", tag, err)
 	}
@@ -736,7 +790,9 @@ func assertRelockLandedLocallyOnly(t *testing.T, tag, primary, bare string) {
 		t.Errorf("%s: primary main missing relock commit; log:\n%s", tag, primLog)
 	}
 
-	bareLog, err := exec.Command("git", "-C", bare, "log", "--oneline", "-n", "5", "main").Output()
+	bareLogCmd := exec.Command("git", "-C", bare, "log", "--oneline", "-n", "5", "main")
+	bareLogCmd.Env = hermeticInheritedEnv()
+	bareLog, err := bareLogCmd.Output()
 	if err != nil {
 		t.Fatalf("%s: git log remote: %v", tag, err)
 	}
@@ -744,12 +800,16 @@ func assertRelockLandedLocallyOnly(t *testing.T, tag, primary, bare string) {
 		t.Errorf("%s: relock commit reached the REMOTE — update must not push (ADR 0023); remote log:\n%s", tag, bareLog)
 	}
 
-	remoteHead, err := exec.Command("git", "-C", bare, "rev-parse", "main").Output()
+	remoteHeadCmd := exec.Command("git", "-C", bare, "rev-parse", "main")
+	remoteHeadCmd.Env = hermeticInheritedEnv()
+	remoteHead, err := remoteHeadCmd.Output()
 	if err != nil {
 		t.Fatalf("%s: git rev-parse remote: %v", tag, err)
 	}
-	if err := exec.Command("git", "-C", primary, "merge-base", "--is-ancestor",
-		strings.TrimSpace(string(remoteHead)), "main").Run(); err != nil {
+	ancestorCmd := exec.Command("git", "-C", primary, "merge-base", "--is-ancestor",
+		strings.TrimSpace(string(remoteHead)), "main")
+	ancestorCmd.Env = hermeticInheritedEnv()
+	if err := ancestorCmd.Run(); err != nil {
 		t.Errorf("%s: remote main %s is not an ancestor of primary main — the relock should be plain unpushed landing debt: %v",
 			tag, strings.TrimSpace(string(remoteHead)), err)
 	}
@@ -822,7 +882,7 @@ func assertS34WorkforestSubset(t *testing.T, wsRoot string) {
 			continue
 		}
 		cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD")
-		cmd.Env = os.Environ()
+		cmd.Env = hermeticInheritedEnv()
 		out, err := cmd.Output()
 		if err != nil {
 			t.Errorf("S34: git rev-parse HEAD in %s: %v", repoDir, err)
@@ -910,7 +970,7 @@ func assertS35WorkforestAddRemoveRepo(t *testing.T, wsRoot, pnBin string, env []
 
 	// remove-repo must NOT delete the feature-x branch in canonical extra.
 	cmd := exec.Command("git", "-C", extraCanon, "branch", "--list", "feature-x")
-	cmd.Env = os.Environ()
+	cmd.Env = hermeticInheritedEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		t.Errorf("S35: git branch --list feature-x in %s: %v", extraCanon, err)
