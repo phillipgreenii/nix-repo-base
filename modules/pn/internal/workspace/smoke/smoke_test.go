@@ -61,7 +61,26 @@ func getPNBin(t *testing.T) string {
 
 // TestMain checks preconditions once before any test runs, and cleans up
 // process-lifetime temp dirs after all tests finish.
+//
+// It also unsets every git-location env var BEFORE any test runs (pg2-kersl,
+// mechanism proven in pg2-67h4y's design field). A git hook (pre-commit/prek,
+// invoking `go test` for this package as its run-unit-tests hook) exports
+// GIT_DIR/GIT_INDEX_FILE for the commit in progress when the commit runs from
+// a linked worktree, and this test binary inherits that. `-C <dir>` and even
+// an explicit path argument (p1Git in p1_invariant_test.go, and smoke_test.go's
+// own git helpers) do NOT override these — git's own repo discovery consults
+// the environment FIRST — so a scenario that builds an isolated fixture under
+// t.TempDir() and drives real git would otherwise silently operate on the
+// AMBIENT repo (the canonical clone this worktree links to) instead of the
+// fixture. Unsetting these here, once, for the whole process is sufficient:
+// nothing in this package's tests re-sets them.
 func TestMain(m *testing.M) {
+	for _, k := range []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES",
+		"GIT_COMMON_DIR", "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
+	} {
+		_ = os.Unsetenv(k)
+	}
 	checkPreconditions()
 	code := m.Run()
 	// Clean up the pn binary temp dir(s) created by buildPNBinary.

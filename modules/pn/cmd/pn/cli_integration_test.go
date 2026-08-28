@@ -19,6 +19,26 @@ func TestMain(m *testing.M) {
 }
 
 func runIntegrationTests(m *testing.M) int {
+	// Unset every git-location env var BEFORE any test runs (pg2-kersl,
+	// mechanism proven in pg2-67h4y's design field). A git hook (pre-commit/
+	// prek, invoking `go test` for this package as its run-unit-tests hook)
+	// exports GIT_DIR/GIT_INDEX_FILE for the commit in progress when the commit
+	// runs from a linked worktree, and this test binary inherits that. `-C
+	// <dir>`, cmd.Dir, and even an explicit path argument (the bare
+	// exec.Command("git", "init", repoDir) in TestIntegration_WorkspaceStatus
+	// below, which sets no Env at all) do NOT override these — git's own repo
+	// discovery consults the environment FIRST — so that `git init` would
+	// otherwise silently re-init the AMBIENT repo (the canonical clone this
+	// worktree links to) instead of the fixture directory. Unsetting these
+	// here, once, for the whole process is sufficient: nothing in this
+	// package's tests re-sets them.
+	for _, k := range []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES",
+		"GIT_COMMON_DIR", "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
+	} {
+		_ = os.Unsetenv(k)
+	}
+
 	// Make git hermetic for the whole integration suite: redirect global and
 	// system git config to /dev/null so neither the harness `git init` below nor
 	// the pn binary's own git invocations (e.g. `git status` from

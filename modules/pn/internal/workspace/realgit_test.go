@@ -26,10 +26,32 @@ import (
 // system config here removes that inheritance entirely (good hygiene beyond
 // fsmonitor) and mirrors the smoke harness's scrubbed env (smoke/smoke_env.go).
 //
+// It also unsets every git-location env var BEFORE any test runs (pg2-kersl,
+// mechanism proven in pg2-67h4y's design field). A git hook (pre-commit/prek,
+// invoking `go test` for this very package as its run-unit-tests hook) exports
+// GIT_DIR/GIT_INDEX_FILE for the commit in progress when the commit runs from a
+// linked worktree, and this test binary inherits that. `-C <dir>`, cmd.Dir, and
+// even an explicit path argument passed to runGitT/hermeticGitCmd do NOT
+// override these — git's own repo discovery consults the environment FIRST —
+// so a test that builds an isolated fixture under t.TempDir() and drives real
+// git (init/config/commit/add/worktree/branch/remote/push/checkout/tag/reset)
+// would otherwise silently operate on the AMBIENT repo (the canonical clone
+// this worktree links to) instead of the fixture. gitConfigIsolationEnv above
+// covers only the global/system CONFIG half of hermeticity; this covers the
+// separate REPO-LOCATION half. Unsetting these here, once, for the whole
+// process is sufficient: nothing in this package's tests or the code under
+// test re-sets them.
+//
 // os.Setenv (rather than a per-command env) is used so exec'd children inherit
 // the isolation via os.Environ(); it runs once, before any test, so it is safe
 // with respect to test parallelism.
 func TestMain(m *testing.M) {
+	for _, k := range []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES",
+		"GIT_COMMON_DIR", "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
+	} {
+		_ = os.Unsetenv(k)
+	}
 	for k, v := range gitConfigIsolationEnv() {
 		if err := os.Setenv(k, v); err != nil {
 			panic("realgit_test TestMain: os.Setenv " + k + ": " + err.Error())
