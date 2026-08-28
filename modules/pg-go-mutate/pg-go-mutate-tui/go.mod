@@ -4,7 +4,7 @@ go 1.25.9
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
-	github.com/phillipgreenii/x v0.0.0-20260826194451-9df7481089ea
+	github.com/phillipgreenii/x v0.0.0-20260828074718-387984c818b9
 	github.com/prometheus/client_golang v1.24.1
 )
 

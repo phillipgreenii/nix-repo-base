@@ -19,9 +19,9 @@ type entry struct {
 
 // RecencyLookup returns the last-changed time for the package at pkgPath.
 // The queue package itself has no git dependency -- the caller supplies
-// this (Task 16's integration wiring provides the production implementation
-// via `git log -1 --format=%ct -- <pkgPath>`) -- which keeps this package
-// independently testable.
+// this (main.go's refillLoop provides the production implementation via
+// x/gitclient's HistoryReader role, i.e. Commits' %ct Committer.When) --
+// which keeps this package independently testable.
 type RecencyLookup func(pkgPath string) time.Time
 
 // Queue is accessed concurrently by design: Task 16's refillLoop goroutine

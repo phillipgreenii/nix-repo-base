@@ -22,6 +22,7 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/worker"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 var version = "dev"
@@ -182,18 +183,29 @@ func classifyExitCode(code int) string {
 
 // refillLoop is the dedicated goroutine design §7 requires, isolated from
 // both the UI loop and the per-run worker goroutines. It ranks packages by
-// git recency (real `git log`) and calls Queue.Refill whenever the queue is
-// below the low mark, backing off per Queue.RetryBackoffElapsed when a
-// refill finds nothing.
+// git recency (via x/gitclient's HistoryReader role) and calls Queue.Refill
+// whenever the queue is below the low mark, backing off per
+// Queue.RetryBackoffElapsed when a refill finds nothing.
+//
+// The gitclient.Client is anchored at root once, here, rather than
+// per-lookup: per gitclient's own doc comment it is safe for concurrent use
+// and holds no per-call state, and root is fixed for refillLoop's lifetime.
+// If root is not (or is not yet) a git repository -- e.g. a bare scan
+// directory in a unit test -- New fails once and gitClientErr is recorded;
+// every recency lookup below then degrades to time.Time{} (the same "give
+// up and rank it as unknown" behavior the old code produced for ANY git
+// failure), rather than the whole loop failing.
 func (a *app) refillLoop(ctx context.Context, root string) {
+	gitClient, gitClientErr := gitclient.New(ctx, root)
 	recency := func(pkgPath string) time.Time {
-		out, err := exec.Command("git", "-C", root, "log", "-1", "--format=%ct", "--", pkgPath).Output()
-		if err != nil {
+		if gitClientErr != nil {
 			return time.Time{}
 		}
-		var unixSec int64
-		fmt.Sscanf(string(out), "%d", &unixSec)
-		return time.Unix(unixSec, 0)
+		commits, err := gitClient.Commits(ctx, gitclient.LogOptions{Limit: 1, Paths: []string{pkgPath}})
+		if err != nil || len(commits) == 0 {
+			return time.Time{}
+		}
+		return commits[0].Committer.When // %ct recency queue.RecencyLookup ranks by
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()

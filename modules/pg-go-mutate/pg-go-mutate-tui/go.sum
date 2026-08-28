@@ -42,8 +42,8 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
-github.com/phillipgreenii/x v0.0.0-20260826194451-9df7481089ea h1:ZEFNDJOsVNORXCjpkKEr9YU4gHCc5weweljIS5ikL6g=
-github.com/phillipgreenii/x v0.0.0-20260826194451-9df7481089ea/go.mod h1:uHj9lca/7K2DDU2ezlrGxlXMsmzQ9ZuidUGRNjgd60o=
+github.com/phillipgreenii/x v0.0.0-20260828074718-387984c818b9 h1:WuPjxt3nr4iV/b3pZqwMdEyKu5B/oyjpOWZLMQRcynk=
+github.com/phillipgreenii/x v0.0.0-20260828074718-387984c818b9/go.mod h1:uHj9lca/7K2DDU2ezlrGxlXMsmzQ9ZuidUGRNjgd60o=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/prometheus/client_golang v1.24.1 h1:JnJkREXzWxUdCuPFpIWZiPispT9xVV59uiuyR2bPlnU=
