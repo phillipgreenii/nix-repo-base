@@ -54,8 +54,9 @@ multiple independent ways of doing config loading, metrics emission, or any of t
   gets to opt one out, so ambient process environment cannot silently redirect what a subprocess
   operates on. This is not a hypothetical hardening — it is the exact mechanism (see §8) that
   corrupted the canonical `phillipgreenii-nix-agent-support` clone's own `.git/config` in production
-  before `x` existed to hold this code, and `gitclient` (§5) is precisely the kind of subprocess
-  wrapper that class of bug targets.
+  before `x` existed to hold this code. `gitclient` (§5) closes that same class of bug for git
+  specifically, but via its own independent contract rather than by sitting on `exec` (design
+  decision D5, `pg2-svfbb`).
 
 ## 3. Non-goals
 
@@ -87,8 +88,11 @@ flowchart TB
         sqliteutil["sqliteutil"]
         backoff["backoff"]
         testkit["testkit (test-only)"]
+        gitfixture["gitfixture (test-only)"]
+        gittest["gittest (test-only)"]
         exec --> bdclient
-        exec --> gitclient
+        gitfixture --> gitclient
+        gittest --> gitclient
     end
     repobase["phillipg-nix-repo-base\npg-go-mutate-tui, pn"] -.->|go.mod require, pinned by commit SHA| x
     agentsupport["phillipgreenii-nix-agent-support\npg-pr, pr-pool, pb, ccpool, pg-ccaudit"] -.-> x
@@ -125,7 +129,8 @@ flowchart TB
 - **`exec`** — the Runner/CLIRunner/FakeRunner foundation, converging `pn`'s and `pb`'s
   independently-identical designs (interface + real subprocess runner + a FIFO-scripted fake
   double for tests, "unscripted call fails loudly"). Zero business logic; every other package here
-  is built on it.
+  is built on it, with one deliberate exception — `gitclient` does not sit on this contract; see
+  the note at the end of this bullet.
   **Hermetic-environment contract (hard requirement, not an open item):** `CLIRunner` MUST NOT let
   a subprocess inherit the calling process's environment wholesale. Its default env MUST be either
   empty or an explicit, documented allowlist (e.g. `PATH`, `HOME`); anything beyond that — and in
@@ -142,6 +147,17 @@ test` process had exported — silently overriding that call's `-C <dir>` argume
   arbitrary `GIT_*`-shaped variable in the TEST PROCESS's own environment before invoking
   `CLIRunner`, and assert the spawned subprocess does not see it unless the test explicitly passed
   it through the Runner's options.
+
+  **`gitclient` deliberately does not build on this contract (D5, `pg2-svfbb`).** Git's own
+  env-outranks-directory precedence (`GIT_DIR`/`GIT_WORK_TREE`/etc. silently overriding a `-C
+    <dir>` argument, as in the incident above) is a git-specific property, not a generic subprocess
+  one, so a generic hermetic `Runner` cannot close it by construction alone — both of `exec`'s
+  ancestor designs already used this same per-call-dir `Run(ctx, dir, args...)` shape and still
+  let caller discipline fail. `gitclient` instead owns and tests its own independent hermetic
+  contract, anchored at construction rather than per call (see `gitclient` below). `exec` remains
+  the right foundation for `bdclient` and other subprocess wrappers; pg2-eol91's hermetic-env
+  contract above stands unchanged for them.
+
 - **`bdclient`** — the `bd` CLI client, built on `exec`: CLIRunner shape, the env-scrub
   (`BEADS_DIR`/`WORKSPACE_ROOT`, from `pr-pool`'s version), JSON-envelope (`{data:[...],
 schema_version:N}`) parsing, and the common verbs the three full implementations (`pg-pr`,
@@ -152,18 +168,19 @@ schema_version:N}`) parsing, and the common verbs the three full implementations
   it just adopts `bdclient` directly instead of ever having its own. App-specific domain modeling
   (`pg-pr`'s mergerequest/deptree/adjudication types) stays local — that is business logic layered
   on top, not plumbing.
-- **`gitclient`** — the `git` CLI client, built on `exec`: `Log` (generalizing `gitlocal`'s and
-  `activity-collector`'s two differently-delimited custom log formats into one options struct),
-  `ChangedFiles` (`git diff --numstat` parsing), and `Locate` (the `rev-parse`
-  toplevel/common-dir/branch trio, soft-fail like `gitfacet`). App-specific policy (`pg-pr`'s
-  worktree/branch lifecycle rules, `activity-collector`'s day-window aggregation into `Activity`
-  records) stays local — but "stays local" governs domain policy, not subprocess plumbing: that
-  local code (`pg-pr`'s `internal/worktree/git.go` among it — the exact site of the corruption
-  incident cited under `exec` above) MUST be built on `exec`'s `CLIRunner` like `gitclient` itself,
-  not a raw `exec.Command`/`exec.CommandContext` call with its own ad-hoc (or absent) environment
-  handling. `gitclient`'s own `Log`/`ChangedFiles`/`Locate` inherit `exec`'s hermetic default for
-  free; the risk this note exists to close is a _local_ git wrapper skipping `exec` entirely and
-  quietly reintroducing the same ambient-environment leak `exec`'s contract was written to prevent.
+- **`gitclient`** — the `git` CLI client. The design of record now lives in `pg2-svfbb`'s DESIGN
+  field (the 2026-08-27 gitclient design), not in this document: a set of role interfaces (`Log`,
+  `ChangedFiles`, `Locate`, and more) implemented by a single CLI-backed `Client`, anchored at
+  construction — the target directory and child environment are fixed in the constructor, never
+  per-call arguments — and hermetic under its own independent contract rather than `exec`'s (D5;
+  see the `exec` bullet above for why). App-specific policy (`pg-pr`'s worktree/branch lifecycle
+  rules, `activity-collector`'s day-window aggregation into `Activity` records) stays local, per
+  `pg2-svfbb`'s D1/D4. Local git-wrapping code that stays in apps (e.g. `pg-pr`'s worktree
+  lifecycle, the exact site of the corruption incident cited under `exec` above) migrates onto
+  `gitclient`'s roles and `Run`, not onto raw `exec` — this supersedes this spec's earlier "MUST be
+  built on `exec`'s `CLIRunner`" note for git specifically; that note's underlying concern (no raw
+  `exec.Command`/`exec.CommandContext` with ad-hoc or absent environment handling) still applies,
+  just enforced by `gitclient`'s own contract instead of `exec`'s.
 - **`jsonllogger`** — the ADR-0038 bootstrap, relocated as-is from `support-apps`
   (`New(app) (*slog.Logger, error)`, appends to `${XDG_STATE_HOME}/<app>/<app>.jsonl`, normalizes
   level/time via `ReplaceAttr`), plus the small XDG state/config-dir-with-`$HOME`-fallback helper
@@ -190,6 +207,11 @@ schema_version:N}`) parsing, and the common verbs the three full implementations
   preserves real `$HOME` (for OAuth), isolating only the XDG dirs. Whether `testkit` should serve
   both shapes, or only one, is folded into the open item (§10) alongside the module-boundary
   question — imported only from `_test.go` files, never shipped in a production binary.
+  A third harness kind now exists alongside these two, and is NOT a variant of either: `gittest`
+  (`x/gitfixture`, a testing-framework-free core, plus `x/gittest`, its `*testing.T` adapter — per
+  `pg2-svfbb`'s D6) creates temporary, isolated, real git repos, hermetic by construction, for
+  integration tests. It ships as its own packages, not folded into `testkit`; the `testkit` open
+  item below (§10) is otherwise unchanged by its existence.
 
 Config-loading scaffolding and metrics emission are explicitly **not** packages here yet (§3, §6
 Phase 3).
@@ -214,13 +236,20 @@ flowchart LR
   package onto `x/jsonllogger`. Nothing else changes. This alone resolves the bead: `pg-go-mutate-
 tui` gets a real dependency to build Task 11 against.
 - **Phase 2 (separate beads, one extract-then-migrate cycle per common-bit).** For each of `exec`,
-  `bdclient`, `gitclient`, `filelock`, `sqliteutil`, `backoff`, `testkit`: one bead copies the
-  canonical implementation into `x`; separate migration bead(s) per consuming app move that app
-  onto `x` and delete its local duplicate. The `jsonllogger` migration (moving `support-apps`' 4
-  existing consumers off their local `../jsonl-logger` `replace` onto `x/jsonllogger`, then deleting
-  the now-dead local package) follows the same pattern and is itself a Phase 2 bead, not part of
-  Phase 1. Each of these beads is filed individually as work proceeds, not designed line-by-line in
-  this document.
+  `bdclient`, `filelock`, `sqliteutil`, `backoff`, `testkit`: one bead copies the canonical
+  implementation into `x`; separate migration bead(s) per consuming app move that app onto `x` and
+  delete its local duplicate. `gitclient` did not follow the one-bead shape: its bead description
+  became "implement per the 2026-08-27 gitclient design (`pg2-svfbb`)" and it decomposed into
+  sequenced child beads `pg2-svfbb.1` through `pg2-svfbb.8` (the fixture is required to test the
+  client, so client and fixture beads chain rather than split across repos) — all closed and
+  landed. That work also updated `phillipgreenii-x`'s own CI (`.github/workflows/ci.yml`) and its
+  README's gate description (`pg2-svfbb.6`). Local git-wrapping code that stays in apps (e.g.
+  `pg-pr`'s worktree lifecycle) migrates onto `gitclient`'s roles/`Run`, not onto raw `exec` — this
+  supersedes this spec's "MUST be built on `exec`'s `CLIRunner`" note for git specifically (§5).
+  The `jsonllogger` migration (moving `support-apps`' 4 existing consumers off their local
+  `../jsonl-logger` `replace` onto `x/jsonllogger`, then deleting the now-dead local package)
+  follows the same pattern and is itself a Phase 2 bead, not part of Phase 1. Each of these beads
+  is filed individually as work proceeds, not designed line-by-line in this document.
 - **Phase 3 (needs its own decision first).** Pick one config-loading format and one metrics
   backend (candidates and trade-offs are real — 3 of 4 config-loading apps already use
   `BurntSushi/toml`; `pr-pool`'s own docs already call OTel its "default emission transport", and
@@ -261,10 +290,15 @@ tui` gets a real dependency to build Task 11 against.
   call's `-C <dir>` argument onto the CANONICAL clone, corrupting its `.git/config`
   (`core.worktree`, `user.email`/`user.name`) — root-caused and fixed in `pg2-5ek6b`
   (duplicate-tracked in `pg2-12795`/`pg2-3fz2s`). This is precisely the failure mode `exec`'s
-  hermetic-environment contract (§2, §5) exists to close off at the foundation, so it cannot be
-  reintroduced through `gitclient`, `bdclient`, or any local subprocess-wrapping code built on
-  `exec`. Mitigated by making that contract a hard requirement (with its own acceptance test, §5)
-  on the Phase 2 `exec` bead, rather than an implementation detail left to whoever writes it.
+  hermetic-environment contract (§2, §5) exists to close off at the foundation, so for `bdclient`
+  and any other local subprocess-wrapping code built on `exec`, it cannot be reintroduced there.
+  `gitclient` closes the same class of bug independently, via its own contract rather than
+  `exec`'s (design decision D5, `pg2-svfbb`) — git's env-outranks-directory precedence is
+  git-specific, not a generic subprocess property, so caller discipline layered on a generic
+  hermetic Runner was not enough on its own (§5). Mitigated by making `exec`'s contract a hard
+  requirement (with its own acceptance test, §5) on the Phase 2 `exec` bead, and by `gitclient`
+  pinning its own allowlist under its own contract tests — rather than either being an
+  implementation detail left to whoever writes it.
 - **Version drift.** Consumers pin `x` at different commits; unlike the current same-repo
   `replace` (always-HEAD), staying in sync now requires an active bump. Mitigated by the bump being
   a normal, reviewable one-line `go.mod` diff — the same cost already paid for every third-party
@@ -313,6 +347,10 @@ tui` gets a real dependency to build Task 11 against.
   or both of the two genuinely different kinds found — "drive real external CLI dependencies
   against drift" (`pb`'s pattern) vs. "build+exec the binary under test" (`ccpool`'s pattern) —
   since collapsing both into one API may not be the right design; splitting into two small
-  packages is a legitimate alternative to decide within that Phase 2 bead.
+  packages is a legitimate alternative to decide within that Phase 2 bead. (Note: `gittest`, per
+  `pg2-svfbb`, is a separate THIRD harness kind — an isolated, hermetic real-git-repo fixture —
+  not one of the two shapes this open item is choosing between; it ships as its own
+  `x/gitfixture`/`x/gittest` packages regardless of how this item resolves. This note does not
+  change the decision itself.)
 - **Phase 3** (config-loading format, metrics backend) requires its own brainstorm and decision
   before any bead can be filed for it — not an implementation detail to resolve inside this plan.
