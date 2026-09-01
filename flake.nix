@@ -186,6 +186,13 @@
           pgTestRunnerScripts = import ./modules/pg-test-runner/scripts.nix {
             inherit pkgs bashBuilders;
           };
+          # gogate: sequential Go validation gate (gofmt -l, go build, go vet,
+          # go test) with fixed output truncation. No extra threaded package
+          # and no engine to bind -- go/gofmt resolve from the ambient PATH
+          # only (mirrors pg-test-runner's language-tool resolution rule).
+          gogateScripts = import ./modules/gogate/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
           # pg-git-check-identity: rejects a commit whose author or
           # committer identity looks like a test/placeholder account. No
           # extra threaded package -- it resolves identity via `git var`
@@ -312,6 +319,10 @@
             # pg-test-runner: label-driven, nix-free-at-runtime direct test
             # runner (spec docs/superpowers/specs/2026-08-24-pg-test-runner-design.md).
             pg-test-runner = pgTestRunnerScripts.pg-test-runner.script;
+
+            # gogate: sequential Go validation gate (fmt/build/vet/test) with
+            # fixed output truncation and a machine-readable PASS/FAIL verdict.
+            gogate = gogateScripts.gogate.script;
 
             # pg-git-check-identity: rejects a commit whose author or
             # committer identity looks like a test/placeholder account.
@@ -1229,6 +1240,7 @@
           // pnwfScripts.checks
           // pgGoMutateScripts.checks
           // pgTestRunnerScripts.checks
+          // gogateScripts.checks
           // pgGitCheckIdentityScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
           # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
@@ -1255,6 +1267,7 @@
           pg-go-mutate = import ./home/pg-go-mutate/default.nix;
           pg-go-mutate-tui = import ./home/pg-go-mutate-tui/default.nix;
           pg-test-runner = import ./home/pg-test-runner/default.nix;
+          gogate = import ./home/gogate/default.nix;
           install-metadata = ./home-modules/install-metadata.nix;
           # Light capability model framework (Plan 5): declares the shared
           # phillipgreenii.account.* property namespace + phillipgreenii.bundles.*
@@ -1287,6 +1300,7 @@
             pg-go-mutate
             pg-go-mutate-tui
             pg-test-runner
+            gogate
             pg-git-check-identity
             ;
         };

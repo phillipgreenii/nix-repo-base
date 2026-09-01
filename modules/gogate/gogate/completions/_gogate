@@ -1,0 +1,7 @@
+#compdef gogate
+
+_arguments -s \
+  '--pkg[Go package pattern passed to build/vet/test]:pattern:_directories' \
+  '--quick[skip the go test stage]' \
+  '(-h --help)'{-h,--help}'[show help]' \
+  '(-v --version)'{-v,--version}'[show version information]'
