@@ -263,6 +263,17 @@
               cp ${./lib/scripts/update-cache-lib.bash} $out/lib/scripts/update-cache-lib.bash
             '';
 
+            # git-fixture-harness: shared hermetic-by-construction bats
+            # git-fixture test harness (design: pg2-gucfd, 2026-08-29;
+            # epic: pg2-ljn47). Referenced via flake input by bats suites in
+            # OTHER repos migrating off per-suite GIT_DIR-family env
+            # scrubbing (pg2-31f13, pg2-whgx5, pg2-vn1nk); mirrors how
+            # update-locks-lib above is packaged for cross-repo consumption.
+            git-fixture-harness = pkgs.runCommand "git-fixture-harness" { } ''
+              mkdir -p $out/lib/scripts
+              cp ${./lib/scripts/git-fixture-harness.bash} $out/lib/scripts/git-fixture-harness.bash
+            '';
+
             # Update-locks resolver
             determine-ul-lib-dir = ulScripts.determine-ul-lib-dir.script;
 
@@ -343,6 +354,7 @@
               scripts = [
                 ./lib/scripts/update-locks-lib.bash
                 ./lib/scripts/update-cache-lib.bash
+                ./lib/scripts/git-fixture-harness.bash
               ];
             };
 
