@@ -18,7 +18,15 @@
 # "sub.gitfixture.invalid" matches but "notgitfixture.invalid" does not.
 # LOCK-STEP: this pattern and the fixture's identity scheme are defined
 # together (pg2-svfbb section 5 guarantee 3) and MUST be updated together.
-PGCI_FAKE_DOMAIN_RE='(^|\.)example\.(com|org|net)$|(^|\.)gitfixture\.invalid$'
+#
+# The third alternative catches the bash-side hermetic bats git-fixture
+# harness's identity scheme (design pg2-gucfd D3; implementation epic
+# pg2-ljn47 / lib/scripts/git-fixture-harness.bash: `<suite>@bashfixture.invalid`),
+# with the same `(^|\.)` left guard, so "sub.bashfixture.invalid" matches but
+# "notbashfixture.invalid" does not. LOCK-STEP: this pattern and
+# GFH_IDENTITY_DOMAIN in git-fixture-harness.bash are defined together and
+# MUST be updated together.
+PGCI_FAKE_DOMAIN_RE='(^|\.)example\.(com|org|net)$|(^|\.)gitfixture\.invalid$|(^|\.)bashfixture\.invalid$'
 
 # Placeholder/test-fixture names, not a real person -- e.g. a test suite that
 # overrode git config and never restored it (the incident this exists for).

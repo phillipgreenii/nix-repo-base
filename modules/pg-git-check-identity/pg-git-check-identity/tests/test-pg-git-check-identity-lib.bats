@@ -92,6 +92,20 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "pgci_is_fake_domain: matches the bashfixture.invalid fixture domain and a subdomain of it" {
+  run pgci_is_fake_domain "bashfixture.invalid"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_domain "BASHFIXTURE.INVALID"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_domain "some-suite.bashfixture.invalid"
+  [ "$status" -eq 0 ]
+}
+
+@test "pgci_is_fake_domain: does not false-positive on a domain merely ending in bashfixture.invalid" {
+  run pgci_is_fake_domain "notbashfixture.invalid"
+  [ "$status" -ne 0 ]
+}
+
 # -- pgci_is_fake_name ----------------------------------------------------------
 
 @test "pgci_is_fake_name: matches common test/placeholder names case-insensitively" {
