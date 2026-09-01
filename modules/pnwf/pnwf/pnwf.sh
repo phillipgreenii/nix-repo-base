@@ -32,9 +32,11 @@ Subcommands (read-only, implemented):
                      (already landed) are skipped.
   cleanup <branch> [--force-dirty-worktree-removal] [--force-unlanded-branch-removal]
                      Best-effort teardown of <branch>'s set from the
-                     canonical clone: removes worktree + branch for every
-                     landed member, keeps (and reports) the rest. Removes
-                     the set directory itself only when nothing was kept.
+                     canonical clone: removes worktree + branch (via
+                     `wtdone`, guarded against a live process still anchored
+                     inside the worktree) for every landed member, keeps
+                     (and reports) the rest. Removes the set directory
+                     itself only when nothing was kept.
   status <branch>    Print a per-repo table for <branch>'s set: member,
                      label (landed/not-started/blocked/kept), reason.
   residue [--set]   Print JSON: an array of {repo, paths, mid_rebase} for
@@ -770,6 +772,62 @@ _pnwf_cleanup_remove_member() {
     force_dirty="$6" forced_unlanded="$7"
   local member_setpath="$setdir/$member"
 
+  # The common/default path (neither force flag set): delegate the actual
+  # worktree-remove + branch--d + prune MECHANICS to `wtdone` (bead
+  # pg2-hpurf) rather than hand-rolling them here. `wtdone` folds in a
+  # liveness guard this function never had (refuse if a live process is
+  # anchored inside the worktree) and, via a plain (never forced) `git
+  # worktree remove`, inherits git's own refusal of a dirty/untracked
+  # worktree.
+  #
+  # The dirty pre-check below stays LOCAL, not delegated: it exists purely
+  # to produce cmd_cleanup's REPORT distinction ("kept", naming the force
+  # flag to rerun with) BEFORE spending a call on an outcome already known --
+  # not to duplicate enforcement (wtdone/git still refuse a dirty worktree
+  # on their own if this check is ever wrong). Skipping it would trade that
+  # specific, actionable report line for a generic "wtdone refused: <git's
+  # raw message>" -- worse for cmd_cleanup's multi-repo report, which
+  # `wtdone` (a single-worktree tool with no notion of pnwf's force-flag
+  # vocabulary) has no way to produce itself.
+  #
+  # `wtdone` is DELIBERATELY NOT a nix runtimeDep here (same rationale as
+  # wsplan/default.nix's `integrate-branch-support` comment, copied
+  # verbatim): it lives in phillipgreenii-nix-agent-support, which DEPENDS ON
+  # this repo (phillipg-nix-repo-base), so declaring it here would invert
+  # that edge into a cycle. Resolved via ambient PATH instead, exactly like
+  # integrate-branch-support already is -- and, like that binary, the bats
+  # check's PATH does not include it, so this suite mocks it.
+  if [[ $force_dirty -ne 1 && $forced_unlanded -ne 1 ]]; then
+    if pnwf_worktree_present "$setdir" "$member"; then
+      local dirty_rc=0
+      pnwf_working_tree_dirty "$member_setpath" || dirty_rc=$?
+      case "$dirty_rc" in
+      0)
+        printf '%s\t%s\n' "0" "worktree has uncommitted changes; rerun with --force-dirty-worktree-removal to remove anyway"
+        return 0
+        ;;
+      1) : ;;
+      *)
+        printf '%s\t%s\n' "0" "could not check worktree cleanliness (rc=$dirty_rc)"
+        return 0
+        ;;
+      esac
+    fi
+
+    local wt_out wt_rc=0
+    wt_out=$(wtdone "$branch" --cc "$canonical_dir" 2>&1) || wt_rc=$?
+    if [[ $wt_rc -ne 0 ]]; then
+      printf '%s\t%s\n' "0" "wtdone refused (rc=$wt_rc): $wt_out"
+      return 0
+    fi
+    printf '%s\t%s\n' "1" "branch was an ancestor of $primary; worktree + branch removed (via wtdone)"
+    return 0
+  fi
+
+  # Force paths only, from here down: --force-dirty-worktree-removal and/or
+  # --force-unlanded-branch-removal deliberately bypass safety checks
+  # `wtdone` will never perform on their behalf (removing a DIRTY worktree,
+  # or `-D`-deleting an UNMERGED branch) -- kept hand-rolled.
   if pnwf_worktree_present "$setdir" "$member"; then
     local dirty_rc=0
     pnwf_working_tree_dirty "$member_setpath" || dirty_rc=$?
@@ -838,9 +896,11 @@ Best-effort teardown of <branch>'s set, from the canonical clone on each
 member's primary branch. Per member (enumerated from the SET's own
 pn-workspace.lock.json — subset-aware):
   - branch absent      already landed/removed elsewhere; nothing to do.
-  - landed (ancestor)  remove worktree + `git branch -d` (never `git branch
-                       -d` AS the landed-test itself — it never runs before
-                       `git merge-base --is-ancestor` has confirmed landed).
+  - landed (ancestor)  remove worktree + branch via `wtdone` (never `git
+                       branch -d` AS the landed-test itself — it never runs
+                       before `git merge-base --is-ancestor` has confirmed
+                       landed). `wtdone` refuses if a live process is still
+                       anchored inside the worktree.
   - not landed         kept by default (incl. pull-request repos); report
                        names the two force flags.
 Processes EVERY member and never aborts on one un-removable repo — the

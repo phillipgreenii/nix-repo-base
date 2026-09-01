@@ -22,7 +22,7 @@ bats_require_minimum_version 1.5.0
 
 # IMMUTABLE, path-stable fixtures are built ONCE per file here (bead pg2-nh1t3):
 # the local-dev wrapper and the mock TEMPLATE (the `pn` + default
-# integrate-branch-support mocks). Rebuilding them in per-test setup() was pure
+# integrate-branch-support + default wtdone mocks). Rebuilding them in per-test setup() was pure
 # repetition -- their contents never vary across tests, and both mocks resolve
 # every per-test path from runtime env (MOCK_PN_ENV_LOG / PN_WORKSPACE_ROOT /
 # PWD), never from a value baked in at build time -- so a single shared copy is
@@ -161,6 +161,53 @@ echo '{"primary_branch":"main","strategy":null}'
 MOCK
   chmod +x "$MOCK_TEMPLATE/integrate-branch-support"
 
+  # Test-only stand-in for phillipgreenii-nix-agent-support's `wtdone` (bead
+  # pg2-hpurf) -- cross-repo, so like integrate-branch-support above it is
+  # NOT a nix runtimeDep here (see wsplan/default.nix's identical
+  # rationale) and this suite mocks it instead. Mirrors wtdone's documented
+  # contract closely enough for `cleanup`'s tests: resolve <branch>'s
+  # worktree in <cc> the same way `wtdone_find_worktree` does (`git worktree
+  # list --porcelain`), stop its fsmonitor daemon immediately before
+  # removing it (bead pg2-fnjfs's ordering, which "cleanup: stops a landed
+  # member's fsmonitor daemon..." below asserts on), `git worktree remove`
+  # it (never forced -- refuses dirty, matching real wtdone), then plain
+  # `git branch -d` (never `-D` -- refuses unmerged, matching real wtdone).
+  cat >"$MOCK_TEMPLATE/wtdone" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+branch=""
+cc=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --cc)
+    cc="$2"
+    shift 2
+    ;;
+  *)
+    branch="$1"
+    shift
+    ;;
+  esac
+done
+: "${branch:?wtdone mock: <branch> required}"
+: "${cc:?wtdone mock: --cc required}"
+
+wt=$(git -C "$cc" worktree list --porcelain | awk -v b="$branch" '
+  /^worktree / { path=$2 }
+  /^branch refs\/heads\// && $0 == "branch refs/heads/"b { print path; exit }
+')
+
+if [[ -n $wt ]]; then
+  git -C "$wt" fsmonitor--daemon stop >/dev/null 2>&1 || true
+  git -C "$cc" worktree remove "$wt"
+fi
+
+git -C "$cc" branch -d "$branch"
+git -C "$cc" worktree prune
+echo "wtdone: removed"
+MOCK
+  chmod +x "$MOCK_TEMPLATE/wtdone"
+
   # Local dev (no nix-provided SCRIPT_UNDER_TEST): assemble a wrapper replicating
   # the builder's composition (library sourced before the command's .sh) -- see
   # the bash-scripting skill's "Library wrapper pattern". Immutable +
@@ -206,7 +253,7 @@ setup() {
   # module -- see testing-advanced.md's mock-isolation gotcha).
   MOCK_BIN="$TEST_DIR/mock-bin"
   mkdir -p "$MOCK_BIN"
-  cp -p "$MOCK_TEMPLATE/pn" "$MOCK_TEMPLATE/integrate-branch-support" "$MOCK_BIN/"
+  cp -p "$MOCK_TEMPLATE/pn" "$MOCK_TEMPLATE/integrate-branch-support" "$MOCK_TEMPLATE/wtdone" "$MOCK_BIN/"
   PATH="$MOCK_BIN:$PATH"
   export PATH MOCK_BIN
 
@@ -969,6 +1016,15 @@ MOCK
   command git -C "$SET_DIR/repoA" commit -q -am second
   command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
 
+  # Resolved (`pwd -P`) form of repoA's worktree path, captured while it
+  # still exists (cleanup below removes it): `wtdone` (mocked here)
+  # discovers the worktree path via `git worktree list --porcelain`, which
+  # git always reports canonicalized -- it need not equal $SET_DIR/repoA's
+  # own (unresolved) string on a machine where $TMPDIR itself is a symlink
+  # (e.g. macOS's /tmp -> /private/tmp).
+  local resolved_repoA
+  resolved_repoA="$(cd "$SET_DIR/repoA" && pwd -P)"
+
   # Install a git shim that logs each invocation's args (one line per call)
   # then delegates to the real git by absolute path, so we can assert pnwf
   # issues a best-effort `fsmonitor--daemon stop` on the worktree IMMEDIATELY
@@ -996,9 +1052,9 @@ SHIM
   remove_line=$(grep -nF -- "worktree remove" "$TEST_DIR/git-calls.log" | head -1 | cut -d: -f1)
   [ -n "$stop_line" ]
   [ -n "$remove_line" ]
-  # The stop must target repoA's set worktree, and be issued IMMEDIATELY before
-  # (no git call between) the worktree remove.
-  grep -qF -- "-C $SET_DIR/repoA fsmonitor--daemon stop" "$TEST_DIR/git-calls.log"
+  # The stop must target repoA's set worktree, and be issued IMMEDIATELY
+  # before (no git call between) the worktree remove.
+  grep -qF -- "-C $resolved_repoA fsmonitor--daemon stop" "$TEST_DIR/git-calls.log"
   [ "$remove_line" -eq $((stop_line + 1)) ]
 }
 

@@ -33,6 +33,15 @@ The teardown is `pnwf cleanup <branch> [--force-dirty-worktree-removal]
 [--force-unlanded-branch-removal]`. This skill wraps it so you can act on
 anything the tool refuses.
 
+For each landed member (neither force flag given), `pnwf cleanup` delegates
+the actual worktree-remove + branch-delete to the guarded `wtdone` script
+(`phillipgreenii-nix-agent-support`, bead `pg2-hpurf`) rather than hand-rolling
+it. That adds a NEW refusal this skill must recognize: a member can now be
+KEPT because a live process is still anchored inside its worktree — e.g. a
+shell left standing in it — not only for the pre-existing dirty/unmerged
+reasons. Treat it the same as any other kept-member report: do not force past
+it; leave the worktree/branch and report which process is anchored.
+
 ## The landed-test (MUST understand)
 
 `pnwf cleanup` classifies each repo from the canonical clone on its primary:
