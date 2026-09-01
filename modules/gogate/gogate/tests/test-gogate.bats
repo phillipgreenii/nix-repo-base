@@ -87,8 +87,18 @@ MOCK
 }
 
 teardown() {
-  [[ -n "${TEST_DIR:-}" ]] && rm -rf "$TEST_DIR"
-  [[ -n "${TEST_WRAPPER_DIR:-}" ]] && rm -rf "$TEST_WRAPPER_DIR"
+  # `if`, never a bare `[[ cond ]] && cmd` list, as the last statement here:
+  # under bats' injected errexit, a FALSE condition as the last command of a
+  # function returns 1 from the function itself, failing the test that
+  # called it even though the test body already passed. TEST_WRAPPER_DIR in
+  # particular is unset whenever SCRIPT_UNDER_TEST is set (the nix check
+  # sandbox), so this is not a hypothetical -- it tripped on every test here.
+  if [[ -n "${TEST_DIR:-}" ]]; then
+    rm -rf "$TEST_DIR"
+  fi
+  if [[ -n "${TEST_WRAPPER_DIR:-}" ]]; then
+    rm -rf "$TEST_WRAPPER_DIR"
+  fi
 }
 
 # --- --help -----------------------------------------------------------------
