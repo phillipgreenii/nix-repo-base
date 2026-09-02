@@ -25,6 +25,9 @@ type fakeGitReader struct {
 	hasUpstreamErr   error
 	commitsAhead     int
 	commitsAheadErr  error
+	status           []gitclient.StatusEntry
+	statusErr        error
+	isTracked        map[string]bool
 }
 
 var _ gitReader = (*fakeGitReader)(nil)
@@ -61,6 +64,14 @@ func (f *fakeGitReader) HasUpstream(ctx context.Context) (bool, error) {
 
 func (f *fakeGitReader) CommitsAhead(ctx context.Context, base, tip string) (int, error) {
 	return f.commitsAhead, f.commitsAheadErr
+}
+
+func (f *fakeGitReader) Status(ctx context.Context) ([]gitclient.StatusEntry, error) {
+	return f.status, f.statusErr
+}
+
+func (f *fakeGitReader) IsTracked(ctx context.Context, path string) (bool, error) {
+	return f.isTracked[path], nil
 }
 
 // stubGitOpener installs a gitOpener that returns readers keyed by dir, for

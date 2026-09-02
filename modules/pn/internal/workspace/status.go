@@ -49,7 +49,7 @@ func (ws *Workspace) Status(ctx context.Context, w io.Writer, errOut io.Writer, 
 	first := true
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
-		res, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "status", "--short"}, exec.RunOptions{})
+		shortLines, err := ws.gitStatusShort(ctx, repoDir)
 		if err != nil {
 			fmt.Fprintf(errOut, "%s (error)\n", name)
 			fmt.Fprintf(errOut, "%s\n", err)
@@ -90,11 +90,11 @@ func (ws *Workspace) Status(ctx context.Context, w io.Writer, errOut io.Writer, 
 				head += "  (no upstream)"
 			}
 		}
-		if len(res.Stdout) == 0 {
+		if len(shortLines) == 0 {
 			fmt.Fprintf(w, "  %s  (clean)\n", head)
 		} else {
 			fmt.Fprintf(w, "  %s\n", head)
-			for _, line := range strings.Split(strings.TrimRight(string(res.Stdout), "\n"), "\n") {
+			for _, line := range shortLines {
 				fmt.Fprintf(w, "    %s\n", line)
 			}
 		}
@@ -200,6 +200,42 @@ func (ws *Workspace) branchInfo(ctx context.Context, repoDir string) (name strin
 		return "", true, s, true
 	}
 	return branch, false, "", true
+}
+
+// gitStatusShort returns repoDir's working-tree status formatted exactly as
+// `git status --short` would print it: one "XY PATH" line per entry (or
+// "XY ORIG -> PATH" for a rename/copy), no trailing newline per line, an
+// empty slice for a clean tree.
+//
+// Migrated onto x/gitclient's StatusReader.Status (bead pg2-oxle0), which
+// runs `status --porcelain=v1 -z`. This is a safe reformat, not a behavior
+// change: verified empirically (git 2.x) that `--short` and `--porcelain=v1`
+// (non -z) print byte-identical text for the same repo state -- porcelain's
+// own doc note is that it is "similar to the short output, but will remain
+// stable across Git versions" -- so reconstructing the XY-plus-path line from
+// StatusEntry's Staged/Unstaged/Path/OrigPath fields (which already carry the
+// same X/Y codes -z parses out) reproduces --short's exact text. -z mode's
+// only structural difference -- NUL terminators and a reversed rename-pair
+// order -- is already unpacked by gitclient's own parser into OrigPath (old)
+// and Path (new), which is the ORDER --short's "OLD -> NEW" expects.
+func (ws *Workspace) gitStatusShort(ctx context.Context, repoDir string) ([]string, error) {
+	client, err := openGitReader(ctx, repoDir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := client.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		path := e.Path
+		if e.OrigPath != "" {
+			path = e.OrigPath + " -> " + e.Path
+		}
+		lines = append(lines, string(e.Staged)+string(e.Unstaged)+" "+path)
+	}
+	return lines, nil
 }
 
 // aheadBehindCounts returns the ahead/behind commit counts of the current

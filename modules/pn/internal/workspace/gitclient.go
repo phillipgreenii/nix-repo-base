@@ -9,17 +9,18 @@ import (
 
 // gitReader is the composed role this package's read-side git call sites
 // need: Locator (CommonDir, CurrentBranch, RemoteURL) + RefReader (RefExists,
-// HasUpstream). *gitclient.Client satisfies it by construction (asserted
-// below). This is pn's read-side migration onto x/gitclient (bead pg2-oxle0,
-// decided by pg2-app6l, per epic pg2-svfbb's design section 4.5's pn
-// paragraph): mutating verbs, streaming, and per-invocation `-c` config stay
-// on the raw exec.Runner pending pn's own full-adoption design pass
-// (pg2-migib) — this bead migrates ONLY call sites that map onto Locator or
-// RefReader exactly (see the per-call-site doc comments at each migrated
-// call site for what does and does not qualify).
+// HasUpstream) + StatusReader (Status). *gitclient.Client satisfies it by
+// construction (asserted below). This is pn's read-side migration onto
+// x/gitclient (bead pg2-oxle0, decided by pg2-app6l, per epic pg2-svfbb's
+// design section 4.5's pn paragraph): mutating verbs, streaming, and
+// per-invocation `-c` config stay on the raw exec.Runner pending pn's own
+// full-adoption design pass (pg2-migib) — this bead migrates ONLY call sites
+// that map onto a role method exactly (see the per-call-site doc comments at
+// each migrated call site for what does and does not qualify).
 type gitReader interface {
 	gitclient.Locator
 	gitclient.RefReader
+	gitclient.StatusReader
 }
 
 var _ gitReader = (*gitclient.Client)(nil)

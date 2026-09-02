@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 // TestOverrideInputArgsFor_SetRootedWorkspace proves that when ws.root is a
@@ -155,12 +156,17 @@ url = "github:owner/alpha"
 url = "github:owner/beta"
 `)
 
-	f := exec.NewFakeRunner()
 	alphaDir := filepath.Join(setRoot, "alpha")
 	betaDir := filepath.Join(setRoot, "beta")
-	f.AddResponse("git", []string{"-C", alphaDir, "status", "--short"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", betaDir, "status", "--short"}, exec.Result{Stdout: []byte(" M worktree-file.go\n")}, nil)
+	// Status is migrated onto x/gitclient's StatusReader.Status (bead pg2-oxle0).
+	stubGitOpener(t, map[string]*fakeGitReader{
+		alphaDir: {},
+		betaDir: {status: []gitclient.StatusEntry{
+			{Staged: gitclient.StatusUnmodified, Unstaged: gitclient.StatusModified, Path: "worktree-file.go"},
+		}},
+	})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(setRoot, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
