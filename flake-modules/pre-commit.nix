@@ -429,16 +429,103 @@ in
         fi
         unset _pgii_git
       '';
+      # pg2-z02uo: let `prek install` (run FROM INSIDE `preCommit.shellHook`
+      # below) actually succeed on a machine that has ALSO configured a
+      # --global or --system `core.hooksPath` (as this workspace intentionally
+      # does — see the `pg-git-check-identity` comment on `hooks` above).
+      #
+      # `preCommit.shellHook` is cachix/git-hooks.nix's own installationScript
+      # (this repo's locked rev, `modules/pre-commit.nix` ~L508-542). It
+      # unsets `core.hooksPath` --local right before installing ("Clear any
+      # user-configured core.hooksPath so the hook tool installs into the
+      # real hooks dir"), then runs `prek install -c ${configPath} [-t stage]`
+      # for every configured stage, then UNCONDITIONALLY (no exit-code check,
+      # no `set -e` in this script) writes `core.hooksPath` --local to the
+      # relativized common hooks dir.
+      #
+      # That comment's assumption — that clearing --local exposes "the real
+      # hooks dir" — holds only when NO higher scope also sets the key. With
+      # --local unset, resolution here falls through to --global (the
+      # nix-managed dispatcher path), and `prek install` REFUSES outright:
+      #
+      #   error: Refusing to install hooks because `core.hooksPath` is
+      #   configured outside this repository.
+      #
+      # (confirmed against this repo's own pinned `prek`, 0.3.11, in a
+      # throwaway scratch repo during the pg2-z02uo investigation). Nothing
+      # downstream checks that exit code, so the script continues and writes
+      # `core.hooksPath` anyway — `correctRelativeHooksPath` below then
+      # absolutizes it exactly as if the install had succeeded. Every
+      # canonical clone on such a machine ends up with a correctly-SHAPED
+      # local `core.hooksPath` pointing at a `.git/hooks` that was NEVER
+      # populated with a real hook script (only git's stock `*.sample`
+      # files) — so `git commit` silently runs no hooks at all.
+      #
+      # FIX: for the DURATION of `preCommit.shellHook` only, redirect
+      # GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM to /dev/null — this does NOT
+      # mutate the real ~/.gitconfig or /etc/gitconfig; it only makes THIS
+      # script's own child git/prek processes see nothing at those scopes, so
+      # `prek install`'s resolution matches the "unset everywhere" case its
+      # own dance assumes, and it writes a real shim into the repo's actual
+      # hooks dir. Restored immediately after (`restoreHigherScopeHooksPath`,
+      # called before `correctRelativeHooksPath` runs), so every later step
+      # still sees the real global/system config, and no other process on the
+      # machine — including a concurrent commit in a different repo or
+      # session — ever observes the redirect (it is a plain env var on this
+      # one script's own process tree, not a filesystem write).
+      #
+      # GATED on an override actually being present at either scope: a
+      # consumer machine/CI with no such global/system `core.hooksPath` sees
+      # this pair of fragments do nothing at all (both are no-ops when the
+      # probe finds nothing to neutralize).
+      neutralizeHigherScopeHooksPath = ''
+        _pgii_git="${lib.getExe' pkgs.git "git"}"
+        if "$_pgii_git" rev-parse --git-dir >/dev/null 2>&1; then
+          _pgii_global_hp="$("$_pgii_git" config --global --get core.hooksPath 2>/dev/null || true)"
+          _pgii_system_hp="$("$_pgii_git" config --system --get core.hooksPath 2>/dev/null || true)"
+          if [ -n "$_pgii_global_hp" ] || [ -n "$_pgii_system_hp" ]; then
+            _pgii_had_gcg="''${GIT_CONFIG_GLOBAL+x}"
+            _pgii_old_gcg="''${GIT_CONFIG_GLOBAL-}"
+            _pgii_had_gcs="''${GIT_CONFIG_SYSTEM+x}"
+            _pgii_old_gcs="''${GIT_CONFIG_SYSTEM-}"
+            export GIT_CONFIG_GLOBAL=/dev/null
+            export GIT_CONFIG_SYSTEM=/dev/null
+            _pgii_neutralized=1
+          fi
+          unset _pgii_global_hp _pgii_system_hp
+        fi
+        unset _pgii_git
+      '';
+      restoreHigherScopeHooksPath = ''
+        if [ "''${_pgii_neutralized:-}" = "1" ]; then
+          if [ -n "''${_pgii_had_gcg:-}" ]; then
+            export GIT_CONFIG_GLOBAL="$_pgii_old_gcg"
+          else
+            unset GIT_CONFIG_GLOBAL
+          fi
+          if [ -n "''${_pgii_had_gcs:-}" ]; then
+            export GIT_CONFIG_SYSTEM="$_pgii_old_gcs"
+          else
+            unset GIT_CONFIG_SYSTEM
+          fi
+          unset _pgii_had_gcg _pgii_old_gcg _pgii_had_gcs _pgii_old_gcs _pgii_neutralized
+        fi
+      '';
       # Single source of truth consumed by BOTH the devShell (via
       # `_module.args.preCommitShellHook`) and `install-pre-commit-hooks`, so the
       # corrected `core.hooksPath`, the tolerant pre-push shim, and the
       # absolutized config path are all applied on either entry point.
       #
-      # ORDER IS LOAD-BEARING. `correctRelativeHooksPath` must run BEFORE
-      # `hardenPrePushHook`, because the latter locates the shim with
-      # `git rev-parse --git-path hooks/pre-push`, which HONOURS `core.hooksPath`.
-      # While the relative value is still in place that resolution fails in a linked
-      # worktree ("Invalid path …/.git/hooks: Not a directory"), so the pre-push
+      # ORDER IS LOAD-BEARING. `neutralizeHigherScopeHooksPath` must run BEFORE
+      # `preCommit.shellHook`, and `restoreHigherScopeHooksPath` immediately
+      # after it, so the redirect covers exactly `prek install`'s own calls and
+      # nothing else (see pg2-z02uo comment above).
+      #
+      # `correctRelativeHooksPath` must run BEFORE `hardenPrePushHook`, because
+      # the latter locates the shim with `git rev-parse --git-path
+      # hooks/pre-push`, which HONOURS `core.hooksPath`. While the relative
+      # value is still in place that resolution fails in a linked worktree
+      # ("Invalid path …/.git/hooks: Not a directory"), so the pre-push
       # hardening would silently skip exactly where it is needed.
       #
       # `absolutizeHookConfigPath` must run LAST, after `hardenPrePushHook`: it
@@ -449,7 +536,9 @@ in
       # why re-running `prek install` instead, in a different order, would
       # conflict with `hardenPrePushHook`'s hardcoded relative `-c` argument).
       preCommitShellHook = ''
+        ${neutralizeHigherScopeHooksPath}
         ${preCommit.shellHook}
+        ${restoreHigherScopeHooksPath}
         ${correctRelativeHooksPath}
         ${hardenPrePushHook}
         ${absolutizeHookConfigPath}
@@ -780,6 +869,184 @@ in
 
             touch "$out"
           '';
+
+      # Regression guard for pg2-z02uo, same shape as the two checks above
+      # (assert the DEFECT first as a CONTROL, then THE FIX): does
+      # `prek install` — run the same way upstream's OWN, UNMODIFIED
+      # installationScript runs it (unset --local, install, relativize) —
+      # actually write a real hook shim on a machine that has ALSO
+      # configured a --global `core.hooksPath`, the exact setup this
+      # workspace uses for its nix-managed hooks dispatcher?
+      #
+      # Exercises the REAL `prek` binary (not a hand-rolled stand-in),
+      # because the defect and the fix both live in prek's own scope check.
+      # Self-contained and sandbox-safe: no network, no reference to the
+      # consumer's own repo, so it runs unchanged in every consumer that
+      # imports this module.
+      higherScopeHooksPathInstallCheck =
+        pkgs.runCommand "pre-commit-higher-scope-hookspath-install"
+          {
+            nativeBuildInputs = [
+              pkgs.git
+              pkgs.prek
+            ];
+          }
+          ''
+            set -u
+            export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t
+            export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+            mkdir -p "$TMPDIR/globalhooks"
+
+            rejectConfig() {
+              cat >"$1" <<'PGII_EOF'
+            repos:
+              - repo: local
+                hooks:
+                  - id: reject
+                    name: reject
+                    entry: sh -c 'echo HOOK-FIRED; exit 1'
+                    language: system
+                    always_run: true
+                    pass_filenames: false
+            PGII_EOF
+            }
+
+            # CONTROL: with a --global core.hooksPath configured and NONE of
+            # this repo's fixes applied, reproducing upstream's OWN
+            # unset-then-install-then-relativize dance byte-for-byte
+            # (cachix/git-hooks.nix, this repo's locked rev,
+            # modules/pre-commit.nix ~L508-542) must fail to write a real
+            # shim — this is the pg2-z02uo defect. A failure here means the
+            # defect is already gone (e.g. a future prek no longer refuses)
+            # and this check is no longer measuring anything real.
+            export HOME="$TMPDIR/home-control"
+            mkdir -p "$HOME"
+            export GIT_CONFIG_GLOBAL="$HOME/gitconfig"
+            export GIT_CONFIG_SYSTEM=/dev/null
+            : >"$GIT_CONFIG_GLOBAL"
+            git config --global core.hooksPath "$TMPDIR/globalhooks"
+
+            canon_control="$TMPDIR/canon-control"
+            git init -q -b main "$canon_control"
+            cd "$canon_control"
+            echo seed >seed.txt
+            git add seed.txt
+            git commit -qm seed
+            rejectConfig .pre-commit-config.yaml
+
+            git config --local --unset-all core.hooksPath || true
+            prek install -c .pre-commit-config.yaml || true
+            common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+            common_dir=''${common_dir#"$canon_control"/}
+            git config --local core.hooksPath "$common_dir/hooks"
+
+            if [ -n "$(ls .git/hooks | grep -v '\.sample$' || true)" ]; then
+              echo "CONTROL FAILED: a real hook shim was written despite the global override; premise (prek refuses) no longer holds" >&2
+              exit 1
+            fi
+
+            echo bad >bad.txt
+            git add bad.txt
+            if ! commit_out=$(git commit -m bad 2>&1); then
+              echo "CONTROL FAILED: commit was rejected; premise no longer holds" >&2
+              printf '%s\n' "$commit_out" >&2
+              exit 1
+            fi
+            case $commit_out in
+              *HOOK-FIRED*)
+                echo "CONTROL FAILED: the hook fired despite no shim being written" >&2
+                exit 1
+                ;;
+            esac
+
+            # THE FIX: a FRESH repo, same global override, this time running
+            # the fragments `preCommitShellHook` actually composes, in the
+            # order it composes them (minus `preCommit.shellHook` itself,
+            # replaced by the same hand-reproduction of its install dance
+            # used above — this check's subject is what WRAPS that dance,
+            # not the dance's own config-symlink bookkeeping).
+            export HOME="$TMPDIR/home-fix"
+            mkdir -p "$HOME"
+            export GIT_CONFIG_GLOBAL="$HOME/gitconfig"
+            : >"$GIT_CONFIG_GLOBAL"
+            git config --global core.hooksPath "$TMPDIR/globalhooks"
+
+            canon_fix="$TMPDIR/canon-fix"
+            git init -q -b main "$canon_fix"
+            cd "$canon_fix"
+            echo seed >seed.txt
+            git add seed.txt
+            git commit -qm seed
+            seed_sha=$(git rev-parse HEAD)
+            rejectConfig .pre-commit-config.yaml
+
+            gcg_before="$GIT_CONFIG_GLOBAL"
+            ${neutralizeHigherScopeHooksPath}
+            git config --local --unset-all core.hooksPath || true
+            if ! prek install -c .pre-commit-config.yaml; then
+              echo "FAIL: prek install refused even with the fix applied" >&2
+              exit 1
+            fi
+            common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+            common_dir=''${common_dir#"$canon_fix"/}
+            git config --local core.hooksPath "$common_dir/hooks"
+            ${restoreHigherScopeHooksPath}
+
+            if [ "''${GIT_CONFIG_GLOBAL:-}" != "$gcg_before" ]; then
+              echo "FAIL: GIT_CONFIG_GLOBAL was not restored after the neutralize/restore pair" >&2
+              exit 1
+            fi
+            if [ -z "$(ls .git/hooks | grep -v '\.sample$' || true)" ]; then
+              echo "FAIL: no real hook shim was written even with the fix applied" >&2
+              exit 1
+            fi
+
+            ${correctRelativeHooksPath}
+
+            # THE ASSERTION: a violating commit is now REJECTED with real
+            # hook output, and HEAD does not move.
+            echo violation >violation.txt
+            git add violation.txt
+            if commit_out=$(git commit -m violation 2>&1); then
+              echo "FAIL: commit succeeded; the hook did not fire" >&2
+              exit 1
+            fi
+            case $commit_out in
+              *HOOK-FIRED*) ;;
+              *)
+                echo "FAIL: no hook output from the commit" >&2
+                printf '%s\n' "$commit_out" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$(git rev-parse HEAD)" != "$seed_sha" ]; then
+              echo "FAIL: HEAD moved despite the rejected commit" >&2
+              exit 1
+            fi
+
+            # A CLEAN commit (no violation) must still succeed — the fix
+            # must let the real hook gate genuine violations only, not
+            # everything.
+            cat >.pre-commit-config.yaml <<'PGII_EOF'
+            repos:
+              - repo: local
+                hooks:
+                  - id: allow
+                    name: allow
+                    entry: sh -c 'exit 0'
+                    language: system
+                    always_run: true
+                    pass_filenames: false
+            PGII_EOF
+            echo clean >clean.txt
+            git add clean.txt
+            if ! git commit -qm clean; then
+              echo "FAIL: a clean commit was rejected" >&2
+              exit 1
+            fi
+
+            touch "$out"
+          '';
     in
     {
       _module.args.preCommitShellHook = preCommitShellHook;
@@ -788,6 +1055,7 @@ in
         pre-commit-config-gitignored = preCommitConfigGitignoredCheck;
         pre-commit-hooks-path-worktree-safe = hooksPathWorktreeSafeCheck;
         pre-commit-hooks-config-path-absolute = absolutizeHookConfigPathCheck;
+        pre-commit-higher-scope-hookspath-install = higherScopeHooksPathInstallCheck;
       };
       packages.install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
         ${preCommitShellHook}
