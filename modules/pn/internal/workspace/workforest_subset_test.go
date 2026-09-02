@@ -217,8 +217,8 @@ func TestWorkforestAdd_Subset_CreatesOnlyChosenRepos(t *testing.T) {
 	// Only app + lib are members; "other" must not be touched.
 	addWorktreeListClean(f, libCanonical, "lib")
 	addWorktreeListClean(f, appCanonical, "app")
-	addBranchNotExists(f, libCanonical, "feature")
-	addBranchNotExists(f, appCanonical, "feature")
+	addBranchNotExists(t, libCanonical, "feature")
+	addBranchNotExists(t, appCanonical, "feature")
 	f.AddResponse("git", []string{"-C", libCanonical, "worktree", "add", "-b", "feature", libSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", appCanonical, "worktree", "add", "-b", "feature", appSet}, exec.Result{}, nil)
 
@@ -298,8 +298,8 @@ func TestWorkforestAdd_Subset_ExcludedDepNotice(t *testing.T) {
 	// Members: app + other (excludes lib, which app depends on).
 	addWorktreeListClean(f, appCanonical, "app")
 	addWorktreeListClean(f, otherCanonical, "other")
-	addBranchNotExists(f, appCanonical, "feature")
-	addBranchNotExists(f, otherCanonical, "feature")
+	addBranchNotExists(t, appCanonical, "feature")
+	addBranchNotExists(t, otherCanonical, "feature")
 	f.AddResponse("git", []string{"-C", appCanonical, "worktree", "add", "-b", "feature", appSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", otherCanonical, "worktree", "add", "-b", "feature", otherSet}, exec.Result{}, nil)
 

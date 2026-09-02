@@ -141,14 +141,18 @@ url = "github:o/zzz"
   "edges": [{"consumer": "aaa", "alias": "zzz-input", "target": "zzz"}]
 }`)
 
-	f := exec.NewFakeRunner()
-	// upstream check for each
 	aDir := filepath.Join(root, "aaa")
 	zDir := filepath.Join(root, "zzz")
-	f.AddResponse("git", []string{"-C", zDir, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	// upstream check for each (hasUpstream, migrated onto x/gitclient's
+	// RefReader.HasUpstream — bead pg2-oxle0).
+	stubGitOpener(t, map[string]*fakeGitReader{
+		zDir: {hasUpstreamVal: true},
+		aDir: {hasUpstreamVal: true},
+	})
+
+	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", zDir, "fetch"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", zDir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", aDir, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", aDir, "fetch"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", aDir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 

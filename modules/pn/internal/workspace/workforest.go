@@ -570,11 +570,19 @@ func (w *Workspace) assertBranchNotCheckedOut(ctx context.Context, canonical, re
 }
 
 // localBranchExists reports whether <branch> exists as a local branch in the repo.
+//
+// Migrated onto x/gitclient's RefReader.RefExists (bead pg2-oxle0): the
+// pre-migration call was `rev-parse --verify --quiet refs/heads/<branch>` (no
+// `^{commit}` suffix), whereas RefExists appends `^{commit}`. A
+// refs/heads/<branch> ref always resolves to a commit (branches never point
+// at anything else), so the dereference is a no-op here.
 func (w *Workspace) localBranchExists(ctx context.Context, canonical, branch string) bool {
-	_, err := w.runner.Run(ctx, "git",
-		[]string{"-C", canonical, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch},
-		exec.RunOptions{})
-	return err == nil
+	client, err := openGitReader(ctx, canonical)
+	if err != nil {
+		return false
+	}
+	ok, err := client.RefExists(ctx, "refs/heads/"+branch)
+	return err == nil && ok
 }
 
 // copyFile copies src to dst verbatim, creating dst if needed.

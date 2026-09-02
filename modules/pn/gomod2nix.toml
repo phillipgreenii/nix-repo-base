@@ -9,6 +9,10 @@ schema = 3
     version = 'v2.3.1'
     hash = 'sha256-5H8+UOtPOs+Yc+8oVT/3bugCCdbq3jFMH6eOW8dadyg='
 
+  [mod.'github.com/phillipgreenii/x']
+    version = 'v0.0.0-20260828074718-387984c818b9'
+    hash = 'sha256-UOk08N2LDr7O5je7OnZdcY6YsNnmozYQSAV4EAY9r2M='
+
   [mod.'github.com/spf13/cobra']
     version = 'v1.10.2'
     hash = 'sha256-nbRCTFiDCC2jKK7AHi79n7urYCMP5yDZnWtNVJrDi+k='

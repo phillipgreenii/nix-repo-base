@@ -4,6 +4,7 @@ go 1.25.9
 
 require (
 	github.com/pelletier/go-toml/v2 v2.3.1
+	github.com/phillipgreenii/x v0.0.0-20260828074718-387984c818b9
 	github.com/spf13/cobra v1.10.2
 )
 

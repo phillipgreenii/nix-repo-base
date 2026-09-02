@@ -65,8 +65,8 @@ run = ["{nix_run install-pre-commit-hooks}"]
 
 	addWorktreeListClean(f, barCanonical, "bar")
 	addWorktreeListClean(f, fooCanonical, "foo")
-	addBranchNotExists(f, barCanonical, "feature")
-	addBranchNotExists(f, fooCanonical, "feature")
+	addBranchNotExists(t, barCanonical, "feature")
+	addBranchNotExists(t, fooCanonical, "feature")
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
 	// Only bar declares a post-clone hook → exactly one sh install call expected.
@@ -117,7 +117,7 @@ run = ["{nix_run install-pre-commit-hooks}"]
 	barSet := filepath.Join(setDir, "bar")
 
 	addWorktreeListClean(f, barCanonical, "bar")
-	addBranchNotExists(f, barCanonical, "feature")
+	addBranchNotExists(t, barCanonical, "feature")
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
 	// The post-clone hook FAILS — must be warn-only (to os.Stderr), never fatal.
 	f.AddResponse("sh", []string{"-c", nixRunHookCmd(barSet)},
@@ -179,7 +179,7 @@ run = ["{nix_run install-pre-commit-hooks}"]
 	libSet := filepath.Join(setDir, "lib")
 
 	addWorktreeListClean(f, libCanonical, "lib")
-	addBranchExists(f, libCanonical, "feature")
+	addBranchExists(t, libCanonical, "feature")
 	f.AddResponse("git", []string{"-C", libCanonical, "worktree", "add", libSet, "feature"}, exec.Result{}, nil)
 	f.AddResponse("sh", []string{"-c", nixRunHookCmd(libSet)}, exec.Result{}, nil)
 
@@ -233,7 +233,7 @@ run = ["{nix_run install-pre-commit-hooks}"]
 	setDir := filepath.Join(w.WorkforestsDir(), "feature")
 	barSet := filepath.Join(setDir, "bar")
 	addWorktreeListClean(f, barCanonical, "bar")
-	addBranchNotExists(f, barCanonical, "feature")
+	addBranchNotExists(t, barCanonical, "feature")
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
 	// No `sh` response scripted: the hook must be trust-skipped, not executed.
 

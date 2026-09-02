@@ -20,12 +20,16 @@ url = "github:owner/foo"
 [repos.bar]
 url = "github:owner/bar"
 `)
+	// hasUpstream is migrated onto x/gitclient's RefReader.HasUpstream (bead
+	// pg2-oxle0); both repos report an upstream via the stubbed gitReader.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "bar"): {hasUpstreamVal: true},
+		filepath.Join(root, "foo"): {hasUpstreamVal: true},
+	})
 
 	f := exec.NewFakeRunner()
-	// upstream check + push, alphabetical order (bar, foo).
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
+	// push, alphabetical order (bar, foo).
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -37,17 +41,14 @@ url = "github:owner/bar"
 		t.Fatalf("Push: %v", err)
 	}
 	calls := f.Calls()
-	if len(calls) != 4 {
-		t.Errorf("expected 4 calls (check+push per repo), got %d", len(calls))
+	if len(calls) != 2 {
+		t.Errorf("expected 2 push calls, got %d", len(calls))
 	}
-	// The push streams; the upstream probe stays captured (silent).
+	// The push streams.
 	for _, c := range calls {
 		last := c.Args[len(c.Args)-1]
 		if last == "push" && c.Opts.Stdout == nil {
 			t.Errorf("git push should stream output (Opts.Stdout set); got %v", c.Args)
-		}
-		if last == "@{u}" && c.Opts.Stdout != nil {
-			t.Errorf("upstream probe should stay captured (Opts.Stdout nil); got %v", c.Args)
 		}
 	}
 }
@@ -61,10 +62,10 @@ func TestPush_TerminalFlagSuppressesWarning(t *testing.T) {
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
 	// upstream check fails — no push (we just care about the warning, not push behavior).
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: false}})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -85,10 +86,10 @@ func TestPush_SkipsWithoutUpstream(t *testing.T) {
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
 	// upstream check fails — no push should happen.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: false}})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -116,9 +117,9 @@ func TestPush_NoUpstreamNoFlag(t *testing.T) {
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: false}})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -145,11 +146,12 @@ func TestPush_NoUpstreamWithFlag(t *testing.T) {
 url = "github:owner/foo"
 `)
 
+	// upstream check fails; current branch lookup.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "foo"): {hasUpstreamVal: false, currentBranch: "my-feature"},
+	})
+
 	f := exec.NewFakeRunner()
-	// upstream check fails.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
-	// current branch lookup.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("my-feature\n")}, nil)
 	// resolvePushRemote: git remote → single remote "origin" (step 2 shortcut).
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\n")}, nil)
 	// push -u origin <branch>.
@@ -185,8 +187,9 @@ func TestPush_ExistingUpstreamPlainPush(t *testing.T) {
 url = "github:owner/foo"
 `)
 
+	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: true}})
+
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -227,8 +230,9 @@ func TestPush_NoVerify_PlainPush(t *testing.T) {
 url = "github:owner/foo"
 `)
 
+	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: true}})
+
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "--no-verify"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -258,8 +262,9 @@ func TestPush_NoVerifyUnset_PlainPushOmitsFlag(t *testing.T) {
 url = "github:owner/foo"
 `)
 
+	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: true}})
+
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -288,9 +293,11 @@ func TestPush_NoVerify_SetUpstreamPush(t *testing.T) {
 url = "github:owner/foo"
 `)
 
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "foo"): {hasUpstreamVal: false, currentBranch: "my-feature"},
+	})
+
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("my-feature\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "--no-verify", "-u", "origin", "my-feature"}, exec.Result{}, nil)
 
@@ -504,11 +511,12 @@ func TestPush_RemoteFlagOverride(t *testing.T) {
 url = "github:owner/foo"
 `)
 
+	// upstream check fails; current branch lookup.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "foo"): {hasUpstreamVal: false, currentBranch: "my-feature"},
+	})
+
 	f := exec.NewFakeRunner()
-	// upstream check fails.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
-	// current branch lookup.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("my-feature\n")}, nil)
 	// resolvePushRemote: git remote → "origin" and "gitea"; flag says "gitea".
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\ngitea\n")}, nil)
 	// push -u gitea my-feature (not origin).
@@ -546,16 +554,17 @@ url = "github:owner/bar"
 url = "github:owner/foo"
 `)
 
+	// bar/foo: upstream check fails, branch lookup ok ("main") for both.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "bar"): {hasUpstreamVal: false, currentBranch: "main"},
+		filepath.Join(root, "foo"): {hasUpstreamVal: false, currentBranch: "main"},
+	})
+
 	f := exec.NewFakeRunner()
-	// bar: upstream check fails, branch lookup ok, no remotes → resolution error → skip.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
-	// git remote returns empty → 0 remotes → resolution will fail with structured error.
+	// bar: no remotes → resolution error → skip.
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "remote"}, exec.Result{Stdout: []byte("")}, nil)
 
-	// foo: upstream check fails, branch lookup ok, single remote "origin" → push succeeds.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
+	// foo: single remote "origin" → push succeeds.
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "-u", "origin", "main"}, exec.Result{}, nil)
 
@@ -612,6 +621,12 @@ url = "github:owner/consumer"
 	consumer = mkGitRepoDir(t, root, "consumer")
 	writeFile(t, filepath.Join(consumer, "flake.lock"),
 		`{"nodes":{"root":{"inputs":{"dep":"dep"}},"dep":{"locked":{"rev":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}},"root":"root"}`)
+	// Both repos report an upstream (hasUpstream, migrated onto x/gitclient's
+	// RefReader.HasUpstream — bead pg2-oxle0), so both are plain-pushed.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		dep:      {hasUpstreamVal: true},
+		consumer: {hasUpstreamVal: true},
+	})
 	f = exec.NewFakeRunner()
 	return root, dep, consumer, f
 }
@@ -640,7 +655,6 @@ func mkGitRepoDir(t *testing.T, root, name string) string {
 func TestPush_PropagatesSiblingsInterleavedWithPushes(t *testing.T) {
 	root, dep, consumer, f := pushEdgeFixture(t)
 	// dep has no workspace inputs → no relock; it is pushed first (topo order).
-	f.AddResponse("git", []string{"-C", dep, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", dep, "push"}, exec.Result{}, nil)
 	// consumer: clean-tree probes, relock against dep's (now pushed) remote tip,
 	// C2 clean check, then push.
@@ -648,7 +662,6 @@ func TestPush_PropagatesSiblingsInterleavedWithPushes(t *testing.T) {
 	f.AddResponse("git", []string{"-C", consumer, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("nix", []string{"flake", "update", "--refresh", "dep"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", consumer, "diff", "--quiet", "--", "flake.lock"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", consumer, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", consumer, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -688,9 +701,7 @@ func TestPush_PropagatesSiblingsInterleavedWithPushes(t *testing.T) {
 // that guards it, so --no-siblings stays a pure git command with no nix eval.
 func TestPush_NoSiblings_SkipsPropagation(t *testing.T) {
 	root, dep, consumer, f := pushEdgeFixture(t)
-	f.AddResponse("git", []string{"-C", dep, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", dep, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", consumer, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", consumer, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -721,7 +732,6 @@ func TestPush_NoSiblings_SkipsPropagation(t *testing.T) {
 // would publish while quietly leaving the locks unconverged.
 func TestPush_RefusesToRelockDirtyRepo(t *testing.T) {
 	root, dep, consumer, f := pushEdgeFixture(t)
-	f.AddResponse("git", []string{"-C", dep, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", dep, "push"}, exec.Result{}, nil)
 	// consumer is dirty: `git diff --quiet` exits 1.
 	f.AddResponse("git", []string{"-C", consumer, "diff", "--quiet"},
@@ -773,10 +783,12 @@ url = "github:owner/same"
 `)
 	aaa = mkGitRepoDir(t, root, "aaa")
 	bbb = mkGitRepoDir(t, root, "bbb")
+	stubGitOpener(t, map[string]*fakeGitReader{
+		aaa: {hasUpstreamVal: true},
+		bbb: {hasUpstreamVal: true},
+	})
 	f = exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", aaa, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", bbb, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
 	return root, aaa, bbb, f
 }
@@ -891,11 +903,13 @@ url = "github:owner/bbb"
 	// is left unscripted, so all three eval tiers fail for both repos.
 	writeFile(t, filepath.Join(aaa, "flake.nix"), `{ inputs = {}; outputs = { self, ... }: {}; }`)
 	writeFile(t, filepath.Join(bbb, "flake.nix"), `{ inputs = {}; outputs = { self, ... }: {}; }`)
+	stubGitOpener(t, map[string]*fakeGitReader{
+		aaa: {hasUpstreamVal: true},
+		bbb: {hasUpstreamVal: true},
+	})
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", aaa, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", bbb, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -967,11 +981,13 @@ url = "github:owner/bbb"
 }`)
 	aaa := mkGitRepoDir(t, root, "aaa")
 	bbb := mkGitRepoDir(t, root, "bbb")
+	stubGitOpener(t, map[string]*fakeGitReader{
+		aaa: {hasUpstreamVal: true},
+		bbb: {hasUpstreamVal: true},
+	})
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", aaa, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", bbb, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -1026,11 +1042,13 @@ url = "github:owner/consumer"
 	consumer := mkGitRepoDir(t, root, "consumer")
 	writeFile(t, filepath.Join(consumer, "flake.lock"),
 		`{"nodes":{"root":{"inputs":{"dep":"dep"}},"dep":{"locked":{"rev":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}},"root":"root"}`)
+	stubGitOpener(t, map[string]*fakeGitReader{
+		dep:      {hasUpstreamVal: true},
+		consumer: {hasUpstreamVal: true},
+	})
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", dep, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/feature-x\n")}, nil)
 	f.AddResponse("git", []string{"-C", dep, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", consumer, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/feature-x\n")}, nil)
 	f.AddResponse("git", []string{"-C", consumer, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)

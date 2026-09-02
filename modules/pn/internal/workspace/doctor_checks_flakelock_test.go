@@ -124,14 +124,15 @@ terminal = "foo"
 [repos.foo]
 url = "github:owner/foo"
 `)
-	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: false}})
+
+	f := exec.NewFakeRunner()
 	mkUpdateLocks(t, foo)
 	// In-place, no-upstream, no-edges flow: isDirty probes → no upstream →
 	// propagation no-op → (skip update-locks) → capture HEAD.
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc0000000000000000000000000000000000000\n")}, nil)
 
 	ws, err := Open(root, f)

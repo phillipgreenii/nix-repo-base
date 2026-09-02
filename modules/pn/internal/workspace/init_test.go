@@ -441,11 +441,13 @@ workforests_dir = "sets"
 url = "github:o/existing"
 `)
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git",
-		[]string{"-C", filepath.Join(root, "real-repo"), "remote", "get-url", "origin"},
-		exec.Result{Stdout: []byte("https://github.com/o/real-repo.git\n")}, nil)
+	// remote get-url origin for real-repo, migrated onto x/gitclient's
+	// Locator.RemoteURL (bead pg2-oxle0).
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "real-repo"): {remoteURL: map[string]string{"origin": "https://github.com/o/real-repo.git"}},
+	})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)

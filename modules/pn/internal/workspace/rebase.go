@@ -19,11 +19,22 @@ type RebaseOptions struct {
 	Onto string
 }
 
-// resolveRef reports whether ref resolves in repoDir using
-// `git rev-parse --verify --quiet <ref>`.
+// resolveRef reports whether ref resolves in repoDir.
+//
+// Migrated onto x/gitclient's RefReader.RefExists (bead pg2-oxle0): the
+// pre-migration call was `rev-parse --verify --quiet <ref>` (no `^{commit}`
+// suffix), whereas RefExists runs `rev-parse --verify --quiet <ref>^{commit}`.
+// Onto is always a branch-shaped ref ("main", "origin/main", or another local
+// ref -- never a tag/blob/tree), and a branch ref always resolves to a
+// commit, so the `^{commit}` dereference is a no-op for every value this
+// function is actually called with.
 func (ws *Workspace) resolveRef(ctx context.Context, repoDir, ref string) bool {
-	_, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "rev-parse", "--verify", "--quiet", ref}, exec.RunOptions{})
-	return err == nil
+	client, err := openGitReader(ctx, repoDir)
+	if err != nil {
+		return false
+	}
+	ok, err := client.RefExists(ctx, ref)
+	return err == nil && ok
 }
 
 // Rebase runs git rebase operations across all workspace repos in topological

@@ -70,14 +70,19 @@ url = "github:owner/foo"
 url = "github:owner/bar"
 `)
 
-	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
 	bar := filepath.Join(root, "bar")
+	// hasUpstream, migrated onto x/gitclient's RefReader.HasUpstream (bead
+	// pg2-oxle0): both repos report an upstream.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		foo: {hasUpstreamVal: true},
+		bar: {hasUpstreamVal: true},
+	})
 
+	f := exec.NewFakeRunner()
 	// foo: clean, has upstream, pull + locks succeed (update never pushes — ADR 0023).
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("deadbeef0000000000000000000000000000000\n")}, nil)
@@ -85,7 +90,6 @@ url = "github:owner/bar"
 	// bar: clean, has upstream, but pull fails → outcome failed (failed_step pull).
 	f.AddResponse("git", []string{"-C", bar, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", bar, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", bar, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", bar, "pull", "--rebase", "--autostash"}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
 
 	w, err := Open(root, f)
@@ -161,11 +165,12 @@ terminal = "foo"
 [repos.foo]
 url = "github:owner/foo"
 `)
-	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: false}})
+
+	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc0000000000000000000000000000000000000\n")}, nil)
 

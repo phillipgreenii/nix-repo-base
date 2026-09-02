@@ -106,11 +106,12 @@ terminal = "foo"
 url = "github:owner/foo"
 `)
 	foo := filepath.Join(root, "foo")
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: true}})
+
 	mkUpdateLocks(t, foo) // existence gate: update-locks.sh must be present to run
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	f.AddResponse("./update-locks.sh", nil, exec.Result{Stdout: []byte("UL_RESULT transient=3\n")}, nil)
 

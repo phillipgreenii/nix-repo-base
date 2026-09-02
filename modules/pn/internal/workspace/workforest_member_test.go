@@ -73,7 +73,7 @@ func TestWorkforestAddRepo_HappyPath(t *testing.T) {
 	// other's branch is checked out somewhere? No — clean; branch exists already
 	// (the set's branch was created when the set was made), so check-out form.
 	addWorktreeListClean(f, otherCanonical, "other")
-	addBranchExists(f, otherCanonical, "feature")
+	addBranchExists(t, otherCanonical, "feature")
 	f.AddResponse("git", []string{"-C", otherCanonical, "worktree", "add", otherSet, "feature"}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer

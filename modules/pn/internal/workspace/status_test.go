@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 func TestStatus_WritesPerRepoSections(t *testing.T) {
@@ -118,9 +119,10 @@ url = "github:owner/foo"
 `)
 	repoDir := filepath.Join(root, "foo")
 
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranch: "feature-x"}})
+
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "status", "--short"}, exec.Result{Stdout: []byte(" M f.txt\n")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("feature-x\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"}, exec.Result{Stdout: []byte("2\t1\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("feature-x\nmain\nold\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "worktree", "list", "--porcelain"},
@@ -177,9 +179,10 @@ url = "github:owner/foo"
 `)
 	repoDir := filepath.Join(root, "foo")
 
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranch: "main"}})
+
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "status", "--short"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"},
 		exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128, Stderr: []byte("no upstream configured")}})
 	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("main\n")}, nil)
@@ -219,9 +222,10 @@ url = "github:owner/foo"
 `)
 	repoDir := filepath.Join(root, "foo")
 
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranchErr: gitclient.ErrDetachedHEAD}})
+
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "status", "--short"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("HEAD\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "rev-parse", "--short", "HEAD"}, exec.Result{Stdout: []byte("deadbee\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	// worktree list omitted (query fails harmlessly).
@@ -285,9 +289,10 @@ url = "github:owner/foo"
 `)
 	repoDir := filepath.Join(root, "foo")
 
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranch: "main"}})
+
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "status", "--short"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"}, exec.Result{Stdout: []byte("0\t0\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "worktree", "list", "--porcelain"},
@@ -322,9 +327,10 @@ url = "github:owner/foo"
 `)
 	repoDir := filepath.Join(root, "foo")
 
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranchErr: gitclient.ErrDetachedHEAD}})
+
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "status", "--short"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("HEAD\n")}, nil)
 	// rev-parse --short HEAD intentionally unscripted: query fails, sha stays "".
 	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("main\n")}, nil)
 
@@ -357,9 +363,10 @@ url = "github:owner/foo"
 `)
 	repoDir := filepath.Join(root, "foo")
 
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranch: "feature"}})
+
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "status", "--short"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("feature\n")}, nil)
 	// Malformed: one field instead of two -> aheadBehindCounts reports not-ok.
 	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"}, exec.Result{Stdout: []byte("5\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("feature\nstale\n")}, nil)

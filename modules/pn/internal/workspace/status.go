@@ -2,12 +2,14 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 // StatusOptions configures Status.
@@ -168,13 +170,27 @@ func suffixArrows(arrows string) string {
 // letting the caller degrade gracefully rather than abort. (Distinct from
 // currentBranch in push.go, which returns an error and does not distinguish a
 // detached HEAD from a branch literally named "HEAD".)
+//
+// Migrated onto x/gitclient's Locator.CurrentBranch (bead pg2-oxle0): the
+// pre-migration call was `rev-parse --abbrev-ref HEAD`, which reports the
+// literal string "HEAD" on a detached checkout; CurrentBranch (`branch
+// --show-current`) instead returns the typed sentinel
+// gitclient.ErrDetachedHEAD for the same case (design section 4.2's migration
+// behavior note (b) -- the same mapping ccpool's gitfacet.Resolve and pg-pr
+// branch's CLIGitRunner.CurrentBranch apply). Folding ErrDetachedHEAD into
+// isDetached=true here preserves the exact observable behavior. The
+// detached-HEAD short sha has no Locator/RefReader equivalent, so that probe
+// stays on the raw runner.
 func (ws *Workspace) branchInfo(ctx context.Context, repoDir string) (name string, isDetached bool, sha string, ok bool) {
-	res, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"}, exec.RunOptions{})
+	client, err := openGitReader(ctx, repoDir)
 	if err != nil {
 		return "", false, "", false
 	}
-	out := strings.TrimSpace(string(res.Stdout))
-	if out == "HEAD" {
+	branch, err := client.CurrentBranch(ctx)
+	if err != nil {
+		if !errors.Is(err, gitclient.ErrDetachedHEAD) {
+			return "", false, "", false
+		}
 		// Detached HEAD: report the short commit sha when we can get it.
 		shaRes, shaErr := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "rev-parse", "--short", "HEAD"}, exec.RunOptions{})
 		s := ""
@@ -183,7 +199,7 @@ func (ws *Workspace) branchInfo(ctx context.Context, repoDir string) (name strin
 		}
 		return "", true, s, true
 	}
-	return out, false, "", true
+	return branch, false, "", true
 }
 
 // aheadBehindCounts returns the ahead/behind commit counts of the current

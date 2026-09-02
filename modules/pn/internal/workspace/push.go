@@ -1,14 +1,15 @@
 package workspace
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 // PushOptions configures Push.
@@ -34,20 +35,43 @@ type PushOptions struct {
 }
 
 // hasUpstream checks whether the branch at repoDir has a configured upstream.
-// Mirrors bash workspace_has_upstream (git rev-parse --abbrev-ref @{u}).
+//
+// Migrated onto x/gitclient's RefReader.HasUpstream (bead pg2-oxle0): the
+// pre-migration call was `rev-parse --abbrev-ref @{u}`; HasUpstream runs
+// plain `rev-parse @{u}` (no --abbrev-ref). Both are used here only for the
+// success/failure signal -- the resolved value is discarded either way -- so
+// the --abbrev-ref difference does not change this function's behavior.
 func (ws *Workspace) hasUpstream(ctx context.Context, repoDir string) bool {
-	_, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "@{u}"}, exec.RunOptions{})
-	return err == nil
+	client, err := openGitReader(ctx, repoDir)
+	if err != nil {
+		return false
+	}
+	ok, err := client.HasUpstream(ctx)
+	return err == nil && ok
 }
 
-// currentBranch returns the short branch name for repoDir using
-// `git rev-parse --abbrev-ref HEAD`.
+// currentBranch returns the short branch name for repoDir.
+//
+// Migrated onto x/gitclient's Locator.CurrentBranch (bead pg2-oxle0): the
+// pre-migration call was `rev-parse --abbrev-ref HEAD`, which reports the
+// literal string "HEAD" on a detached checkout; CurrentBranch (`branch
+// --show-current`) instead returns gitclient.ErrDetachedHEAD for the same
+// case (design section 4.2's migration behavior note (b)). Mapping
+// ErrDetachedHEAD back to the literal "HEAD" string here preserves the exact
+// legacy behavior -- the same mapping pg-pr branch's
+// CLIGitRunner.CurrentBranch applies.
 func (ws *Workspace) currentBranch(ctx context.Context, repoDir string) (string, error) {
-	res, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"}, exec.RunOptions{})
+	client, err := openGitReader(ctx, repoDir)
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD in %s: %w", repoDir, err)
 	}
-	branch := strings.TrimSpace(string(bytes.TrimRight(res.Stdout, "\n")))
+	branch, err := client.CurrentBranch(ctx)
+	if err != nil {
+		if errors.Is(err, gitclient.ErrDetachedHEAD) {
+			return "HEAD", nil
+		}
+		return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD in %s: %w", repoDir, err)
+	}
 	return branch, nil
 }
 

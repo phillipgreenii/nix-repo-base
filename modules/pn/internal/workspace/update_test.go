@@ -113,13 +113,15 @@ terminal = "foo"
 [repos.foo]
 url = "github:owner/foo"
 `)
-	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	// no upstream → straight to update-locks (hasUpstream, migrated onto
+	// x/gitclient's RefReader.HasUpstream — bead pg2-oxle0).
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: false}})
+
+	f := exec.NewFakeRunner()
 	mkUpdateLocks(t, foo)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	// no upstream → straight to update-locks
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -164,13 +166,14 @@ terminal = "foo"
 [repos.foo]
 url = "github:owner/foo"
 `)
-	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	// no upstream → no pull/push; propagation has no edges → no-op.
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: false}})
+
+	f := exec.NewFakeRunner()
 	mkUpdateLocks(t, foo)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	// no upstream → no pull/push; propagation has no edges → no-op.
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -251,15 +254,21 @@ url = "github:owner/foo"
 url = "github:owner/bar"
 `)
 
-	f := exec.NewFakeRunner()
 	bar := filepath.Join(root, "bar")
 	foo := filepath.Join(root, "foo")
+	// hasUpstream, migrated onto x/gitclient's RefReader.HasUpstream (bead
+	// pg2-oxle0): both repos report an upstream.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		bar: {hasUpstreamVal: true},
+		foo: {hasUpstreamVal: true},
+	})
+
+	f := exec.NewFakeRunner()
 	mkUpdateLocks(t, bar)
 	mkUpdateLocks(t, foo)
 	for _, d := range []string{bar, foo} {
 		f.AddResponse("git", []string{"-C", d, "diff", "--quiet"}, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", d, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 		f.AddResponse("git", []string{"-C", d, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	}
 	// update-locks: bar (runs first, alphabetical) fails; foo succeeds.
@@ -280,11 +289,13 @@ url = "github:owner/bar"
 	if strings.Contains(err.Error(), "foo") {
 		t.Errorf("error should not name the passing repo (foo); got %q", err.Error())
 	}
-	// Both repos fully processed: 5 calls each (diff, cached, rev-parse @{u},
-	// pull, update-locks) = 10 total. (The rev-lock HEAD capture was removed with
-	// RevLock in pg2-f1k1; the per-repo push was removed by ADR 0023.)
-	if len(f.Calls()) != 10 {
-		t.Errorf("expected both repos fully attempted (10 calls); got %d", len(f.Calls()))
+	// Both repos fully processed: 4 calls each (diff, cached, pull, update-locks)
+	// = 8 total. (The rev-lock HEAD capture was removed with RevLock in
+	// pg2-f1k1; the per-repo push was removed by ADR 0023; the upstream check
+	// moved off the raw runner onto x/gitclient's RefReader.HasUpstream, bead
+	// pg2-oxle0.)
+	if len(f.Calls()) != 8 {
+		t.Errorf("expected both repos fully attempted (8 calls); got %d", len(f.Calls()))
 	}
 }
 
@@ -309,10 +320,11 @@ url = "github:owner/zzz"
 	mkUpdateLocks(t, aaa)
 	mkUpdateLocks(t, zzz) // exists but must never be run (run aborts at aaa)
 
+	stubGitOpener(t, map[string]*fakeGitReader{aaa: {hasUpstreamVal: true}})
+
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", aaa, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", aaa, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", aaa, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", aaa, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	// aaa's update-locks aborts with 77 — the run must stop before push and zzz.
 	f.AddResponse("./update-locks.sh", nil,
@@ -363,11 +375,12 @@ terminal = "foo"
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: true}})
+
+	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	// pull fails — update-locks and push must NOT run.
 	f.AddResponse("git", []string{"-C", foo, "pull", "--rebase", "--autostash"}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
 
@@ -416,6 +429,11 @@ url = "github:owner/sib"
   },
   "edges": [{"consumer": "foo", "alias": "sib", "target": "sib"}]
 }`)
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "sib"): {hasUpstreamVal: true},
+		filepath.Join(root, "foo"): {hasUpstreamVal: true},
+	})
+
 	f := exec.NewFakeRunner()
 	for _, name := range []string{"sib", "foo"} {
 		d := filepath.Join(root, name)
@@ -423,7 +441,6 @@ url = "github:owner/sib"
 		writeFile(t, filepath.Join(d, "flake.lock"), `{"nodes":{"root":{"inputs":{"sib":"sib"}},"sib":{"locked":{"rev":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}},"root":"root"}`)
 		f.AddResponse("git", []string{"-C", d, "diff", "--quiet"}, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", d, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 		f.AddResponse("git", []string{"-C", d, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 		f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 	}
@@ -464,12 +481,16 @@ url = "github:owner/sib"
 }`)
 	foo := filepath.Join(root, "foo")
 	sib := filepath.Join(root, "sib")
+	stubGitOpener(t, map[string]*fakeGitReader{
+		sib: {hasUpstreamVal: true},
+		foo: {hasUpstreamVal: true},
+	})
+
 	f := exec.NewFakeRunner()
 	for _, d := range []string{sib, foo} {
 		mkRepoDir(t, root, filepath.Base(d))
 		f.AddResponse("git", []string{"-C", d, "diff", "--quiet"}, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", d, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 		f.AddResponse("git", []string{"-C", d, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	}
 	// Only foo has a workspace edge, so only foo relocks.
@@ -516,14 +537,16 @@ terminal = "foo"
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	// upstream check (hasUpstream, migrated onto x/gitclient's
+	// RefReader.HasUpstream — bead pg2-oxle0).
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: true}})
+
+	f := exec.NewFakeRunner()
 	mkUpdateLocks(t, foo)
 	// dirty checks: both pass (clean).
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	// upstream check.
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	// pull rebase autostash.
 	f.AddResponse("git", []string{"-C", foo, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 	// update-locks. There is deliberately NO push response: update is local-only
@@ -539,11 +562,12 @@ url = "github:owner/foo"
 		t.Fatalf("Update: %v", err)
 	}
 	calls := f.Calls()
-	// diff --quiet, diff --cached --quiet, rev-parse @{u}, pull, update-locks.sh —
-	// the rev-lock HEAD capture was removed with RevLock (pg2-f1k1), and the push
-	// with ADR 0023.
-	if len(calls) != 5 {
-		t.Errorf("expected 5 calls, got %d (%+v)", len(calls), calls)
+	// diff --quiet, diff --cached --quiet, pull, update-locks.sh — the rev-lock
+	// HEAD capture was removed with RevLock (pg2-f1k1), the push with ADR 0023,
+	// and the upstream check (rev-parse @{u}) moved off the raw runner onto
+	// x/gitclient's RefReader.HasUpstream (bead pg2-oxle0).
+	if len(calls) != 4 {
+		t.Errorf("expected 4 calls, got %d (%+v)", len(calls), calls)
 	}
 	assertNoPushNoPropagate(t, calls)
 
@@ -611,12 +635,13 @@ terminal = "foo"
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
 	foo := filepath.Join(root, "foo")
+	// no upstream
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: false}})
+
+	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	// no upstream
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	// update-locks still runs (file present).
 	mkUpdateLocks(t, foo)
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
@@ -651,10 +676,10 @@ url = "github:owner/foo"
 `)
 	foo := filepath.Join(root, "foo")
 	mkUpdateLocks(t, foo)
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: false}})
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 
 	w, err := Open(root, f)

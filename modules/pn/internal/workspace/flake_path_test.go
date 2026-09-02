@@ -237,11 +237,13 @@ url = "github:owner/existing"
 `)
 	makeClonedRepo(t, root, "existing")
 
-	f := exec.NewFakeRunner()
-	// Expect git remote get-url for newrepo during reconcile.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "newrepo"), "remote", "get-url", "origin"},
-		exec.Result{Stdout: []byte("https://github.com/owner/newrepo.git\n")}, nil)
+	// remote get-url origin for newrepo during reconcile, migrated onto
+	// x/gitclient's Locator.RemoteURL (bead pg2-oxle0).
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "newrepo"): {remoteURL: map[string]string{"origin": "https://github.com/owner/newrepo.git"}},
+	})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)

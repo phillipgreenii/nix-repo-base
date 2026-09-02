@@ -98,14 +98,13 @@ terminal = "app"
 url = "github:owner/app"
 `)
 
-	f := exec.NewFakeRunner()
 	appDir := filepath.Join(setRoot, "app")
+	// no upstream so the pull is skipped; update never pushes.
+	stubGitOpener(t, map[string]*fakeGitReader{appDir: {hasUpstreamVal: false}})
 
-	// Standard per-repo Update sequence (no upstream so the pull is skipped; update never pushes).
+	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", appDir, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", appDir, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", appDir, "rev-parse", "--abbrev-ref", "@{u}"},
-		exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 
 	w, err := Open(setRoot, f)

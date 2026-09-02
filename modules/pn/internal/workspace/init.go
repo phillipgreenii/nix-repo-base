@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 
 	"github.com/pelletier/go-toml/v2"
-	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
 // InitOptions configures workspace init behavior.
@@ -285,11 +284,24 @@ func (w *Workspace) reconcileFromFilesystem(ctx context.Context) error {
 			continue
 		}
 		// Get the remote URL.
-		res, err := w.runner.Run(ctx, "git", []string{"-C", repoDir, "remote", "get-url", "origin"}, exec.RunOptions{})
+		//
+		// Migrated onto x/gitclient's Locator.RemoteURL (bead pg2-oxle0): the
+		// pre-migration call was `remote get-url origin`, which expands
+		// insteadOf rewrites; RemoteURL instead reads raw
+		// `config --get remote.origin.url` (no insteadOf expansion) --
+		// design section 4.2's documented RemoteURL behavior note, the same
+		// deliberate change pg-pr branch's CLIGitRunner.RemoteOriginURL
+		// migration absorbed. It only differs on a host with an insteadOf
+		// rewrite configured for its origin remote.
+		client, err := openGitReader(ctx, repoDir)
 		if err != nil {
 			continue
 		}
-		url := httpsToFlakeURL(strings.TrimSpace(string(res.Stdout)))
+		remoteURL, err := client.RemoteURL(ctx, "origin")
+		if err != nil {
+			continue
+		}
+		url := httpsToFlakeURL(strings.TrimSpace(remoteURL))
 		newEntry := RepoConfig{URL: url, Branch: "main"}
 		w.config.Repos[name] = newEntry
 		added = true

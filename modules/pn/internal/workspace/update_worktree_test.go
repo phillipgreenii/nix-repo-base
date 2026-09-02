@@ -959,10 +959,10 @@ func TestUpdateViaWorktree_RefusesInsideSet(t *testing.T) {
 	// --in-place must still work inside a set (no guard there): script the in-place
 	// no-upstream flow for the single repo.
 	foo := filepath.Join(setRoot, "foo")
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {hasUpstreamVal: false}})
 	f2 := exec.NewFakeRunner()
 	f2.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f2.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-	f2.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 	f2.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 	f2.AddResponse("git", []string{"-C", foo, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc0000000000000000000000000000000000000\n")}, nil)
 	w2, err := Open(setRoot, f2)

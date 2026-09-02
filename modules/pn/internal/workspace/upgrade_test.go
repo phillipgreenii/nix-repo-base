@@ -80,15 +80,20 @@ url = "github:owner/dep"
 }`)
 	trustWS(t, root) // upgrade's apply phase now gates on workspace trust (bead pg2-x2q6o)
 
-	f := exec.NewFakeRunner()
 	leaf := filepath.Join(root, "leaf")
 	dep := filepath.Join(root, "dep")
+	// Both repos have an upstream (hasUpstream, migrated onto x/gitclient's
+	// RefReader.HasUpstream — bead pg2-oxle0), so Update pulls both.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		dep:  {hasUpstreamVal: true},
+		leaf: {hasUpstreamVal: true},
+	})
 
+	f := exec.NewFakeRunner()
 	// Update sequence (clean, has upstream) for dep and leaf (alphabetical).
 	for _, dir := range []string{dep, leaf} {
 		f.AddResponse("git", []string{"-C", dir, "diff", "--quiet"}, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", dir, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", dir, "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 		f.AddResponse("git", []string{"-C", dir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 		f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", dir, "push"}, exec.Result{}, nil)

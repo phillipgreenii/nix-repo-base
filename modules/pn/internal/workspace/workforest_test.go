@@ -91,21 +91,49 @@ func addWorktreeListWithBranch(f *exec.FakeRunner, canonical, branch string) {
 		exec.Result{Stdout: []byte(output)}, nil)
 }
 
-// addBranchNotExists scripts rev-parse --verify to fail (branch doesn't exist).
-func addBranchNotExists(f *exec.FakeRunner, canonical, branch string) {
-	f.AddResponse(
-		"git",
-		[]string{"-C", canonical, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch},
-		exec.Result{ExitCode: 128},
-		&exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}},
-	)
+// branchExistsRegistry lets addBranchExists/addBranchNotExists accumulate
+// RefExists stubs across multiple calls within one (sub)test -- a test may
+// cover several canonical/branch pairs -- without every call site needing to
+// thread its own map. Keyed by *testing.T since each (sub)test gets its own.
+// localBranchExists is migrated onto x/gitclient's RefReader.RefExists (bead
+// pg2-oxle0); these helpers replace the old rev-parse --verify --quiet
+// FakeRunner scripting with the equivalent stubbed gitReader.
+var branchExistsRegistry = map[*testing.T]map[string]*fakeGitReader{}
+
+func branchExistsReaders(t *testing.T) map[string]*fakeGitReader {
+	t.Helper()
+	readers, ok := branchExistsRegistry[t]
+	if !ok {
+		readers = map[string]*fakeGitReader{}
+		branchExistsRegistry[t] = readers
+		stubGitOpener(t, readers)
+		t.Cleanup(func() { delete(branchExistsRegistry, t) })
+	}
+	return readers
 }
 
-// addBranchExists scripts rev-parse --verify to succeed (branch exists locally).
-func addBranchExists(f *exec.FakeRunner, canonical, branch string) {
-	f.AddResponse("git",
-		[]string{"-C", canonical, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch},
-		exec.Result{Stdout: []byte("abc123\n")}, nil)
+func setBranchExists(t *testing.T, canonical, branch string, exists bool) {
+	t.Helper()
+	readers := branchExistsReaders(t)
+	r := readers[canonical]
+	if r == nil {
+		r = &fakeGitReader{}
+		readers[canonical] = r
+	}
+	if r.refExists == nil {
+		r.refExists = map[string]bool{}
+	}
+	r.refExists["refs/heads/"+branch] = exists
+}
+
+// addBranchNotExists stubs canonical's gitReader so branch reports as absent.
+func addBranchNotExists(t *testing.T, canonical, branch string) {
+	setBranchExists(t, canonical, branch, false)
+}
+
+// addBranchExists stubs canonical's gitReader so branch reports as present.
+func addBranchExists(t *testing.T, canonical, branch string) {
+	setBranchExists(t, canonical, branch, true)
 }
 
 // ============================================================
@@ -237,8 +265,8 @@ url = "github:owner/bar"
 	addWorktreeListClean(f, barCanonical, "bar")
 	addWorktreeListClean(f, fooCanonical, "foo")
 	// Branch does not exist locally in either repo.
-	addBranchNotExists(f, barCanonical, "feature")
-	addBranchNotExists(f, fooCanonical, "feature")
+	addBranchNotExists(t, barCanonical, "feature")
+	addBranchNotExists(t, fooCanonical, "feature")
 	// git worktree add -b feature {setRepo} (no commit-ish).
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
@@ -317,8 +345,8 @@ url = "github:owner/bar"
 
 	addWorktreeListClean(f, barCanonical, "bar")
 	addWorktreeListClean(f, fooCanonical, "foo")
-	addBranchNotExists(f, barCanonical, "feature")
-	addBranchNotExists(f, fooCanonical, "feature")
+	addBranchNotExists(t, barCanonical, "feature")
+	addBranchNotExists(t, fooCanonical, "feature")
 	// With commit-ish: args end in the commit-ish.
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet, "abc1234"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet, "abc1234"}, exec.Result{}, nil)
@@ -371,8 +399,8 @@ url = "github:owner/bar"
 	addWorktreeListClean(f, barCanonical, "bar")
 	addWorktreeListClean(f, fooCanonical, "foo")
 	// Both repos have branch locally.
-	addBranchExists(f, barCanonical, "feature")
-	addBranchExists(f, fooCanonical, "feature")
+	addBranchExists(t, barCanonical, "feature")
+	addBranchExists(t, fooCanonical, "feature")
 	// Check-out form: no -b.
 	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", barSet, "feature"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", fooSet, "feature"}, exec.Result{}, nil)

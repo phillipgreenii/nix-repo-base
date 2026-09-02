@@ -20,11 +20,16 @@ url = "github:owner/foo"
 url = "github:owner/bar"
 `)
 
+	// hasUpstream is migrated onto x/gitclient's RefReader.HasUpstream (bead
+	// pg2-oxle0); both repos report an upstream via the stubbed gitReader.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "bar"): {hasUpstreamVal: true},
+		filepath.Join(root, "foo"): {hasUpstreamVal: true},
+	})
+
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "fetch"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{Stdout: []byte("origin/main\n")}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "fetch"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 
@@ -37,17 +42,14 @@ url = "github:owner/bar"
 		t.Fatalf("Rebase: %v", err)
 	}
 	calls := f.Calls()
-	if len(calls) != 6 {
-		t.Errorf("expected 6 calls (check+fetch+pull per repo), got %d", len(calls))
+	if len(calls) != 4 {
+		t.Errorf("expected 4 calls (fetch+pull per repo), got %d", len(calls))
 	}
-	// The rebase commands (fetch, pull) stream; the upstream probe stays captured.
+	// The rebase commands (fetch, pull) stream.
 	for _, c := range calls {
 		last := c.Args[len(c.Args)-1]
 		if (last == "fetch" || last == "--autostash") && c.Opts.Stdout == nil {
 			t.Errorf("rebase command should stream output (Opts.Stdout set); got %v", c.Args)
-		}
-		if last == "@{u}" && c.Opts.Stdout != nil {
-			t.Errorf("upstream probe should stay captured (Opts.Stdout nil); got %v", c.Args)
 		}
 	}
 }
@@ -61,10 +63,10 @@ func TestRebase_TerminalFlagSuppressesWarning(t *testing.T) {
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
 	// upstream check fails — no rebase (we just care about the warning).
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: false}})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -85,9 +87,9 @@ func TestRebase_SkipsWithoutUpstream(t *testing.T) {
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--abbrev-ref", "@{u}"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
+	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: false}})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -121,11 +123,15 @@ url = "github:owner/foo"
 url = "github:owner/bar"
 `)
 
+	// ref resolution (resolveRef, migrated onto x/gitclient's RefReader.RefExists
+	// — bead pg2-oxle0) succeeds for both repos.
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "bar"): {refExists: map[string]bool{"main": true}},
+		filepath.Join(root, "foo"): {refExists: map[string]bool{"main": true}},
+	})
+
 	f := exec.NewFakeRunner()
-	// ref resolution succeeds for both repos.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--verify", "--quiet", "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rebase", "--autostash", "main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--verify", "--quiet", "main"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rebase", "--autostash", "main"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
@@ -137,9 +143,9 @@ url = "github:owner/bar"
 		t.Fatalf("Rebase with Onto: %v", err)
 	}
 	calls := f.Calls()
-	// 2 ref-resolve + 2 rebase = 4 total; no fetch or pull calls.
-	if len(calls) != 4 {
-		t.Errorf("expected 4 calls (rev-parse+rebase per repo), got %d", len(calls))
+	// 2 rebase calls; no fetch or pull calls.
+	if len(calls) != 2 {
+		t.Errorf("expected 2 calls (rebase per repo), got %d", len(calls))
 	}
 	for _, c := range calls {
 		for _, a := range c.Args {
@@ -162,12 +168,14 @@ url = "github:owner/foo"
 url = "github:owner/bar"
 `)
 
+	// "bar" ref resolves OK; "foo" ref does NOT (no entry -> RefExists false, nil).
+	stubGitOpener(t, map[string]*fakeGitReader{
+		filepath.Join(root, "bar"): {refExists: map[string]bool{"feature": true}},
+		filepath.Join(root, "foo"): {},
+	})
+
 	f := exec.NewFakeRunner()
-	// "bar" ref resolves OK.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rev-parse", "--verify", "--quiet", "feature"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rebase", "--autostash", "feature"}, exec.Result{}, nil)
-	// "foo" ref does NOT resolve.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rev-parse", "--verify", "--quiet", "feature"}, exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}})
 
 	w, err := Open(root, f)
 	if err != nil {
