@@ -59,6 +59,7 @@ type rawFields struct {
 	Labels    []string              `json:"labels"`
 	Created   string                `json:"created"`
 	Updated   string                `json:"updated"`
+	Duedate   *string               `json:"duedate"`
 	Status    struct{ Name string } `json:"status"`
 	IssueType struct{ Name string } `json:"issuetype"`
 	Priority  struct{ Name string } `json:"priority"`
@@ -83,6 +84,7 @@ func (c *Client) mapIssue(key string, f rawFields) Issue {
 		Project:   f.Project.Key,
 		Created:   f.Created,
 		Updated:   f.Updated,
+		Duedate:   f.Duedate,
 		Reporter:  f.Reporter.toUser(),
 		Assignee:  f.Assignee.toUser(),
 	}
@@ -152,7 +154,7 @@ func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp Expa
 	if strings.TrimSpace(jql) == "" {
 		return nil, fmt.Errorf("pjira: empty jql")
 	}
-	fields := []string{"summary", "status", "issuetype", "labels", "priority", "project", "created", "updated", "reporter", "assignee"}
+	fields := []string{"summary", "status", "issuetype", "labels", "priority", "project", "created", "updated", "duedate", "reporter", "assignee"}
 	if exp.Comments {
 		fields = append(fields, "comment")
 	}
@@ -264,7 +266,7 @@ func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
 		return nil, fmt.Errorf("pjira: empty issue key")
 	}
 	endpoint := c.BaseURL + "/rest/api/3/issue/" + url.PathEscape(key) +
-		"?fields=summary,status,issuetype,labels,priority,project,created,updated,reporter,assignee"
+		"?fields=summary,status,issuetype,labels,priority,project,created,updated,duedate,reporter,assignee"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err

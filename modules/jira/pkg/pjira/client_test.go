@@ -17,6 +17,22 @@ func testClient(srv *httptest.Server) *Client {
 	return c
 }
 
+func strPtr(s string) *string { return &s }
+
+// assertDuedate compares a nullable duedate against the expected pointer,
+// treating nil/nil as equal without dereferencing either side.
+func assertDuedate(t *testing.T, got, want *string) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Errorf("Duedate = %q, want nil", *got)
+	case want != nil && got == nil:
+		t.Errorf("Duedate = nil, want %q", *want)
+	case want != nil && got != nil && *got != *want:
+		t.Errorf("Duedate = %q, want %q", *got, *want)
+	}
+}
+
 // TestRawUser_toUser_nilVsEmpty pins the nil-vs-empty collapse. Atlassian returns
 // a present-but-empty user object in places (an unassigned issue), and toUser is
 // what folds that back to a nil *User. Because the guard is an && chain over all
@@ -105,6 +121,51 @@ func TestGetIssue_mapsFieldsAndAuth(t *testing.T) {
 	}
 }
 
+// TestGetIssue_duedate pins the nullable duedate mapping for GetIssue: present
+// when Jira sets it, and null/absent (never an error) when Jira has no due
+// date on the issue. Daily Focus v2 ranking key 1 ("due urgency") depends on
+// this field having a stable shape across both duedate-set and duedate-unset
+// issues.
+func TestGetIssue_duedate(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want *string
+	}{
+		{
+			name: "due date set",
+			body: `{"key":"ENG-1","fields":{"summary":"Fix","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[],"duedate":"2026-09-15"}}`,
+			want: strPtr("2026-09-15"),
+		},
+		{
+			name: "due date explicitly null",
+			body: `{"key":"ENG-1","fields":{"summary":"Fix","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[],"duedate":null}}`,
+			want: nil,
+		},
+		{
+			name: "due date field absent entirely",
+			body: `{"key":"ENG-1","fields":{"summary":"Fix","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}`,
+			want: nil,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.Contains(r.URL.RawQuery, "duedate") {
+					t.Errorf("GetIssue fields query must include duedate, got %q", r.URL.RawQuery)
+				}
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+			got, err := testClient(srv).GetIssue(context.Background(), "ENG-1")
+			if err != nil {
+				t.Fatalf("GetIssue: %v", err)
+			}
+			assertDuedate(t, got.Duedate, c.want)
+		})
+	}
+}
+
 func TestGetIssue_notFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) }))
 	defer srv.Close()
@@ -145,6 +206,63 @@ func TestSearch_mapsItemsExpandAndTruncation(t *testing.T) {
 	}
 	if got.Items[0].Comments[0].ID != "c-501" {
 		t.Errorf("comment id not mapped: %+v", got.Items[0].Comments)
+	}
+}
+
+// TestSearchPage_duedate is SearchPage's counterpart to TestGetIssue_duedate:
+// the same nullable-duedate contract must hold through the search field list
+// and item mapping, not just GetIssue.
+func TestSearchPage_duedate(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want *string
+	}{
+		{
+			name: "due date set",
+			body: `{"issues":[{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[],"duedate":"2026-09-15"}}],"isLast":true}`,
+			want: strPtr("2026-09-15"),
+		},
+		{
+			name: "due date explicitly null",
+			body: `{"issues":[{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[],"duedate":null}}],"isLast":true}`,
+			want: nil,
+		},
+		{
+			name: "due date field absent entirely",
+			body: `{"issues":[{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}],"isLast":true}`,
+			want: nil,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var reqBody map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				fields, _ := reqBody["fields"].([]any)
+				found := false
+				for _, f := range fields {
+					if f == "duedate" {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("SearchPage fields list must include duedate, got %v", fields)
+				}
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+			got, err := testClient(srv).SearchPage(context.Background(), "project = ENG", 100, ExpandOpts{}, "")
+			if err != nil {
+				t.Fatalf("SearchPage: %v", err)
+			}
+			if len(got.Items) != 1 {
+				t.Fatalf("items: %+v", got.Items)
+			}
+			assertDuedate(t, got.Items[0].Duedate, c.want)
+		})
 	}
 }
 

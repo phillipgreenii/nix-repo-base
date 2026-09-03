@@ -56,6 +56,7 @@ type Issue struct {
 	Project   string           `json:"project,omitempty"`
 	Created   string           `json:"created,omitempty"`
 	Updated   string           `json:"updated,omitempty"`
+	Duedate   *string          `json:"duedate,omitempty"`
 	Reporter  *User            `json:"reporter,omitempty"`
 	Assignee  *User            `json:"assignee,omitempty"`
 	Changelog []ChangelogEntry `json:"changelog,omitempty"`
