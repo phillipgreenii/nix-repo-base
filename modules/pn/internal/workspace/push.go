@@ -323,11 +323,7 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 		}
 		if ws.hasUpstream(ctx, repoDir) {
 			fmt.Fprintf(out, "  --== push %s ==--  \n", name)
-			args := []string{"-C", repoDir, "push"}
-			if opts.NoVerify {
-				args = append(args, "--no-verify")
-			}
-			if _, err := ws.runner.Run(ctx, "git", args, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+			if err := ws.gitPush(ctx, out, repoDir, gitclient.PushOptions{NoVerify: opts.NoVerify}); err != nil {
 				return fmt.Errorf("git push in %s: %w", name, err)
 			}
 			continue
@@ -345,14 +341,30 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 			continue
 		}
 		fmt.Fprintf(out, "  --== push %s ==--  \n", name)
-		args := []string{"-C", repoDir, "push"}
-		if opts.NoVerify {
-			args = append(args, "--no-verify")
-		}
-		args = append(args, "-u", remote, branch)
-		if _, err := ws.runner.Run(ctx, "git", args, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+		if err := ws.gitPush(ctx, out, repoDir, gitclient.PushOptions{
+			NoVerify:    opts.NoVerify,
+			SetUpstream: true,
+			Remote:      remote,
+			Branch:      branch,
+		}); err != nil {
 			return fmt.Errorf("git push -u %s %s in %s: %w", remote, branch, name, err)
 		}
 	}
 	return nil
+}
+
+// gitPush runs Pusher.Push in repoDir, streaming its output to out — the
+// same live-progress behavior the raw `git push`/`push -u` runner call had
+// before this migration (bead pg2-8bfb5, design pg2-migib §7a).
+func (ws *Workspace) gitPush(ctx context.Context, out io.Writer, repoDir string, opts gitclient.PushOptions) error {
+	client, err := openGitMutator(ctx, repoDir)
+	if err != nil {
+		return err
+	}
+	h, err := client.Push(ctx, opts)
+	if err != nil {
+		return err
+	}
+	h.AttachStream(out, out)
+	return h.Wait()
 }

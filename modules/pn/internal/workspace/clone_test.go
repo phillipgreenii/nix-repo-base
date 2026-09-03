@@ -36,18 +36,13 @@ url = "github:owner/missing-a"
 url = "github:owner/missing-b"
 `)
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{
-		"clone", "--branch", "main", "--",
-		"https://github.com/owner/missing-a.git", filepath.Join(root, "missing-a"),
-	},
-		exec.Result{}, nil)
-	f.AddResponse("git", []string{
-		"clone", "--branch", "main", "--",
-		"https://github.com/owner/missing-b.git", filepath.Join(root, "missing-b"),
-	},
-		exec.Result{}, nil)
+	// clone is migrated onto x/gitclient's Clone constructor (bead pg2-8bfb5).
+	stubGitCloner(t, map[string]*fakeGitMutator{
+		"https://github.com/owner/missing-a.git": {},
+		"https://github.com/owner/missing-b.git": {},
+	})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -57,27 +52,14 @@ url = "github:owner/missing-b"
 		t.Fatalf("Clone: %v", err)
 	}
 
-	// Exactly 2 clone calls (alphabetical order: missing-a, missing-b).
-	calls := f.Calls()
-	var cloneCalls []exec.Call
-	for _, c := range calls {
-		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "clone" {
-			cloneCalls = append(cloneCalls, c)
-		}
-	}
-	if len(cloneCalls) != 2 {
-		t.Errorf("expected 2 clone calls, got %d", len(cloneCalls))
-	}
-	// Verify streaming output.
-	for _, c := range cloneCalls {
-		if c.Opts.Stdout == nil {
-			t.Errorf("clone should stream output (Opts.Stdout set); args=%v", c.Args)
-		}
-	}
+	// The stub errors on any url not in its fixture map, so a successful run
+	// here already proves exactly the two missing repos were cloned (and
+	// "existing" was skipped, since it has no fixture entry and Clone would
+	// have failed had it tried).
 }
 
-// TestClone_Idempotent verifies that running Clone twice produces no git calls
-// on the second run when all repos are already present.
+// TestClone_Idempotent verifies that running Clone twice produces no clone
+// calls on the second run when all repos are already present.
 func TestClone_Idempotent(t *testing.T) {
 	root := t.TempDir()
 	makeClonedRepo(t, root, "foo")
@@ -90,6 +72,10 @@ url = "github:owner/foo"
 [repos.bar]
 url = "github:owner/bar"
 `)
+
+	// No fixture entries: any clone attempt fails the stub, pinning that
+	// neither run tries to clone an already-present repo.
+	stubGitCloner(t, map[string]*fakeGitMutator{})
 
 	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
@@ -105,12 +91,6 @@ url = "github:owner/bar"
 	if err := w.Clone(context.Background(), &bytes.Buffer{}, CloneOptions{}); err != nil {
 		t.Fatalf("Clone second run: %v", err)
 	}
-
-	for _, c := range f.Calls() {
-		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "clone" {
-			t.Errorf("unexpected git clone call: %v", c.Args)
-		}
-	}
 }
 
 // TestClone_FailurePropagates verifies that a git clone failure returns an
@@ -122,14 +102,10 @@ func TestClone_FailurePropagates(t *testing.T) {
 url = "github:owner/foo"
 `)
 
-	f := exec.NewFakeRunner()
-	cloneErr := &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128}}
-	f.AddResponse("git", []string{
-		"clone", "--branch", "main", "--",
-		"https://github.com/owner/foo.git", filepath.Join(root, "foo"),
-	},
-		exec.Result{ExitCode: 128}, cloneErr)
+	// No fixture entry for foo's url → stubGitCloner's fake errors.
+	stubGitCloner(t, map[string]*fakeGitMutator{})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -165,28 +141,12 @@ name = "upstream"
 url = "https://upstream.host/upstream/myrepo.git"
 `)
 
-	repoDir := filepath.Join(root, "myrepo")
+	m := &fakeGitMutator{}
+	stubGitCloner(t, map[string]*fakeGitMutator{
+		"https://origin.host/owner/myrepo.git": m,
+	})
 
 	f := exec.NewFakeRunner()
-	// Clone from origin.
-	f.AddResponse("git", []string{
-		"clone", "--branch", "main", "--",
-		"https://origin.host/owner/myrepo.git", repoDir,
-	},
-		exec.Result{}, nil)
-	// Add fork remote.
-	f.AddResponse("git", []string{
-		"-C", repoDir, "remote", "add", "--", "fork",
-		"https://fork.host/me/myrepo.git",
-	},
-		exec.Result{}, nil)
-	// Add upstream remote.
-	f.AddResponse("git", []string{
-		"-C", repoDir, "remote", "add", "--", "upstream",
-		"https://upstream.host/upstream/myrepo.git",
-	},
-		exec.Result{}, nil)
-
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -195,9 +155,20 @@ url = "https://upstream.host/upstream/myrepo.git"
 		t.Fatalf("Clone: %v", err)
 	}
 
-	calls := f.Calls()
-	if len(calls) != 3 {
-		t.Errorf("expected 3 git calls (clone + 2 remote add), got %d: %v", len(calls), calls)
+	want := map[string]string{
+		"fork":     "https://fork.host/me/myrepo.git",
+		"upstream": "https://upstream.host/upstream/myrepo.git",
+	}
+	if len(m.addRemotes) != len(want) {
+		t.Fatalf("expected %d added remotes (origin excluded), got %v", len(want), m.addRemotes)
+	}
+	for name, url := range want {
+		if got := m.addRemotes[name]; got != url {
+			t.Errorf("remote %s: got url %q, want %q", name, got, url)
+		}
+	}
+	if _, ok := m.addRemotes["origin"]; ok {
+		t.Errorf("origin must NOT be re-added; got %v", m.addRemotes)
 	}
 }
 

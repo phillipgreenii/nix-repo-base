@@ -294,16 +294,18 @@ func (ws *Workspace) deltaArrows(ctx context.Context, repoDir, ref, base string)
 
 // localBranches returns the local branch names for the repo, in git's default
 // (alphabetical) order. It returns nil when the query fails.
+//
+// Migrated onto x/gitclient's BranchLister.ListBranches (bead pg2-8bfb5,
+// design pg2-migib §7a) — the read-side role behind this exact gap (design
+// §2: "no BranchManager method covers `branch --format=...` today").
 func (ws *Workspace) localBranches(ctx context.Context, repoDir string) []string {
-	res, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.RunOptions{})
+	client, err := openGitMutator(ctx, repoDir)
 	if err != nil {
 		return nil
 	}
-	var branches []string
-	for line := range strings.SplitSeq(string(res.Stdout), "\n") {
-		if b := strings.TrimSpace(line); b != "" {
-			branches = append(branches, b)
-		}
+	branches, err := client.ListBranches(ctx)
+	if err != nil {
+		return nil
 	}
 	return branches
 }

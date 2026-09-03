@@ -67,14 +67,24 @@ run = ["{nix_run install-pre-commit-hooks}"]
 	addWorktreeListClean(f, fooCanonical, "foo")
 	addBranchNotExists(t, barCanonical, "feature")
 	addBranchNotExists(t, fooCanonical, "feature")
-	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
+	mBar := &fakeGitMutator{}
+	mFoo := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		barCanonical: mBar,
+		fooCanonical: mFoo,
+	})
 	// Only bar declares a post-clone hook → exactly one sh install call expected.
 	f.AddResponse("sh", []string{"-c", nixRunHookCmd(barSet)}, exec.Result{}, nil)
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
 		t.Fatalf("WorkforestAdd: %v", err)
+	}
+	if len(mBar.createWorktrees) != 1 || mBar.createWorktrees[0] != barSet+"@feature" {
+		t.Errorf("bar: expected one CreateWorktree(%s, feature); got %v", barSet, mBar.createWorktrees)
+	}
+	if len(mFoo.createWorktrees) != 1 || mFoo.createWorktrees[0] != fooSet+"@feature" {
+		t.Errorf("foo: expected one CreateWorktree(%s, feature); got %v", fooSet, mFoo.createWorktrees)
 	}
 
 	sc := shCalls(f)
@@ -118,7 +128,7 @@ run = ["{nix_run install-pre-commit-hooks}"]
 
 	addWorktreeListClean(f, barCanonical, "bar")
 	addBranchNotExists(t, barCanonical, "feature")
-	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{barCanonical: {}})
 	// The post-clone hook FAILS — must be warn-only (to os.Stderr), never fatal.
 	f.AddResponse("sh", []string{"-c", nixRunHookCmd(barSet)},
 		exec.Result{ExitCode: 1},
@@ -234,12 +244,16 @@ run = ["{nix_run install-pre-commit-hooks}"]
 	barSet := filepath.Join(setDir, "bar")
 	addWorktreeListClean(f, barCanonical, "bar")
 	addBranchNotExists(t, barCanonical, "feature")
-	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
+	mBar := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{barCanonical: mBar})
 	// No `sh` response scripted: the hook must be trust-skipped, not executed.
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
 		t.Fatalf("WorkforestAdd must succeed (post-clone warn-only); got %v", err)
+	}
+	if len(mBar.createWorktrees) != 1 || mBar.createWorktrees[0] != barSet+"@feature" {
+		t.Errorf("bar: expected one CreateWorktree(%s, feature); got %v", barSet, mBar.createWorktrees)
 	}
 	if n := len(shCalls(f)); n != 0 {
 		t.Errorf("post-clone hook must be trust-skipped on an untrusted canonical; got %d sh calls", n)

@@ -2,11 +2,14 @@
 package workspace
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 // TestMain makes the whole package's real-git tests HERMETIC: it redirects
@@ -57,7 +60,44 @@ func TestMain(m *testing.M) {
 			panic("realgit_test TestMain: os.Setenv " + k + ": " + err.Error())
 		}
 	}
+	// The env-var-based isolation above (os.Setenv, inherited via
+	// internal/exec.realRunner's os.Environ() copy) does NOT reach git
+	// invocations made through x/gitclient: gitclient.Client builds its
+	// child environment from a fixed allowlist (PATH, HOME, SSH_AUTH_SOCK —
+	// design §4.4 D5) and never carries over GIT_CONFIG_GLOBAL/
+	// GIT_CONFIG_SYSTEM from the parent process. Left alone, every real-git
+	// test that reaches openGitReader/openGitMutator/cloneGitRepo (bead
+	// pg2-8bfb5's mutating-side migration routes real commits through this
+	// seam) would inherit the developer's ACTUAL global git config —
+	// exactly the pg2-39rz2 class of bug, just via a second, gitclient-
+	// shaped door. Installing hermetic package-level defaults here, once,
+	// closes that door the same way the env vars above close it for the raw
+	// runner. Individual tests may still override these three vars further
+	// via stubGitOpener/stubGitMutatorOpener/stubGitCloner; those
+	// t.Cleanup-restore back to these hermetic defaults, not to gitclient's
+	// bare constructors.
+	openGitReader = func(ctx context.Context, dir string) (gitReader, error) {
+		return gitclient.New(ctx, dir, hermeticGitOptions()...)
+	}
+	openGitMutator = func(ctx context.Context, dir string) (gitMutator, error) {
+		return gitclient.New(ctx, dir, hermeticGitOptions()...)
+	}
+	cloneGitRepo = func(ctx context.Context, url, dir string, opts gitclient.CloneOptions) (gitMutator, *gitclient.Handle, error) {
+		return gitclient.Clone(ctx, url, dir, opts, hermeticGitOptions()...)
+	}
 	os.Exit(m.Run())
+}
+
+// hermeticGitOptions is gitConfigIsolationEnv's equivalent for x/gitclient
+// constructors — see TestMain's doc comment for why the two mechanisms
+// (process env vars vs. gitclient's Option allowlist) must be applied
+// separately.
+func hermeticGitOptions() []gitclient.Option {
+	var opts []gitclient.Option
+	for k, v := range gitConfigIsolationEnv() {
+		opts = append(opts, gitclient.WithEnv(k, v))
+	}
+	return opts
 }
 
 // gitConfigIsolationEnv returns the git env-var overrides that make a real-git

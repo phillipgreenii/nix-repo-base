@@ -134,10 +134,12 @@ url = "github:owner/foo"
 			{Staged: gitclient.StatusUnmodified, Unstaged: gitclient.StatusModified, Path: "f.txt"},
 		},
 	}})
+	// localBranches is migrated onto x/gitclient's BranchLister.ListBranches
+	// (bead pg2-8bfb5).
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: {listBranches: []string{"feature-x", "main", "old"}}})
 
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"}, exec.Result{Stdout: []byte("2\t1\n")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("feature-x\nmain\nold\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "worktree", "list", "--porcelain"},
 		exec.Result{Stdout: []byte("worktree " + repoDir + "\nHEAD abc\nbranch refs/heads/feature-x\n\nworktree /ws/wt-feature\nHEAD def\nbranch refs/heads/other\n")}, nil)
 	// Deltas vs the default branch (main) for the linked worktree and the loose branches.
@@ -193,11 +195,11 @@ url = "github:owner/foo"
 	repoDir := filepath.Join(root, "foo")
 
 	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranch: "main"}})
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: {listBranches: []string{"main"}}})
 
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"},
 		exec.Result{ExitCode: 128}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 128, Stderr: []byte("no upstream configured")}})
-	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	// worktree list intentionally not scripted: query fails and the line is omitted.
 
 	w, err := Open(root, f)
@@ -235,10 +237,10 @@ url = "github:owner/foo"
 	repoDir := filepath.Join(root, "foo")
 
 	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranchErr: gitclient.ErrDetachedHEAD}})
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: {listBranches: []string{"main"}}})
 
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "rev-parse", "--short", "HEAD"}, exec.Result{Stdout: []byte("deadbee\n")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	// worktree list omitted (query fails harmlessly).
 
 	w, err := Open(root, f)
@@ -301,10 +303,10 @@ url = "github:owner/foo"
 	repoDir := filepath.Join(root, "foo")
 
 	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranch: "main"}})
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: {listBranches: []string{"main"}}})
 
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"}, exec.Result{Stdout: []byte("0\t0\n")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "worktree", "list", "--porcelain"},
 		exec.Result{Stdout: []byte("worktree " + repoDir + "\nHEAD aaa\nbranch refs/heads/main\n\nworktree /ws/wt-x\nHEAD 0123456789abcdef\ndetached\n")}, nil)
 	// Detached worktree ahead/behind is measured from its sha vs the default branch.
@@ -338,10 +340,10 @@ url = "github:owner/foo"
 	repoDir := filepath.Join(root, "foo")
 
 	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranchErr: gitclient.ErrDetachedHEAD}})
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: {listBranches: []string{"main"}}})
 
 	f := exec.NewFakeRunner()
 	// rev-parse --short HEAD intentionally unscripted: query fails, sha stays "".
-	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("main\n")}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -373,11 +375,11 @@ url = "github:owner/foo"
 	repoDir := filepath.Join(root, "foo")
 
 	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {currentBranch: "feature"}})
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: {listBranches: []string{"feature", "stale"}}})
 
 	f := exec.NewFakeRunner()
 	// Malformed: one field instead of two -> aheadBehindCounts reports not-ok.
 	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"}, exec.Result{Stdout: []byte("5\n")}, nil)
-	f.AddResponse("git", []string{"-C", repoDir, "branch", "--format=%(refname:short)"}, exec.Result{Stdout: []byte("feature\nstale\n")}, nil)
 	f.AddResponse("git", []string{"-C", repoDir, "worktree", "list", "--porcelain"},
 		exec.Result{Stdout: []byte("worktree " + repoDir + "\nHEAD aaa\nbranch refs/heads/feature\n")}, nil)
 	// Malformed: one field -> deltaArrows returns "" -> no suffix on the loose branch.

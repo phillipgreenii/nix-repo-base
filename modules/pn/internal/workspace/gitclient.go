@@ -39,3 +39,44 @@ type gitOpener func(ctx context.Context, dir string) (gitReader, error)
 var openGitReader gitOpener = func(ctx context.Context, dir string) (gitReader, error) {
 	return gitclient.New(ctx, dir)
 }
+
+// gitMutator is the composed role this package's MUTATING git call sites
+// need, per design doc pg2-migib §7a's operator-decided full adoption and its
+// implementation (bead pg2-f1cq7): Fetcher, WorktreeManager, Syncer,
+// Committer, Pusher, BranchLister, RemoteManager. *gitclient.Client satisfies
+// it by construction (asserted below). This is pn's mutating-side migration
+// (bead pg2-8bfb5) — the counterpart to gitReader's read-side migration
+// (bead pg2-oxle0) above.
+type gitMutator interface {
+	gitclient.Fetcher
+	gitclient.WorktreeManager
+	gitclient.Syncer
+	gitclient.Committer
+	gitclient.Pusher
+	gitclient.BranchLister
+	gitclient.RemoteManager
+}
+
+var _ gitMutator = (*gitclient.Client)(nil)
+
+// gitMutatorOpener anchors a gitMutator at dir, mirroring gitOpener — a
+// package-level var so tests can substitute a fake without threading a new
+// seam through every mutating call site.
+//
+// gitclient.New (not Discover) is used for the identical reason gitOpener
+// uses it: every mutating call site below already knows dir is a repo root.
+type gitMutatorOpener func(ctx context.Context, dir string) (gitMutator, error)
+
+var openGitMutator gitMutatorOpener = func(ctx context.Context, dir string) (gitMutator, error) {
+	return gitclient.New(ctx, dir)
+}
+
+// gitCloner opens a fresh repository at dir by cloning url, mirroring
+// gitclient.Clone's signature narrowed to the gitMutator role clone.go needs
+// from the result — a package-level var so tests can substitute a fake,
+// matching openGitReader/openGitMutator above.
+type gitCloner func(ctx context.Context, url, dir string, opts gitclient.CloneOptions) (gitMutator, *gitclient.Handle, error)
+
+var cloneGitRepo gitCloner = func(ctx context.Context, url, dir string, opts gitclient.CloneOptions) (gitMutator, *gitclient.Handle, error) {
+	return gitclient.Clone(ctx, url, dir, opts)
+}

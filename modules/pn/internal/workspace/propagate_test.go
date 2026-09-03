@@ -334,18 +334,26 @@ func TestPropagate_NixFailureErrorsCleanly(t *testing.T) {
 	}
 }
 
-// TestPropagate_CommitsUnderMissingConfigPreCommitHook is the tc-1zbpk regression:
-// in an ephemeral update worktree the prek pre-commit hook (installed in the
-// canonical gitdir, shared into the worktree) fires on the bump commit, but the
-// worktree has no .pre-commit-config.yaml (a gitignored dev-shell symlink that
-// only exists in the canonical checkout), so prek aborts with "config file not
-// found". propagateWorkspaceEdges must pass PREK_ALLOW_NO_CONFIG on its commit so
-// the bump still lands. We install a hook that mimics prek — fail unless
-// PREK_ALLOW_NO_CONFIG is set — and assert the commit is created; without the fix
-// the hook exits 1 and no bump commit lands.
-func TestPropagate_CommitsUnderMissingConfigPreCommitHook(t *testing.T) {
+// TestPropagate_CommitFailsUnderMissingConfigPreCommitHook is the design
+// pg2-migib §7a / bead pg2-8bfb5 regression, superseding the old tc-1zbpk
+// PREK_ALLOW_NO_CONFIG-on-commit guard (removed, not duplicated, per the
+// operator's explicit ruling): propagateWorkspaceEdges's commit now runs
+// through x/gitclient's Committer with NO hook-bypass mechanism at all — the
+// package deliberately ships none (interfaces.go's Committer doc comment).
+// When a repo's pre-commit hook demands a config that genuinely is not
+// present, the commit must fail LOUDLY, not silently no-op the hook. The
+// actual fix for the missing-config case in production is upstream of this
+// function entirely: update_worktree.go's linkPreCommitConfig symlinks the
+// canonical clone's config into the ephemeral worktree BEFORE
+// propagateWorkspaceEdges ever runs (see TestLinkPreCommitConfig), so this
+// function never actually needs to tolerate a missing config in practice.
+// This test pins that propagateWorkspaceEdges itself no longer papers over
+// it if that upstream step is somehow skipped.
+func TestPropagate_CommitFailsUnderMissingConfigPreCommitHook(t *testing.T) {
 	dir, writeLock := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
-	// Installed AFTER propEnv's init commit so init is not blocked.
+	// Installed AFTER propEnv's init commit so init is not blocked. Mimics
+	// prek's real failure mode: abort whenever no bypass is set — and none
+	// exists any more, so this must always abort.
 	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
 	if err := os.WriteFile(hook, []byte(
 		"#!/bin/sh\n"+
@@ -362,19 +370,61 @@ func TestPropagate_CommitsUnderMissingConfigPreCommitHook(t *testing.T) {
 	ws := &Workspace{runner: r}
 
 	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"})
-	if err != nil {
-		t.Fatalf("propagate: %v", err)
+	if err == nil {
+		t.Fatalf("expected the commit to fail (no PREK_ALLOW_NO_CONFIG bypass exists any more); relocked=%v", relocked)
 	}
-	if !relocked {
-		t.Errorf("relocked = false, want true (bump committed despite the prek hook)")
+	if !strings.Contains(err.Error(), "git commit") {
+		t.Errorf("error should name the failing commit; got %v", err)
 	}
-	if n := commitCount(t, dir); n != 2 {
-		t.Errorf("commit count = %d, want 2 (bump commit must land despite the prek hook)", n)
+	if relocked {
+		t.Errorf("relocked = true, want false on a failed commit")
 	}
-	if subj := headSubject(t, dir); subj != "chore(deps): bump sib 1111111 -> 2222222" {
-		t.Errorf("subject = %q", subj)
+	// No partial/dirty state: the failed commit must leave exactly the init
+	// commit behind, with flake.lock staged-but-uncommitted (add already ran).
+	if n := commitCount(t, dir); n != 1 {
+		t.Errorf("commit count = %d, want 1 (no partial commit landed)", n)
 	}
-	assertCleanTree(t, dir)
+}
+
+// TestLinkPreCommitConfig covers update_worktree.go's root-cause fix for the
+// PREK_ALLOW_NO_CONFIG workaround (design pg2-migib §7a): a fresh worktree
+// gets its OWN symlink to the same /nix/store target the canonical clone's
+// .pre-commit-config.yaml already points at, so prek resolves a real config
+// there instead of aborting or needing a bypass.
+func TestLinkPreCommitConfig(t *testing.T) {
+	canonical := t.TempDir()
+	worktree := t.TempDir()
+
+	t.Run("propagates an existing symlink", func(t *testing.T) {
+		target := filepath.Join(t.TempDir(), "generated-config.yaml")
+		if err := osWrite(target, "hooks: []\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(canonical, preCommitConfigName)); err != nil {
+			t.Fatal(err)
+		}
+		if err := linkPreCommitConfig(canonical, worktree); err != nil {
+			t.Fatalf("linkPreCommitConfig: %v", err)
+		}
+		got, err := os.Readlink(filepath.Join(worktree, preCommitConfigName))
+		if err != nil {
+			t.Fatalf("Readlink: %v", err)
+		}
+		if got != target {
+			t.Errorf("worktree symlink target = %q, want %q", got, target)
+		}
+	})
+
+	t.Run("no-op when canonical has no symlink", func(t *testing.T) {
+		bareCanonical := t.TempDir()
+		bareWorktree := t.TempDir()
+		if err := linkPreCommitConfig(bareCanonical, bareWorktree); err != nil {
+			t.Fatalf("linkPreCommitConfig should be a no-op, not an error; got %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(bareWorktree, preCommitConfigName)); err == nil {
+			t.Error("expected no symlink to be created in the worktree")
+		}
+	})
 }
 
 func TestWorkspaceAliasesFromLock(t *testing.T) {

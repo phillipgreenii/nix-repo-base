@@ -13,6 +13,26 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
+// linkPreCommitConfig recreates canonicalDir's preCommitConfigName symlink
+// (a git-hooks.nix-generated, gitignored symlink into /nix/store, ADR 0016)
+// at the same target inside worktreeDir, so a freshly created worktree
+// resolves the SAME generated config prek does in the canonical clone
+// instead of having none at all (design pg2-migib §7a's PREK_ALLOW_NO_CONFIG
+// root-cause fix). It is a no-op, not an error, when canonicalDir has no
+// such symlink (e.g. its devShell was never entered) — there is nothing to
+// propagate in that case, and the caller's own commit step surfaces any
+// resulting hook failure normally.
+func linkPreCommitConfig(canonicalDir, worktreeDir string) error {
+	target, err := os.Readlink(filepath.Join(canonicalDir, preCommitConfigName))
+	if err != nil {
+		return nil //nolint:nilerr // no symlink to propagate; not a failure of this operation
+	}
+	if err := os.Symlink(target, filepath.Join(worktreeDir, preCommitConfigName)); err != nil {
+		return fmt.Errorf("symlink %s in %s: %w", preCommitConfigName, worktreeDir, err)
+	}
+	return nil
+}
+
 // primaryState classifies a primary checkout for smart integration (step 6).
 type primaryState int
 
@@ -260,6 +280,24 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		oc.note = err.Error()
 		fmt.Fprintf(out, "  ✗ %s: worktree add failed (stale leftover? run `pn workspace workforest prune`): %v\n", name, err)
 		return oc
+	}
+
+	// Symlink the canonical clone's .pre-commit-config.yaml into the new
+	// worktree at creation time — the root-cause fix for the
+	// PREK_ALLOW_NO_CONFIG workaround propagateWorkspaceEdges used to need
+	// (design pg2-migib §7a, tc-1zbpk): the config is a gitignored dev-shell
+	// symlink into /nix/store present only in canonical clones, so a fresh
+	// `git worktree add` starts without one and prek would otherwise abort
+	// every commit in this worktree with "config file not found". Mirroring
+	// the canonical symlink's own target here means each worktree resolves
+	// its OWN copy (workforest.go's per-worktree-isolated resolution), so
+	// hooks run for real instead of being no-op'd. Best-effort: if the
+	// canonical clone itself has no such symlink (its devShell was never
+	// entered), there is nothing to propagate, and any resulting commit-hook
+	// failure surfaces for real below — which is the correct, honest
+	// behavior this fix restores.
+	if err := linkPreCommitConfig(primary, wt); err != nil {
+		fmt.Fprintf(out, "  ⚠ %s: could not link %s into the update worktree: %v\n", name, preCommitConfigName, err)
 	}
 
 	// Step 2: sync branch to remote main.

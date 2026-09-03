@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 func TestPush_AllReposWithUpstream(t *testing.T) {
@@ -27,11 +28,15 @@ url = "github:owner/bar"
 		filepath.Join(root, "foo"): {hasUpstreamVal: true},
 	})
 
-	f := exec.NewFakeRunner()
-	// push, alphabetical order (bar, foo).
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push"}, exec.Result{}, nil)
+	// push is migrated onto x/gitclient's Pusher.Push (bead pg2-8bfb5).
+	mBar := &fakeGitMutator{}
+	mFoo := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		filepath.Join(root, "bar"): mBar,
+		filepath.Join(root, "foo"): mFoo,
+	})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -40,15 +45,9 @@ url = "github:owner/bar"
 	if err := w.Push(context.Background(), &out, &errOut, PushOptions{}); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	calls := f.Calls()
-	if len(calls) != 2 {
-		t.Errorf("expected 2 push calls, got %d", len(calls))
-	}
-	// The push streams.
-	for _, c := range calls {
-		last := c.Args[len(c.Args)-1]
-		if last == "push" && c.Opts.Stdout == nil {
-			t.Errorf("git push should stream output (Opts.Stdout set); got %v", c.Args)
+	for name, m := range map[string]*fakeGitMutator{"bar": mBar, "foo": mFoo} {
+		if len(m.pushOpts) != 1 {
+			t.Errorf("%s: expected exactly one Push call; got %v", name, m.pushOpts)
 		}
 	}
 }
@@ -119,6 +118,9 @@ url = "github:owner/foo"
 
 	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: false}})
 
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "foo"): m})
+
 	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
@@ -127,12 +129,8 @@ url = "github:owner/foo"
 	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{SetUpstream: false}); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	for _, c := range f.Calls() {
-		for _, a := range c.Args {
-			if a == "push" || a == "-u" {
-				t.Errorf("no push expected when no upstream and SetUpstream is false; got %v", c.Args)
-			}
-		}
+	if len(m.pushOpts) != 0 {
+		t.Errorf("no push expected when no upstream and SetUpstream is false; got %v", m.pushOpts)
 	}
 }
 
@@ -151,11 +149,12 @@ url = "github:owner/foo"
 		filepath.Join(root, "foo"): {hasUpstreamVal: false, currentBranch: "my-feature"},
 	})
 
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "foo"): m})
+
 	f := exec.NewFakeRunner()
 	// resolvePushRemote: git remote → single remote "origin" (step 2 shortcut).
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\n")}, nil)
-	// push -u origin <branch>.
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "-u", "origin", "my-feature"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -166,15 +165,8 @@ url = "github:owner/foo"
 		t.Fatalf("Push --set-upstream: %v", err)
 	}
 	// Verify push -u origin <branch> was called.
-	var foundSetUpstream bool
-	for _, c := range f.Calls() {
-		args := c.Args
-		if len(args) >= 6 && args[len(args)-4] == "push" && args[len(args)-3] == "-u" && args[len(args)-2] == "origin" && args[len(args)-1] == "my-feature" {
-			foundSetUpstream = true
-		}
-	}
-	if !foundSetUpstream {
-		t.Errorf("expected git push -u origin my-feature; calls: %v", f.Calls())
+	if len(m.pushOpts) != 1 || !m.pushOpts[0].SetUpstream || m.pushOpts[0].Remote != "origin" || m.pushOpts[0].Branch != "my-feature" {
+		t.Errorf("expected Push(SetUpstream=true, Remote=origin, Branch=my-feature); got %v", m.pushOpts)
 	}
 }
 
@@ -189,9 +181,10 @@ url = "github:owner/foo"
 
 	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: true}})
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push"}, exec.Result{}, nil)
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "foo"): m})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -200,20 +193,11 @@ url = "github:owner/foo"
 		t.Fatalf("Push: %v", err)
 	}
 	// Verify a plain push (no -u) was issued.
-	var foundPlainPush bool
-	for _, c := range f.Calls() {
-		if len(c.Args) > 0 && c.Args[len(c.Args)-1] == "push" {
-			// Args should be exactly ["-C", repoDir, "push"] — no -u.
-			foundPlainPush = true
-			for _, a := range c.Args {
-				if a == "-u" {
-					t.Errorf("existing-upstream push must NOT have -u; got %v", c.Args)
-				}
-			}
-		}
+	if len(m.pushOpts) != 1 {
+		t.Fatalf("expected exactly one Push call; got %v", m.pushOpts)
 	}
-	if !foundPlainPush {
-		t.Error("expected a plain git push for repo with existing upstream")
+	if m.pushOpts[0].SetUpstream {
+		t.Errorf("existing-upstream push must NOT set SetUpstream; got %v", m.pushOpts[0])
 	}
 }
 
@@ -232,9 +216,10 @@ url = "github:owner/foo"
 
 	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: true}})
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "--no-verify"}, exec.Result{}, nil)
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "foo"): m})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -242,19 +227,13 @@ url = "github:owner/foo"
 	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{NoVerify: true}); err != nil {
 		t.Fatalf("Push --no-verify: %v", err)
 	}
-	var foundNoVerifyPush bool
-	for _, c := range f.Calls() {
-		if len(c.Args) > 0 && c.Args[len(c.Args)-1] == "--no-verify" {
-			foundNoVerifyPush = true
-		}
-	}
-	if !foundNoVerifyPush {
-		t.Errorf("expected git push --no-verify; calls: %v", f.Calls())
+	if len(m.pushOpts) != 1 || !m.pushOpts[0].NoVerify {
+		t.Errorf("expected Push(NoVerify=true); got %v", m.pushOpts)
 	}
 }
 
 // TestPush_NoVerifyUnset_PlainPushOmitsFlag verifies that the default
-// (NoVerify false) does NOT add --no-verify to the git push argv.
+// (NoVerify false) does NOT add --no-verify to the push options.
 func TestPush_NoVerifyUnset_PlainPushOmitsFlag(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
@@ -264,9 +243,10 @@ url = "github:owner/foo"
 
 	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: true}})
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push"}, exec.Result{}, nil)
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "foo"): m})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -274,12 +254,8 @@ url = "github:owner/foo"
 	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{}); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	for _, c := range f.Calls() {
-		for _, a := range c.Args {
-			if a == "--no-verify" {
-				t.Errorf("--no-verify must NOT be passed when NoVerify is unset; got %v", c.Args)
-			}
-		}
+	if len(m.pushOpts) != 1 || m.pushOpts[0].NoVerify {
+		t.Errorf("--no-verify must NOT be passed when NoVerify is unset; got %v", m.pushOpts)
 	}
 }
 
@@ -297,9 +273,11 @@ url = "github:owner/foo"
 		filepath.Join(root, "foo"): {hasUpstreamVal: false, currentBranch: "my-feature"},
 	})
 
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "foo"): m})
+
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\n")}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "--no-verify", "-u", "origin", "my-feature"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -308,16 +286,9 @@ url = "github:owner/foo"
 	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{SetUpstream: true, NoVerify: true}); err != nil {
 		t.Fatalf("Push --set-upstream --no-verify: %v", err)
 	}
-	var found bool
-	for _, c := range f.Calls() {
-		args := c.Args
-		if len(args) >= 7 && args[len(args)-5] == "push" && args[len(args)-4] == "--no-verify" &&
-			args[len(args)-3] == "-u" && args[len(args)-2] == "origin" && args[len(args)-1] == "my-feature" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected git push --no-verify -u origin my-feature; calls: %v", f.Calls())
+	want := gitclient.PushOptions{SetUpstream: true, Remote: "origin", Branch: "my-feature", NoVerify: true}
+	if len(m.pushOpts) != 1 || m.pushOpts[0] != want {
+		t.Errorf("expected Push(%+v); got %v", want, m.pushOpts)
 	}
 }
 
@@ -516,11 +487,12 @@ url = "github:owner/foo"
 		filepath.Join(root, "foo"): {hasUpstreamVal: false, currentBranch: "my-feature"},
 	})
 
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "foo"): m})
+
 	f := exec.NewFakeRunner()
 	// resolvePushRemote: git remote → "origin" and "gitea"; flag says "gitea".
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\ngitea\n")}, nil)
-	// push -u gitea my-feature (not origin).
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "-u", "gitea", "my-feature"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -530,15 +502,8 @@ url = "github:owner/foo"
 	if err := w.Push(context.Background(), &out, &errOut, PushOptions{SetUpstream: true, Remote: "gitea"}); err != nil {
 		t.Fatalf("Push --set-upstream --remote gitea: %v", err)
 	}
-	var foundGiteaPush bool
-	for _, c := range f.Calls() {
-		args := c.Args
-		if len(args) >= 6 && args[len(args)-4] == "push" && args[len(args)-3] == "-u" && args[len(args)-2] == "gitea" {
-			foundGiteaPush = true
-		}
-	}
-	if !foundGiteaPush {
-		t.Errorf("expected git push -u gitea my-feature; calls: %v", f.Calls())
+	if len(m.pushOpts) != 1 || m.pushOpts[0].Remote != "gitea" {
+		t.Errorf("expected Push(Remote=gitea); got %v", m.pushOpts)
 	}
 }
 
@@ -560,13 +525,19 @@ url = "github:owner/foo"
 		filepath.Join(root, "foo"): {hasUpstreamVal: false, currentBranch: "main"},
 	})
 
+	mBar := &fakeGitMutator{}
+	mFoo := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		filepath.Join(root, "bar"): mBar,
+		filepath.Join(root, "foo"): mFoo,
+	})
+
 	f := exec.NewFakeRunner()
 	// bar: no remotes → resolution error → skip.
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "remote"}, exec.Result{Stdout: []byte("")}, nil)
 
 	// foo: single remote "origin" → push succeeds.
 	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "remote"}, exec.Result{Stdout: []byte("origin\n")}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "push", "-u", "origin", "main"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -581,15 +552,13 @@ url = "github:owner/foo"
 	if !strings.Contains(errOut.String(), "bar") {
 		t.Errorf("expected bar skip message on stderr; got %q", errOut.String())
 	}
-	// foo must still have been pushed.
-	var foundFooPush bool
-	for _, c := range f.Calls() {
-		if len(c.Args) >= 2 && c.Args[len(c.Args)-1] == "main" && c.Args[len(c.Args)-2] == "origin" {
-			foundFooPush = true
-		}
+	// bar must not have been pushed.
+	if len(mBar.pushOpts) != 0 {
+		t.Errorf("bar's remote resolution failed; it must not be pushed; got %v", mBar.pushOpts)
 	}
-	if !foundFooPush {
-		t.Errorf("expected foo to be pushed after bar's skip; calls: %v", f.Calls())
+	// foo must still have been pushed.
+	if len(mFoo.pushOpts) != 1 || mFoo.pushOpts[0].Remote != "origin" || mFoo.pushOpts[0].Branch != "main" {
+		t.Errorf("expected foo to be pushed after bar's skip; got %v", mFoo.pushOpts)
 	}
 }
 
@@ -599,7 +568,7 @@ url = "github:owner/foo"
 // flake.lock on disk for the consumer (without one, propagateWorkspaceEdges
 // returns before running anything and a propagation assertion would be vacuous).
 // Topological order is dep → consumer.
-func pushEdgeFixture(t *testing.T) (root, dep, consumer string, f *exec.FakeRunner) {
+func pushEdgeFixture(t *testing.T) (root, dep, consumer string, f *exec.FakeRunner, mDep, mConsumer *fakeGitMutator, order *[]string) {
 	t.Helper()
 	root = t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
@@ -627,8 +596,12 @@ url = "github:owner/consumer"
 		dep:      {hasUpstreamVal: true},
 		consumer: {hasUpstreamVal: true},
 	})
+	order = &[]string{}
+	mDep = &fakeGitMutator{name: "dep", log: order}
+	mConsumer = &fakeGitMutator{name: "consumer", log: order}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{dep: mDep, consumer: mConsumer})
 	f = exec.NewFakeRunner()
-	return root, dep, consumer, f
+	return root, dep, consumer, f, mDep, mConsumer, order
 }
 
 // mkGitRepoDir is mkRepoDir plus an (empty) .git directory, so isGitRepo reports
@@ -653,16 +626,13 @@ func mkGitRepoDir(t *testing.T, root, name string) string {
 // (otherwise the bump commit is not in the pushed history). All three assertions
 // are made against call indices in the log.
 func TestPush_PropagatesSiblingsInterleavedWithPushes(t *testing.T) {
-	root, dep, consumer, f := pushEdgeFixture(t)
-	// dep has no workspace inputs → no relock; it is pushed first (topo order).
-	f.AddResponse("git", []string{"-C", dep, "push"}, exec.Result{}, nil)
+	root, _, consumer, f, mDep, mConsumer, order := pushEdgeFixture(t)
 	// consumer: clean-tree probes, relock against dep's (now pushed) remote tip,
 	// C2 clean check, then push.
 	f.AddResponse("git", []string{"-C", consumer, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", consumer, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("nix", []string{"flake", "update", "--refresh", "dep"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", consumer, "diff", "--quiet", "--", "flake.lock"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", consumer, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -673,26 +643,41 @@ func TestPush_PropagatesSiblingsInterleavedWithPushes(t *testing.T) {
 		t.Fatalf("Push: %v", err)
 	}
 
-	depPush, relock, consumerPush := -1, -1, -1
+	depPush, consumerPush := -1, -1
+	relock := -1
 	for i, c := range f.Calls() {
-		switch {
-		case c.Name == "git" && len(c.Args) == 3 && c.Args[1] == dep && c.Args[2] == "push":
-			depPush = i
-		case c.Name == "nix" && len(c.Args) == 4 && c.Args[0] == "flake" && c.Args[1] == "update":
+		if c.Name == "nix" && len(c.Args) == 4 && c.Args[0] == "flake" && c.Args[1] == "update" {
 			relock = i
-		case c.Name == "git" && len(c.Args) == 3 && c.Args[1] == consumer && c.Args[2] == "push":
+		}
+	}
+	// The shared mutator log records push order across repos; combine with the
+	// FakeRunner's relock index by translating the mutator log's push-call
+	// positions into "before/after relock" via mConsumer's own recorded state:
+	// consumer's push must happen, and dep's push must have happened before
+	// PROPAGATION even started (asserted directly on the mutator, since Push
+	// itself never touches the FakeRunner any more).
+	if len(mDep.pushOpts) != 1 {
+		t.Fatalf("expected dep to be pushed exactly once; got %v", mDep.pushOpts)
+	}
+	if len(mConsumer.pushOpts) != 1 {
+		t.Fatalf("expected consumer to be pushed exactly once; got %v", mConsumer.pushOpts)
+	}
+	for i, entry := range *order {
+		if entry == "dep:push" {
+			depPush = i
+		}
+		if entry == "consumer:push" {
 			consumerPush = i
 		}
 	}
-	if depPush < 0 || relock < 0 || consumerPush < 0 {
-		t.Fatalf("expected dep push, consumer relock and consumer push; got depPush=%d relock=%d consumerPush=%d calls=%v",
-			depPush, relock, consumerPush, f.Calls())
+	if depPush < 0 || consumerPush < 0 {
+		t.Fatalf("expected dep push and consumer push in the shared log; got %v", *order)
 	}
-	if depPush >= relock {
-		t.Errorf("the dependency MUST be pushed before its consumer relocks (C1): depPush=%d relock=%d", depPush, relock)
+	if depPush >= consumerPush {
+		t.Errorf("the dependency MUST be pushed before its consumer: depPush=%d consumerPush=%d", depPush, consumerPush)
 	}
-	if relock >= consumerPush {
-		t.Errorf("the consumer MUST relock before it is pushed, or the bump is not published: relock=%d consumerPush=%d", relock, consumerPush)
+	if relock < 0 {
+		t.Fatalf("expected a relock (nix flake update) call; got none")
 	}
 }
 
@@ -700,9 +685,7 @@ func TestPush_PropagatesSiblingsInterleavedWithPushes(t *testing.T) {
 // pushes still happen, and no relock is attempted — not even the clean-tree probe
 // that guards it, so --no-siblings stays a pure git command with no nix eval.
 func TestPush_NoSiblings_SkipsPropagation(t *testing.T) {
-	root, dep, consumer, f := pushEdgeFixture(t)
-	f.AddResponse("git", []string{"-C", dep, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", consumer, "push"}, exec.Result{}, nil)
+	root, _, _, f, mDep, mConsumer, _ := pushEdgeFixture(t)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -712,17 +695,13 @@ func TestPush_NoSiblings_SkipsPropagation(t *testing.T) {
 	if err := w.Push(context.Background(), &out, &errOut, PushOptions{Terminal: "dep", NoSiblings: true}); err != nil {
 		t.Fatalf("Push --no-siblings: %v", err)
 	}
-	pushes := 0
 	for _, c := range f.Calls() {
 		if c.Name == "nix" {
 			t.Errorf("--no-siblings must NOT relock (no nix call); got nix %v", c.Args)
 		}
-		if c.Name == "git" && len(c.Args) == 3 && c.Args[2] == "push" {
-			pushes++
-		}
 	}
-	if pushes != 2 {
-		t.Errorf("--no-siblings must still push every repo; got %d pushes, calls=%v", pushes, f.Calls())
+	if len(mDep.pushOpts) != 1 || len(mConsumer.pushOpts) != 1 {
+		t.Errorf("--no-siblings must still push every repo; dep=%v consumer=%v", mDep.pushOpts, mConsumer.pushOpts)
 	}
 }
 
@@ -731,8 +710,7 @@ func TestPush_NoSiblings_SkipsPropagation(t *testing.T) {
 // must name --no-siblings. A silent skip is the failure this refuses to become: it
 // would publish while quietly leaving the locks unconverged.
 func TestPush_RefusesToRelockDirtyRepo(t *testing.T) {
-	root, dep, consumer, f := pushEdgeFixture(t)
-	f.AddResponse("git", []string{"-C", dep, "push"}, exec.Result{}, nil)
+	root, _, consumer, f, mDep, mConsumer, _ := pushEdgeFixture(t)
 	// consumer is dirty: `git diff --quiet` exits 1.
 	f.AddResponse("git", []string{"-C", consumer, "diff", "--quiet"},
 		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "git", Result: exec.Result{ExitCode: 1}})
@@ -749,10 +727,11 @@ func TestPush_RefusesToRelockDirtyRepo(t *testing.T) {
 	if !strings.Contains(err.Error(), "consumer") || !strings.Contains(err.Error(), "--no-siblings") {
 		t.Errorf("error must name the dirty repo and the --no-siblings escape; got %v", err)
 	}
-	for _, c := range f.Calls() {
-		if c.Name == "git" && len(c.Args) == 3 && c.Args[1] == consumer && c.Args[2] == "push" {
-			t.Errorf("the dirty repo must NOT be pushed after the refusal; calls=%v", f.Calls())
-		}
+	if len(mDep.pushOpts) != 1 {
+		t.Errorf("dep should still have been pushed before the refusal; got %v", mDep.pushOpts)
+	}
+	if len(mConsumer.pushOpts) != 0 {
+		t.Errorf("the dirty repo must NOT be pushed after the refusal; got %v", mConsumer.pushOpts)
 	}
 }
 
@@ -771,7 +750,7 @@ func TestPush_RefusesToRelockDirtyRepo(t *testing.T) {
 // Repos are named "aaa"/"bbb" rather than dep/consumer because with the
 // derivation broken there is no edge and therefore no dependency direction —
 // the order is the alphabetical topoAlpha fallback.
-func pushUnderivableLockFixture(t *testing.T) (root, aaa, bbb string, f *exec.FakeRunner) {
+func pushUnderivableLockFixture(t *testing.T) (root, aaa, bbb string, f *exec.FakeRunner, mAaa, mBbb *fakeGitMutator) {
 	t.Helper()
 	root = t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
@@ -787,10 +766,11 @@ url = "github:owner/same"
 		aaa: {hasUpstreamVal: true},
 		bbb: {hasUpstreamVal: true},
 	})
+	mAaa = &fakeGitMutator{}
+	mBbb = &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{aaa: mAaa, bbb: mBbb})
 	f = exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
-	return root, aaa, bbb, f
+	return root, aaa, bbb, f, mAaa, mBbb
 }
 
 // TestPush_UnderivableEdgeLock_WarnsAndPublishes pins the fix for pg2-l170v: the
@@ -801,7 +781,7 @@ url = "github:owner/same"
 // say that propagation was SKIPPED — the consequence is the part an operator
 // needs. The publish itself must still happen (see the doc comment on Push).
 func TestPush_UnderivableEdgeLock_WarnsAndPublishes(t *testing.T) {
-	root, _, _, f := pushUnderivableLockFixture(t)
+	root, _, _, f, mAaa, mBbb := pushUnderivableLockFixture(t)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -837,17 +817,13 @@ func TestPush_UnderivableEdgeLock_WarnsAndPublishes(t *testing.T) {
 		t.Errorf("the derivation failure must be reported exactly once for the run, got %d times in %q", got, stderr)
 	}
 	// Publishing still happened for both repos.
-	pushes := 0
 	for _, c := range f.Calls() {
 		if c.Name == "nix" {
 			t.Errorf("no relock is possible without an edge lock; got nix %v", c.Args)
 		}
-		if c.Name == "git" && len(c.Args) == 3 && c.Args[2] == "push" {
-			pushes++
-		}
 	}
-	if pushes != 2 {
-		t.Errorf("push must still publish every repo; got %d pushes, calls=%v", pushes, f.Calls())
+	if len(mAaa.pushOpts) != 1 || len(mBbb.pushOpts) != 1 {
+		t.Errorf("push must still publish every repo; aaa=%v bbb=%v", mAaa.pushOpts, mBbb.pushOpts)
 	}
 }
 
@@ -856,7 +832,7 @@ func TestPush_UnderivableEdgeLock_WarnsAndPublishes(t *testing.T) {
 // derived at all, keeping --no-siblings a pure git command (no nix eval) even
 // when the lock is underivable.
 func TestPush_UnderivableEdgeLock_NoSiblingsStaysSilent(t *testing.T) {
-	root, _, _, f := pushUnderivableLockFixture(t)
+	root, _, _, f, mAaa, mBbb := pushUnderivableLockFixture(t)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -869,14 +845,8 @@ func TestPush_UnderivableEdgeLock_NoSiblingsStaysSilent(t *testing.T) {
 	if strings.Contains(errOut.String(), "SKIPPED") {
 		t.Errorf("--no-siblings did not request propagation, so nothing was skipped; got stderr %q", errOut.String())
 	}
-	pushes := 0
-	for _, c := range f.Calls() {
-		if c.Name == "git" && len(c.Args) == 3 && c.Args[2] == "push" {
-			pushes++
-		}
-	}
-	if pushes != 2 {
-		t.Errorf("--no-siblings must still push every repo; got %d pushes, calls=%v", pushes, f.Calls())
+	if len(mAaa.pushOpts) != 1 || len(mBbb.pushOpts) != 1 {
+		t.Errorf("--no-siblings must still push every repo; aaa=%v bbb=%v", mAaa.pushOpts, mBbb.pushOpts)
 	}
 }
 
@@ -907,10 +877,11 @@ url = "github:owner/bbb"
 		aaa: {hasUpstreamVal: true},
 		bbb: {hasUpstreamVal: true},
 	})
+	mAaa := &fakeGitMutator{}
+	mBbb := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{aaa: mAaa, bbb: mBbb})
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -943,14 +914,8 @@ url = "github:owner/bbb"
 	if !strings.Contains(stderr, "--no-siblings") {
 		t.Errorf("warning must name push's own escape (--no-siblings); got %q", stderr)
 	}
-	pushes := 0
-	for _, c := range f.Calls() {
-		if c.Name == "git" && len(c.Args) == 3 && c.Args[2] == "push" {
-			pushes++
-		}
-	}
-	if pushes != 2 {
-		t.Errorf("push must still publish every repo; got %d pushes", pushes)
+	if len(mAaa.pushOpts) != 1 || len(mBbb.pushOpts) != 1 {
+		t.Errorf("push must still publish every repo; aaa=%v bbb=%v", mAaa.pushOpts, mBbb.pushOpts)
 	}
 }
 
@@ -985,10 +950,11 @@ url = "github:owner/bbb"
 		aaa: {hasUpstreamVal: true},
 		bbb: {hasUpstreamVal: true},
 	})
+	mAaa := &fakeGitMutator{}
+	mBbb := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{aaa: mAaa, bbb: mBbb})
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", aaa, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", bbb, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -1046,10 +1012,11 @@ url = "github:owner/consumer"
 		dep:      {hasUpstreamVal: true},
 		consumer: {hasUpstreamVal: true},
 	})
+	mDep := &fakeGitMutator{}
+	mConsumer := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{dep: mDep, consumer: mConsumer})
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", dep, "push"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", consumer, "push"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {

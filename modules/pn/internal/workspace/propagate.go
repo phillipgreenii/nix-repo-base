@@ -168,30 +168,37 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 	}
 	if len(changed) == 0 {
 		// Only lastModified/formatting churn — restore to keep the tree clean (C2).
-		if _, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "checkout", "--", lockRel}, exec.RunOptions{}); err != nil {
+		client, err := openGitMutator(ctx, dir)
+		if err != nil {
+			return false, fmt.Errorf("restore unchanged %s: %w", lockRel, err)
+		}
+		if err := client.RestorePath(ctx, lockRel); err != nil {
 			return false, fmt.Errorf("restore unchanged %s: %w", lockRel, err)
 		}
 		return false, nil
 	}
 
-	if _, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "add", lockRel}, exec.RunOptions{}); err != nil {
+	client, err := openGitMutator(ctx, dir)
+	if err != nil {
+		return false, fmt.Errorf("git add %s: %w", lockRel, err)
+	}
+	if err := client.Add(ctx, lockRel); err != nil {
 		return false, fmt.Errorf("git add %s: %w", lockRel, err)
 	}
 	msg := bumpCommitMessage(changed, before, after)
-	// PREK_ALLOW_NO_CONFIG lets the commit succeed when the repo's prek pre-commit
-	// hook (installed in the CANONICAL gitdir and SHARED into this ephemeral
-	// worktree) fires but the worktree has no .pre-commit-config.yaml. That config
-	// is a gitignored dev-shell symlink present only in the canonical checkout, so a
-	// fresh `git worktree add` lacks it and prek aborts every commit with
-	// "config file not found" (tc-1zbpk). The env var no-ops prek only in the
-	// no-config case — hooks still run normally when a config IS present, so this
-	// does not disable enforcement (unlike --no-verify). Stdout/Stderr are wired so
-	// a real commit failure surfaces in the run log instead of being swallowed.
-	if _, err := ws.runner.Run(ctx, "git", []string{"-C", dir, "commit", "-m", msg}, exec.RunOptions{
-		Env:    map[string]string{"PREK_ALLOW_NO_CONFIG": "1"},
-		Stdout: out,
-		Stderr: out,
-	}); err != nil {
+	// No PREK_ALLOW_NO_CONFIG here (root-cause fix, design pg2-migib §7a): the
+	// worktree this runs in now has its OWN .pre-commit-config.yaml symlink,
+	// created at creation time by update_worktree.go's linkPreCommitConfig —
+	// mirroring workforest.go's per-worktree-isolated config resolution — so
+	// prek's hook finds a real config and runs for real instead of needing a
+	// bypass. Streams via Handle.AttachStream so a real commit failure (a
+	// failing hook) surfaces in the run log instead of being swallowed.
+	h, err := client.Commit(ctx, msg)
+	if err != nil {
+		return false, fmt.Errorf("git commit: %w", err)
+	}
+	h.AttachStream(out, out)
+	if err := h.Wait(); err != nil {
 		return false, fmt.Errorf("git commit: %w", err)
 	}
 	fmt.Fprintf(out, "  → %s: bumped workspace input(s): %v\n", name, changed)

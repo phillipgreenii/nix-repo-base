@@ -267,9 +267,14 @@ url = "github:owner/bar"
 	// Branch does not exist locally in either repo.
 	addBranchNotExists(t, barCanonical, "feature")
 	addBranchNotExists(t, fooCanonical, "feature")
-	// git worktree add -b feature {setRepo} (no commit-ish).
-	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet}, exec.Result{}, nil)
+	// git worktree add -b feature {setRepo} (no commit-ish) is migrated onto
+	// x/gitclient's WorktreeManager.CreateWorktree (bead pg2-8bfb5).
+	mBar := &fakeGitMutator{}
+	mFoo := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		barCanonical: mBar,
+		fooCanonical: mFoo,
+	})
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature"}); err != nil {
@@ -279,33 +284,12 @@ url = "github:owner/bar"
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
-	// Verify git args: should use -b form without commit-ish.
-	calls := f.Calls()
-	var addCalls []exec.Call
-	for _, c := range calls {
-		if len(c.Args) > 3 && c.Args[3] == "add" {
-			addCalls = append(addCalls, c)
-		}
+	// Verify CreateWorktree args: no commit-ish (StartPoint empty).
+	if len(mBar.createWorktrees) != 1 || mBar.createWorktrees[0] != barSet+"@feature" || mBar.createWorktreeOpts[0].StartPoint != "" {
+		t.Errorf("bar: expected one CreateWorktree(%s, feature, StartPoint=\"\"); got %v %v", barSet, mBar.createWorktrees, mBar.createWorktreeOpts)
 	}
-	if len(addCalls) != 2 {
-		t.Fatalf("expected 2 worktree add calls, got %d", len(addCalls))
-	}
-	for _, c := range addCalls {
-		// Should contain "-b" and "feature" but NOT a commit-ish.
-		hasDashB := false
-		for _, a := range c.Args {
-			if a == "-b" {
-				hasDashB = true
-			}
-		}
-		if !hasDashB {
-			t.Errorf("new-branch add should use -b flag; args=%v", c.Args)
-		}
-		// Should be exactly 6 args: git -C canonical worktree add -b feature setRepo
-		// (no commit-ish appended)
-		if len(c.Args) != 7 {
-			t.Errorf("new-branch add (no commit-ish) should have 7 args; got %d: %v", len(c.Args), c.Args)
-		}
+	if len(mFoo.createWorktrees) != 1 || mFoo.createWorktrees[0] != fooSet+"@feature" || mFoo.createWorktreeOpts[0].StartPoint != "" {
+		t.Errorf("foo: expected one CreateWorktree(%s, feature, StartPoint=\"\"); got %v %v", fooSet, mFoo.createWorktrees, mFoo.createWorktreeOpts)
 	}
 
 	// Config files should be copied.
@@ -347,9 +331,13 @@ url = "github:owner/bar"
 	addWorktreeListClean(f, fooCanonical, "foo")
 	addBranchNotExists(t, barCanonical, "feature")
 	addBranchNotExists(t, fooCanonical, "feature")
-	// With commit-ish: args end in the commit-ish.
-	f.AddResponse("git", []string{"-C", barCanonical, "worktree", "add", "-b", "feature", barSet, "abc1234"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", fooCanonical, "worktree", "add", "-b", "feature", fooSet, "abc1234"}, exec.Result{}, nil)
+	// With commit-ish: CreateWorktreeOptions.StartPoint carries it (bead pg2-8bfb5).
+	mBar := &fakeGitMutator{}
+	mFoo := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		barCanonical: mBar,
+		fooCanonical: mFoo,
+	})
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature", CommitIsh: "abc1234"}); err != nil {
@@ -359,14 +347,14 @@ url = "github:owner/bar"
 		t.Errorf("expected empty errOut on happy path; got: %q", errOut.String())
 	}
 
-	// Verify commit-ish appended.
-	for _, c := range f.Calls() {
-		if len(c.Args) > 3 && c.Args[3] == "add" && contains([]byte(strings.Join(c.Args, " ")), "-b") {
-			last := c.Args[len(c.Args)-1]
-			if last != "abc1234" {
-				t.Errorf("expected commit-ish 'abc1234' as last arg; got %q in %v", last, c.Args)
-			}
-		}
+	// Verify commit-ish carried as StartPoint, at the expected set paths.
+	if len(mBar.createWorktrees) != 1 || mBar.createWorktrees[0] != barSet+"@feature" ||
+		len(mBar.createWorktreeOpts) != 1 || mBar.createWorktreeOpts[0].StartPoint != "abc1234" {
+		t.Errorf("bar: expected CreateWorktree(%s, feature, StartPoint=abc1234); got %v %v", barSet, mBar.createWorktrees, mBar.createWorktreeOpts)
+	}
+	if len(mFoo.createWorktrees) != 1 || mFoo.createWorktrees[0] != fooSet+"@feature" ||
+		len(mFoo.createWorktreeOpts) != 1 || mFoo.createWorktreeOpts[0].StartPoint != "abc1234" {
+		t.Errorf("foo: expected CreateWorktree(%s, feature, StartPoint=abc1234); got %v %v", fooSet, mFoo.createWorktrees, mFoo.createWorktreeOpts)
 	}
 }
 

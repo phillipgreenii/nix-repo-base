@@ -27,12 +27,16 @@ url = "github:owner/bar"
 		filepath.Join(root, "foo"): {hasUpstreamVal: true},
 	})
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "fetch"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "fetch"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
+	// fetch + pull --rebase --autostash migrated onto Fetcher.Fetch +
+	// Syncer.Sync (bead pg2-8bfb5).
+	mBar := &fakeGitMutator{}
+	mFoo := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		filepath.Join(root, "bar"): mBar,
+		filepath.Join(root, "foo"): mFoo,
+	})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -41,15 +45,9 @@ url = "github:owner/bar"
 	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
-	calls := f.Calls()
-	if len(calls) != 4 {
-		t.Errorf("expected 4 calls (fetch+pull per repo), got %d", len(calls))
-	}
-	// The rebase commands (fetch, pull) stream.
-	for _, c := range calls {
-		last := c.Args[len(c.Args)-1]
-		if (last == "fetch" || last == "--autostash") && c.Opts.Stdout == nil {
-			t.Errorf("rebase command should stream output (Opts.Stdout set); got %v", c.Args)
+	for name, m := range map[string]*fakeGitMutator{"bar": mBar, "foo": mFoo} {
+		if len(m.syncOpts) != 1 || m.syncOpts[0].Onto != "" {
+			t.Errorf("%s: expected exactly one Sync(Onto=\"\") call; got %v", name, m.syncOpts)
 		}
 	}
 }
@@ -89,6 +87,9 @@ url = "github:owner/foo"
 
 	stubGitOpener(t, map[string]*fakeGitReader{filepath.Join(root, "foo"): {hasUpstreamVal: false}})
 
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "foo"): m})
+
 	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
@@ -97,12 +98,8 @@ url = "github:owner/foo"
 	if err := w.Rebase(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, RebaseOptions{}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
-	for _, c := range f.Calls() {
-		for _, a := range c.Args {
-			if a == "fetch" || a == "--autostash" {
-				t.Errorf("expected no rebase call when upstream missing; got %v", c.Args)
-			}
-		}
+	if len(m.syncOpts) != 0 {
+		t.Errorf("expected no Sync call when upstream missing; got %v", m.syncOpts)
 	}
 }
 
@@ -130,10 +127,14 @@ url = "github:owner/bar"
 		filepath.Join(root, "foo"): {refExists: map[string]bool{"main": true}},
 	})
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rebase", "--autostash", "main"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "foo"), "rebase", "--autostash", "main"}, exec.Result{}, nil)
+	mBar := &fakeGitMutator{}
+	mFoo := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		filepath.Join(root, "bar"): mBar,
+		filepath.Join(root, "foo"): mFoo,
+	})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -142,16 +143,9 @@ url = "github:owner/bar"
 	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{Onto: "main"}); err != nil {
 		t.Fatalf("Rebase with Onto: %v", err)
 	}
-	calls := f.Calls()
-	// 2 rebase calls; no fetch or pull calls.
-	if len(calls) != 2 {
-		t.Errorf("expected 2 calls (rebase per repo), got %d", len(calls))
-	}
-	for _, c := range calls {
-		for _, a := range c.Args {
-			if a == "fetch" || a == "pull" {
-				t.Errorf("rebase <branch> form must not call fetch/pull; got %v", c.Args)
-			}
+	for name, m := range map[string]*fakeGitMutator{"bar": mBar, "foo": mFoo} {
+		if len(m.syncOpts) != 1 || m.syncOpts[0].Onto != "main" {
+			t.Errorf("%s: expected exactly one Sync(Onto=\"main\") call; got %v", name, m.syncOpts)
 		}
 	}
 }
@@ -174,9 +168,10 @@ url = "github:owner/bar"
 		filepath.Join(root, "foo"): {},
 	})
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", filepath.Join(root, "bar"), "rebase", "--autostash", "feature"}, exec.Result{}, nil)
+	mBar := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{filepath.Join(root, "bar"): mBar})
 
+	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -190,14 +185,7 @@ url = "github:owner/bar"
 	if !strings.Contains(errOut.String(), "foo") {
 		t.Errorf("expected stderr notice mentioning skipped repo 'foo'; got: %q", errOut.String())
 	}
-	// No rebase should have been attempted for "foo".
-	for _, c := range f.Calls() {
-		if len(c.Args) >= 2 && c.Args[1] == filepath.Join(root, "foo") {
-			for _, a := range c.Args {
-				if a == "--autostash" {
-					t.Errorf("should not have rebased foo; got %v", c.Args)
-				}
-			}
-		}
+	if len(mBar.syncOpts) != 1 || mBar.syncOpts[0].Onto != "feature" {
+		t.Errorf("expected bar to be rebased onto feature; got %v", mBar.syncOpts)
 	}
 }

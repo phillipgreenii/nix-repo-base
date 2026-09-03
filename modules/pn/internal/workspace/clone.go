@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 // CloneOptions configures workspace clone behavior.
@@ -49,12 +49,16 @@ func (w *Workspace) Clone(ctx context.Context, out io.Writer, opts CloneOptions)
 		}
 
 		fmt.Fprintf(out, "  --== clone %s ==--  \n", name)
-		// "--" terminates option parsing so a URL beginning with '-' cannot be
-		// misread as a git option (bead pg2-3j8b2). --branch's value is consumed
-		// by the option itself, so it needs no such guard.
-		if _, err := w.runner.Run(ctx, "git",
-			[]string{"clone", "--branch", branch, "--", cloneURL, repoDir},
-			exec.RunOptions{Dir: w.root, Stdout: out, Stderr: out}); err != nil {
+		// Migrated onto x/gitclient's Clone constructor + RemoteManager.AddRemote
+		// (bead pg2-8bfb5, design pg2-migib §7a). Clone's own cloneArgs preserves
+		// the "--" guard against a leading-dash URL (bead pg2-3j8b2) — see
+		// argv.go's cloneArgs/addRemoteArgs in x/gitclient.
+		client, h, err := cloneGitRepo(ctx, cloneURL, repoDir, gitclient.CloneOptions{Branch: branch})
+		if err != nil {
+			return fmt.Errorf("clone %s: %w", name, err)
+		}
+		h.AttachStream(out, out)
+		if err := h.Wait(); err != nil {
 			return fmt.Errorf("clone %s: %w", name, err)
 		}
 
@@ -64,9 +68,7 @@ func (w *Workspace) Clone(ctx context.Context, out io.Writer, opts CloneOptions)
 				// Origin was set by git clone; skip adding it again.
 				continue
 			}
-			if _, err := w.runner.Run(ctx, "git",
-				[]string{"-C", repoDir, "remote", "add", "--", rm.Name, rm.URL},
-				exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+			if err := client.AddRemote(ctx, rm.Name, rm.URL); err != nil {
 				return fmt.Errorf("clone %s: add remote %s: %w", name, rm.Name, err)
 			}
 		}

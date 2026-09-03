@@ -6,7 +6,7 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 // RebaseOptions configures Rebase.
@@ -50,6 +50,11 @@ func (ws *Workspace) resolveRef(ctx context.Context, repoDir, ref string) bool {
 //
 // Rebase is a terminal-optional command: if no terminal is configured it emits
 // a warning to errOut and continues.
+//
+// Migrated onto x/gitclient's Fetcher.Fetch and Syncer.Sync (bead pg2-8bfb5,
+// design pg2-migib §7a): both stream to out/errOut via Handle.AttachStream —
+// the operator watches fetch/rebase progress live, exactly as the raw runner
+// did before this migration.
 func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer, opts RebaseOptions) error {
 	if opts.Terminal == "" && ws.config.Workspace.Terminal == "" {
 		fmt.Fprintln(errOut, terminalWarningMessage)
@@ -65,7 +70,16 @@ func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer
 				continue
 			}
 			fmt.Fprintf(out, "  --== rebase %s ==--  \n", name)
-			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "rebase", "--autostash", opts.Onto}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+			client, err := openGitMutator(ctx, repoDir)
+			if err != nil {
+				return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
+			}
+			h, err := client.Sync(ctx, gitclient.SyncOptions{Onto: opts.Onto})
+			if err != nil {
+				return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
+			}
+			h.AttachStream(out, out)
+			if err := h.Wait(); err != nil {
 				return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
 			}
 		}
@@ -79,10 +93,24 @@ func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer
 			continue
 		}
 		fmt.Fprintf(out, "  --== rebase %s ==--  \n", name)
-		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "fetch"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+		client, err := openGitMutator(ctx, repoDir)
+		if err != nil {
 			return fmt.Errorf("git fetch in %s: %w", name, err)
 		}
-		if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "pull", "--rebase", "--autostash"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+		fh, err := client.Fetch(ctx, gitclient.FetchOptions{})
+		if err != nil {
+			return fmt.Errorf("git fetch in %s: %w", name, err)
+		}
+		fh.AttachStream(out, out)
+		if err := fh.Wait(); err != nil {
+			return fmt.Errorf("git fetch in %s: %w", name, err)
+		}
+		sh, err := client.Sync(ctx, gitclient.SyncOptions{})
+		if err != nil {
+			return fmt.Errorf("git pull --rebase --autostash in %s: %w", name, err)
+		}
+		sh.AttachStream(out, out)
+		if err := sh.Wait(); err != nil {
 			return fmt.Errorf("git pull --rebase --autostash in %s: %w", name, err)
 		}
 	}

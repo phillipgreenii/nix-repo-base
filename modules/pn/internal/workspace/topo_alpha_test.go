@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -150,12 +151,15 @@ url = "github:o/zzz"
 		aDir: {hasUpstreamVal: true},
 	})
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("git", []string{"-C", zDir, "fetch"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", zDir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", aDir, "fetch"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", aDir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
+	// fetch + pull --rebase --autostash migrated onto Fetcher.Fetch +
+	// Syncer.Sync (bead pg2-8bfb5); order is asserted via the shared log.
+	var order []string
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		zDir: {name: "zzz", log: &order},
+		aDir: {name: "aaa", log: &order},
+	})
 
+	f := exec.NewFakeRunner()
 	ws, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -165,18 +169,13 @@ url = "github:o/zzz"
 		t.Fatalf("Rebase: %v", err)
 	}
 	// Verify zzz was rebased before aaa (check fetch calls for ordering)
-	calls := f.Calls()
-	zCallDir := filepath.Join(root, "zzz")
-	aCallDir := filepath.Join(root, "aaa")
-	// Check that zzz appears before aaa in the fetch calls (proxy for rebase order)
-	gotOrder := []string{}
-	for _, c := range calls {
-		if c.Name == "git" && len(c.Args) >= 3 && c.Args[len(c.Args)-1] == "fetch" {
-			// args are ["-C", dir, "fetch"]
-			gotOrder = append(gotOrder, c.Args[1])
+	var gotOrder []string
+	for _, entry := range order {
+		if entry == "zzz:fetch" || entry == "aaa:fetch" {
+			gotOrder = append(gotOrder, strings.TrimSuffix(entry, ":fetch"))
 		}
 	}
-	if len(gotOrder) != 2 || gotOrder[0] != zCallDir || gotOrder[1] != aCallDir {
-		t.Errorf("rebase order: got %v, want [%s %s]", gotOrder, zCallDir, aCallDir)
+	if len(gotOrder) != 2 || gotOrder[0] != "zzz" || gotOrder[1] != "aaa" {
+		t.Errorf("rebase order: got %v, want [zzz aaa]", gotOrder)
 	}
 }

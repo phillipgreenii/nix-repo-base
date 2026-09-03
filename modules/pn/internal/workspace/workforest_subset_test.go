@@ -219,15 +219,29 @@ func TestWorkforestAdd_Subset_CreatesOnlyChosenRepos(t *testing.T) {
 	addWorktreeListClean(f, appCanonical, "app")
 	addBranchNotExists(t, libCanonical, "feature")
 	addBranchNotExists(t, appCanonical, "feature")
-	f.AddResponse("git", []string{"-C", libCanonical, "worktree", "add", "-b", "feature", libSet}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", appCanonical, "worktree", "add", "-b", "feature", appSet}, exec.Result{}, nil)
+	// worktree add -b is migrated onto WorktreeManager.CreateWorktree (bead
+	// pg2-8bfb5); no entry for "other" — if it were touched, opening its
+	// mutator would fail with ErrNotARepository.
+	mLib := &fakeGitMutator{}
+	mApp := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		libCanonical: mLib,
+		appCanonical: mApp,
+	})
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature", Repos: []string{"app", "lib"}}); err != nil {
 		t.Fatalf("WorkforestAdd subset: %v", err)
 	}
 
-	// "other" must have NO git calls.
+	// Exactly one CreateWorktree call each, at the set paths — and "other"
+	// must have NO git calls (no stub for it; a touch would have errored above).
+	if len(mLib.createWorktrees) != 1 || mLib.createWorktrees[0] != libSet+"@feature" {
+		t.Errorf("lib: expected one CreateWorktree(%s, feature); got %v", libSet, mLib.createWorktrees)
+	}
+	if len(mApp.createWorktrees) != 1 || mApp.createWorktrees[0] != appSet+"@feature" {
+		t.Errorf("app: expected one CreateWorktree(%s, feature); got %v", appSet, mApp.createWorktrees)
+	}
 	otherCanonical := filepath.Join(root, "other")
 	for _, c := range f.Calls() {
 		for i, a := range c.Args {
@@ -300,12 +314,22 @@ func TestWorkforestAdd_Subset_ExcludedDepNotice(t *testing.T) {
 	addWorktreeListClean(f, otherCanonical, "other")
 	addBranchNotExists(t, appCanonical, "feature")
 	addBranchNotExists(t, otherCanonical, "feature")
-	f.AddResponse("git", []string{"-C", appCanonical, "worktree", "add", "-b", "feature", appSet}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", otherCanonical, "worktree", "add", "-b", "feature", otherSet}, exec.Result{}, nil)
+	mApp := &fakeGitMutator{}
+	mOther := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		appCanonical:   mApp,
+		otherCanonical: mOther,
+	})
 
 	var out, errOut bytes.Buffer
 	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature", Repos: []string{"app", "other"}}); err != nil {
 		t.Fatalf("WorkforestAdd subset w/ excluded dep: %v", err)
+	}
+	if len(mApp.createWorktrees) != 1 || mApp.createWorktrees[0] != appSet+"@feature" {
+		t.Errorf("app: expected one CreateWorktree(%s, feature); got %v", appSet, mApp.createWorktrees)
+	}
+	if len(mOther.createWorktrees) != 1 || mOther.createWorktrees[0] != otherSet+"@feature" {
+		t.Errorf("other: expected one CreateWorktree(%s, feature); got %v", otherSet, mOther.createWorktrees)
 	}
 
 	// A notice must name the consumer (app) and the excluded dep (lib).

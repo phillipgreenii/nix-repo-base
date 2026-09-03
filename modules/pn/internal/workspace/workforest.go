@@ -13,6 +13,7 @@ import (
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
+	"github.com/phillipgreenii/x/gitclient"
 )
 
 // WorkforestAddOptions configures WorkforestAdd.
@@ -167,6 +168,20 @@ func installSetHooks(ctx context.Context, w *Workspace, setDir string, repos []s
 // gitWorktreeAddOne runs `git worktree add` for one repo into the set dir,
 // mirroring git worktree add semantics: check out <branch> if it exists locally,
 // otherwise create it with -b from the optional commit-ish (default: HEAD).
+//
+// Partially migrated onto x/gitclient's WorktreeManager.CreateWorktree (bead
+// pg2-8bfb5, design pg2-migib §7a) — streaming via Handle.AttachStream,
+// matching the raw runner's live-progress behavior before this migration —
+// but ONLY for the branch-creation shape (`-b [<commit-ish>]`).
+// CreateWorktree always creates-or-resets a branch (`-b`/`-B`); there is no
+// "plain checkout of an already-existing branch" mode (no flag at all), so
+// the branchExists=true case genuinely does not map onto it — using `-B`
+// there would additionally RESET the branch to the given/implicit
+// commit-ish, silently discarding any history unique to that branch if the
+// canonical repo's HEAD has since moved. This is the same "role exists but
+// the shape is wrong" pattern the read-side migration's own left-behind call
+// sites document (design §2); it is left on the raw runner rather than
+// force-fit, exactly as that precedent does.
 func (w *Workspace) gitWorktreeAddOne(ctx context.Context, out io.Writer, setDir, repo, branch, commitIsh string) error {
 	fmt.Fprintf(out, "  --== worktree add %s ==--  \n", repo)
 	canonical := filepath.Join(w.Root(), repo)
@@ -174,17 +189,24 @@ func (w *Workspace) gitWorktreeAddOne(ctx context.Context, out io.Writer, setDir
 
 	branchExists := w.localBranchExists(ctx, canonical, branch)
 
-	var gitArgs []string
 	if branchExists {
-		gitArgs = []string{"-C", canonical, "worktree", "add", setRepo, branch}
-	} else {
-		gitArgs = []string{"-C", canonical, "worktree", "add", "-b", branch, setRepo}
-		if commitIsh != "" {
-			gitArgs = append(gitArgs, commitIsh)
+		// Check-out form: no -b/-B — genuinely unmigrated, see doc comment above.
+		if _, err := w.runner.Run(ctx, "git", []string{"-C", canonical, "worktree", "add", setRepo, branch}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+			return fmt.Errorf("workforest add: git worktree add in repo %q: %w", repo, err)
 		}
+		return nil
 	}
 
-	if _, err := w.runner.Run(ctx, "git", gitArgs, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
+	client, err := openGitMutator(ctx, canonical)
+	if err != nil {
+		return fmt.Errorf("workforest add: git worktree add in repo %q: %w", repo, err)
+	}
+	h, err := client.CreateWorktree(ctx, setRepo, branch, gitclient.CreateWorktreeOptions{StartPoint: commitIsh})
+	if err != nil {
+		return fmt.Errorf("workforest add: git worktree add in repo %q: %w", repo, err)
+	}
+	h.AttachStream(out, out)
+	if err := h.Wait(); err != nil {
 		return fmt.Errorf("workforest add: git worktree add in repo %q: %w", repo, err)
 	}
 	return nil
