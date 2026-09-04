@@ -474,16 +474,54 @@ in
       # session — ever observes the redirect (it is a plain env var on this
       # one script's own process tree, not a filesystem write).
       #
-      # GATED on an override actually being present at either scope: a
-      # consumer machine/CI with no such global/system `core.hooksPath` sees
-      # this pair of fragments do nothing at all (both are no-ops when the
-      # probe finds nothing to neutralize).
+      # GATED on an override actually being present at a higher-than-local
+      # scope: a consumer machine/CI with no such global/system/XDG
+      # `core.hooksPath` sees this pair of fragments do nothing at all (both
+      # are no-ops when the probe finds nothing to neutralize).
+      #
+      # tc-la3r: the probe used to be two SCOPED reads,
+      # `git config --global --get core.hooksPath` and
+      # `... --system --get ...`. On a machine with BOTH a legacy
+      # `~/.gitconfig` (e.g. carrying only `[user]`/other sections, no
+      # `hooksPath` of its own) AND an XDG `~/.config/git/config`
+      # (home-manager-managed, the file that actually sets `core.hooksPath`)
+      # present at once, `git config --global --get core.hooksPath` can
+      # return empty even though git's OWN effective resolution --
+      # `git config --get core.hooksPath` with no scope flag, which merges
+      # every applicable scope file in git's own precedence order -- finds
+      # it. (Empirically confirmed against both a real machine `$HOME` and
+      # an isolated `HOME`/`XDG_CONFIG_HOME` test tree carrying exactly this
+      # file combination.) That silent miss left `_pgii_global_hp` and
+      # `_pgii_system_hp` both empty, so the guard below never fired, the
+      # redirect never happened, and `prek install` still resolved the real
+      # global hooksPath and refused -- reproducing the pre-4266979 symptom
+      # despite this fragment being present and, by itself, correctly
+      # written.
+      #
+      # THE FIX: ask git for the EFFECTIVE value instead of probing
+      # individual scopes. Since `git config --get` (no scope flag) honours
+      # `--local` first, a local `core.hooksPath` would otherwise mask
+      # exactly the higher-scope value this probe needs to see -- so any
+      # local value is saved and temporarily unset for the duration of one
+      # read, then restored immediately, before the unscoped read runs.
+      # Whatever comes back from that unscoped read with local out of the
+      # way IS the higher-than-local effective value (global, XDG, system,
+      # or empty if none is configured) -- no per-scope enumeration required,
+      # so this stays correct however many scope files git decides to merge.
       neutralizeHigherScopeHooksPath = ''
         _pgii_git="${lib.getExe' pkgs.git "git"}"
         if "$_pgii_git" rev-parse --git-dir >/dev/null 2>&1; then
-          _pgii_global_hp="$("$_pgii_git" config --global --get core.hooksPath 2>/dev/null || true)"
-          _pgii_system_hp="$("$_pgii_git" config --system --get core.hooksPath 2>/dev/null || true)"
-          if [ -n "$_pgii_global_hp" ] || [ -n "$_pgii_system_hp" ]; then
+          _pgii_local_hp_set=0
+          _pgii_local_hp=""
+          if _pgii_local_hp="$("$_pgii_git" config --local --get core.hooksPath 2>/dev/null)"; then
+            _pgii_local_hp_set=1
+            "$_pgii_git" config --local --unset-all core.hooksPath 2>/dev/null || true
+          fi
+          _pgii_effective_hp="$("$_pgii_git" config --get core.hooksPath 2>/dev/null || true)"
+          if [ "$_pgii_local_hp_set" = 1 ]; then
+            "$_pgii_git" config --local core.hooksPath "$_pgii_local_hp"
+          fi
+          if [ -n "$_pgii_effective_hp" ]; then
             _pgii_had_gcg="''${GIT_CONFIG_GLOBAL+x}"
             _pgii_old_gcg="''${GIT_CONFIG_GLOBAL-}"
             _pgii_had_gcs="''${GIT_CONFIG_SYSTEM+x}"
@@ -492,7 +530,7 @@ in
             export GIT_CONFIG_SYSTEM=/dev/null
             _pgii_neutralized=1
           fi
-          unset _pgii_global_hp _pgii_system_hp
+          unset _pgii_local_hp_set _pgii_local_hp _pgii_effective_hp
         fi
         unset _pgii_git
       '';
@@ -1047,6 +1085,129 @@ in
 
             touch "$out"
           '';
+
+      # Regression guard for tc-la3r, same shape as
+      # `higherScopeHooksPathInstallCheck` immediately above (assert THE FIX
+      # works), but targeting the specific combination that fooled the old
+      # scoped probes: a higher-scope `core.hooksPath` set ONLY via the XDG
+      # git config file, while a separate legacy `~/.gitconfig` ALSO exists
+      # (carrying no `hooksPath` of its own) -- exactly what a
+      # home-manager-managed machine produces. Deliberately does NOT
+      # override `GIT_CONFIG_GLOBAL` the way the other checks in this file
+      # do: pointing that env var at a single controlled file would
+      # collapse git's normal two-file global resolution and hide the exact
+      # defect under test. Instead it points `HOME`/`XDG_CONFIG_HOME` at a
+      # throwaway tree carrying both real global-scope files, so this
+      # exercises git's genuine resolution rather than a stand-in for it.
+      # Self-contained and sandbox-safe: no network, no reference to the
+      # consumer's own repo, so it runs unchanged in every consumer that
+      # imports this module.
+      higherScopeHooksPathXdgOnlyCheck =
+        pkgs.runCommand "pre-commit-higher-scope-hookspath-xdg-only"
+          {
+            nativeBuildInputs = [
+              pkgs.git
+              pkgs.prek
+            ];
+          }
+          ''
+            set -u
+            export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t
+            export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+            mkdir -p "$TMPDIR/globalhooks"
+
+            export HOME="$TMPDIR/home-xdg"
+            mkdir -p "$HOME/.config/git"
+            export XDG_CONFIG_HOME="$HOME/.config"
+            unset GIT_CONFIG_GLOBAL
+            export GIT_CONFIG_SYSTEM=/dev/null
+
+            # Legacy file present but carries no hooksPath of its own --
+            # the exact shape that made the pre-tc-la3r scoped probe
+            # misfire.
+            cat >"$HOME/.gitconfig" <<'PGII_EOF'
+            [user]
+            	name = t
+            	email = t@t
+            PGII_EOF
+
+            # XDG file is the ONLY place core.hooksPath is actually set.
+            cat >"$HOME/.config/git/config" <<PGII_EOF
+            [core]
+            	hooksPath = $TMPDIR/globalhooks
+            PGII_EOF
+
+            canon="$TMPDIR/canon"
+            git init -q -b main "$canon"
+            cd "$canon"
+            echo seed >seed.txt
+            git add seed.txt
+            git commit -qm seed
+            seed_sha=$(git rev-parse HEAD)
+
+            # PREMISE: git's own effective resolution must actually see the
+            # XDG-only value (otherwise this check is not exercising the
+            # scenario it claims to).
+            if [ "$(git config --get core.hooksPath)" != "$TMPDIR/globalhooks" ]; then
+              echo "PREMISE FAILED: effective core.hooksPath resolution does not see the XDG-only value" >&2
+              exit 1
+            fi
+
+            cat >.pre-commit-config.yaml <<'PGII_EOF'
+            repos:
+              - repo: local
+                hooks:
+                  - id: reject
+                    name: reject
+                    entry: sh -c 'echo HOOK-FIRED; exit 1'
+                    language: system
+                    always_run: true
+                    pass_filenames: false
+            PGII_EOF
+
+            # THE FIX, byte-identical to what the shellHook and
+            # install-pre-commit-hooks run.
+            ${neutralizeHigherScopeHooksPath}
+            git config --local --unset-all core.hooksPath || true
+            if ! prek install -c .pre-commit-config.yaml; then
+              echo "FAIL: prek install refused even with the fix applied (XDG-only hooksPath)" >&2
+              exit 1
+            fi
+            common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+            common_dir=''${common_dir#"$canon"/}
+            git config --local core.hooksPath "$common_dir/hooks"
+            ${restoreHigherScopeHooksPath}
+
+            if [ -z "$(ls .git/hooks | grep -v '\.sample$' || true)" ]; then
+              echo "FAIL: no real hook shim was written even with the fix applied (XDG-only hooksPath)" >&2
+              exit 1
+            fi
+
+            ${correctRelativeHooksPath}
+
+            # THE ASSERTION: a violating commit is now REJECTED with real
+            # hook output, and HEAD does not move.
+            echo violation >violation.txt
+            git add violation.txt
+            if commit_out=$(git commit -m violation 2>&1); then
+              echo "FAIL: commit succeeded; the hook did not fire (XDG-only hooksPath)" >&2
+              exit 1
+            fi
+            case $commit_out in
+              *HOOK-FIRED*) ;;
+              *)
+                echo "FAIL: no hook output from the commit (XDG-only hooksPath)" >&2
+                printf '%s\n' "$commit_out" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$(git rev-parse HEAD)" != "$seed_sha" ]; then
+              echo "FAIL: HEAD moved despite the rejected commit (XDG-only hooksPath)" >&2
+              exit 1
+            fi
+
+            touch "$out"
+          '';
     in
     {
       _module.args.preCommitShellHook = preCommitShellHook;
@@ -1056,6 +1217,7 @@ in
         pre-commit-hooks-path-worktree-safe = hooksPathWorktreeSafeCheck;
         pre-commit-hooks-config-path-absolute = absolutizeHookConfigPathCheck;
         pre-commit-higher-scope-hookspath-install = higherScopeHooksPathInstallCheck;
+        pre-commit-higher-scope-hookspath-xdg-only = higherScopeHooksPathXdgOnlyCheck;
       };
       packages.install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
         ${preCommitShellHook}
