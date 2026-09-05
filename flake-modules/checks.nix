@@ -16,12 +16,22 @@ in
   options.phillipgreenii = {
     src = lib.mkOption {
       type = lib.types.path;
-      default = inputs.self.outPath;
-      defaultText = lib.literalExpression "inputs.self";
+      default = builtins.path {
+        # inputs.self.outPath carries store-path string context, which
+        # lib.fileset rejects outright (it wants a literal, context-free
+        # `path`) — builtins.path accepts it directly and re-filters at
+        # evaluation time, which is the standard idiom for filtering a flake
+        # input's source.
+        path = inputs.self.outPath;
+        filter = path: type: type == "directory" || lib.hasSuffix ".nix" path;
+        name = "phillipgreenii-nix-src";
+      };
+      defaultText = lib.literalExpression "inputs.self filtered to *.nix";
       description = ''
-        Source root used by the auto-contributed formatting + linting checks.
-        Defaults to the consumer's flake root; override only to scope these
-        checks to a subdirectory.
+        Source root used by the auto-contributed linting check (statix). Defaults
+        to the consumer's *.nix files only, so an unrelated non-nix change (docs,
+        scripts, fixtures) does not invalidate this check's cache; override only
+        to scope it to a subdirectory instead.
       '';
     };
     alignment.requires = lib.mkOption {
@@ -189,7 +199,12 @@ in
       _module.args.checksHelpers = helpers;
 
       checks = {
-        formatting = helpers.formatting topLevelCfg.src;
+        # NOTE: no auto-contributed `formatting` check here — `checks.treefmt`
+        # (flake-modules/treefmt.nix, auto-registered by treefmt-nix) already
+        # runs nixfmt as part of its multi-formatter pass, so a separate
+        # nixfmt-only check duplicated that work on every `nix flake check`.
+        # `helpers.formatting` is kept available via `checksHelpers` for a
+        # consumer that wants a standalone nixfmt-only check.
         linting = helpers.linting topLevelCfg.src;
         consumer-input-alignment =
           let

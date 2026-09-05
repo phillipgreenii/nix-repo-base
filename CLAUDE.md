@@ -164,6 +164,10 @@ be committed — a committed store path is GC-eligible and rots into a dangling 
 symlink with `nix run .#install-pre-commit-hooks` or by entering the devShell. Do **not** re-add
 it to git and do **not** auto-write the `.gitignore` entry from the shellHook.
 
+`flake-modules/checks.nix` no longer auto-contributes a separate `checks.formatting` (removed:
+duplicated the nixfmt pass `checks.treefmt` already runs) — `checksHelpers.formatting` is still
+available for a consumer that wants a standalone nixfmt-only check.
+
 `flake-modules/pre-commit.nix` is a LIGHT-UPSTREAM module imported by EVERY consumer as
 `inputs.phillipgreenii-nix-base.flakeModules.pre-commit`. Any hook added to its base `hooks` set
 therefore runs inside every consumer's sandboxed `checks.pre-commit` — not just this repo's. This
@@ -275,7 +279,7 @@ treefmt formats markdown/yaml/json with prettier (version UNPINNED — it comes 
 `nix/dev-env.nix` `mkTreefmtConfig` via `programs.prettier.enable = true`, so it tracks nixpkgs).
 prettier is NON-IDEMPOTENT on some markdown: wide-unicode tables plus star-emphasis next to
 underscored identifiers need 2+ passes to reach a fixed point. A file committed at a non-fixed
-point reds BOTH `nix flake check` (`checks.formatting`) and prek — they run the IDENTICAL
+point reds BOTH `nix flake check` (`checks.treefmt`) and prek — they run the IDENTICAL
 prettier, so it is never a version skew. Always run treefmt/prek TO CONVERGENCE before committing
 markdown. Decision (Phillip, after `pg2-qe48`): prettier was chosen only as the treefmt-nix
 batteries-included default, never vetted for markdown idempotency — if non-idempotency recurs,

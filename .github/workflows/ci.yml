@@ -46,10 +46,6 @@ jobs:
           fail-mode: true
           send-statistics: false
 
-      - name: Check formatting with treefmt
-        run: |
-          nix fmt -- --ci
-
       - name: Run nix flake check
         run: nix flake check --show-trace -L
 
