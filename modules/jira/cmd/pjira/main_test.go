@@ -207,6 +207,47 @@ func TestCLI_Create(t *testing.T) {
 	}
 }
 
+// TestCLI_Transition pins the transition subcommand's two-step request shape
+// (GET then POST against .../transitions) and success envelope: exactly one
+// JSON object with the mapped {key,to}.
+func TestCLI_Transition(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/issue/ENG-1/transitions" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"transitions":[{"id":"31","to":{"name":"Done"}}]}`))
+		case http.MethodPost:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+	out, err := runCLI(t, srv.URL, "transition", "ENG-1", "Done")
+	if err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if got["key"] != "ENG-1" || got["to"] != "Done" {
+		t.Errorf("bad envelope: %+v", got)
+	}
+}
+
+// TestCLI_TransitionMissingArgs pins that a missing positional argument (KEY
+// or TO) is a usage error caught before any tenant call, writing no envelope.
+func TestCLI_TransitionMissingArgs(t *testing.T) {
+	out, err := runCLI(t, "http://unused.invalid", "transition", "ENG-1")
+	if err == nil {
+		t.Fatal("want an error when the target-state argument is missing")
+	}
+	if out != "" {
+		t.Errorf("no envelope must be written on usage error, got: %s", out)
+	}
+}
+
 // TestCLI_CreateMissingRequiredFlags pins that each required flag is checked
 // before any tenant call and that a usage error writes no partial envelope.
 func TestCLI_CreateMissingRequiredFlags(t *testing.T) {
@@ -354,6 +395,7 @@ func subcommands() []subcommand {
 		{"search", []string{"search", "--jql", "project = ENG"}},
 		{"auth-status", []string{"auth-status"}},
 		{"create", []string{"create", "--project", "ENG", "--type", "Bug", "--summary", "S"}},
+		{"transition", []string{"transition", "ENG-1", "Done"}},
 	}
 }
 
@@ -414,7 +456,7 @@ func TestCLI_MissingBaseURLPropagates(t *testing.T) {
 func TestCLI_UnreadableTokenFilePropagates(t *testing.T) {
 	absentToken := filepath.Join(t.TempDir(), "absent")
 	cfgPath := writeConfig(t, "[secret]\nsource=\"file\"\npath=\""+absentToken+"\"\n")
-	assertStartupFailure(t, "http://unused.invalid", cfgPath, "read token file", "issue", "search", "create")
+	assertStartupFailure(t, "http://unused.invalid", cfgPath, "read token file", "issue", "search", "create", "transition")
 }
 
 // TestCLI_TenantErrorPropagates pins the fetch-time error paths, which are
@@ -435,6 +477,7 @@ func TestCLI_TenantErrorPropagates(t *testing.T) {
 		{"search single page", []string{"search", "--jql", "project = ENG"}},
 		{"search --all", []string{"search", "--jql", "project = ENG", "--all"}},
 		{"create", []string{"create", "--project", "ENG", "--type", "Bug", "--summary", "S"}},
+		{"transition", []string{"transition", "ENG-1", "Done"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

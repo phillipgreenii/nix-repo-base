@@ -206,6 +206,25 @@ func newCreateCmd() *cobra.Command {
 	return c
 }
 
+func newTransitionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "transition <KEY> <TO>",
+		Short: "Transition an issue to a target workflow state; writes {key,to} JSON",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, err := newClient(cmd)
+			if err != nil {
+				return err
+			}
+			res, err := c.Transition(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+			return writeJSON(cmd, res)
+		},
+	}
+}
+
 func newAuthStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "auth-status",
@@ -254,7 +273,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().String("config", "", "path to config TOML (default: $XDG_CONFIG_HOME/pjira/config.toml)")
-	root.AddCommand(newIssueCmd(), newSearchCmd(), newAuthStatusCmd(), newCreateCmd())
+	root.AddCommand(newIssueCmd(), newSearchCmd(), newAuthStatusCmd(), newCreateCmd(), newTransitionCmd())
 	return root
 }
 

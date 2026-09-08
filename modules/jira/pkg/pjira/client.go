@@ -384,6 +384,99 @@ func (c *Client) CreateIssue(ctx context.Context, req CreateIssueRequest) (*Crea
 	return &CreateIssueResult{Key: raw.Key, URL: c.browseURL(raw.Key)}, nil
 }
 
+// rawTransition is one available transition from
+// GET /rest/api/3/issue/{key}/transitions -- the id to POST back, plus the
+// destination status name (`to.name`) that Transition matches its `to`
+// argument against.
+type rawTransition struct {
+	ID string `json:"id"`
+	To struct {
+		Name string `json:"name"`
+	} `json:"to"`
+}
+
+// Transition moves an issue to a target workflow state by name, via the
+// standard two-step Jira Cloud transition dance: GET
+// /rest/api/3/issue/{key}/transitions resolves the target state name to a
+// transition id (matched case-insensitively against each candidate's
+// destination status name), then POST the same endpoint with
+// {"transition":{"id":...}} executes it. A target state that matches no
+// available transition is a distinct, clearly-classified error -- never
+// folded into the issue's own "not found" classification, which is returned
+// separately (and first, since resolving transitions requires the issue to
+// exist).
+func (c *Client) Transition(ctx context.Context, key, to string) (*TransitionResult, error) {
+	key = strings.TrimSpace(key)
+	to = strings.TrimSpace(to)
+	if key == "" {
+		return nil, fmt.Errorf("pjira: empty issue key")
+	}
+	if to == "" {
+		return nil, fmt.Errorf("pjira: empty target state")
+	}
+	endpoint := c.BaseURL + "/rest/api/3/issue/" + url.PathEscape(key) + "/transitions"
+
+	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	getResp, err := c.do(getReq)
+	if err != nil {
+		return nil, fmt.Errorf("pjira: transition %s: list transitions: %w", key, err)
+	}
+	defer func() { _ = getResp.Body.Close() }()
+	if getResp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("pjira: issue %s not found", key)
+	}
+	if getResp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("pjira: transition %s: unauthenticated", key)
+	}
+	if getResp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("pjira: transition %s: list transitions: status %s%s", key, getResp.Status, decodeJiraError(getResp.Body))
+	}
+	var raw struct {
+		Transitions []rawTransition `json:"transitions"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("pjira: transition %s: decode transitions: %w", key, err)
+	}
+	id := ""
+	for _, t := range raw.Transitions {
+		if strings.EqualFold(t.To.Name, to) {
+			id = t.ID
+			break
+		}
+	}
+	if id == "" {
+		return nil, fmt.Errorf("pjira: transition %s: no transition to state %q available", key, to)
+	}
+
+	reqBody, err := json.Marshal(map[string]any{"transition": map[string]string{"id": id}})
+	if err != nil {
+		return nil, err
+	}
+	postReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+	postResp, err := c.do(postReq)
+	if err != nil {
+		return nil, fmt.Errorf("pjira: transition %s: %w", key, err)
+	}
+	defer func() { _ = postResp.Body.Close() }()
+	if postResp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("pjira: issue %s not found", key)
+	}
+	if postResp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("pjira: transition %s: unauthenticated", key)
+	}
+	if postResp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("pjira: transition %s: status %s%s", key, postResp.Status, decodeJiraError(postResp.Body))
+	}
+	return &TransitionResult{Key: key, To: to}, nil
+}
+
 // AuthStatus performs a live credential check via GET /rest/api/3/myself.
 // 401 -> Unauthenticated (Atlassian returns 401 for both invalid and expired
 // tokens, so there is deliberately no EXPIRED state), 403 -> Forbidden,

@@ -87,3 +87,12 @@ type CreateIssueResult struct {
 	Key string `json:"key"`
 	URL string `json:"url"`
 }
+
+// TransitionResult is the result of Client.Transition: the issue key and the
+// applied target state name. Jira's own transitions POST returns 204 No
+// Content, so there is no response body to reflect back — this just confirms
+// what was requested succeeded.
+type TransitionResult struct {
+	Key string `json:"key"`
+	To  string `json:"to"`
+}

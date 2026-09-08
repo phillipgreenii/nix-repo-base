@@ -599,8 +599,172 @@ func TestCreateIssue_unavailableNetworkError(t *testing.T) {
 	}
 }
 
+// TestTransition_success pins the two-step request shape (GET
+// .../transitions to resolve the target state to an id, then POST the chosen
+// id) and the mapped result (key + the requested target state). The target
+// state is deliberately passed in a different case ("done" vs the tenant's
+// "Done") to pin the case-insensitive match.
+func TestTransition_success(t *testing.T) {
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("user@example.com:tok"))
+	var posted map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/issue/ENG-1/transitions" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != wantAuth {
+			t.Errorf("auth = %q want %q", r.Header.Get("Authorization"), wantAuth)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"transitions":[{"id":"11","to":{"name":"In Progress"}},{"id":"31","to":{"name":"Done"}}]}`))
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Fatalf("decode post body: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer srv.Close()
+	got, err := testClient(srv).Transition(context.Background(), "ENG-1", "done")
+	if err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	if got.Key != "ENG-1" || got.To != "done" {
+		t.Errorf("result = %+v", got)
+	}
+	transition, _ := posted["transition"].(map[string]any)
+	if transition["id"] != "31" {
+		t.Errorf("posted transition id = %v, want 31 (the id whose to.name case-insensitively matches %q)", transition["id"], "done")
+	}
+}
+
+// TestTransition_unknownTargetState pins that a target state matching no
+// available transition is a DISTINCT, clearly-classified error — never the
+// issue's own "not found" classification — and that the POST step is never
+// reached once resolution fails.
+func TestTransition_unknownTargetState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("must not POST when no transition matches, got %s", r.Method)
+		}
+		_, _ = w.Write([]byte(`{"transitions":[{"id":"11","to":{"name":"In Progress"}}]}`))
+	}))
+	defer srv.Close()
+	_, err := testClient(srv).Transition(context.Background(), "ENG-1", "Nonexistent State")
+	if err == nil {
+		t.Fatal("want an error when no transition matches the target state")
+	}
+	if !strings.Contains(err.Error(), "no transition to state") {
+		t.Errorf("error = %v, want it to mention the unmatched state", err)
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, must not be classified as issue-not-found", err)
+	}
+}
+
+// TestTransition_issueNotFound pins the 404 classification on the initial
+// GET .../transitions call, mirroring GetIssue's own 404 special-case.
+func TestTransition_issueNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	_, err := testClient(srv).Transition(context.Background(), "NOPE-1", "Done")
+	if err == nil {
+		t.Fatal("want an error on 404")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want it to mention not found", err)
+	}
+}
+
+// TestTransition_unauthenticated pins the 401 classification, distinct from
+// the generic non-2xx path (mirroring CreateIssue's own 401 special-case).
+func TestTransition_unauthenticated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	_, err := testClient(srv).Transition(context.Background(), "ENG-1", "Done")
+	if err == nil {
+		t.Fatal("want an error on 401")
+	}
+	if !strings.Contains(err.Error(), "unauthenticated") {
+		t.Errorf("error = %v, want it to mention unauthenticated", err)
+	}
+}
+
+// TestTransition_postValidationErrorSurfaced pins that Jira's own validation
+// error body on the POST step (e.g. a transition rejected by the workflow) is
+// decoded via decodeJiraError and surfaced in the returned error, not
+// swallowed behind a bare status code — mirroring CreateIssue's reuse of the
+// same helper.
+func TestTransition_postValidationErrorSurfaced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"transitions":[{"id":"31","to":{"name":"Done"}}]}`))
+		case http.MethodPost:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"errorMessages":["Transition is not allowed"],"errors":{}}`))
+		}
+	}))
+	defer srv.Close()
+	_, err := testClient(srv).Transition(context.Background(), "ENG-1", "Done")
+	if err == nil {
+		t.Fatal("want an error on a validation failure")
+	}
+	if !strings.Contains(err.Error(), "Transition is not allowed") {
+		t.Errorf("error = %v, want it to mention the Jira validation message", err)
+	}
+}
+
+// TestTransition_unavailableNetworkError pins that a transport failure (the
+// tenant unreachable) is returned as an error, not swallowed into a nil
+// result/nil error pair.
+func TestTransition_unavailableNetworkError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	url := srv.URL
+	srv.Close() // make the endpoint unreachable (connection refused)
+	c := NewClient(url, "user@example.com", "tok")
+	c.HTTP = &http.Client{Timeout: 2 * time.Second}
+	got, err := c.Transition(context.Background(), "ENG-1", "Done")
+	if err == nil {
+		t.Fatal("want a non-nil transport error")
+	}
+	if got != nil {
+		t.Errorf("no partial result may accompany the error: %+v", got)
+	}
+}
+
+// TestTransition_emptyRequiredFields mirrors CreateIssue's empty-input guard:
+// a blank key/target-state must fail locally, without reaching the tenant.
+func TestTransition_emptyRequiredFields(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		to   string
+	}{
+		{"empty key", "", "Done"},
+		{"empty target state", "ENG-1", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Error("must not contact the tenant with a blank required field")
+			}))
+			defer srv.Close()
+			if _, err := testClient(srv).Transition(context.Background(), c.key, c.to); err == nil {
+				t.Fatal("want an error on a blank required field")
+			}
+		})
+	}
+}
+
 // TestClient_requestConstructionErrorsSurface pins the request-construction error
-// paths of all four endpoints. An unparseable BaseURL fails inside
+// paths of all five endpoints. An unparseable BaseURL fails inside
 // http.NewRequestWithContext, before any transport work, and that error must be
 // RETURNED — swallowing it hands the caller a nil result with a nil error.
 func TestClient_requestConstructionErrorsSurface(t *testing.T) {
@@ -624,6 +788,12 @@ func TestClient_requestConstructionErrorsSurface(t *testing.T) {
 		t.Errorf("SearchPage: want a request-construction error, got result %+v", got)
 	} else if !strings.Contains(err.Error(), wantMsg) {
 		t.Errorf("SearchPage error = %v, want it to mention %q", err, wantMsg)
+	}
+
+	if got, err := c.Transition(context.Background(), "ENG-1", "Done"); err == nil {
+		t.Errorf("Transition: want a request-construction error, got result %+v", got)
+	} else if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("Transition error = %v, want it to mention %q", err, wantMsg)
 	}
 
 	state, err := c.AuthStatus(context.Background())
