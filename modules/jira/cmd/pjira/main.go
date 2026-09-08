@@ -168,6 +168,44 @@ func newSearchCmd() *cobra.Command {
 	return c
 }
 
+func newCreateCmd() *cobra.Command {
+	var project, issueType, summary, description string
+	c := &cobra.Command{
+		Use:   "create",
+		Short: "Create a new issue; writes {key,url} JSON",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(project) == "" {
+				return fmt.Errorf("pjira create: --project is required")
+			}
+			if strings.TrimSpace(issueType) == "" {
+				return fmt.Errorf("pjira create: --type is required")
+			}
+			if strings.TrimSpace(summary) == "" {
+				return fmt.Errorf("pjira create: --summary is required")
+			}
+			cl, _, err := newClient(cmd)
+			if err != nil {
+				return err
+			}
+			res, err := cl.CreateIssue(cmd.Context(), pjira.CreateIssueRequest{
+				Project:     project,
+				IssueType:   issueType,
+				Summary:     summary,
+				Description: description,
+			})
+			if err != nil {
+				return err
+			}
+			return writeJSON(cmd, res)
+		},
+	}
+	c.Flags().StringVar(&project, "project", "", "project key (required)")
+	c.Flags().StringVar(&issueType, "type", "", "issue type name (required)")
+	c.Flags().StringVar(&summary, "summary", "", "issue summary (required)")
+	c.Flags().StringVar(&description, "description", "", "issue description, plain text (encoded to ADF)")
+	return c
+}
+
 func newAuthStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "auth-status",
@@ -216,7 +254,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().String("config", "", "path to config TOML (default: $XDG_CONFIG_HOME/pjira/config.toml)")
-	root.AddCommand(newIssueCmd(), newSearchCmd(), newAuthStatusCmd())
+	root.AddCommand(newIssueCmd(), newSearchCmd(), newAuthStatusCmd(), newCreateCmd())
 	return root
 }
 

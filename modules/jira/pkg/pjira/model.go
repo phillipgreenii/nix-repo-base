@@ -70,3 +70,20 @@ type SearchResult struct {
 	Truncated     bool    `json:"truncated"`
 	NextPageToken string  `json:"next_page_token,omitempty"`
 }
+
+// CreateIssueRequest is the input to Client.CreateIssue: the fields required
+// to create a Jira issue (project key, issue type name, summary) plus an
+// optional plain-text description, encoded to ADF on the wire (EncodeADFText).
+type CreateIssueRequest struct {
+	Project     string
+	IssueType   string
+	Summary     string
+	Description string
+}
+
+// CreateIssueResult is the result of Client.CreateIssue: the new issue's key
+// and its browse URL (derived the same way Issue.URL is).
+type CreateIssueResult struct {
+	Key string `json:"key"`
+	URL string `json:"url"`
+}

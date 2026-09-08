@@ -15,6 +15,9 @@ specifics are injected as configuration at the edge.
 - `pjira issue <KEY>` — one issue as JSON.
 - `pjira search --jql "<JQL>" [--limit N] [--expand changelog[,comments]]` — `{items,truncated,next_page_token?}`.
 - `pjira auth-status` — credential check.
+- `pjira create --project <KEY> --type <NAME> --summary <TEXT> [--description <TEXT>]` — creates
+  an issue; writes `{key,url}`. `--description` is plain text, encoded to Atlassian Document
+  Format (`pjira.EncodeADFText`) before being sent.
 
 ### Configuration
 

@@ -426,8 +426,181 @@ func TestSearchAll_propagatesPageError(t *testing.T) {
 	}
 }
 
+// TestCreateIssue_success pins the request shape (POST /rest/api/3/issue with
+// fields.project.key/fields.issuetype.name/fields.summary, plus a description
+// encoded to ADF only when non-empty) and the mapped result (key + browse URL,
+// mirroring Issue.URL's derivation).
+func TestCreateIssue_success(t *testing.T) {
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("user@example.com:tok"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/issue" || r.Method != http.MethodPost {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != wantAuth {
+			t.Errorf("auth = %q want %q", r.Header.Get("Authorization"), wantAuth)
+		}
+		var body struct {
+			Fields struct {
+				Project     struct{ Key string }
+				IssueType   struct{ Name string } `json:"issuetype"`
+				Summary     string
+				Description map[string]any
+			}
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body.Fields.Project.Key != "ENG" || body.Fields.IssueType.Name != "Bug" || body.Fields.Summary != "Fix it" {
+			t.Errorf("bad request fields: %+v", body.Fields)
+		}
+		if body.Fields.Description == nil || body.Fields.Description["type"] != "doc" {
+			t.Errorf("description not encoded as ADF: %+v", body.Fields.Description)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"10000","key":"ENG-100","self":"https://example.atlassian.net/rest/api/3/issue/10000"}`))
+	}))
+	defer srv.Close()
+	got, err := testClient(srv).CreateIssue(context.Background(), CreateIssueRequest{
+		Project: "ENG", IssueType: "Bug", Summary: "Fix it", Description: "some detail",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if got.Key != "ENG-100" {
+		t.Errorf("Key = %q, want ENG-100", got.Key)
+	}
+	if got.URL != srv.URL+"/browse/ENG-100" {
+		t.Errorf("URL = %q, want %q", got.URL, srv.URL+"/browse/ENG-100")
+	}
+}
+
+// TestCreateIssue_omitsEmptyDescription pins that a blank description is
+// dropped from the request entirely rather than sent as an empty ADF doc.
+func TestCreateIssue_omitsEmptyDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		fields, _ := body["fields"].(map[string]any)
+		if _, present := fields["description"]; present {
+			t.Errorf("description must be omitted when blank, got fields=%v", fields)
+		}
+		_, _ = w.Write([]byte(`{"key":"ENG-101"}`))
+	}))
+	defer srv.Close()
+	if _, err := testClient(srv).CreateIssue(context.Background(), CreateIssueRequest{
+		Project: "ENG", IssueType: "Bug", Summary: "Fix it",
+	}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+}
+
+// TestCreateIssue_emptyRequiredFields mirrors GetIssue's/Search's empty-input
+// guard: a blank project/issue-type/summary must fail locally, without
+// reaching the tenant.
+func TestCreateIssue_emptyRequiredFields(t *testing.T) {
+	cases := []struct {
+		name string
+		req  CreateIssueRequest
+	}{
+		{"empty project", CreateIssueRequest{IssueType: "Bug", Summary: "S"}},
+		{"empty issue type", CreateIssueRequest{Project: "ENG", Summary: "S"}},
+		{"empty summary", CreateIssueRequest{Project: "ENG", IssueType: "Bug"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Error("must not contact the tenant with a blank required field")
+			}))
+			defer srv.Close()
+			if _, err := testClient(srv).CreateIssue(context.Background(), c.req); err == nil {
+				t.Fatal("want an error on a blank required field")
+			}
+		})
+	}
+}
+
+// TestCreateIssue_validationErrorSurfaced pins that Jira's own validation
+// error body (an invalid project/issue-type) is decoded and surfaced in the
+// returned error, not swallowed behind a bare status code.
+func TestCreateIssue_validationErrorSurfaced(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantMsg string
+	}{
+		{
+			name:    "errorMessages",
+			body:    `{"errorMessages":["project key is invalid"],"errors":{}}`,
+			wantMsg: "project key is invalid",
+		},
+		{
+			name:    "field errors map",
+			body:    `{"errorMessages":[],"errors":{"issuetype":"valid issue type is required"}}`,
+			wantMsg: "valid issue type is required",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+			_, err := testClient(srv).CreateIssue(context.Background(), CreateIssueRequest{
+				Project: "NOPE", IssueType: "Bogus", Summary: "S",
+			})
+			if err == nil {
+				t.Fatal("want an error on a validation failure")
+			}
+			if !strings.Contains(err.Error(), c.wantMsg) {
+				t.Errorf("error = %v, want it to mention %q", err, c.wantMsg)
+			}
+		})
+	}
+}
+
+// TestCreateIssue_unauthenticated pins the 401 classification, distinct from
+// the generic non-2xx path (mirroring GetIssue's 404 special-case).
+func TestCreateIssue_unauthenticated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	_, err := testClient(srv).CreateIssue(context.Background(), CreateIssueRequest{
+		Project: "ENG", IssueType: "Bug", Summary: "S",
+	})
+	if err == nil {
+		t.Fatal("want an error on 401")
+	}
+	if !strings.Contains(err.Error(), "unauthenticated") {
+		t.Errorf("error = %v, want it to mention unauthenticated", err)
+	}
+}
+
+// TestCreateIssue_unavailableNetworkError pins that a transport failure (the
+// tenant unreachable) is returned as an error, not swallowed into a nil
+// result/nil error pair.
+func TestCreateIssue_unavailableNetworkError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	url := srv.URL
+	srv.Close() // make the endpoint unreachable (connection refused)
+	c := NewClient(url, "user@example.com", "tok")
+	c.HTTP = &http.Client{Timeout: 2 * time.Second}
+	got, err := c.CreateIssue(context.Background(), CreateIssueRequest{
+		Project: "ENG", IssueType: "Bug", Summary: "S",
+	})
+	if err == nil {
+		t.Fatal("want a non-nil transport error")
+	}
+	if got != nil {
+		t.Errorf("no partial result may accompany the error: %+v", got)
+	}
+}
+
 // TestClient_requestConstructionErrorsSurface pins the request-construction error
-// paths of all three endpoints. An unparseable BaseURL fails inside
+// paths of all four endpoints. An unparseable BaseURL fails inside
 // http.NewRequestWithContext, before any transport work, and that error must be
 // RETURNED — swallowing it hands the caller a nil result with a nil error.
 func TestClient_requestConstructionErrorsSurface(t *testing.T) {
@@ -439,6 +612,12 @@ func TestClient_requestConstructionErrorsSurface(t *testing.T) {
 		t.Errorf("GetIssue: want a request-construction error, got issue %+v", got)
 	} else if !strings.Contains(err.Error(), wantMsg) {
 		t.Errorf("GetIssue error = %v, want it to mention %q", err, wantMsg)
+	}
+
+	if got, err := c.CreateIssue(context.Background(), CreateIssueRequest{Project: "ENG", IssueType: "Bug", Summary: "S"}); err == nil {
+		t.Errorf("CreateIssue: want a request-construction error, got result %+v", got)
+	} else if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("CreateIssue error = %v, want it to mention %q", err, wantMsg)
 	}
 
 	if got, err := c.SearchPage(context.Background(), "project = ENG", 10, ExpandOpts{}, ""); err == nil {

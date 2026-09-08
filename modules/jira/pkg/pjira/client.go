@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -291,6 +293,95 @@ func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
 	}
 	iss := c.mapIssue(raw.Key, raw.Fields)
 	return &iss, nil
+}
+
+// rawErrorBody is Atlassian's validation-error shape returned by write
+// endpoints (POST/PUT) on failure: top-level errorMessages plus a per-field
+// errors map. CreateIssue decodes this so an invalid project/issue-type is
+// diagnosable in the returned error, not swallowed behind a bare status code.
+type rawErrorBody struct {
+	ErrorMessages []string          `json:"errorMessages"`
+	Errors        map[string]string `json:"errors"`
+}
+
+// decodeJiraError best-effort decodes an Atlassian error body into a
+// ": "-prefixed detail suffix; it returns "" when the body doesn't parse as
+// one (or carries no messages), so callers can always append its result.
+func decodeJiraError(body io.Reader) string {
+	var e rawErrorBody
+	if err := json.NewDecoder(body).Decode(&e); err != nil {
+		return ""
+	}
+	parts := append([]string{}, e.ErrorMessages...)
+	keys := make([]string, 0, len(e.Errors))
+	for k := range e.Errors {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		parts = append(parts, k+": "+e.Errors[k])
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return ": " + strings.Join(parts, "; ")
+}
+
+// CreateIssue creates a new issue via POST /rest/api/3/issue and returns its
+// key and browse URL. A non-empty Description is encoded to ADF (EncodeADFText)
+// before being sent; an empty one omits the description field entirely rather
+// than sending an empty document.
+func (c *Client) CreateIssue(ctx context.Context, req CreateIssueRequest) (*CreateIssueResult, error) {
+	project := strings.TrimSpace(req.Project)
+	issueType := strings.TrimSpace(req.IssueType)
+	summary := strings.TrimSpace(req.Summary)
+	if project == "" {
+		return nil, fmt.Errorf("pjira: empty project")
+	}
+	if issueType == "" {
+		return nil, fmt.Errorf("pjira: empty issue type")
+	}
+	if summary == "" {
+		return nil, fmt.Errorf("pjira: empty summary")
+	}
+	fields := map[string]any{
+		"project":   map[string]string{"key": project},
+		"issuetype": map[string]string{"name": issueType},
+		"summary":   summary,
+	}
+	if desc := strings.TrimSpace(req.Description); desc != "" {
+		fields["description"] = EncodeADFText(desc)
+	}
+	reqBody, err := json.Marshal(map[string]any{"fields": fields})
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/rest/api/3/issue", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("pjira: create issue: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("pjira: create issue: unauthenticated")
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("pjira: create issue: status %s%s", resp.Status, decodeJiraError(resp.Body))
+	}
+	var raw struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("pjira: create issue: decode: %w", err)
+	}
+	if raw.Key == "" {
+		return nil, fmt.Errorf("pjira: create issue: response missing key")
+	}
+	return &CreateIssueResult{Key: raw.Key, URL: c.browseURL(raw.Key)}, nil
 }
 
 // AuthStatus performs a live credential check via GET /rest/api/3/myself.

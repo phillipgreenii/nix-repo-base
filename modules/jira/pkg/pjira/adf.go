@@ -27,6 +27,29 @@ func FlattenADF(raw json.RawMessage) string {
 	return strings.TrimSpace(sb.String())
 }
 
+// EncodeADFText encodes plain text into a minimal Atlassian Document Format
+// document: one paragraph per input line (split on "\n"), each paragraph
+// holding a single text node (an empty line becomes an empty paragraph, never
+// dropped, so line structure round-trips). It is the encode-side counterpart
+// to FlattenADF and round-trips through it exactly.
+//
+// Kept deliberately separable from any particular write endpoint (create,
+// comment, ...) so it can be reused wherever a plain-text field needs to
+// become an ADF document, rather than each call site re-deriving its own
+// envelope.
+func EncodeADFText(text string) map[string]any {
+	lines := strings.Split(text, "\n")
+	content := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		inline := []map[string]any{}
+		if line != "" {
+			inline = append(inline, map[string]any{"type": "text", "text": line})
+		}
+		content = append(content, map[string]any{"type": "paragraph", "content": inline})
+	}
+	return map[string]any{"type": "doc", "version": 1, "content": content}
+}
+
 func walkADF(nodes []json.RawMessage, sb *strings.Builder) {
 	for _, n := range nodes {
 		var node struct {

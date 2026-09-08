@@ -70,9 +70,15 @@ as an importable Go library for the Go consumers.
   coexist.
 - Non-basic auth (Bearer/PAT for Jira Data Center). No consumer exists; it is
   explicitly deferred (see §10).
-- Implementing `transition` / `add_comment` now. `transition`'s interface shape
-  is reserved (a live consumer is planned, UJ-8); `add_comment` is dropped (no
-  consumer).
+- ~~Implementing `transition` / `add_comment` now. `transition`'s interface
+  shape is reserved (a live consumer is planned, UJ-8); `add_comment` is
+  dropped (no consumer).~~ **Superseded 2026-09-08 (epic pg2-7p4mr, amended by
+  child pg2-7p4mr.3):** a new consumer, `pg-connector-issue-jira`
+  (pg2-2j5ac.17.1, blocked on this epic), needs `create`, `add_comment`, and
+  `transition` — all three, not just `transition` — so this is no longer a
+  non-goal. `create` is now implemented (pg2-7p4mr.3; see §6). `add_comment`
+  (pg2-7p4mr.2) and `transition` (pg2-7p4mr.1) are tracked as separate,
+  still-open sibling beads under the same epic — see §3.1 UJ-9 and §12.
 
 ## 3. Use-Case / User-Journey Inventory
 
@@ -95,6 +101,17 @@ non-interactively; "reference-only" = merely recognizes a ticket-key string.
 
 `add_comment` was considered (design §2.2 of pg2-3z8j) and **dropped** — no
 consumer.
+
+**Added 2026-09-08 (epic pg2-7p4mr):**
+
+| #    | Journey                                                                                 | Repo / lang | Operation                       | Auth today                  | Invocation           | Status                                                                               |
+| ---- | --------------------------------------------------------------------------------------- | ----------- | ------------------------------- | --------------------------- | -------------------- | ------------------------------------------------------------------------------------ |
+| UJ-9 | pg-connector-issue-jira — Tier-2 Jira backend for the unified issue-provider capability | (new) / Go  | create, add_comment, transition | inherits pjira's basic auth | shell-out to `pjira` | `create` implemented (pg2-7p4mr.3); `add_comment`/`transition` open (pg2-7p4mr.2/.1) |
+
+This reverses the `add_comment`-dropped and `transition`-deferred calls above
+(§2, §12): `pg-connector-issue-jira` (work packet pg2-2j5ac.17.1, blocked on
+this epic) is a real, live consumer needing all three write ops, superseding
+the "wait for UJ-8" plan.
 
 ### 3.2 Explicitly out of scope
 
@@ -204,12 +221,14 @@ All in-scope journeys reduce to **four operations**, exposed through _two front
 doors over one core_ (Facade): the plain **CLI** (this spec) for Bash / Python /
 Go shell-out, and the **scriptout** protocol (SP3, agent-support) for pg-pr.
 
-| Capability                   | Serves           | CLI subcommand                                                    | Notes                                                                                                                                                                                                     |
-| ---------------------------- | ---------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_issue(key)`             | UJ-1, UJ-2, UJ-3 | `jira issue <KEY>`                                                | returns the unified Issue (§7)                                                                                                                                                                            |
-| `search(jql, limit, expand)` | UJ-5, UJ-6, UJ-7 | `jira search --jql … [--limit N] [--expand changelog[,comments]]` | `{items, truncated}`; truncation via `nextPageToken`/`isLast`. `--expand` is a CLI convenience: `changelog`→Jira `expand=changelog`; `comments`→add the `comment` **field** (NOT a Jira expand). See §9.2 |
-| `auth_status`                | UJ-4 (+ Py/Bash) | `jira auth-status`                                                | `MISSING` pre-flight, else **live** `GET /rest/api/3/myself` → `OK`(200)/`FORBIDDEN`(403)/`UNAUTHENTICATED`(401)/`ERROR`(other). See §8.5                                                                 |
-| `transition(key, to)`        | UJ-8 (deferred)  | reserved; not wired                                               | interface shape **to be defined** when UJ-8 graduates; no code now                                                                                                                                        |
+| Capability                                           | Serves                       | CLI subcommand                                                    | Notes                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_issue(key)`                                     | UJ-1, UJ-2, UJ-3             | `jira issue <KEY>`                                                | returns the unified Issue (§7)                                                                                                                                                                                                                                            |
+| `search(jql, limit, expand)`                         | UJ-5, UJ-6, UJ-7             | `jira search --jql … [--limit N] [--expand changelog[,comments]]` | `{items, truncated}`; truncation via `nextPageToken`/`isLast`. `--expand` is a CLI convenience: `changelog`→Jira `expand=changelog`; `comments`→add the `comment` **field** (NOT a Jira expand). See §9.2                                                                 |
+| `auth_status`                                        | UJ-4 (+ Py/Bash)             | `jira auth-status`                                                | `MISSING` pre-flight, else **live** `GET /rest/api/3/myself` → `OK`(200)/`FORBIDDEN`(403)/`UNAUTHENTICATED`(401)/`ERROR`(other). See §8.5                                                                                                                                 |
+| `create_issue(project, type, summary, description?)` | UJ-9                         | `pjira create --project … --type … --summary … [--description …]` | **Added 2026-09-08, implemented (pg2-7p4mr.3).** `POST /rest/api/3/issue`; writes `{key,url}`; `description` is plain text, encoded to ADF (`EncodeADFText`) only when non-empty. Jira's own validation error (bad project/type) is surfaced in the error, not swallowed. |
+| `add_comment(key, body)`                             | UJ-9 (open)                  | not yet wired — pg2-7p4mr.2                                       | **Added 2026-09-08.** Interface shape to be decided by that bead when it lands (reuse `EncodeADFText` for the comment body — see adf.go).                                                                                                                                 |
+| `transition(key, to)`                                | UJ-8 (deferred), UJ-9 (open) | not yet wired — pg2-7p4mr.1                                       | **Updated 2026-09-08:** no longer waiting on UJ-8 to graduate — UJ-9 (`pg-connector-issue-jira`) needs it now, superseding the original "reserved until UJ-8" plan. Interface shape to be decided by pg2-7p4mr.1 when it lands.                                           |
 
 The CLI MUST use exit codes (`0` ok, non-zero error) and MUST write exactly one
 JSON envelope to stdout on success and **never** a partial envelope on error
@@ -525,8 +544,15 @@ Backward compatibility: the `pg-pr-issues-jira-zr` name and the existing
 
 ## 12. Open Questions / Future
 
-- **`transition` implementation** (UJ-8): interface shape reserved now; built
-  when the workflow cleanup hook graduates from its stub.
+- ~~**`transition` implementation** (UJ-8): interface shape reserved now; built
+  when the workflow cleanup hook graduates from its stub.~~ **Superseded
+  2026-09-08 (epic pg2-7p4mr):** no longer gated on UJ-8 graduating —
+  `pg-connector-issue-jira` (UJ-9, §3.1) needs `transition` now, tracked as
+  pg2-7p4mr.1 (still open). Its interface shape is decided by that bead when
+  it lands, not here.
+- **`add_comment` implementation** (UJ-9, added 2026-09-08): tracked as
+  pg2-7p4mr.2 (still open). Reuse `EncodeADFText` (pkg/pjira/adf.go) for the
+  comment body rather than re-deriving ADF encoding.
 - **Bearer/PAT auth**: deferred until a Jira Data Center (or other non-basic)
   tenant appears; planned then.
 - **`file` config-source delivery**: go-toml/v2 supplies config-file parsing;
