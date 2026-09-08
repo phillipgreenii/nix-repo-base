@@ -225,6 +225,25 @@ func newTransitionCmd() *cobra.Command {
 	}
 }
 
+func newCommentCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "comment <KEY> <BODY>",
+		Short: "Add a plain-text comment to an issue (ADF-encoded); writes {key,id} JSON",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, err := newClient(cmd)
+			if err != nil {
+				return err
+			}
+			res, err := c.AddComment(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+			return writeJSON(cmd, res)
+		},
+	}
+}
+
 func newAuthStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "auth-status",
@@ -273,7 +292,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().String("config", "", "path to config TOML (default: $XDG_CONFIG_HOME/pjira/config.toml)")
-	root.AddCommand(newIssueCmd(), newSearchCmd(), newAuthStatusCmd(), newCreateCmd(), newTransitionCmd())
+	root.AddCommand(newIssueCmd(), newSearchCmd(), newAuthStatusCmd(), newCreateCmd(), newTransitionCmd(), newCommentCmd())
 	return root
 }
 

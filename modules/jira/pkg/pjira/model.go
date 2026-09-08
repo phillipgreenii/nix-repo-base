@@ -96,3 +96,10 @@ type TransitionResult struct {
 	Key string `json:"key"`
 	To  string `json:"to"`
 }
+
+// AddCommentResult is the result of Client.AddComment: the issue key and the
+// new comment's Jira id (from the comment POST's response body).
+type AddCommentResult struct {
+	Key string `json:"key"`
+	ID  string `json:"id"`
+}

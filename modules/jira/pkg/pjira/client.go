@@ -477,6 +477,55 @@ func (c *Client) Transition(ctx context.Context, key, to string) (*TransitionRes
 	return &TransitionResult{Key: key, To: to}, nil
 }
 
+// AddComment posts a new plain-text comment to an issue via
+// POST /rest/api/3/issue/{key}/comment. The body is encoded to ADF
+// (EncodeADFText) before being sent, mirroring CreateIssue's description
+// handling. Returns the issue key alongside the new comment's Jira id.
+func (c *Client) AddComment(ctx context.Context, key, body string) (*AddCommentResult, error) {
+	key = strings.TrimSpace(key)
+	body = strings.TrimSpace(body)
+	if key == "" {
+		return nil, fmt.Errorf("pjira: empty issue key")
+	}
+	if body == "" {
+		return nil, fmt.Errorf("pjira: empty comment body")
+	}
+	reqBody, err := json.Marshal(map[string]any{"body": EncodeADFText(body)})
+	if err != nil {
+		return nil, err
+	}
+	endpoint := c.BaseURL + "/rest/api/3/issue/" + url.PathEscape(key) + "/comment"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("pjira: add comment %s: %w", key, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("pjira: issue %s not found", key)
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("pjira: add comment %s: unauthenticated", key)
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("pjira: add comment %s: status %s%s", key, resp.Status, decodeJiraError(resp.Body))
+	}
+	var raw struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("pjira: add comment %s: decode: %w", key, err)
+	}
+	if raw.ID == "" {
+		return nil, fmt.Errorf("pjira: add comment %s: response missing id", key)
+	}
+	return &AddCommentResult{Key: key, ID: raw.ID}, nil
+}
+
 // AuthStatus performs a live credential check via GET /rest/api/3/myself.
 // 401 -> Unauthenticated (Atlassian returns 401 for both invalid and expired
 // tokens, so there is deliberately no EXPIRED state), 403 -> Forbidden,

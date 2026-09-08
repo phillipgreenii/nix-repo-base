@@ -763,8 +763,137 @@ func TestTransition_emptyRequiredFields(t *testing.T) {
 	}
 }
 
+// TestAddComment_success pins the request shape (POST
+// /rest/api/3/issue/{key}/comment with the plain-text body encoded to ADF,
+// mirroring CreateIssue's description handling) and the mapped result (issue
+// key + the new comment's Jira id).
+func TestAddComment_success(t *testing.T) {
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("user@example.com:tok"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/issue/ENG-1/comment" || r.Method != http.MethodPost {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != wantAuth {
+			t.Errorf("auth = %q want %q", r.Header.Get("Authorization"), wantAuth)
+		}
+		var body struct {
+			Body map[string]any `json:"body"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body.Body == nil || body.Body["type"] != "doc" {
+			t.Errorf("comment body not encoded as ADF: %+v", body.Body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"10050","self":"https://example.atlassian.net/rest/api/3/issue/10000/comment/10050"}`))
+	}))
+	defer srv.Close()
+	got, err := testClient(srv).AddComment(context.Background(), "ENG-1", "looks good")
+	if err != nil {
+		t.Fatalf("AddComment: %v", err)
+	}
+	if got.Key != "ENG-1" || got.ID != "10050" {
+		t.Errorf("result = %+v, want {Key:ENG-1 ID:10050}", got)
+	}
+}
+
+// TestAddComment_issueNotFound pins the 404 classification, mirroring
+// GetIssue's/Transition's own 404 special-case.
+func TestAddComment_issueNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	_, err := testClient(srv).AddComment(context.Background(), "NOPE-1", "hi")
+	if err == nil {
+		t.Fatal("want an error on 404")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want it to mention not found", err)
+	}
+}
+
+// TestAddComment_unauthenticated pins the 401 classification, distinct from
+// the generic non-2xx path (mirroring CreateIssue's/Transition's own 401
+// special-case).
+func TestAddComment_unauthenticated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	_, err := testClient(srv).AddComment(context.Background(), "ENG-1", "hi")
+	if err == nil {
+		t.Fatal("want an error on 401")
+	}
+	if !strings.Contains(err.Error(), "unauthenticated") {
+		t.Errorf("error = %v, want it to mention unauthenticated", err)
+	}
+}
+
+// TestAddComment_validationErrorSurfaced pins that Jira's own validation
+// error body is decoded via decodeJiraError and surfaced in the returned
+// error, mirroring CreateIssue's/Transition's reuse of the same helper.
+func TestAddComment_validationErrorSurfaced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"errorMessages":["comment body is invalid"],"errors":{}}`))
+	}))
+	defer srv.Close()
+	_, err := testClient(srv).AddComment(context.Background(), "ENG-1", "hi")
+	if err == nil {
+		t.Fatal("want an error on a validation failure")
+	}
+	if !strings.Contains(err.Error(), "comment body is invalid") {
+		t.Errorf("error = %v, want it to mention the Jira validation message", err)
+	}
+}
+
+// TestAddComment_unavailableNetworkError pins that a transport failure (the
+// tenant unreachable) is returned as an error, not swallowed into a nil
+// result/nil error pair.
+func TestAddComment_unavailableNetworkError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	url := srv.URL
+	srv.Close() // make the endpoint unreachable (connection refused)
+	c := NewClient(url, "user@example.com", "tok")
+	c.HTTP = &http.Client{Timeout: 2 * time.Second}
+	got, err := c.AddComment(context.Background(), "ENG-1", "hi")
+	if err == nil {
+		t.Fatal("want a non-nil transport error")
+	}
+	if got != nil {
+		t.Errorf("no partial result may accompany the error: %+v", got)
+	}
+}
+
+// TestAddComment_emptyRequiredFields mirrors CreateIssue's/Transition's
+// empty-input guard: a blank key/body must fail locally, without reaching
+// the tenant.
+func TestAddComment_emptyRequiredFields(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		body string
+	}{
+		{"empty key", "", "hi"},
+		{"empty body", "ENG-1", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Error("must not contact the tenant with a blank required field")
+			}))
+			defer srv.Close()
+			if _, err := testClient(srv).AddComment(context.Background(), c.key, c.body); err == nil {
+				t.Fatal("want an error on a blank required field")
+			}
+		})
+	}
+}
+
 // TestClient_requestConstructionErrorsSurface pins the request-construction error
-// paths of all five endpoints. An unparseable BaseURL fails inside
+// paths of all six endpoints. An unparseable BaseURL fails inside
 // http.NewRequestWithContext, before any transport work, and that error must be
 // RETURNED — swallowing it hands the caller a nil result with a nil error.
 func TestClient_requestConstructionErrorsSurface(t *testing.T) {
@@ -794,6 +923,12 @@ func TestClient_requestConstructionErrorsSurface(t *testing.T) {
 		t.Errorf("Transition: want a request-construction error, got result %+v", got)
 	} else if !strings.Contains(err.Error(), wantMsg) {
 		t.Errorf("Transition error = %v, want it to mention %q", err, wantMsg)
+	}
+
+	if got, err := c.AddComment(context.Background(), "ENG-1", "hi"); err == nil {
+		t.Errorf("AddComment: want a request-construction error, got result %+v", got)
+	} else if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("AddComment error = %v, want it to mention %q", err, wantMsg)
 	}
 
 	state, err := c.AuthStatus(context.Background())
