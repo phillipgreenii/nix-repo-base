@@ -1,10 +1,12 @@
 # Design: should `pn` fully adopt `x/gitclient`?
 
-> Status: **DESIGN — awaiting an operator decision.** This document explores options and ends
-> with a recommendation; it is not itself a ruling. Written for bead `pg2-migib`, the deferred
-> "full adoption" half of `pg2-app6l` (2026-08-29: "adopt read-side now, full design pass filed
-> separately and deliberately sequenced after"). Do not implement anything in this document
-> without a separate operator ruling.
+> Status: **DECIDED (Phillip, 2026-09-03) — see Section 7a.** Sections 1-7 are the original design
+> exploration and are kept for their evidence and reasoning; Section 7a is the binding decision and
+> supersedes Section 7's recommendation. Written for bead `pg2-migib`, the deferred "full adoption"
+> half of `pg2-app6l` (2026-08-29: "adopt read-side now, full design pass filed separately and
+> deliberately sequenced after"). Implementation is filed as its own follow-up work, per this
+> bead's own scope note ("do not implement without a separate ruling") — the ruling now exists;
+> the implementation does not yet.
 
 ## 1. Background
 
@@ -59,8 +61,8 @@ design pass is supposed to weigh:
   in `gitclient` today — `BranchManager` only has `DeleteBranch`. Left unmigrated (this is the
   concrete production call site behind the bead's "branch-lister" gap).
 - **`modules/pn/internal/workspace/doctor_mode.go:52-61` (`gitRevParse`)**, which calls raw
-  `git rev-parse --git-dir`, carries an explicit in-code note: *"`--git-dir` has no x/gitclient
-  equivalent (bead pg2-oxle0's scope is Locator/RefReader only), so it stays here unmigrated."*
+  `git rev-parse --git-dir`, carries an explicit in-code note: _"`--git-dir` has no x/gitclient
+  equivalent (bead pg2-oxle0's scope is Locator/RefReader only), so it stays here unmigrated."_
   `Locator` has `CommonDir` (`--git-common-dir`) but not plain `--git-dir`; the two differ for a
   linked worktree, and `workspaceMode`'s worktree-vs-primary detection needs both.
 - **`modules/pn/internal/workspace/remotes.go:12-55` (`readGitRemotes`)** still calls raw
@@ -90,7 +92,7 @@ undersells how much mutating surface already exists. Reading
 --hard`), `CleanUntracked` (`clean -fd`). Notably, `CreateWorktree` already models exactly what
 `modules/pn/internal/workspace/workforest.go:167-188,283-383,522-544` does today
 (`git worktree add [-b|-B] <path> <branch> [<startpoint>]`) — this is a real, already-available
-migration target that doesn't require *any* new gitclient feature, modulo the streaming gap below.
+migration target that doesn't require _any_ new gitclient feature, modulo the streaming gap below.
 
 **Genuinely absent (confirmed by reading `gitclient/client.go` and `options.go` directly, not just
 the design doc's own gap list):**
@@ -108,7 +110,7 @@ the design doc's own gap list):**
   per-invocation `-c`: `updatecache.go:88` runs
   `git -C <dir> -c core.fsmonitor=false status --porcelain` so the health-check probe never
   queries a wedged `git fsmonitor--daemon`. **This is a narrower, safer kind of "per-call" than
-  the one D2 forbids.** D2's constraint is about the *directory* and the *environment*
+  the one D2 forbids.** D2's constraint is about the _directory_ and the _environment_
   (`cmd.Env`/`cmd.Dir`) — the exact vector that let `GIT_DIR` outrank `-C <dir>` in the original
   incidents. A per-call `-c key=value` is an **argv** concern (`git -c core.fsmonitor=false ...`),
   not an env-var concern, and touches none of the allowlist machinery `gitclient`'s hermeticity
@@ -119,7 +121,7 @@ the design doc's own gap list):**
 - **`Syncer` (conflict-aware pull/rebase `--autostash`).** No such role exists. Building one is
   more than "wrap `pull --rebase --autostash`": `gitclient/classify.go`'s error mapping is
   deliberately **exit-code-driven, never stderr-text-driven** (design §4.4: "Error classification
-  keys on exit codes, never on localized stderr text" — this is *why* `LC_ALL=C` is scoped the way
+  keys on exit codes, never on localized stderr text" — this is _why_ `LC_ALL=C` is scoped the way
   it is). `git rebase`/`pull --rebase` exit non-zero (typically 1) for a merge conflict AND for
   several other failure modes, so a conflict can't be told apart from a generic failure by exit
   code alone. The `StatusReader.Status` role (already implemented, already parses
@@ -135,7 +137,7 @@ the design doc's own gap list):**
   raw `config --get` reads at `push.go:88-163` that a `Locator`-shaped read could partly but not
   fully replace — it reads `branch.<b>.pushRemote`, then local, then global
   `remote.pushDefault`, none of which `Locator.RemoteURL` covers), and `clone.go:29-70` (`clone
-  --branch ... -- <url> <dir>`, plus `remote add`) all need a role with no `gitclient` counterpart
+--branch ... -- <url> <dir>`, plus `remote add`) all need a role with no `gitclient` counterpart
   today.
 - **A richer failure taxonomy** generally (per `pg2-app6l`'s evaluation point 3) — today's
   taxonomy is three named sentinels (`ErrNotARepository`, `ErrDetachedHEAD`, `ErrNoRemote`) plus
@@ -213,7 +215,7 @@ string)`-style per-invocation `-c` mechanism, and the `Syncer`/`Committer`/`Push
 - One hermetic, tested git-invocation implementation across the whole workspace instead of two
   (pn's `internal/exec` + `gitclient`), which is the whole point of extracting `gitclient` in the
   first place.
-- The read-side migration proved the *role-interface* pattern holds up under real use without
+- The read-side migration proved the _role-interface_ pattern holds up under real use without
   churn — that evidence transfers to new roles built the same way (small, YAGNI-scoped, one
   method per real call site).
 
@@ -272,7 +274,7 @@ Keep `pg2-oxle0`'s landed read-side migration as the ceiling. All mutating verbs
 
 ### Option C — Middle ground: adopt what already fits; defer (don't design now) the rest
 
-Migrate pn's mutating call sites that `gitclient` can *already* satisfy without any new feature —
+Migrate pn's mutating call sites that `gitclient` can _already_ satisfy without any new feature —
 concretely, `workforest.go`'s `worktree add [-b|-B]` calls onto `WorktreeManager.CreateWorktree`,
 and `rebase.go`'s plain `git fetch` onto `Fetcher.Fetch` — accepting the loss of live streaming on
 just those calls (or keeping them on the raw runner solely for the streaming pass-through, calling
@@ -301,7 +303,7 @@ consumer").
   watching `pn workspace workforest add`/`rebase` progress), this option collapses back into
   "nothing changes" for those calls, and the "already fits" win shrinks to zero.
 
-## 7. Recommendation (not a decision)
+## 7. Recommendation (not a decision) — SUPERSEDED by Section 7a's operator decision
 
 **Recommendation: Option B, with the Option C worktree-create migration as an optional low-risk
 add-on the operator can take or leave — not Option A.**
@@ -323,7 +325,7 @@ pn's own `internal/exec.Runner`/`WorkerPool` (§4) is not technical debt standin
 dir/env, live streaming, concurrent fan-out) pn's mutating call sites actually need, and it
 predates `gitclient` by design intent, not by accident. The one real gap it has relative to
 `gitclient` — no process-group kill on cancellation (§3) — is worth fixing, but it is a fix to
-pn's *own* runner (port the `Setpgid`/negative-pid-kill pattern from `gitclient/client.go:249-274`
+pn's _own_ runner (port the `Setpgid`/negative-pid-kill pattern from `gitclient/client.go:249-274`
 into `internal/exec/exec.go`'s `realRunner.Run`), not a reason to route pn's mutations through
 `gitclient`.
 
@@ -333,6 +335,145 @@ already-implemented `WorktreeManager.CreateWorktree` (Option C) — it needs zer
 work and only loses live streaming on that one call family (worktree creation is typically fast;
 the streaming need is much more acute for `rebase`/`pull`/`push`, which would stay local either
 way). That is a small, separately-schedulable follow-up, not a reason to reopen this design.
+
+## 7a. OPERATOR DECISION (Phillip, 2026-09-03) — SUPERSEDES the Recommendation above
+
+**Option A adopted — full mutating-side adoption — but scoped narrowly to exactly what pn's real
+call sites need, not the open-ended "grow gitclient with streaming/config/new roles" framing
+Section 5 posed.** This section is the binding decision; Section 7's "Recommendation: Option B"
+above no longer applies. Reached via extended live design review (this session), which read pn's
+actual mutating call sites (`rebase.go`, `push.go`, `propagate.go`, `clone.go`, `workforest.go`,
+`apply.go`), the existing `gitclient` implementation (`client.go`, `read.go`, `mutate.go`,
+`options.go`, `argv.go`), and iterated the interface shapes against that evidence rather than
+against the abstract role names in Section 6.
+
+### Resolved without any new mechanism
+
+- **`core.fsmonitor=false`** (Section 3's per-invocation-config gap): hardcode it into
+  `statusArgs()` (`argv.go`) unconditionally — `Args: []string{"-c", "core.fsmonitor=false",
+"status", "--porcelain=v1", "-z"}`. Every `StatusReader.Status` call, for every consumer, always
+  disables fsmonitor. Safe because it's a pure performance knob with no correctness downside (the
+  existing comment already measured fsmonitor-off `status` as "well under a second" on these
+  repos), so there's no reason any consumer would want it configurable. No `WithConfig` option, no
+  per-call override, no per-instance construction needed — this eliminates that entire discussion.
+- **`PREK_ALLOW_NO_CONFIG`**: **NOT built into gitclient in any form** — no env-override
+  mechanism, no parameter on `Committer.Commit`, nothing. It is a workaround for prek being
+  misconfigured in pn's `.workforests/.pn-update` ephemeral worktree (which lacks
+  `.pre-commit-config.yaml` — a gitignored dev-shell symlink present only in canonical clones),
+  and the correct fix is on pn's side: symlink the config into that worktree at creation time,
+  exactly as `workforest.go`'s `gitWorktreeAddOne` already does for coordinated sets. This is a
+  pn-side follow-up, independent of gitclient adoption.
+
+### The `Handle` mechanism — scoped to exactly where pn needs streaming, nothing else
+
+Every mutating verb pn actually calls streams live output to the operator's terminal today
+(`rebase.go`/`push.go`/`workforest.go`/`propagate.go`'s commit all wire
+`exec.RunOptions{Stdout: out, Stderr: out}`, which resolve to `cmd.OutOrStdout()`/`cmd.ErrOrStderr()`
+— real terminal output, watched live by a human, consumed by nothing else in pn's own logic). Losing
+that means: a header line prints, then silence for however long the step takes, and — since today's
+buffered `Fetch` discards captured stdout even on success — literally zero confirmation anything
+happened on success. That live-progress behavior is worth preserving, so streaming needs to be a
+real capability, but **only for the verbs pn actually calls with a live sink**, per the package's
+own "no method exists without a current consumer" rule (`interfaces.go` header).
+
+Mechanism (new type, `handle.go`):
+
+```go
+// Handle represents a running git invocation. The process starts and runs
+// to completion regardless of whether anyone ever calls Wait or
+// AttachStream -- only OBSERVING the outcome is optional, never running it.
+type Handle struct { /* mutex; separate stdout/stderr buffers (stderr is
+    needed by classify() regardless); optional attached writer pair; a
+    done channel; the final classified error */ }
+
+// AttachStream may be called at any time -- before, during, or after the
+// invocation completes. It first flushes everything already buffered into
+// stdout/stderr (the replay), then registers them as the live sink for
+// everything still to come, under the same lock -- so nothing is missed
+// or duplicated regardless of when it's called.
+func (h *Handle) AttachStream(stdout, stderr io.Writer)
+
+// Wait blocks until the invocation completes and returns its classified
+// error (same classify()/ctx-error logic run() already has). Safe to call
+// more than once or from more than one goroutine.
+func (h *Handle) Wait() error
+```
+
+Implementation approach: `cmd.Stdout`/`cmd.Stderr` are set to a small internal writer that, under
+the Handle's mutex, appends to its buffer and also forwards to the attached writer if one is
+registered -- `os/exec`'s own internal copying goroutine (already spun up whenever `cmd.Stdout` is
+a non-`*os.File` writer, already joined by `cmd.Wait()`) does the concurrent draining; no manual
+pipe/goroutine plumbing needed beyond that. `cmd.Start()` (not `Run()`) is called immediately, and
+one internal goroutine is spawned right after to call `cmd.Wait()`, classify the result exactly as
+today's `run()` tail does, store it, and close `done` -- this runs whether or not the caller ever
+asks, so the process is always reaped (no zombies) and there is no "forgot to consume it, so it
+never ran" footgun.
+
+**Scoping — which verbs get `(*Handle, error)` and which stay untouched:**
+
+```go
+// CHANGED (existing roles, pn needs to stream them; 9 leaf-app consumers keep using them buffered
+// via .Wait()):
+type Fetcher interface { Fetch(ctx context.Context, opts FetchOptions) (*Handle, error) }
+type WorktreeManager interface {
+    CreateWorktree(ctx context.Context, path, branch string, opts CreateWorktreeOptions) (*Handle, error)
+    RemoveWorktree(ctx context.Context, path string, force bool) error // unchanged -- no streaming need
+    PruneWorktrees(ctx context.Context) error                          // unchanged -- no streaming need
+}
+
+// NEW roles (pn-only consumer, so no buffered form is ever needed -- born streaming-shaped):
+type Syncer interface { Sync(ctx context.Context, opts SyncOptions) (*Handle, error) }
+type Committer interface {
+    RestorePath(ctx context.Context, path string) error // checkout -- <path>; no streaming need
+    Add(ctx context.Context, paths ...string) error       // add <paths...>; no streaming need
+    Commit(ctx context.Context, message string) (*Handle, error) // commit -m <message> -- streams (hook output)
+}
+type Pusher interface { Push(ctx context.Context, opts PushOptions) (*Handle, error) }
+func Clone(ctx context.Context, url, dir string, opts CloneOptions, copts ...Option) (*Client, *Handle, error)
+
+// NEW, read-side, no streaming concept applies:
+type BranchLister interface { ListBranches(ctx context.Context) ([]string, error) } // branch --format=%(refname:short)
+```
+
+`BranchManager.DeleteBranch`, `Cleaner.ResetHard`, `Cleaner.CleanUntracked` are **untouched** —
+nothing needs them streamed today; convert them later only if a real consumer needs it.
+
+### Explicit acceptance bar for the `Handle` implementation (operator requirement, 2026-09-03)
+
+**`Handle` MUST ship with full test coverage, MUST have zero goroutine/process leaks, and MUST be
+race-free (`go test -race`).** Concretely, whoever implements this must cover at minimum: the
+buffer-then-replay-then-live-sync correctness of `AttachStream` called before, during, and after
+completion (no bytes missed, none duplicated); `Wait()`'s error classification is unchanged from
+today's `run()`; concurrent calls to `Wait()` and/or `AttachStream()` from multiple goroutines; the
+"never call Wait or AttachStream at all" case still reaps the process (no zombie, no leaked
+goroutine); and context cancellation/timeout while a stream is attached mid-flight. This is a
+hard gate on the implementation, not a nice-to-have.
+
+### Known follow-on costs (not resolved here, but must be scoped by the implementation work)
+
+- **All 9 existing leaf-app consumers' call sites for `Fetch`/`CreateWorktree` change** — from
+  `err := x.Fetch(ctx, opts)` to `h, err := x.Fetch(ctx, opts); ...; err = h.Wait()`. Real,
+  mechanical edits across ccpool, pr-pool (×3), pg-pr (×3 composite), CETA's gh resolver,
+  pa-monitor, pg-go-mutate-tui — not confined to this repo.
+- **A new testing problem**: a fake `Fetcher`/`WorktreeManager` can no longer return a plain
+  `error` — it needs to return something `*Handle`-shaped. This needs either an exported
+  `HandleLike` interface (`Wait`/`AttachStream`) that `Fetch`/`CreateWorktree` return instead of
+  the concrete `*Handle`, or a small test-helper package with a fake-Handle constructor. This is
+  new API surface that has to be designed as part of implementation, not assumed away.
+- **`Clone`'s constructor mechanics**: `setupAnchoredClient`'s existing `prepare` hook (already
+  used by `Init` for `os.MkdirAll`) is the right seam — `Clone`'s `prepare` runs the actual `git
+clone` invocation itself (using `buildClientConfig`'s already-resolved env/gitPath, before the
+  anchor exists), then anchors afterward exactly like `Init` does. Needs `run`'s core spawn logic
+  extracted into a helper parameterized by directory rather than reading `c.dir`, so `Clone`'s
+  `prepare` can reuse it. Also needs a companion `RemoteManager.AddRemote(ctx, name, url string)
+error` (`remote add`) for `clone.go`'s multi-remote configs, and must preserve `clone.go`'s
+  existing `--` guard against a leading-dash URL (bead pg2-3j8b2).
+- **`Pusher`'s `resolvePushRemote`**: needs either the full 7-step fallback chain folded into
+  gitclient as one method, or new primitives (`Locator.Remotes`, a scoped `ConfigGet`) with the
+  resolution logic staying in pn. Undecided; implementation should pick based on what's cleanest
+  once building it.
+- **pn-side, independent of gitclient**: symlink `.pre-commit-config.yaml` into `.pn-update`'s
+  worktree at creation (the `PREK_ALLOW_NO_CONFIG` root-cause fix above).
 
 ## 8. If the operator rules otherwise
 
