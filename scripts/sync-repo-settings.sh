@@ -7,8 +7,10 @@
 # the single source of truth for nix-* repo settings; re-run it whenever a
 # new repo is added or settings drift is suspected.
 #
-# Scope: the four nix-* repos under phillipgreenii/*. ha-addon-esphome-mcp
-# and homelab are intentionally out of scope (homelab is on Forgejo, not
+# Scope: the four nix-* repos under phillipgreenii/*, plus mobilecombackup
+# (a distributed application repo, not a nix-* library, but folded into the
+# same canonical settings — see tc-5lxy.12). ha-addon-esphome-mcp and
+# homelab are intentionally out of scope (homelab is on Forgejo, not
 # GitHub; ha-addon-* is a separate HA-add-on family).
 #
 # Usage:
@@ -26,9 +28,10 @@ REPOS=(
   phillipgreenii/nix-overlay
   phillipgreenii/nix-personal
   phillipgreenii/nix-agent-support
+  phillipgreenii/mobilecombackup
 )
 
-# Canonical settings. Single set applied to all four repos. Visibility is
+# Canonical settings. Single set applied to all repos in REPOS. Visibility is
 # NOT enforced (nix-personal stays private; others stay public — that's the
 # operator's decision per repo, not a fleet-wide knob).
 #
