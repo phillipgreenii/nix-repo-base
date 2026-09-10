@@ -873,9 +873,16 @@ EOF
   pid1=$!
   ( pgm_sem_acquire 5 && sleep 2 ) &
   pid2=$!
-  # 0.5s is far shorter than either backgrounded acquire's own 5s timeout, so
-  # this is a wait for slot creation, not a race against them.
-  sleep 0.5
+  # Poll for both backgrounded acquires to claim their slots instead of a
+  # single fixed sleep: on a heavily loaded machine, scheduling the
+  # backgrounded subshells can be delayed past a short fixed wait even though
+  # the acquire itself is uncontended (pg2-etudj). The 4.5s poll ceiling
+  # stays comfortably under either acquire's own 5s timeout, so this remains
+  # a wait for slot creation, never a race against them.
+  for _ in $(seq 1 45); do
+    [ -d "$PGM_SEM_DIR/0" ] && [ -d "$PGM_SEM_DIR/1" ] && break
+    sleep 0.1
+  done
   [ -d "$PGM_SEM_DIR/0" ]
   [ -d "$PGM_SEM_DIR/1" ]
   run pgm_sem_acquire 1
@@ -887,8 +894,19 @@ EOF
   export PGM_CONFIG_PATH="$TEST_DIR/no-such-config.json"
   export PGM_SEM_DIR="$TEST_DIR/sem"
   mkdir -p "$PGM_SEM_DIR/0"
-  # PID 99999 is not running.
-  printf '99999\n' >"$PGM_SEM_DIR/0/pid"
+  # A pid guaranteed to be dead by construction: spawn a real short-lived
+  # subprocess and `wait` for it to exit, rather than an arbitrary fixed
+  # value like 99999. A hardcoded "large" pid is merely UNLIKELY to be alive
+  # -- on a heavily loaded machine running many concurrent processes it can
+  # genuinely collide with a live, unrelated pid, in which case `kill -0`
+  # correctly reports it alive, pgm_sem_acquire correctly declines to
+  # reclaim, and this test times out and fails with status 3 even though
+  # nothing is wrong (pg2-etudj). A pid this test itself just spawned and
+  # reaped cannot suffer that collision.
+  ( : ) &
+  dead_pid=$!
+  wait "$dead_pid"
+  printf '%s\n' "$dead_pid" >"$PGM_SEM_DIR/0/pid"
   pgm_sem_acquire 1
   [ "$(cat "$PGM_SEM_DIR/0/pid")" = "$$" ]
   pgm_sem_release

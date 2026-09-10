@@ -43,13 +43,18 @@ WRAPPER
   unset PG_TEST_RUNNER_CONFIG PG_TEST_RUNNER_DEFAULT_CONFIG
 
   # A minimal, deterministic config using only go + bats (both available to
-  # this check via testDeps) -- see pg-test-runner/default.nix.
+  # this check via testDeps) -- see pg-test-runner/default.nix. timeoutSeconds
+  # matches the production default (modules/pg-test-runner/config.nix) rather
+  # than an independent, tighter value: a subprocess this suite spawns (e.g.
+  # a fixture's `go test`) can genuinely take longer than a short fixed cap
+  # under this workspace's normal concurrent-session load, timing out a
+  # healthy run rather than catching a real bug (pg2-etudj).
   CONFIG_PATH="$TEST_DIR/config.json"
   cat >"$CONFIG_PATH" <<'JSON'
 {
   "version": 1,
   "jobs": 2,
-  "timeoutSeconds": 120,
+  "timeoutSeconds": 300,
   "ignore": [".git/", "fixtures/", "testdata/"],
   "nonUnitLabels": ["integration", "smoke"],
   "languages": [
