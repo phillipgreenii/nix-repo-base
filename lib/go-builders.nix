@@ -212,7 +212,7 @@ rec {
   #       # NO modRoot. mkGoApp sets pwd = src.
   #     }
   #
-  #   Pattern B — a local `replace => ../sibling` (pa-monitor, ccpool, pr-pool):
+  #   Pattern B — a local `replace => ../sibling` (pa-monitor, ccpool, pg-router):
   #     mkGoApp {
   #       pname = "<name>";
   #       # Root src at the PARENT so the sibling is inside ONE store tree.
