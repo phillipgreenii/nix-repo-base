@@ -36,7 +36,10 @@ func (ws *Workspace) resolveRefRevs(ctx context.Context, mode string, offline bo
 			skipped[name] = true
 			continue
 		}
-		url := displayURL(rc)
+		// displayURL may return a Nix flake-ref shorthand (github:owner/repo),
+		// which `git ls-remote` cannot resolve; translate it the same way
+		// cloneURLAndBranch does before handing it to git.
+		url := flakeURLToHTTPS(displayURL(rc))
 		branch := rc.Branch
 		if branch == "" {
 			branch = "main"

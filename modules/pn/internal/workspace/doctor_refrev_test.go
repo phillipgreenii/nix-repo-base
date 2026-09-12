@@ -33,6 +33,31 @@ func TestResolveRefRevs_PrimaryUsesRemote(t *testing.T) {
 	}
 }
 
+// TestResolveRefRevs_GithubShorthandResolves guards against tc-l9gif: a repo
+// configured with the Nix flake-ref shorthand (github:owner/repo) must not be
+// marked skipped just because `git ls-remote` can't parse that scheme. The
+// FakeRunner only scripts the translated https:// URL, so this fails loudly
+// if resolveRefRevs regresses to passing the shorthand straight through.
+func TestResolveRefRevs_GithubShorthandResolves(t *testing.T) {
+	root := t.TempDir()
+	fr := exec.NewFakeRunner()
+	const want = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	fr.AddResponse("git",
+		[]string{"ls-remote", "https://github.com/o/r.git", "refs/heads/main"},
+		exec.Result{Stdout: []byte(want + "\trefs/heads/main\n")}, nil)
+	ws := &Workspace{
+		root: root, runner: fr,
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"repo-a": {URL: "github:o/r", Branch: "main"}}},
+	}
+	refRev, skipped := ws.resolveRefRevs(context.Background(), "primary", false)
+	if skipped["repo-a"] {
+		t.Fatal("repo-a unexpectedly skipped for a resolvable github: shorthand URL")
+	}
+	if refRev["repo-a"] != want {
+		t.Fatalf("refRev: want %s got %s", want, refRev["repo-a"])
+	}
+}
+
 func TestResolveRefRevs_OfflineSkips(t *testing.T) {
 	root := t.TempDir()
 	initRealRepo(t, filepath.Join(root, "repo-a"))
