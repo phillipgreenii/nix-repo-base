@@ -63,12 +63,18 @@ func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer
 
 	if opts.Onto != "" {
 		// Local-ref rebase: no fetch/pull; skip repos where ref is absent.
+		first := true
 		for _, name := range names {
 			repoDir := filepath.Join(ws.root, name)
 			if !ws.resolveRef(ctx, repoDir, opts.Onto) {
 				fmt.Fprintf(errOut, "pn workspace rebase: skipping %s — ref %q not found\n", name, opts.Onto)
 				continue
 			}
+			// Blank line between repo blocks (not before the first).
+			if !first {
+				fmt.Fprintln(out)
+			}
+			first = false
 			fmt.Fprintf(out, "  --== rebase %s ==--  \n", name)
 			client, err := openGitMutator(ctx, repoDir)
 			if err != nil {
@@ -87,11 +93,17 @@ func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer
 	}
 
 	// Default: fetch + pull --rebase --autostash onto tracked upstream.
+	first := true
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
 		if !ws.hasUpstream(ctx, repoDir) {
 			continue
 		}
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		fmt.Fprintf(out, "  --== rebase %s ==--  \n", name)
 		client, err := openGitMutator(ctx, repoDir)
 		if err != nil {

@@ -25,8 +25,14 @@ func (ws *Workspace) Format(ctx context.Context, out io.Writer, errOut io.Writer
 		fmt.Fprintln(errOut, terminalWarningMessage)
 	}
 	names := ws.topoAlpha(ctx)
+	first := true
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		fmt.Fprintf(out, "  --== format %s ==--  \n", name)
 		if _, err := ws.runner.Run(ctx, "nix", []string{"fmt"}, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out}); err != nil {
 			return fmt.Errorf("nix fmt in %s: %w", name, err)

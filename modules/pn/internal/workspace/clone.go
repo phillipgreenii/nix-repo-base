@@ -33,6 +33,7 @@ func (w *Workspace) Clone(ctx context.Context, out io.Writer, opts CloneOptions)
 	}
 	sort.Strings(names)
 
+	first := true
 	for _, name := range names {
 		r := w.config.Repos[name]
 		repoDir := filepath.Join(w.root, name)
@@ -48,6 +49,11 @@ func (w *Workspace) Clone(ctx context.Context, out io.Writer, opts CloneOptions)
 			return fmt.Errorf("clone %s: %w", name, err)
 		}
 
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		fmt.Fprintf(out, "  --== clone %s ==--  \n", name)
 		// Migrated onto x/gitclient's Clone constructor + RemoteManager.AddRemote
 		// (bead pg2-8bfb5, design pg2-migib §7a). Clone's own cloneArgs preserves

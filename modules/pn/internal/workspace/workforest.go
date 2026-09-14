@@ -104,7 +104,13 @@ func (w *Workspace) WorkforestAdd(ctx context.Context, out io.Writer, errOut io.
 	}
 
 	// --- git worktree add per member repo ---
+	firstAdd := true
 	for _, repo := range names {
+		// Blank line between repo blocks (not before the first).
+		if !firstAdd {
+			fmt.Fprintln(out)
+		}
+		firstAdd = false
 		if err := w.gitWorktreeAddOne(ctx, out, setDir, repo, branch, opts.CommitIsh); err != nil {
 			return err
 		}
@@ -524,6 +530,7 @@ func (w *Workspace) WorkforestRemove(ctx context.Context, out io.Writer, errOut 
 
 	names := w.topoAlpha(ctx)
 
+	first := true
 	for _, repo := range names {
 		canonical := filepath.Join(w.Root(), repo)
 		setRepo := filepath.Join(setDir, repo)
@@ -533,6 +540,11 @@ func (w *Workspace) WorkforestRemove(ctx context.Context, out io.Writer, errOut 
 			continue
 		}
 
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		fmt.Fprintf(out, "  --== worktree remove %s ==--  \n", repo)
 		// Stop this member worktree's fsmonitor daemon before removing it
 		// (best-effort; keyed by worktree path, so `worktree remove` would orphan it).
@@ -558,7 +570,13 @@ func (w *Workspace) WorkforestRemove(ctx context.Context, out io.Writer, errOut 
 // or a partial add failed.
 func (w *Workspace) WorkforestPrune(ctx context.Context, out io.Writer, errOut io.Writer, opts WorkforestPruneOptions) error {
 	names := w.topoAlpha(ctx)
+	first := true
 	for _, repo := range names {
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		fmt.Fprintf(out, "  --== worktree prune %s ==--  \n", repo)
 		canonical := filepath.Join(w.Root(), repo)
 		if _, err := w.runner.Run(ctx, "git",

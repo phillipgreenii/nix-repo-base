@@ -27,8 +27,14 @@ func (ws *Workspace) PreCommitCheck(ctx context.Context, out io.Writer, errOut i
 	}
 	names := ws.topoAlpha(ctx)
 	var firstErr error
+	first := true
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		fmt.Fprintf(out, "  --== pre-commit %s ==--  \n", name)
 		if _, err := ws.runner.Run(ctx, "pre-commit", []string{"run", "--all-files"}, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out}); err != nil {
 			if firstErr == nil {

@@ -184,11 +184,18 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 	var failed []string
 	var aborted bool
 	var abortedName string
+	first := true
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
 		}
 		repoDir := filepath.Join(ws.root, name)
+
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 
 		// Skip (non-fatal) if the working tree is dirty (modified or staged), or
 		// if cleanliness could not be determined — either way updating is unsafe.

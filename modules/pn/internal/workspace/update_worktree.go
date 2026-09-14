@@ -177,10 +177,16 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	})
 
 	outcomes := make([]repoOutcome, 0, len(names))
+	first := true
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
 		}
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		oc := ws.updateRepoViaWorktree(ctx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name), opts.SiblingsOnly)
 		level, outcome := "info", statusOK
 		msg := "project " + oc.status

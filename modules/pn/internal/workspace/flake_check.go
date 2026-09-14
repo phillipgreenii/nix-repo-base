@@ -34,11 +34,17 @@ func (ws *Workspace) FlakeCheck(ctx context.Context, out io.Writer, errOut io.Wr
 	}
 	names := ws.topoAlpha(ctx)
 	var failed []string
+	first := true
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
 		// Per-consumer override: inject workspace deps of this repo (excluding itself).
 		overrides := ws.overrideInputArgsFor(name, overrideOpts{ExcludeRepo: name})
 		args := append([]string{"flake", "check"}, overrides...)
+		// Blank line between repo blocks (not before the first).
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		fmt.Fprintf(out, "  --== flake-check %s ==--  \n", name)
 		if _, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out}); err != nil {
 			failed = append(failed, name)

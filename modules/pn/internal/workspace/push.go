@@ -314,8 +314,16 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 		}
 	}
 
+	first := true
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
+		// Blank line between repo blocks (not before the first). Placed ahead of
+		// any per-repo output (including the optional sibling-relock output below)
+		// so a repo's relock chatter and its push banner stay in the same block.
+		if !first {
+			fmt.Fprintln(out)
+		}
+		first = false
 		if propagate {
 			if err := ws.relockSiblingsBeforePush(ctx, out, name, repoDir, workspaceAliasesFromLock(edgeLock, name)); err != nil {
 				return err
