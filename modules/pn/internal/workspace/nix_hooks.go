@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -90,6 +91,45 @@ func validateAllHooks(cfg *WorkspaceConfig) error {
 	return nil
 }
 
+// installPreCommitHooksAttr is the {nix_run} attr name for the flake output
+// that (re)writes a repo's .pre-commit-config.yaml as a /nix/store symlink
+// and registers the git hook (ADR-0016). It is the sole {nix_run} hook
+// declared on every workspace repo (pn-workspace.toml's
+// post-clone/-rebase/-update/-upgrade entries), and realizing it is the
+// dominant recurring cost the idempotency gate below targets — each
+// invocation is a `nix run --override-input …`, and --override-input
+// defeats nix's flake-eval cache, forcing a full re-evaluation of the whole
+// flake graph even when the install itself has nothing to do. See the
+// amendment to ADR-0019 (bead pg2-19rcj).
+const installPreCommitHooksAttr = "install-pre-commit-hooks"
+
+// preCommitConfigLive reports whether dir/.pre-commit-config.yaml already
+// resolves to a live (still-present) /nix/store path — the ordinary state
+// once install-pre-commit-hooks has run once and nothing has invalidated it
+// since (the repo's checkout/flake inputs haven't changed). A missing entry,
+// a non-symlink, a symlink pointing outside /nix/store, or a dangling
+// symlink (the store path has since been GC'd) all return false, so the
+// (re)install still runs in every case except the one where it would be a
+// pure no-op anyway — most notably a freshly-materialized worktree, where
+// the file is simply absent.
+func preCommitConfigLive(dir string) bool {
+	link := filepath.Join(dir, ".pre-commit-config.yaml")
+	target, err := os.Readlink(link)
+	if err != nil {
+		return false // absent, or not a symlink at all
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(link), target)
+	}
+	if !strings.HasPrefix(target, "/nix/store/") {
+		return false
+	}
+	if _, err := os.Stat(target); err != nil {
+		return false // dangling: the store path was garbage-collected
+	}
+	return true
+}
+
 // eventName returns the "<phase>-<command>" event string.
 func eventName(phase HookPhase, cmd string) string {
 	if phase == HookPhasePre {
@@ -122,6 +162,10 @@ func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string
 // root; per-repo [[repos.<r>.hooks]] entries run in each processed repo
 // (cwd=repo), expanding any {nix_run} token against that repo's flake +
 // overrides. Pre-hooks abort on first failure; post-hooks warn and continue.
+// A per-repo {nix_run install-pre-commit-hooks} entry is additionally skipped
+// (for every event, every caller — workforest add/add-repo included) when
+// that repo's generated config already resolves live; see
+// installPreCommitHooksAttr / preCommitConfigLive.
 func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out, errOut io.Writer) error {
 	ev := eventName(phase, cmd)
 
@@ -206,6 +250,19 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 				continue
 			}
 			for _, raw := range h.Run {
+				// Idempotency gate (bead pg2-19rcj): install-pre-commit-hooks
+				// only (re)writes .pre-commit-config.yaml and registers the git
+				// hook, so when that symlink already resolves live there is
+				// nothing for it to do. Skip BEFORE expanding vars/effectiveLock
+				// so the dominant cost — nix re-evaluating the whole flake graph
+				// because --override-input defeats its eval cache — is never
+				// paid on a re-materialization/persistent worktree whose hooks
+				// are already current. A fresh worktree (config absent) or a
+				// genuinely-changed hook set (config missing/dangling) falls
+				// through and installs normally, exactly as before this gate.
+				if m := nixRunTokenRe.FindStringSubmatch(raw); m != nil && m[1] == installPreCommitHooksAttr && preCommitConfigLive(dir) {
+					continue
+				}
 				var vars nixHookVars
 				if nixRunTokenRe.MatchString(raw) {
 					vars = varsFor(key)

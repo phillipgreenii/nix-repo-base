@@ -390,3 +390,166 @@ func TestRunEventHooks_NonMatchingEventNeedsNoTrust(t *testing.T) {
 }
 
 var errBoom = errors.New("boom")
+
+// existingNixStoreEntry returns the path of a real, currently-present
+// /nix/store entry for use as a "live" symlink target in tests, or "" if
+// none can be found (e.g. a sandbox with no /nix/store) — callers must skip
+// in that case rather than assert against a synthetic path, since
+// preCommitConfigLive's /nix/store prefix check is deliberately literal.
+func existingNixStoreEntry(t *testing.T) string {
+	t.Helper()
+	matches, err := filepath.Glob("/nix/store/*")
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	return matches[0]
+}
+
+// TestPreCommitConfigLive covers the idempotency-gate predicate directly
+// (bead pg2-19rcj): live only for a symlink resolving into an EXISTING
+// /nix/store path; false for absent, a plain (non-symlink) file, a symlink
+// outside /nix/store, and a dangling /nix/store symlink.
+func TestPreCommitConfigLive(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, ".pre-commit-config.yaml")
+
+	if preCommitConfigLive(dir) {
+		t.Error("absent config must not be live")
+	}
+
+	writeFile(t, link, "not a symlink")
+	if preCommitConfigLive(dir) {
+		t.Error("a plain (non-symlink) file must not be live")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := filepath.Join(dir, "outside.yaml")
+	writeFile(t, outside, "x")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if preCommitConfigLive(dir) {
+		t.Error("a symlink resolving outside /nix/store must not be live")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+
+	dangling := "/nix/store/deadbeefdeadbeefdeadbeefdeadbeef-does-not-exist/pre-commit-config.yaml"
+	if err := os.Symlink(dangling, link); err != nil {
+		t.Fatal(err)
+	}
+	if preCommitConfigLive(dir) {
+		t.Error("a dangling /nix/store symlink (GC'd store path) must not be live")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+
+	target := existingNixStoreEntry(t)
+	if target == "" {
+		t.Skip("no /nix/store entries available in this environment")
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if !preCommitConfigLive(dir) {
+		t.Errorf("a symlink to an existing /nix/store entry must be live: %s -> %s", link, target)
+	}
+}
+
+// TestRunEventHooks_SkipsInstallPreCommitHooksWhenConfigAlreadyLive is the
+// core idempotency-gate regression (bead pg2-19rcj): when a repo's
+// .pre-commit-config.yaml already resolves to a live /nix/store path, the
+// {nix_run install-pre-commit-hooks} hook entry is skipped entirely — no
+// `sh` subprocess, and (the actual win) no effective-lock derivation either,
+// since the skip happens before vars are computed for that entry.
+func TestRunEventHooks_SkipsInstallPreCommitHooksWhenConfigAlreadyLive(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	w := openHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-clone\"]\nrun=[\"{nix_run install-pre-commit-hooks}\"]\n",
+		[]string{"a"}, lk)
+
+	target := existingNixStoreEntry(t)
+	if target == "" {
+		t.Skip("no /nix/store entries available in this environment")
+	}
+	repoDir := filepath.Join(w.root, "a")
+	if err := os.Symlink(target, filepath.Join(repoDir, ".pre-commit-config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately no `sh` response scripted: any attempt to run it fails the
+	// FakeRunner's call, proving the gate actually prevented the subprocess.
+
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "clone", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatalf("RunEventHooks: %v", err)
+	}
+	f := w.runner.(*exec.FakeRunner)
+	if n := len(shCalls(f)); n != 0 {
+		t.Errorf("install-pre-commit-hooks must be skipped when the config is already live; got %d sh calls", n)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("a clean skip should not warn; got %q", errOut.String())
+	}
+}
+
+// TestRunEventHooks_StillFiresInstallPreCommitHooksWhenConfigDangling proves
+// the gate's other half: a dangling (GC'd) .pre-commit-config.yaml is NOT
+// treated as live, so the hook still runs — a genuinely-stale gate must
+// still be re-synced.
+func TestRunEventHooks_StillFiresInstallPreCommitHooksWhenConfigDangling(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	w := openHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-clone\"]\nrun=[\"{nix_run install-pre-commit-hooks}\"]\n",
+		[]string{"a"}, lk)
+
+	repoDir := filepath.Join(w.root, "a")
+	dangling := "/nix/store/deadbeefdeadbeefdeadbeefdeadbeef-does-not-exist/pre-commit-config.yaml"
+	if err := os.Symlink(dangling, filepath.Join(repoDir, ".pre-commit-config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	wantCmd := "nix run '" + repoDir + "#install-pre-commit-hooks'"
+	f := w.runner.(*exec.FakeRunner)
+	f.AddResponse("sh", []string{"-c", wantCmd}, exec.Result{}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "clone", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatalf("RunEventHooks: %v", err)
+	}
+	if n := len(shCalls(f)); n != 1 {
+		t.Errorf("a dangling config must still install; want 1 sh call, got %d", n)
+	}
+}
+
+// TestRunEventHooks_OtherNixRunAttrsUnaffectedByGate proves the gate is
+// scoped to the install-pre-commit-hooks attr only: a {nix_run} hook for a
+// DIFFERENT attr still fires even when .pre-commit-config.yaml is live.
+func TestRunEventHooks_OtherNixRunAttrsUnaffectedByGate(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	w := openHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-clone\"]\nrun=[\"{nix_run some-other-tool}\"]\n",
+		[]string{"a"}, lk)
+
+	target := existingNixStoreEntry(t)
+	if target == "" {
+		t.Skip("no /nix/store entries available in this environment")
+	}
+	repoDir := filepath.Join(w.root, "a")
+	if err := os.Symlink(target, filepath.Join(repoDir, ".pre-commit-config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	wantCmd := "nix run '" + repoDir + "#some-other-tool'"
+	f := w.runner.(*exec.FakeRunner)
+	f.AddResponse("sh", []string{"-c", wantCmd}, exec.Result{}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "clone", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatalf("RunEventHooks: %v", err)
+	}
+	if n := len(shCalls(f)); n != 1 {
+		t.Errorf("a non-install-pre-commit-hooks {nix_run} hook must still fire; want 1 sh call, got %d", n)
+	}
+}

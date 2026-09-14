@@ -164,3 +164,57 @@ that would deploy the fix.
 `pn workspace apply` to deploy the new `pn`, then re-add the event and `apply` again.
 
 Reference: bd pg2-mbi5.
+
+## Amendment: idempotency gate on `{nix_run install-pre-commit-hooks}` (bd pg2-19rcj)
+
+Every workspace repo declares the same per-repo hook —
+`when = ['post-clone', 'post-rebase', 'post-update', 'post-upgrade']` /
+`run = ['{nix_run install-pre-commit-hooks}']` — so **every** hookable command that
+processes all repos (`clone`, `rebase`, `update`, `upgrade`) re-fires it in **every**
+repo, unconditionally. `pn workspace workforest add` (the fork stage of
+`/pn-workspace-sync`/`/pn-workspace-update`) additionally re-fires `post-clone` per member
+repo on every set materialization. The install itself
+(`flake-modules/pre-commit.nix`'s `writeShellScriptBin` wrapping `preCommit.shellHook`) is
+milliseconds of real work — it only (re)writes `.pre-commit-config.yaml` as a `/nix/store`
+symlink and registers the git hook (ADR-0016) — but each firing is wrapped in
+`nix run <--override-input …> '<flakedir>#install-pre-commit-hooks'`, and
+`--override-input` defeats nix's flake-eval cache: the resolved flake ≠ the locked flake,
+forcing a full re-evaluation of the whole flake graph (plus the full hook tool closure —
+prek, treefmt, statix, deadnix, shellcheck — realized in the store) on **every**
+invocation, observed at ~1.5 min/repo.
+
+**Decision:** an idempotency gate at the hook-firing layer (`RunEventHooks`,
+`internal/workspace/nix_hooks.go`), not inside the installed script and not by narrowing
+`pn-workspace.toml`'s `when` list — both alternatives were considered and rejected (see the
+pg2-19rcj bead history for the full analysis):
+
+- A gate _inside_ `install-pre-commit-hooks` cannot help: the dominant cost (flake
+  realization + the override-defeated eval) is paid by `nix run` **before** the script body
+  ever executes.
+- Narrowing `when` to `post-upgrade` only is config-only but unsafe: a freshly-materialized
+  worktree (the common `workforest add` case) would then carry **no** generated
+  `.pre-commit-config.yaml` at all until the next upgrade, so commits/pushes there would
+  skip or fail the git gate — colliding with the pre-commit-config-missing-in-worktree
+  cluster (pg2-qxjhe / pg2-m75sq / pg2-x42j3 / pg2-vqyw3).
+
+`RunEventHooks` now skips a `{nix_run install-pre-commit-hooks}` run entry — for **any**
+event, in **any** caller (plain `clone`/`rebase`/`update`/`upgrade` and every workforest
+path alike) — when that repo's `.pre-commit-config.yaml` already resolves to a **live**
+`/nix/store` path (`preCommitConfigLive`: a symlink, target prefixed `/nix/store/`, target
+still present on disk). The check runs before any `{nix_run}` expansion, so a skip also
+avoids deriving the effective lock for that entry. Any other outcome — the file is absent,
+not a symlink, points outside `/nix/store`, or is dangling (its store path was GC'd) — falls
+through and installs exactly as before this gate.
+
+**Which trigger events still install hooks, and why:**
+
+| Trigger                                                                 | Still installs?                                    | Why                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A fresh worktree (first `workforest add`, or a bare `git worktree add`) | Yes, always                                        | `.pre-commit-config.yaml` does not exist yet in the new worktree — the gate's absent case.                                                                                                                                                               |
+| Re-materialization / a persistent worktree whose hooks are current      | No — skipped                                       | The symlink already resolves live; re-running would be a pure no-op.                                                                                                                                                                                     |
+| The repo's hook set genuinely changed (upstream config/formatter edit)  | Yes, if the symlink is now dangling or was removed | A changed derivation invalidates the OLD store path only once it is actually GC'd; a still-live stale symlink is a pre-existing staleness window this gate does not create or close (unchanged from before pg2-19rcj — see ADR-0019's original Context). |
+| `post-apply` / a plain `nix run .#install-pre-commit-hooks`             | Yes, always                                        | Not a hookable event this gate touches; unaffected.                                                                                                                                                                                                      |
+
+**Known limit, so nobody expects too much:** the common `workforest add` case creates a
+FRESH worktree, so the gate's win is on re-materialization and persistent worktrees, not on
+a first fork — a first fork still pays the cost once per repo.
