@@ -66,9 +66,28 @@
 #   (exits 1) — it means a prior step's commit attempt failed silently.
 #
 # ANCHOR: ul_run_step-success-commit
-#   On <cmd> exit 0 AND content changed: runs nix fmt, stages all, writes
-#   stamp, commits ONE commit with <commit-msg>. On <cmd> exit 0 AND no
-#   content changed: writes stamp, commits stamp-only.
+#   On <cmd> exit 0 AND content changed: runs nix fmt, refreshes the
+#   pre-commit-hooks symlink if this step's own changes touched flake.lock
+#   (see ANCHOR ul_run_step-pre-commit-refresh), stages all, writes stamp,
+#   commits ONE commit with <commit-msg>. On <cmd> exit 0 AND no content
+#   changed: writes stamp, commits stamp-only.
+#
+# ANCHOR: ul_run_step-pre-commit-refresh
+#   If a step's own changes (still uncommitted at this point) modified
+#   flake.lock -- e.g. the canonical "nix-flake-update" step's `nix flake
+#   update` -- _ul_commit_updated re-runs _ul_ensure_pre_commit_hooks before
+#   committing. ul_setup's own install (ANCHOR ul_setup-pre-commit-install)
+#   runs ONCE, before any step, against whatever lock was checked out at the
+#   START of the run; a step that bumps the lock mid-run leaves that symlink
+#   pointing at a pre-commit-hooks build made from the OLD lock. The commit
+#   this function makes fires the repo's git hooks against that symlink --
+#   if the pinned formatter version differs from what a fresh `nix fmt`
+#   (which resolves the JUST-bumped lock immediately) just applied, a
+#   --fail-on-change treefmt hook can read that disagreement as an
+#   "unexpected change" on a file the fresh nix fmt already formatted
+#   correctly (bd pg2-vayo4). Refreshing here, before this commit, keeps the
+#   symlink a step's own commit fires hooks against synced with the lock that
+#   same step just bumped.
 #
 # ANCHOR: ul_run_step-deferred
 #   On <cmd> exit $UL_RC_ATTEMPTED (75 = EX_TEMPFAIL): rolls back content
@@ -796,6 +815,13 @@ _ul_commit_updated() {
       _UL_FAILED_STEPS+=("$step_name")
       return 1
     fi
+  fi
+  # See ANCHOR ul_run_step-pre-commit-refresh: if THIS step's own uncommitted
+  # changes touched flake.lock, the pre-commit-hooks symlink ul_setup built at
+  # the start of the run is now stale relative to it. Refresh before the
+  # commit below fires git hooks against that symlink (bd pg2-vayo4).
+  if ! git diff --quiet -- flake.lock 2>/dev/null || ! git diff --cached --quiet -- flake.lock 2>/dev/null; then
+    _ul_ensure_pre_commit_hooks
   fi
   ul_write_stamp "$step_name"
   if ! git add -A || ! git commit -m "$commit_msg" >/dev/null; then

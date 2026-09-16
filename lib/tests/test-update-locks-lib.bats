@@ -841,6 +841,94 @@ HOOK
   [[ ! "${_UL_UPGRADE_NOTES[0]}" =~ home-manager ]]
 }
 
+# --- ul_run_step: pre-commit-hooks refresh on a flake.lock-changing step
+# (bd pg2-vayo4) ---
+#
+# ul_setup's own _ul_ensure_pre_commit_hooks call happens ONCE, at the START
+# of the run, against whatever flake.lock is checked out then. If a later
+# step (canonically "nix-flake-update") bumps flake.lock, the derivation that
+# install produced is now stale relative to the lock this step just moved.
+# _ul_commit_updated must re-run _ul_ensure_pre_commit_hooks, before its own
+# commit, whenever the step's own (still-uncommitted) changes touched
+# flake.lock -- and must NOT do so for a step that left flake.lock untouched.
+#
+# The mock nix's Tier-1 `build .#install-pre-commit-hooks` below derives the
+# "drv path" it prints from a checksum of the CURRENT flake.lock content, so
+# a real lock-content change naturally yields a different observed drv --
+# mirroring how a real `nix build` output would move if the lock it
+# evaluates against changed. Tier 3 (the drv-path marker compare inside
+# _ul_ensure_pre_commit_hooks) then decides whether to reinstall, exactly as
+# it would against a real store path.
+_seed_lock_sensitive_pre_commit_mock() {
+  UL_TEST_INSTALL_COUNTER="$STATE_DIR/install-count"
+  export UL_TEST_INSTALL_COUNTER
+
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in
+  *build*install-pre-commit-hooks*)
+    hash=$(cksum flake.lock 2>/dev/null | awk '{print $1}')
+    echo "/nix/store/deadbeef-${hash:-nolock}-install-pre-commit-hooks"
+    ;;
+  *run*install-pre-commit-hooks*)
+    n=$(( $(cat "$UL_TEST_INSTALL_COUNTER" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$UL_TEST_INSTALL_COUNTER"
+    ;;
+esac
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  # A findable, non-GC'd hook (no /nix/store path named in it) so Tiers 1/2
+  # never force a reinstall on their own -- only Tier 3's drv-path mismatch,
+  # driven by the lock-sensitive mock above, should.
+  _seed_hook_runner_mock
+  local hooks_dir
+  hooks_dir="$(git rev-parse --path-format=absolute --git-path hooks)"
+  mkdir -p "$hooks_dir"
+  printf 'exec %s hook-impl --hook-type=pre-commit\n' "$MOCK_BIN/hook-runner" \
+    > "$hooks_dir/pre-commit"
+
+  printf '%s\n' '{"nodes":{"nixpkgs":{"locked":{"rev":"aaaa"}},"root":{}}}' > flake.lock
+  git add flake.lock
+  git commit -m "add flake.lock"
+}
+
+@test "ul_run_step re-installs pre-commit hooks when a step's own changes touch flake.lock (pg2-vayo4)" {
+  _seed_lock_sensitive_pre_commit_mock
+
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  [ "$(cat "$UL_TEST_INSTALL_COUNTER")" -eq 1 ] # ul_setup's own install
+
+  bump_lock() {
+    printf '%s\n' '{"nodes":{"nixpkgs":{"locked":{"rev":"bbbb"}},"root":{}}}' > flake.lock
+  }
+  ul_run_step "nix-flake-update" "update: lock" bump_lock
+
+  [ "$_UL_STEPS_FAILED" -eq 0 ]
+  # The step changed flake.lock, so the mock's observed drv path moved too --
+  # _ul_commit_updated must have re-run _ul_ensure_pre_commit_hooks before
+  # committing, ahead of any git-hook run the commit triggers.
+  [ "$(cat "$UL_TEST_INSTALL_COUNTER")" -eq 2 ]
+}
+
+@test "ul_run_step does NOT re-install pre-commit hooks for a step that leaves flake.lock untouched" {
+  _seed_lock_sensitive_pre_commit_mock
+
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  [ "$(cat "$UL_TEST_INSTALL_COUNTER")" -eq 1 ] # ul_setup's own install
+
+  other_step() { echo "new content" > file.txt; }
+  ul_run_step "other-step" "update: other" other_step
+
+  [ "$_UL_STEPS_FAILED" -eq 0 ]
+  # flake.lock never moved, so no re-install was warranted or should happen.
+  [ "$(cat "$UL_TEST_INSTALL_COUNTER")" -eq 1 ]
+}
+
 @test "ul_finalize lists upgraded steps and counts them" {
   source "$UL_LOCKS_LIB"
   ul_setup "test-project" "$TEST_DIR"
