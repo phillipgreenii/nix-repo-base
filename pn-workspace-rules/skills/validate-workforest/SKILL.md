@@ -86,7 +86,7 @@ flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
        | (.mode == "worktree") as $inset
        | "mode=\(.mode)",
          ( .findings[]
-           | select(.severity == "error" and (.skipped | not))
+           | select((.severity | ascii_downcase) == "error" and (.skipped | not))
            | (.message | capture("\\(→ \"(?<t>[^\"]+)\"\\)") | .t) // "" as $target
            | if $inset and .check == "flake-lock-fresh" and ($L | index($target))
              then "EXEMPT   \(.repo)\t\(.message)"
