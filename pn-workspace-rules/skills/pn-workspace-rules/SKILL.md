@@ -116,6 +116,8 @@ Evaluates each cloned repo's `flake.nix` inputs, discovers workspace dependency 
 
 The `input-name` field on `[repos.*]` sections has been removed. Alias names are now derived automatically from each consumer's declared flake input aliases at lock time. If you see an error about `input-name`, remove that field from `pn-workspace.toml`.
 
+**`apply_command` has no default** — unlike `build_command`, which defaults to `{builder} build --flake {terminal_nix_dir}`, `workspace.apply_command` MUST be set explicitly in `pn-workspace.toml` or `pn workspace apply` fails with `workspace.apply_command is not set in pn-workspace.toml`. A NixOS example: `apply_command = '{builder} switch --flake {terminal_nix_dir}#{hostname} --sudo'`. Known template placeholders: `terminal_repo_dir`, `terminal_nix_dir`, `terminal_nix_relative_path`, `hostname`, `builder` (`nixos-rebuild` on NixOS, `darwin-rebuild` on darwin). `--sudo` (nixos-rebuild-ng) builds/evaluates unprivileged and escalates only activation — this matters because an eval running as root hits a git "dubious ownership" error on the sibling override repos owned by the non-root user. `pn-workspace.toml` lives in the non-git workspace root, so this setting is not version-controlled — a `pn workspace init`/`clone` regen could drop it, so re-check it after either.
+
 ### Adopting a new hookable command (forward-compat two-step)
 
 An unknown hook `when` event (`[[hooks]] when=['<phase>-<command>']` naming a command the
