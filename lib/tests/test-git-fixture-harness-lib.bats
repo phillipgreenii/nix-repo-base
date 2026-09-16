@@ -144,6 +144,44 @@ HOOK
   rm -rf "$root"
 }
 
+# Regression for pg2-510ya: a stray [user] block with exactly this fixture
+# identity ("standalone-suite@bashfixture.invalid") was found in the
+# CANONICAL clone's real .git/config after a bats run. Root cause: `-C
+# <path>` does NOT protect against a leaked GIT_DIR -- when GIT_DIR is set,
+# git's repository discovery is pinned there and bypasses `-C` entirely, so
+# an inherited GIT_DIR (e.g. from a linked-worktree hook environment, the
+# pg2-jjlm8/pg2-12795 mechanism) silently redirects gfh_init_repo's "init a
+# fixture repo at <path>" onto the leaked real repo instead. This is exactly
+# the standalone-usage shape of the test above, but WITH that leak present
+# and NO prior gfh_setup call to have scrubbed it (gfh_init_repo's own
+# documented, intended standalone use) -- discriminating: it must prove BOTH
+# that the leaked repo is untouched AND that the real target got initialised,
+# not just that the call didn't error.
+@test "gfh_init_repo: a leaked GIT_DIR does not redirect init/config onto it (pg2-510ya)" {
+  local leaked target
+  leaked="$(mktemp -d)"
+  target="$(mktemp -d)"
+  command git init -q -b main "$leaked"
+  command git -C "$leaked" config core.hooksPath /dev/null
+  command git -C "$leaked" config user.email "real@example.com"
+  command git -C "$leaked" config user.name "Real User"
+
+  run env GIT_DIR="$leaked/.git" bash -c "
+    source '$GFH_LIB'
+    gfh_init_repo '$target/second-repo' 'leak-suite'
+  "
+  [ "$status" -eq 0 ]
+
+  # The leaked repo's real identity must survive untouched.
+  [ "$(command git -C "$leaked" config user.email)" = "real@example.com" ]
+  # The actual target must be the one that got initialised with the fixture
+  # identity -- not left without a .git at all (what happened before the fix).
+  [ -d "$target/second-repo/.git" ]
+  [ "$(command git -C "$target/second-repo" config user.email)" = "leak-suite@bashfixture.invalid" ]
+
+  rm -rf "$leaked" "$target"
+}
+
 # --- HOME isolation ----------------------------------------------------------
 
 @test "gfh_setup: HOME is a fresh, empty directory, never the developer's real one" {

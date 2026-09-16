@@ -70,10 +70,23 @@
 #
 #   gfh_init_repo <path> <suite-name>
 #     Lower-level primitive: git-init a repo at <path> with hooks disabled
-#     and the per-suite fixture identity, WITHOUT touching HOME, env, or
-#     GIT_CEILING_DIRECTORIES. For a caller that needs a SECOND repository
-#     inside one gfh_setup call (e.g. a bare remote for push/fetch tests) —
-#     gfh_setup itself calls this for GFH_REPO.
+#     and the per-suite fixture identity, WITHOUT touching HOME, the wider
+#     exported environment, or GIT_CEILING_DIRECTORIES. For a caller that
+#     needs a SECOND repository inside one gfh_setup call (e.g. a bare remote
+#     for push/fetch tests) — gfh_setup itself calls this for GFH_REPO.
+#     ONE deliberate exception to "does not touch env" (pg2-510ya): it DOES
+#     unset the GIT_DIR-family vars (GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR/
+#     GIT_INDEX_FILE/GIT_PREFIX/GIT_OBJECT_DIRECTORY) before its own git
+#     calls, unconditionally — not only when gfh_setup already scrubbed them.
+#     `-C <path>` does NOT protect against a leaked GIT_DIR: when GIT_DIR is
+#     set, git's repository discovery is pinned there and bypasses `-C`
+#     entirely, so an inherited GIT_DIR (e.g. from a linked-worktree hook
+#     environment, the pg2-jjlm8/pg2-12795 mechanism) silently redirects
+#     "init a fixture repo at <path>" onto the leaked real repo instead —
+#     confirmed the exact corruption pg2-510ya reported. A caller that uses
+#     this primitive standalone (its whole documented purpose) gets no other
+#     scrub, so this one has to live here rather than depending on the caller
+#     having called gfh_setup/gfh_reset_env first.
 #
 #   gfh_identity_email <suite-name> / gfh_identity_name <suite-name>
 #     Pure functions printing the email/name half of the fixture identity.
@@ -157,6 +170,12 @@ gfh_identity_name() {
 gfh_init_repo() {
   local repo="$1" suite="$2"
   mkdir -p "$repo"
+  # By-construction guard (pg2-510ya): see the CONTRACT block above this
+  # function for why this is here unconditionally, not only relied on via
+  # gfh_setup's earlier gfh_reset_env call. Idempotent with that path (these
+  # are already unset there); load-bearing for a standalone caller, which is
+  # this primitive's own documented, intended use.
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
   command git -C "$repo" init -q -b main
   # Hooks disabled (D2): core.hooksPath pointed at a non-directory means git
   # can never resolve a hook file under it, so no hook — planted, inherited,
