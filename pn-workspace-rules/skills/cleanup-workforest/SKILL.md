@@ -27,6 +27,22 @@ not — including `pull-request` repos and un-landed clean work.
 **Disambiguation.** This tears down a whole coordinated SET. It is not a landing
 step and not a force-delete; by default it never discards unmerged work.
 
+**Precondition: the land transaction must be COMPLETE, not merely progressed
+(MUST — bd `pg2-fxj57`).** Do not run this (or bare `pnwf cleanup`) while
+`land-workforest`'s own land-plan for the set is non-empty, or while its last
+attempt ended in `stopped:<reason>` / `pr-opened` / `pr-updated`. The
+landed-test below is purely per-member (branch-absent or ancestor-of-primary)
+— it has no way to see a cross-repo **filesystem** dependency (e.g. a
+gitignored dev symlink from one member into a sibling's set-worktree), so it
+will happily remove an already-landed member's worktree even while a
+still-blocked sibling's own land-time gate still needs it on disk. That is the
+exact race `land-workforest` now defers its own teardown to avoid — invoking
+this skill mid-transaction as a "clean up what we can so far" shortcut
+reintroduces it at a different call site. Run this only once
+`land-workforest` reports the whole plan clear (its own step 3 already runs
+`pnwf cleanup` at that point; invoking this skill again afterward is a safe,
+idempotent no-op over whatever it already swept).
+
 ## Deterministic teardown in `pnwf`; the skill wraps it
 
 The teardown is `pnwf cleanup <branch> [--force-dirty-worktree-removal]
