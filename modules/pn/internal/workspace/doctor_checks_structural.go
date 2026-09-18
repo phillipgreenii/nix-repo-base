@@ -4,7 +4,6 @@ package workspace
 import (
 	"context"
 	"path/filepath"
-	"reflect"
 )
 
 // checkLock emits lock-present / lock-legacy / lock-current findings.
@@ -39,7 +38,7 @@ func (ws *Workspace) checkLock(ctx context.Context, env *doctorEnv) []Finding {
 	if ws.lock != nil && len(ws.lock.Repos) > 0 && lockMatchesConfig(ws.lock, ws.config) {
 		fresh, _, err := deriveLock(ctx, ws, "")
 		if err == nil && fresh != nil {
-			if !reflect.DeepEqual(ws.lock.Edges, fresh.Edges) || !reflect.DeepEqual(ws.lock.Order, fresh.Order) {
+			if !lockEdgesEqual(ws.lock.Edges, fresh.Edges) || !stringSliceEqual(ws.lock.Order, fresh.Order) {
 				fs = append(fs, Finding{
 					CheckID: "lock-current", Severity: SevError,
 					Message: "pn-workspace.lock.json is stale (edges/order differ from a fresh derive) and is consumed as-is",
@@ -50,4 +49,41 @@ func (ws *Workspace) checkLock(ctx context.Context, env *doctorEnv) []Finding {
 		}
 	}
 	return fs
+}
+
+// lockEdgesEqual reports whether a and b contain the same edges in the same
+// order. Compared by length-then-element rather than reflect.DeepEqual so a
+// nil slice (the zero value of "var edges []LockEdge" when buildEdges finds
+// no edges — the fresh-derive path) and a non-nil empty slice (emptyLock's
+// `Edges: []LockEdge{}` — what filterLock starts from when writing a
+// `--repos` subset's on-disk lock) compare equal. reflect.DeepEqual treats
+// those as DIFFERENT, which made lock-current fire spuriously for any
+// `--repos` subset workforest set whose members have zero dependency edges
+// between each other (e.g. two otherwise-unrelated repos subsetted together
+// because a change touches both) — a semantically identical "no edges" lock,
+// not staleness. LockEdge is a plain comparable struct (three strings).
+func lockEdgesEqual(a, b []LockEdge) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// stringSliceEqual is lockEdgesEqual's counterpart for Order, guarding
+// against the same nil-vs-empty-slice mismatch.
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

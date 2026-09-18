@@ -47,7 +47,9 @@ Completion-Gate tier** actually guarantees the whole set is valid.
    lighter only when a lower tier still guarantees the _whole set_ is valid.
    - Note the `--repos` subset case: a subset that excludes the terminal cannot
      `pn workspace build`; validate at the highest tier the subset supports and
-     say so in the report.
+     say so in the report. That same excluded terminal also makes `pn workspace
+doctor`'s `terminal-resolvable` check unresolvable by construction — step 6
+     below is the classifier carve-out this implies.
 3. **Run the selected `pn` check verbs** for that tier (e.g. `pn workspace
 flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
    final consistency gate.
@@ -98,6 +100,85 @@ flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
      finding whose message yields no target falls through to `BLOCKING`, so a
      message-format change fails the gate CLOSED rather than exempting silently.
 
+6. **`--repos` subset excludes the terminal → `terminal-resolvable`
+   (`missing_terminal`) WARN, do not fail (MUST).** A subset forked via `pn
+workspace workforest add <branch> --repos a,b` gets its own filtered
+   `pn-workspace.toml` (`filterConfig`, `modules/pn/internal/workspace/workforest_subset.go`),
+   which deliberately clears `workspace.terminal` when the configured terminal
+   is not one of the subset's members — the subset genuinely doesn't contain
+   it. `pn workspace doctor`'s `terminal-resolvable` check then tries
+   auto-detection over the subset's own (smaller) dependency graph
+   (`autoDetectTerminal`, `modules/pn/internal/workspace/terminal.go`), which
+   requires a candidate sink to share a connected component with at least one
+   other flake repo in the graph being searched. When the subset's members
+   have no dependency edge on EACH OTHER — their shared dependency is
+   precisely the excluded terminal, e.g. two otherwise-unrelated repos
+   subsetted together because a change touches both — every candidate is
+   isolated and gets filtered out, so NO terminal resolves at all. This is a
+   **structural** consequence of restricting the graph to a subset that
+   excludes its terminal, not a misconfiguration: the identical subset run
+   against the FULL (unforked) workspace never hits this, and re-running with
+   `workspace.terminal` explicitly set to a SUBSET member would not fix it
+   either (the real terminal still isn't a member — setting it to the wrong
+   repo just trades this finding for `terminal_not_sink`). Validate MUST
+   downgrade `terminal-resolvable`'s `missing_terminal` code to a **warning**
+   when the run is confirmed to be a genuine `--repos` subset (below), and
+   MUST leave `terminal_not_sink` and `missing_flake_path` (the check's other
+   two codes) untouched — those are real problems even inside a subset.
+   - **Distinguish a subset from a genuinely misconfigured FULL set.** A full
+     (non-`--repos`) workforest set copies `pn-workspace.toml` byte-for-byte
+     (`writeSetMembership`'s `isFullSet` branch), so `workspace.terminal`
+     empty on a full set means the CANONICAL workspace itself never had a
+     terminal configured — a real bug that would show up identically on the
+     canonical primary and MUST stay BLOCKING. `mode == "worktree"` plus
+     `workspace.terminal == ""` alone cannot tell the two apart; only an
+     actual repo-count comparison against the canonical workspace can.
+     Compute it once, alongside `land-plan`:
+
+     ```bash
+     set_count=$(env -u PN_WORKSPACE_ROOT pn workspace info --json | jq '.repos | length')
+     canonical_root=$(pnwf resolve | jq -r '.canonical_root')
+     canonical_count=$(PN_WORKSPACE_ROOT="$canonical_root" pn workspace info --json | jq '.repos | length')
+     is_subset=$([ "$set_count" -lt "$canonical_count" ] && echo true || echo false)
+     ```
+
+   - **Classify in the same pass as step 5.** Extend that step's jq classifier
+     with a second exemption branch, gated on `$subset` in addition to
+     `$inset`:
+
+     ```bash
+     pn workspace doctor --json | jq -r --arg landing "$landing" --argjson subset "$is_subset" '
+       ($landing | split("\n") | map(select(length > 0))) as $L
+       | (.mode == "worktree") as $inset
+       | "mode=\(.mode)",
+         ( .findings[]
+           | select((.severity | ascii_downcase) == "error" and (.skipped | not))
+           | (.message | capture("\\(→ \"(?<t>[^\"]+)\"\\)") | .t) // "" as $target
+           | if $inset and .check == "flake-lock-fresh" and ($L | index($target))
+             then "EXEMPT   \(.repo)\t\(.message)"
+             elif $inset and $subset and .check == "terminal-resolvable"
+                  and (.message | startswith("missing_terminal"))
+             then "EXEMPT   \(.repo)\t\(.message)"
+             else "BLOCKING \(.repo)\t\(.check)\t\(.message)"
+             end )'
+     ```
+
+   - **`lock-current` needed no carve-out here.** The same `--repos` subset
+     shape also made `lock-current` ("edges/order differ from a fresh
+     derive") fire falsely whenever the subset's members have zero edges
+     between each other: the on-disk lock `pn workspace workforest add`
+     writes (`filterLock`) starts from `emptyLock()`'s non-nil
+     `Edges: []LockEdge{}`, while `checkLock`'s fresh re-derive
+     (`deriveLock`→`buildEdges`) leaves an untouched, never-appended-to `nil`
+     slice — and `reflect.DeepEqual(nil, []LockEdge{})` is `false`. Unlike
+     `terminal-resolvable`, this was a genuine implementation bug, not a
+     structural fact about subset graphs (a fresh derive over the subset
+     alone agrees with the filtered lock on every edge that survives
+     filtering, byte for byte, once nil and empty compare equal) — so it was
+     fixed directly in `checkLock`
+     (`modules/pn/internal/workspace/doctor_checks_structural.go`) rather than
+     carved out here. No classifier change was needed or made for it.
+
 ## Policies
 
 - MUST guarantee validity on success.
@@ -115,6 +196,17 @@ flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
   where nothing was synced, and otherwise takes a bounded publish-then-re-validate
   escape (bd `pg2-6gjcy`). Widening step 5 to cover it would exempt genuinely stale
   pins along with it, which is the "silent hole" this carve-out exists to avoid.
+- MUST NOT fail solely because a `--repos` subset's own `terminal-resolvable`
+  check reports `missing_terminal` — warn instead (step 6). This is likewise a
+  NARROWING: `terminal_not_sink` and `missing_flake_path` keep their severity,
+  and so does `terminal-resolvable` on any run that is not a confirmed subset.
+- **Step 6 MUST NOT be widened to `mode == "worktree"` alone (dropping the
+  subset-count check).** A FULL workforest set copies `pn-workspace.toml`
+  verbatim, so `workspace.terminal == ""` there means the CANONICAL workspace
+  itself has no terminal configured — a real bug, not a subsetting artifact.
+  Exempting on `mode` alone would silently wave that through on every full-set
+  validate; the repo-count comparison against canonical is what tells the two
+  apart.
 - This is the single Facade for validating a set; consumers (the sync command,
   the bead work-cycle) call it rather than re-deriving check commands.
 
@@ -133,6 +225,18 @@ freshness, so on the canonical primary `flake-lock-fresh` MUST remain a **hard
 error** — satisfied by `pn workspace push`, never waived. Step 5 exempts only drift
 against a rev that is not published yet _because this run has not landed it yet_;
 once the run lands and publishes, the same drift is back under the hard gate.
+
+Step 6's carve-out is likewise gated on `mode == "worktree"` PLUS the subset-count
+check, so it too cannot reach a canonical checkout — a canonical clone is never a
+`--repos` subset of itself. Unlike step 5, there is no later convergence step to
+reason about: `land-workforest` folds each member back onto its own canonical
+primary one repo at a time (the coordinated set, and the notion of "this subset
+excludes the terminal," cease to exist once the set is dismantled), and the
+canonical workspace's `pn workspace doctor` always sees the FULL graph, where the
+real terminal was never excluded. `terminal-resolvable` on the canonical primary
+therefore isn't "the same finding, now hard" the way `flake-lock-fresh` is after
+landing — it is simply a different, unrelated doctor run over a graph the subset
+carve-out never applied to.
 
 ## Frontmatter constraint: never set `disable-model-invocation`
 

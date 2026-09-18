@@ -22,6 +22,38 @@ func TestCheckTerminal_NoTerminalIsError(t *testing.T) {
 	}
 }
 
+// TestCheckTerminal_SubsetMembersWithNoEdgeIsMissingTerminal reproduces the
+// other half of pg2-jj4ie: a `--repos` subset workforest set whose members
+// have no dependency edge on EACH OTHER (their shared dependency is the
+// workspace terminal, which the subset excludes) cannot auto-detect a
+// terminal even though it genuinely has two configured, real repos — unlike
+// TestCheckTerminal_NoTerminalIsError above (a degenerate empty-repos case
+// that never reaches autoDetectTerminal's connected-component filter at
+// all). filterConfig already clears workspace.terminal when the configured
+// terminal is excluded from the set (workforest_subset.go), so config.
+// Workspace.Terminal is "" here exactly as it would be on disk. With zero
+// edges between the two members, autoDetectTerminal finds two candidate
+// sinks but filters BOTH out as isolated (step 4: a candidate must share a
+// connected component with at least one other flake repo), leaving no
+// terminal at all -- a structural consequence of the subset excluding the
+// repo that actually ties the two members together, not a misconfiguration
+// bug in resolution itself.
+func TestCheckTerminal_SubsetMembersWithNoEdgeIsMissingTerminal(t *testing.T) {
+	root := t.TempDir()
+	cfg := &WorkspaceConfig{
+		Repos: map[string]RepoConfig{
+			"agent-support": {URL: "u1", Branch: "main"},
+			"support-apps":  {URL: "u2", Branch: "main"},
+		},
+	}
+	ws := &Workspace{root: root, runner: exec.NewFakeRunner(), config: cfg}
+	env := &doctorEnv{ws: ws, mode: "worktree", terminal: "", lock: emptyLock()}
+	fs := ws.checkTerminal(context.Background(), env)
+	if !hasFinding(fs, "terminal-resolvable", SevError) {
+		t.Fatalf("two edge-less subset members should be terminal-resolvable error: %+v", fs)
+	}
+}
+
 func TestCheckTerminal_FollowsViolationIsError(t *testing.T) {
 	root := t.TempDir()
 	term := filepath.Join(root, "term")
