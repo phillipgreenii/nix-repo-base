@@ -444,6 +444,12 @@ let
         else
           null;
 
+      # Per event, the value under `hooks.<Event>` is itself an ARRAY of
+      # matcher-groups (Claude Code's own `hooks.json` shape — see e.g.
+      # claude-extended-tool-approver's real hooks.json, cited by the design
+      # at §1.3): `[ { matcher?; hooks: [ {type;command} ] } ]`. This builder
+      # only ever emits one group per event (the union matcher above), but the
+      # VALUE must still be that one-element array, not an object wrapping it.
       hooksJsonEvents = lib.mapAttrs (
         _event: delegates:
         let
@@ -453,9 +459,7 @@ let
             command = routerCommand;
           };
         in
-        {
-          hooks = [ ({ hooks = [ hookCmd ]; } // (if m == null then { } else { matcher = m; })) ];
-        }
+        [ ({ hooks = [ hookCmd ]; } // (if m == null then { } else { matcher = m; })) ]
       ) delegatesByEvent;
 
       sortDelegates = lib.sort (
