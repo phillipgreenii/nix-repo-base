@@ -104,6 +104,28 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   does not breach the no-modify prohibition; you MUST NOT reset, stash,
   commit, abort, or continue anything it reports.
 
+## Constraint: A Classifier-Denied Bash Call Escalates, Never Retries
+
+**A denial you receive is not a live prompt you can get answered.** A Bash
+call the permission classifier blocks outright — reason `"Modify Shared
+Resources"`, or any other outright denial with **no exit code**, because the
+command never started — is a different failure from a command that ran and
+exited non-zero. The main session can surface a live human approval prompt for
+a denial like this; a dispatched subagent cannot reliably do the same (bd
+`pg2-bswgr`: `pnwf sync-fetch --set` was denied identically twice in a
+dispatched runner, including once AFTER the user approved the prompt live,
+then ran immediately with no denial when the main session issued the exact
+same command itself).
+
+- On a classifier denial in ANY stage — no exit code, the command never
+  started — you MUST NOT retry it in place: not verbatim, not reworded, not
+  via a different tool or a different phrasing of the same command. A second
+  attempt from you is not more likely to surface a prompt than the first.
+- You MUST instead immediately return `halt` with `reason:
+"permission-denied"`, naming the stage and the exact command that was
+  denied in `detail`. The main session runs that command itself, with the
+  user's live authorization, and then continues you.
+
 ## 1. Role
 
 You run exactly three stages, in order, and stop at the first gate, halt, or
@@ -535,8 +557,8 @@ after it. Use exactly one of these shapes:
 
 `reason` is one of `fetch-failed`, `rebase-indeterminate`,
 `dirtiness-indeterminate`, `sync-fetch-unrecognised`, `incomplete-sync`,
-`validate-failed`, or the `pnwf fork-preflight` reason line for a
-`stage: "fork"` halt.
+`validate-failed`, `permission-denied`, or the `pnwf fork-preflight` reason
+line for a `stage: "fork"` halt.
 
 On the `noop` shape, `validated` MUST be `false` — Stage 3 did not run, so you
 MUST NOT claim it did — and `members` MUST list every member key `pnwf status`
