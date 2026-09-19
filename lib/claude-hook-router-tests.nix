@@ -87,7 +87,7 @@ let
   copiedPath =
     dest: args:
     let
-      buildCommand = (mkClaudeHookRouterPlugin args).buildCommand;
+      inherit (mkClaudeHookRouterPlugin args) buildCommand;
       marker = ''"$out/${dest}"'';
       lines = lib.splitString "\n" buildCommand;
       match = lib.findFirst (l: lib.hasSuffix marker l) null lines;
