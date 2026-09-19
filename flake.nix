@@ -471,6 +471,76 @@
                   "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
               );
 
+            # A3 (ADR 0071, bead tc-rjzd3.4): builds a mkClaudeHookRouterPlugin-generated
+            # fixture plugin and runs `claude plugin validate ./result` against it — the one
+            # Tier-3 (docs/claude-marketplaces.md) validation step confirmed local/no-network
+            # (correctness review, against plugins-reference.md: validate checks manifest
+            # schema only), so it belongs in a nix check rather than staying a manual
+            # build-inspection step. This is the builder family's own most dangerous failure
+            # mode — the symlink-drop behavior Claude Code's directory-source cache-copy
+            # silently triggers on, which a pure-eval nix test (A2) cannot catch.
+            #
+            # Also asserts the check itself is not vacuous (mirrors the
+            # shellcheck-allowwarnings-errors-not-swallowed idiom above): `claude plugin
+            # validate` is run against BOTH a valid fixture (must pass) and a deliberately
+            # malformed directory with no `.claude-plugin/plugin.json` (must fail).
+            #
+            # Preflight (ADR 0071 A3's "one preflight concern the confirmation doesn't
+            # cover"): whether the `claude` binary's own process startup (telemetry, an
+            # update check) stays silent/network-less regardless of `plugin validate` itself.
+            # Confirmed empirically (2026-09-19): `claude plugin validate` completes with no
+            # network access needed with these env vars set; they are set explicitly below
+            # rather than assumed silent.
+            #
+            # `pkgs.claude-code` (nixpkgs) is unfree; this repo's own `pkgs` does not set
+            # `config.allowUnfree` (and MUST NOT, repo-wide, for one check's sake), so a
+            # separate, scoped nixpkgs instantiation supplies just this derivation's `claude`.
+            claude-hook-router-plugin-validate =
+              let
+                claudeUnfreePkgs = import inputs.nixpkgs {
+                  inherit system;
+                  config.allowUnfree = true;
+                };
+                fixturePlugin = (mkClaudeMarketplaceBuilders { inherit pkgs lib; }).mkClaudeHookRouterPlugin {
+                  name = "check-hook-router-fixture";
+                  declared = "0.0.0";
+                  sources = [
+                    {
+                      name = "plug-a";
+                      src = ./lib/tests/claude-marketplace-fixture/plug-a;
+                    }
+                  ];
+                };
+                malformedPlugin = pkgs.runCommand "malformed-plugin-fixture" { } ''
+                  mkdir -p "$out"
+                '';
+              in
+              pkgs.runCommand "check-claude-hook-router-plugin-validate"
+                {
+                  nativeBuildInputs = [ claudeUnfreePkgs.claude-code ];
+                }
+                ''
+                  export HOME="$TMPDIR"
+                  export DISABLE_TELEMETRY=1
+                  export DISABLE_ERROR_REPORTING=1
+                  export DISABLE_AUTOUPDATER=1
+                  export DISABLE_NON_ESSENTIAL_MODEL_CALLS=1
+
+                  echo "validating a VALID mkClaudeHookRouterPlugin-generated fixture (must pass)..."
+                  if ! claude plugin validate ${fixturePlugin}; then
+                    echo "FAIL: claude plugin validate rejected a valid mkClaudeHookRouterPlugin-generated fixture plugin" >&2
+                    exit 1
+                  fi
+
+                  echo "validating a MALFORMED plugin directory (must fail, proving the check isn't vacuous)..."
+                  if claude plugin validate ${malformedPlugin}; then
+                    echo "FAIL: claude plugin validate PASSED a directory with no .claude-plugin manifest -- the check is vacuous" >&2
+                    exit 1
+                  fi
+
+                  touch "$out"
+                '';
+
             # Regression guard for the pnwf runner agents' turn-boundary contract
             # (bead pg2-es5nn). `pnwf-update-runner` once started the long
             # `pnwf update-relock --set` step with `run_in_background` and then
