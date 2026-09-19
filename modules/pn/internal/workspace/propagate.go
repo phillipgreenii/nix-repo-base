@@ -193,16 +193,48 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 	// prek's hook finds a real config and runs for real instead of needing a
 	// bypass. Streams via Handle.AttachStream so a real commit failure (a
 	// failing hook) surfaces in the run log instead of being swallowed.
+	//
+	// A commit failure here (bead tc-dubbr: e.g. a pre-commit hook pinning a
+	// garbage-collected /nix/store config path) must NOT leave lockRel staged
+	// but uncommitted — restoreAfterFailedCommit resets the repo back to the
+	// clean tree it had before this function started, on BOTH failure shapes
+	// (Commit erroring before a process even starts, and Wait erroring once the
+	// hook actually runs).
 	h, err := client.Commit(ctx, msg)
 	if err != nil {
-		return false, fmt.Errorf("git commit: %w", err)
+		return false, restoreAfterFailedCommit(ctx, client, lockRel, fmt.Errorf("git commit: %w", err))
 	}
 	h.AttachStream(out, out)
 	if err := h.Wait(); err != nil {
-		return false, fmt.Errorf("git commit: %w", err)
+		return false, restoreAfterFailedCommit(ctx, client, lockRel, fmt.Errorf("git commit: %w", err))
 	}
 	fmt.Fprintf(out, "  → %s: bumped workspace input(s): %v\n", name, changed)
 	return true, nil
+}
+
+// restoreAfterFailedCommit resets a repo back to a clean working tree after
+// `git add` staged lockRel but the subsequent `git commit` failed (bead
+// tc-dubbr — observed with a pre-commit hook pinning a garbage-collected
+// /nix/store config path). Without this, the repo is left dirty with lockRel
+// staged: Tier R (R-3) requires the canonical clone stay clean in steady
+// state, and relockSiblingsBeforePush's own dirty-tree guard then refuses to
+// retry against that same dirty tree — the failure blocks its own recovery.
+//
+// ResetHard (`git reset --hard`) is safe here specifically because every
+// caller of propagateWorkspaceEdges already refused to run against a dirty
+// tree before propagation started (relockSiblingsBeforePush's isDirty check;
+// the update siblings-only path's equivalent guard) — so the only
+// working-tree/index change in play at this point is the lockRel bump this
+// function itself just staged. Discarding "everything since HEAD" discards
+// exactly that and nothing else.
+//
+// If the reset itself fails, both errors are reported: the repo may be left
+// dirty and that must not be silently swallowed by the reset attempt.
+func restoreAfterFailedCommit(ctx context.Context, client gitMutator, lockRel string, commitErr error) error {
+	if rerr := client.ResetHard(ctx); rerr != nil {
+		return fmt.Errorf("%w (additionally failed to restore %s — the repo may be left dirty: %v)", commitErr, lockRel, rerr)
+	}
+	return commitErr
 }
 
 // pathClean reports whether path has no unstaged changes in repoDir (git diff

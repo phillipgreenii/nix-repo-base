@@ -132,6 +132,11 @@ type fakeGitMutator struct {
 
 	addRemoteErr error
 	addRemotes   map[string]string
+
+	resetHardErr        error
+	resetHardCalls      int
+	cleanUntrackedErr   error
+	cleanUntrackedCalls int
 }
 
 var _ gitMutator = (*fakeGitMutator)(nil)
@@ -207,6 +212,18 @@ func (f *fakeGitMutator) Push(ctx context.Context, opts gitclient.PushOptions) (
 
 func (f *fakeGitMutator) ListBranches(ctx context.Context) ([]string, error) {
 	return f.listBranches, f.listBranchesErr
+}
+
+// ResetHard and CleanUntracked implement gitclient.Cleaner (added to
+// gitMutator by bead tc-dubbr for propagate.go's restoreAfterFailedCommit).
+func (f *fakeGitMutator) ResetHard(ctx context.Context) error {
+	f.resetHardCalls++
+	return f.resetHardErr
+}
+
+func (f *fakeGitMutator) CleanUntracked(ctx context.Context) error {
+	f.cleanUntrackedCalls++
+	return f.cleanUntrackedErr
 }
 
 func (f *fakeGitMutator) AddRemote(ctx context.Context, name, url string) error {

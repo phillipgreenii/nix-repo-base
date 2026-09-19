@@ -349,6 +349,13 @@ func TestPropagate_NixFailureErrorsCleanly(t *testing.T) {
 // function never actually needs to tolerate a missing config in practice.
 // This test pins that propagateWorkspaceEdges itself no longer papers over
 // it if that upstream step is somehow skipped.
+//
+// Also doubles as the propagate-level half of bead tc-dubbr's fix (the
+// canonical clone's own hook symlink pinning a since-garbage-collected
+// /nix/store config path — the same "commit fails under a broken hook" shape,
+// just a stale symlink instead of a config genuinely absent): the assertion
+// below used to pin the BUG — flake.lock left staged-but-uncommitted after
+// the failed commit — and now pins the fix instead (assertCleanTree).
 func TestPropagate_CommitFailsUnderMissingConfigPreCommitHook(t *testing.T) {
 	dir, writeLock := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	// Installed AFTER propEnv's init commit so init is not blocked. Mimics
@@ -380,10 +387,14 @@ func TestPropagate_CommitFailsUnderMissingConfigPreCommitHook(t *testing.T) {
 		t.Errorf("relocked = true, want false on a failed commit")
 	}
 	// No partial/dirty state: the failed commit must leave exactly the init
-	// commit behind, with flake.lock staged-but-uncommitted (add already ran).
+	// commit behind...
 	if n := commitCount(t, dir); n != 1 {
 		t.Errorf("commit count = %d, want 1 (no partial commit landed)", n)
 	}
+	// ...AND (bead tc-dubbr fix) a fully clean tree — flake.lock restored, not
+	// left staged-but-uncommitted — so the canonical clone stays in Tier R
+	// steady state and a retry needs no manual cleanup.
+	assertCleanTree(t, dir)
 }
 
 // TestLinkPreCommitConfig covers update_worktree.go's root-cause fix for the

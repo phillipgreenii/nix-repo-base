@@ -314,6 +314,13 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 		}
 	}
 
+	// completed names every repo whose relock+push (or deliberate skip) has
+	// already finished when the walk aborts partway through — bead tc-dubbr AC
+	// #3: on an abort, the error must name which repos are already done so
+	// recovery does not require re-deriving it (there is no transaction
+	// boundary across the ordered walk; bb was already relocked/pushed when
+	// mobilecombackup's commit aborted the original run).
+	completed := make([]string, 0, len(names))
 	first := true
 	for _, name := range names {
 		repoDir := filepath.Join(ws.root, name)
@@ -326,26 +333,29 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 		first = false
 		if propagate {
 			if err := ws.relockSiblingsBeforePush(ctx, out, name, repoDir, workspaceAliasesFromLock(edgeLock, name)); err != nil {
-				return err
+				return abortedPushError(err, completed)
 			}
 		}
 		if ws.hasUpstream(ctx, repoDir) {
 			fmt.Fprintf(out, "  --== push %s ==--  \n", name)
 			if err := ws.gitPush(ctx, out, repoDir, gitclient.PushOptions{NoVerify: opts.NoVerify}); err != nil {
-				return fmt.Errorf("git push in %s: %w", name, err)
+				return abortedPushError(fmt.Errorf("git push in %s: %w", name, err), completed)
 			}
+			completed = append(completed, name)
 			continue
 		}
 		if !opts.SetUpstream {
+			completed = append(completed, name)
 			continue
 		}
 		branch, err := ws.currentBranch(ctx, repoDir)
 		if err != nil {
-			return err
+			return abortedPushError(err, completed)
 		}
 		remote, err := resolvePushRemote(ctx, ws.runner, repoDir, branch, opts.Remote)
 		if err != nil {
 			fmt.Fprintf(errOut, "pn: push skipped %s: %v\n", name, err)
+			completed = append(completed, name)
 			continue
 		}
 		fmt.Fprintf(out, "  --== push %s ==--  \n", name)
@@ -355,10 +365,24 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 			Remote:      remote,
 			Branch:      branch,
 		}); err != nil {
-			return fmt.Errorf("git push -u %s %s in %s: %w", remote, branch, name, err)
+			return abortedPushError(fmt.Errorf("git push -u %s %s in %s: %w", remote, branch, name, err), completed)
 		}
+		completed = append(completed, name)
 	}
 	return nil
+}
+
+// abortedPushError wraps err (via %w, so errors.Is/As still see the original
+// cause) with the names of repos that had already completed — relocked
+// and/or pushed, or deliberately skipped — before the ordered walk aborted at
+// the current repo. Push has no transaction boundary across repos (bead
+// tc-dubbr), so this is the only place that information survives the abort;
+// without it, recovery means re-deriving which repos are already done.
+func abortedPushError(err error, completed []string) error {
+	if len(completed) == 0 {
+		return fmt.Errorf("%w (no repos completed before this failure)", err)
+	}
+	return fmt.Errorf("%w (repos already completed before this failure: %s)", err, strings.Join(completed, ", "))
 }
 
 // gitPush runs Pusher.Push in repoDir, streaming its output to out — the

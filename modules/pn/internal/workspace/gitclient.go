@@ -43,10 +43,16 @@ var openGitReader gitOpener = func(ctx context.Context, dir string) (gitReader, 
 // gitMutator is the composed role this package's MUTATING git call sites
 // need, per design doc pg2-migib §7a's operator-decided full adoption and its
 // implementation (bead pg2-f1cq7): Fetcher, WorktreeManager, Syncer,
-// Committer, Pusher, BranchLister, RemoteManager. *gitclient.Client satisfies
-// it by construction (asserted below). This is pn's mutating-side migration
-// (bead pg2-8bfb5) — the counterpart to gitReader's read-side migration
-// (bead pg2-oxle0) above.
+// Committer, Pusher, BranchLister, RemoteManager, Cleaner. *gitclient.Client
+// satisfies it by construction (asserted below). This is pn's mutating-side
+// migration (bead pg2-8bfb5) — the counterpart to gitReader's read-side
+// migration (bead pg2-oxle0) above.
+//
+// Cleaner was added by bead tc-dubbr: propagate.go's restoreAfterFailedCommit
+// uses ResetHard to leave the repo clean when a relock's `git commit` fails
+// (e.g. a GC'd pre-commit hook config) — flake.lock would otherwise be left
+// staged-but-uncommitted, violating Tier R's clean-canonical-clone invariant
+// and blocking the relock's own retry.
 type gitMutator interface {
 	gitclient.Fetcher
 	gitclient.WorktreeManager
@@ -55,6 +61,7 @@ type gitMutator interface {
 	gitclient.Pusher
 	gitclient.BranchLister
 	gitclient.RemoteManager
+	gitclient.Cleaner
 }
 
 var _ gitMutator = (*gitclient.Client)(nil)

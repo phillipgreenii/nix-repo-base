@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1033,5 +1034,134 @@ url = "github:owner/consumer"
 	}
 	if !strings.Contains(errOut.String(), "workforest set") {
 		t.Errorf("the skipped relock must be announced on stderr; got %q", errOut.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// bead tc-dubbr: a relock commit failing under a broken pre-commit hook must
+// leave the repo clean and must name already-completed repos on abort.
+// ---------------------------------------------------------------------------
+
+// depFlakeLockJSON is a minimal flake.lock declaring exactly one
+// workspace-sibling input named "dep" locked at rev — mirrors
+// pushEdgeFixture's inline flake.lock above but as a function so the test
+// below can also produce the POST-relock content nix would have written.
+func depFlakeLockJSON(rev string) string {
+	return fmt.Sprintf(`{"nodes":{"root":{"inputs":{"dep":"dep"}},"dep":{"locked":{"rev":%q}}},"root":"root"}`, rev)
+}
+
+// TestPush_CommitFailureUnderBrokenHookLeavesRepoCleanAndReportsCompleted is
+// bead tc-dubbr's AC #4 reproduction at the Push level, driven through REAL
+// git (this package's TestMain wires openGitReader/openGitMutator to real
+// gitclient by default whenever a test does not call
+// stubGitOpener/stubGitMutatorOpener — see realgit_test.go) so the fix is
+// exercised against an actual git index/working tree, not a scripted fake.
+//
+// It reproduces the observed bug shape directly: consumer's installed
+// pre-commit hook always fails — the same observable failure a hook pinning a
+// garbage-collected /nix/store config path produces (tc-dubbr's
+// mobilecombackup/nix-personal observation: "config file not found:
+// /nix/store/...-pre-commit-config.json"). dep has no workspace-sibling
+// inputs of its own and is relocked/pushed first (topological order dep ->
+// consumer, per the committed pn-workspace.lock.json); Push's relock for
+// consumer then reaches propagateWorkspaceEdges, stages a real flake.lock
+// bump, and `git commit` aborts under the hook.
+//
+// Confirms all of AC #1/#2/#3 together: consumer's working tree is left
+// completely clean (restoreAfterFailedCommit ran, not staged-but-uncommitted),
+// and the returned error names dep as already completed before the abort.
+func TestPush_CommitFailureUnderBrokenHookLeavesRepoCleanAndReportsCompleted(t *testing.T) {
+	root := t.TempDir()
+	dep := filepath.Join(root, "dep")
+	consumer := filepath.Join(root, "consumer")
+
+	initRealRepo(t, dep)
+	bareDep := dep + ".git"
+	runGitT(t, dep, "init", "-q", "--bare", "-b", "main", bareDep)
+	runGitT(t, dep, "remote", "add", "origin", bareDep)
+	runGitT(t, dep, "push", "-q", "-u", "origin", "main")
+
+	initRealRepo(t, consumer)
+	writeFile(t, filepath.Join(consumer, "flake.nix"), "{ }\n") // FILE, not a dir
+	writeFile(t, filepath.Join(consumer, "flake.lock"), depFlakeLockJSON("1111111111111111111111111111111111111111"))
+	runGitT(t, consumer, "add", ".")
+	runGitT(t, consumer, "commit", "-qm", "add flake")
+	bareConsumer := consumer + ".git"
+	runGitT(t, consumer, "init", "-q", "--bare", "-b", "main", bareConsumer)
+	runGitT(t, consumer, "remote", "add", "origin", bareConsumer)
+	runGitT(t, consumer, "push", "-q", "-u", "origin", "main")
+
+	// Reproduce the bug: install a pre-commit hook that always fails, AFTER
+	// the init/add-flake commits so those succeed — only the relock's bump
+	// commit hits it, exactly like the original observation (the hook is
+	// invisible until a commit is actually attempted).
+	hook := filepath.Join(consumer, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte(
+		"#!/bin/sh\n"+
+			"echo 'config file not found: /nix/store/deadbeef0000000000000000-pre-commit-config.json' >&2\n"+
+			"exit 1\n",
+	), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), fmt.Sprintf(`
+[repos.dep]
+url = %q
+
+[repos.consumer]
+url = %q
+`, bareDep, bareConsumer))
+	writeFile(t, filepath.Join(root, LockFileName), fmt.Sprintf(`{
+  "order": ["dep", "consumer"],
+  "repos": {
+    "dep":      {"flake_path": "flake.nix", "remote_url": %q},
+    "consumer": {"flake_path": "flake.nix", "remote_url": %q}
+  },
+  "edges": [{"consumer": "consumer", "alias": "dep", "target": "dep"}]
+}`, bareDep, bareConsumer))
+
+	// Real git for everything; "nix flake update" is the one call this test
+	// intercepts (as propagate_test.go's fsNixRunner does) to apply the same
+	// filesystem mutation a real relock would.
+	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
+		if err := osWrite(filepath.Join(consumer, "flake.lock"), depFlakeLockJSON("2222222222222222222222222222222222222222")); err != nil {
+			t.Fatal(err)
+		}
+	}}
+
+	w, err := Open(root, r)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	pushErr := w.Push(context.Background(), &out, &errOut, PushOptions{Terminal: "dep"})
+	if pushErr == nil {
+		t.Fatal("expected Push to fail: consumer's pre-commit hook always aborts the relock commit")
+	}
+	if !strings.Contains(pushErr.Error(), "git commit") {
+		t.Errorf("error should name the failing commit; got %v", pushErr)
+	}
+
+	// AC #3: the abort must name dep as already completed (relocked/pushed)
+	// before the walk reached consumer, so recovery does not need to
+	// re-derive it.
+	if !strings.Contains(pushErr.Error(), "dep") {
+		t.Errorf("error should name dep as already completed before the abort; got %v", pushErr)
+	}
+
+	// AC #1/#2: consumer must be left completely clean, not staged-but-
+	// uncommitted, so a retry needs no manual cleanup and stays possible at
+	// all (relockSiblingsBeforePush itself refuses to run against a dirty
+	// tree).
+	if status := runGitT(t, consumer, "status", "--porcelain"); status != "" {
+		t.Errorf("consumer working tree not clean after the aborted commit:\n%s", status)
+	}
+
+	// dep really was relocked/pushed (its remote matches local HEAD) before
+	// the abort — confirms "dep" in the error is not a false positive.
+	depRemote := runGitT(t, bareDep, "rev-parse", "main")
+	depLocal := runGitT(t, dep, "rev-parse", "main")
+	if depRemote != depLocal {
+		t.Errorf("dep's remote should match local HEAD (it was pushed before the abort); remote=%s local=%s", depRemote, depLocal)
 	}
 }
