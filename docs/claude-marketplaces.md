@@ -190,6 +190,73 @@ phillipgreenii.programs.claude-code.marketplaces = {
 };
 ```
 
+## Pattern 3 — merge several plugins' surfaces into one (the hook-router case)
+
+`mkClaudeHookRouterPlugin` (same builder file, `lib/claude-marketplace.nix`) generates **one**
+plugin directory that vendors several source plugins' surfaces (hooks, commands, agents,
+skills, MCP servers) into a single namespaced tree, with every hook delegated through one
+router binary instead of shipping N separate hook-registering plugins. Full design: ADR
+[0071](https://github.com/phillipgreenii/nix-agent-support/blob/main/docs/adr/0071-claude-code-hook-router.md)
+(`phillipgreenii-nix-agent-support`, a separate repo) — Phase B (the Go router runtime that
+reads `router-config.json`) and Phase C (first-party delegate wiring) live there; this repo only
+produces the generator (Phase A).
+
+1. **Two distinct paths become a delegate**, matched to trust level (ADR-0071 §2.2):
+   - **First-party tools** contribute a delegate by adding to the consumer's
+     `programs.claude-hook-router.delegates` home-manager option (Phase C1, in
+     `phillipgreenii-nix-agent-support`) — no vendoring, no separate plugin.
+   - **Third-party plugins** are vendored through this builder: each is a `sources` entry
+     whose `src` is a pinned flake input. This is a deliberate, versioned, pinned inclusion —
+     the same trust model as any other vendored dependency in this workspace (gomod2nix
+     lockfiles, `uv.lock`, flake input pins). **Adopted mechanism**: one flake input per
+     vendored third-party plugin, pinned and updated the same way any other flake input is
+     bumped — never a live-composed read of an installed plugin.
+
+2. **Call the builder** with a list of sources, one per plugin surface to merge:
+
+   ```nix
+   (mkClaudeMarketplaceBuilders { inherit pkgs lib; }).mkClaudeHookRouterPlugin {
+     name = "merged-hooks";
+     declared = "1.0.0";
+     routerCommand = "claude-hook-router"; # Phase B binary name (TBD upstream)
+     sources = [
+       {
+         name = "some-vendored-plugin";
+         src = inputs.some-vendored-plugin; # a pinned flake input — see step 1
+         includeHooks = true;
+         priority = 10; # required whenever includeHooks = true
+       }
+       {
+         name = "another-plugin";
+         src = inputs.another-plugin;
+         includeCommands = true;
+         includeSkills = true;
+       }
+     ];
+   }
+   ```
+
+   Each source hook entry in its `hooks/hooks.json` (or an inline `plugin.json` `hooks` key)
+   MUST carry a `contract` field (`decide` / `rewrite` / `annotate` / `observe` /
+   `decide+rewrite`) valid for its event — missing or invalid is a build-time error, never a
+   silent no-op.
+
+3. **What it produces** (`$out`): a version-stamped `.claude-plugin/plugin.json`, one
+   `hooks/hooks.json` entry per event that has ≥1 delegate (all pointing at `routerCommand`),
+   `router-config.json` (delegates grouped by event, sorted priority-then-name), the merged
+   `commands`/`agents`/`skills` trees (each namespaced under `<surface>/<source-name>/…`, never
+   flattened/renamed), and a merged `.mcp.json` (`mcpServers` keys prefixed `<source-name>-`).
+   Every copy dereferences symlinks, and the build asserts none remain under `$out` (Claude
+   Code's directory-source cache-copy step silently drops symlinks that resolve outside it).
+
+Where things live:
+
+- Builder: `lib/claude-marketplace.nix` (`mkClaudeHookRouterPlugin`, alongside
+  `mkClaudePlugin`/`mkClaudeMarketplace` from Pattern 1).
+- Full design, Phase B (router runtime), Phase C (first-party delegate wiring): ADR
+  [0071](https://github.com/phillipgreenii/nix-agent-support/blob/main/docs/adr/0071-claude-code-hook-router.md)
+  (`phillipgreenii-nix-agent-support`, separate repo — out of scope here).
+
 ## Pure helper: `mkDirectoryMarketplaceSettings`
 
 If you are not going through the agent-support module, `mkClaudeMarketplaceBuilders`
@@ -199,9 +266,13 @@ of it.
 
 ## Where things live
 
-- Builder + this convention: `lib/claude-marketplace.nix`,
-  `lib/claude-marketplace-tests.nix` (this repo).
+- Builder + this convention: `lib/claude-marketplace.nix` (`mkClaudePlugin`,
+  `mkClaudeMarketplace`, `mkDirectoryMarketplaceSettings`, and — Pattern 3 —
+  `mkClaudeHookRouterPlugin`), `lib/claude-marketplace-tests.nix` (this repo).
 - Decision record: [ADR-0010](adr/0010-claude-marketplace-builder-and-identity.md)
   (amends [ADR-0003](adr/0003-claude-marketplace-convention.md)).
+- Pattern 3's design (the hook-router): ADR
+  [0071](https://github.com/phillipgreenii/nix-agent-support/blob/main/docs/adr/0071-claude-code-hook-router.md)
+  (`phillipgreenii-nix-agent-support`, separate repo).
 - The consumer-control module (`marketplaces.{nixProvided,enabled,overrides}`) lives
   in `phillipgreenii-nix-agent-support` (separate repo — out of scope here).
