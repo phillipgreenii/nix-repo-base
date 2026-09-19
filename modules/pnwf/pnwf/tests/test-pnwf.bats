@@ -1143,6 +1143,16 @@ SHIM
 # the evidence that the mid-rebase-vs-refused verdict came from an
 # observable rather than from a catch-all.
 #
+# PRE-FLIGHT SWEEP (bd tc-p08nv): cmd_sync_fetch now probes every present
+# member's CANONICAL divergence (pnwf_canonical_divergence: 'remote', then
+# 'rev-list' ahead, then 'rev-list' behind if ahead > 0) BEFORE the mutating
+# per-member loop runs at all. This adds ONE 'remote' call per present member
+# to the front of EVERY git-call-log assertion below (topo order, even for a
+# member the mutating loop never reaches, since the sweep itself never stops
+# early on anything but a POSITIVELY-confirmed ahead-and-behind finding) --
+# every exact `${#lines[@]}` count and per-index assertion in this section
+# accounts for that prefix explicitly, rather than leaving it implicit.
+#
 # FIVE distinguishable stopping points are modelled, because
 # `pnwf_fetch_and_rebase` returns a different sentinel for each and this
 # subcommand must not collapse them (bd pg2-k3s0x, bd pg2-lgzcg):
@@ -1278,10 +1288,40 @@ rev-list)
     echo "mock git: fatal: bad revision '${3:-}'" >&2
     exit 128
   fi
-  if [[ -f "$dir/.mock-canonical-ahead-count" ]]; then
-    cat "$dir/.mock-canonical-ahead-count"
+  # pnwf_canonical_divergence (bd tc-p08nv) asks TWO directions once ahead >
+  # 0: 'origin/<primary>..<primary>' (ahead of origin) and
+  # '<primary>..origin/<primary>' (behind origin) -- distinguished by which
+  # side of the range names 'origin/', since both queries share the same
+  # <primary> name.
+  case "${3:-}" in
+  origin/*)
+    if [[ -f "$dir/.mock-canonical-ahead-count" ]]; then
+      cat "$dir/.mock-canonical-ahead-count"
+    else
+      echo 0
+    fi
+    ;;
+  *..origin/*)
+    if [[ -f "$dir/.mock-canonical-behind-count" ]]; then
+      cat "$dir/.mock-canonical-behind-count"
+    else
+      echo 0
+    fi
+    ;;
+  *)
+    echo "mock git: unsupported rev-list range: $dir ${3:-}" >&2
+    exit 1
+    ;;
+  esac
+  exit 0
+  ;;
+merge-base)
+  # pnwf_canonical_divergence's ahead-and-behind detail (bd tc-p08nv): only
+  # ever invoked once both ahead and behind are already known positive.
+  if [[ -f "$dir/.mock-canonical-merge-base" ]]; then
+    cat "$dir/.mock-canonical-merge-base"
   else
-    echo 0
+    echo "deadbeef"
   fi
   exit 0
   ;;
@@ -1337,25 +1377,28 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  # FOUR calls per member: the NEW canonical-push pre-step (bd pg2-xl9ez)
-  # checks 'origin' on the member's CANONICAL clone FIRST -- none of these
-  # fixtures has `.mock-has-origin`, so it is a silent one-call no-op -- then
-  # the existing THREE (status/fetch/rebase, `status` first: the dirtiness
-  # pre-check precedes the fetch, so a member that is already a decided stop
-  # costs no network round trip, bd pg2-lgzcg).
-  [ "${#lines[@]}" -eq 12 ]
+  # THREE pre-flight 'remote' calls (one per member, none has-origin, so each
+  # is a one-call no-op) THEN FOUR calls per member in the mutating loop: the
+  # existing canonical-push pre-step (bd pg2-xl9ez) checks 'origin' again --
+  # still a one-call no-op -- then the existing THREE (status/fetch/rebase,
+  # `status` first: the dirtiness pre-check precedes the fetch, so a member
+  # that is already a decided stop costs no network round trip, bd pg2-lgzcg).
+  [ "${#lines[@]}" -eq 15 ]
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoB remote" ]
-  [ "${lines[5]}" = "$SET_DIR/repoB status" ]
-  [ "${lines[6]}" = "$SET_DIR/repoB fetch" ]
-  [ "${lines[7]}" = "$SET_DIR/repoB rebase" ]
-  [ "${lines[8]}" = "$CANONICAL_DIR/repoC remote" ]
-  [ "${lines[9]}" = "$SET_DIR/repoC status" ]
-  [ "${lines[10]}" = "$SET_DIR/repoC fetch" ]
-  [ "${lines[11]}" = "$SET_DIR/repoC rebase" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoC remote" ]
+  [ "${lines[3]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[5]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[6]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[7]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[8]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[9]}" = "$SET_DIR/repoB fetch" ]
+  [ "${lines[10]}" = "$SET_DIR/repoB rebase" ]
+  [ "${lines[11]}" = "$CANONICAL_DIR/repoC remote" ]
+  [ "${lines[12]}" = "$SET_DIR/repoC status" ]
+  [ "${lines[13]}" = "$SET_DIR/repoC fetch" ]
+  [ "${lines[14]}" = "$SET_DIR/repoC rebase" ]
 }
 
 @test "sync-fetch --set: conflicting rebase stops on the FIRST conflicting repo, reports repo+worktree with rebase-specific recovery, exits non-zero, and does not continue" {
@@ -1387,22 +1430,31 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 9 ]
+  [ "${#lines[@]}" -eq 12 ]
+  # Pre-flight sweep touches all THREE members' canonicals first (it does
+  # not yet know repoB's rebase will conflict -- that is a mutating-loop
+  # concern, discovered only once reached).
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoC remote" ]
+  [ "${lines[3]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[5]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[6]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[7]}" = "$CANONICAL_DIR/repoB remote" ]
   # repoB's pre-check passes (it is not dirty), so this IS a rebase-stage
   # failure rather than the pre-check's own refusal.
-  [ "${lines[5]}" = "$SET_DIR/repoB status" ]
-  [ "${lines[6]}" = "$SET_DIR/repoB fetch" ]
-  [ "${lines[7]}" = "$SET_DIR/repoB rebase" ]
+  [ "${lines[8]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[9]}" = "$SET_DIR/repoB fetch" ]
+  [ "${lines[10]}" = "$SET_DIR/repoB rebase" ]
   # The classifying probe -- the failed rebase is diagnosed by ASKING git
   # whether a rebase is in progress, not by assuming one is. It runs exactly
   # once here: `rebase-merge` is found, so `rebase-apply` is never queried.
-  [ "${lines[8]}" = "$SET_DIR/repoB rev-parse" ]
-  [[ "$output" != *"repoC"* ]]
+  [ "${lines[11]}" = "$SET_DIR/repoB rev-parse" ]
+  # repoC's SET worktree is never reached by the mutating loop (the halt on
+  # repoB stops it there); only its CANONICAL saw a (harmless) pre-flight
+  # 'remote' probe.
+  [[ "$output" != *"$SET_DIR/repoC"* ]]
 }
 
 @test "sync-fetch --set: a REFUSED rebase on a CLEAN tree reports git's own refusal, NEVER 'rebase --continue', exits non-zero, and does not continue" {
@@ -1458,24 +1510,28 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 10 ]
+  [ "${#lines[@]}" -eq 13 ]
+  # Pre-flight sweep touches all THREE members' canonicals first.
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoC remote" ]
+  [ "${lines[3]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[5]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[6]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[7]}" = "$CANONICAL_DIR/repoB remote" ]
   # repoB's pre-check runs and PASSES (not dirty), so the fetch and rebase
   # are both attempted -- the evidence that "CLEAN" above is observed rather
   # than asserted.
-  [ "${lines[5]}" = "$SET_DIR/repoB status" ]
-  [ "${lines[6]}" = "$SET_DIR/repoB fetch" ]
-  [ "${lines[7]}" = "$SET_DIR/repoB rebase" ]
+  [ "${lines[8]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[9]}" = "$SET_DIR/repoB fetch" ]
+  [ "${lines[10]}" = "$SET_DIR/repoB rebase" ]
   # BOTH backends are queried before concluding "no rebase in progress" --
   # `rebase-merge` then `rebase-apply`; concluding it off one would miss a
   # rebase run with the apply/am backend.
-  [ "${lines[8]}" = "$SET_DIR/repoB rev-parse" ]
-  [ "${lines[9]}" = "$SET_DIR/repoB rev-parse" ]
-  [[ "$output" != *"repoC"* ]]
+  [ "${lines[11]}" = "$SET_DIR/repoB rev-parse" ]
+  [ "${lines[12]}" = "$SET_DIR/repoB rev-parse" ]
+  [[ "$output" != *"$SET_DIR/repoC"* ]]
 }
 
 @test "sync-fetch --set: a DIRTY member is refused BEFORE any fetch or rebase, with its own status and recovery, and does not continue" {
@@ -1520,17 +1576,21 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  # SIX lines, and this is the discriminating evidence: repoB's canonical
+  # NINE lines, and this is the discriminating evidence: repoB's canonical
   # push pre-step and its own `status` are logged but `fetch`/`rebase` are
-  # NOT -- nothing was attempted -- and repoC is never reached.
-  [ "${#lines[@]}" -eq 6 ]
+  # NOT -- nothing was attempted -- and repoC's SET side is never reached
+  # (only its canonical saw the harmless pre-flight probe).
+  [ "${#lines[@]}" -eq 9 ]
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoB remote" ]
-  [ "${lines[5]}" = "$SET_DIR/repoB status" ]
-  [[ "$output" != *"repoC"* ]]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoC remote" ]
+  [ "${lines[3]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[5]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[6]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[7]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[8]}" = "$SET_DIR/repoB status" ]
+  [[ "$output" != *"$SET_DIR/repoC"* ]]
 }
 
 @test "sync-fetch --set: when the dirtiness observable cannot be read, NO recovery is asserted and nothing is attempted" {
@@ -1557,10 +1617,13 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 6 ]
+  [ "${#lines[@]}" -eq 8 ]
+  # Pre-flight sweep touches both members' canonicals first.
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoB remote" ]
-  [ "${lines[5]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[6]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[7]}" = "$SET_DIR/repoB status" ]
 }
 
 @test "sync-fetch --set: when the rebase-in-progress observable cannot be read, NO recovery is asserted" {
@@ -1614,16 +1677,20 @@ _sync_fetch_init_members() {
   # (the later member) is never touched.
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 7 ]
+  [ "${#lines[@]}" -eq 10 ]
+  # Pre-flight sweep touches all THREE members' canonicals first.
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoC remote" ]
+  [ "${lines[3]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[5]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[6]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[7]}" = "$CANONICAL_DIR/repoB remote" ]
   # repoB's pre-check passes, so the fetch IS attempted -- and stops there.
-  [ "${lines[5]}" = "$SET_DIR/repoB status" ]
-  [ "${lines[6]}" = "$SET_DIR/repoB fetch" ]
-  [[ "$output" != *"repoC"* ]]
+  [ "${lines[8]}" = "$SET_DIR/repoB status" ]
+  [ "${lines[9]}" = "$SET_DIR/repoB fetch" ]
+  [[ "$output" != *"$SET_DIR/repoC"* ]]
 }
 
 @test "sync-fetch --set: a member with an absent worktree is skipped, and sync-fetch continues to later members" {
@@ -1646,15 +1713,20 @@ _sync_fetch_init_members() {
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
   [[ "$output" != *"repoB"* ]]
-  [ "${#lines[@]}" -eq 8 ]
+  # repoB's SET worktree is absent, so BOTH the pre-flight sweep and the
+  # mutating loop skip it via the same pnwf_worktree_present gate -- it is
+  # never touched at all, canonical included.
+  [ "${#lines[@]}" -eq 10 ]
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoC remote" ]
-  [ "${lines[5]}" = "$SET_DIR/repoC status" ]
-  [ "${lines[6]}" = "$SET_DIR/repoC fetch" ]
-  [ "${lines[7]}" = "$SET_DIR/repoC rebase" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoC remote" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[3]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[5]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[6]}" = "$CANONICAL_DIR/repoC remote" ]
+  [ "${lines[7]}" = "$SET_DIR/repoC status" ]
+  [ "${lines[8]}" = "$SET_DIR/repoC fetch" ]
+  [ "${lines[9]}" = "$SET_DIR/repoC rebase" ]
 }
 
 @test "sync-fetch --set: a re-run after a member is already up to date is a clean no-op for it" {
@@ -1675,15 +1747,19 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 8 ]
+  [ "${#lines[@]}" -eq 10 ]
+  # Each run: ONE pre-flight 'remote' call, then the existing per-member
+  # push pre-step 'remote' + status/fetch/rebase.
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[1]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoA remote" ]
-  [ "${lines[5]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[6]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[7]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[3]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[5]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[6]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[7]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[8]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[9]}" = "$SET_DIR/repoA rebase" ]
 }
 
 @test "sync-fetch --set exits non-zero on a guard violation" {
@@ -1702,11 +1778,25 @@ _sync_fetch_init_members() {
 # CANONICAL directory (a DIFFERENT path than its set worktree):
 #   .mock-has-origin              'origin' IS configured (default: absent).
 #   .mock-canonical-ahead-count   rev-list --count prints this (default "0").
+#   .mock-canonical-behind-count  rev-list --count prints this for the
+#                                 BEHIND direction (default "0") -- used by
+#                                 pnwf_canonical_divergence's pre-flight sweep
+#                                 (bd tc-p08nv), see below.
+#   .mock-canonical-merge-base    merge-base prints this (default "deadbeef")
+#                                 -- only ever asked once ahead AND behind are
+#                                 both already known positive.
 #   .mock-canonical-push-rejected the push is rejected (non-fast-forward).
 #   .mock-dirty                   (reused) canonical's OWN status is dirty.
 # The prior tests in this file already prove the two silent-no-op paths by
 # omission (no `.mock-has-origin` at all) -- these add the has-origin+not-
 # ahead no-op explicitly, plus the substantive push/halt paths.
+#
+# EVERY test below now ALSO pays the pre-flight sweep's own divergence probe
+# for repoA's canonical (bd tc-p08nv, see the section intro above) BEFORE the
+# existing per-member push pre-step runs its own, independent computation --
+# so an ahead>0 fixture costs an extra pre-flight 'rev-list' (behind) beyond
+# what the existing per-member step already asked. The dedicated
+# ahead-and-behind halt tests are their own section further below.
 
 @test "sync-fetch --set: canonical AHEAD of origin is published before fetch+rebase, which then proceeds normally" {
   _stage_write_lock repoA
@@ -1725,20 +1815,25 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  # remote, rev-list (ahead=2), rev-parse x2 (root confirm), symbolic-ref +
-  # status (on-primary/clean), push -- THEN the existing fetch+rebase recipe
-  # on the SET worktree, unaffected.
-  [ "${#lines[@]}" -eq 10 ]
+  # Pre-flight sweep: remote, rev-list (ahead=2), rev-list (behind=0 default
+  # -- ahead-only) -- THEN the existing per-member push pre-step recomputes
+  # independently: remote, rev-list (ahead=2), rev-parse x2 (root confirm),
+  # symbolic-ref + status (on-primary/clean), push -- THEN the existing
+  # fetch+rebase recipe on the SET worktree, unaffected.
+  [ "${#lines[@]}" -eq 13 ]
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
   [ "${lines[1]}" = "$CANONICAL_DIR/repoA rev-list" ]
-  [ "${lines[2]}" = "$CANONICAL_DIR/repoA rev-parse" ]
-  [ "${lines[3]}" = "$CANONICAL_DIR/repoA rev-parse" ]
-  [ "${lines[4]}" = "$CANONICAL_DIR/repoA symbolic-ref" ]
-  [ "${lines[5]}" = "$CANONICAL_DIR/repoA status" ]
-  [ "${lines[6]}" = "$CANONICAL_DIR/repoA push" ]
-  [ "${lines[7]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[8]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[9]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoA rev-list" ]
+  [ "${lines[3]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[4]}" = "$CANONICAL_DIR/repoA rev-list" ]
+  [ "${lines[5]}" = "$CANONICAL_DIR/repoA rev-parse" ]
+  [ "${lines[6]}" = "$CANONICAL_DIR/repoA rev-parse" ]
+  [ "${lines[7]}" = "$CANONICAL_DIR/repoA symbolic-ref" ]
+  [ "${lines[8]}" = "$CANONICAL_DIR/repoA status" ]
+  [ "${lines[9]}" = "$CANONICAL_DIR/repoA push" ]
+  [ "${lines[10]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[11]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[12]}" = "$SET_DIR/repoA rebase" ]
 }
 
 @test "sync-fetch --set: canonical with 'origin' configured but NOT ahead is a no-op -- no push attempted" {
@@ -1758,16 +1853,19 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  # Only remote + rev-list on canonical: ahead=0 short-circuits before ANY
-  # health check or push is even attempted -- proof by call count, not just
+  # remote + rev-list, TWICE (pre-flight sweep, then the existing per-member
+  # push pre-step): ahead=0 short-circuits BOTH before any behind check,
+  # health check, or push is even attempted -- proof by call count, not just
   # by absence of a `push` line.
-  [ "${#lines[@]}" -eq 5 ]
+  [ "${#lines[@]}" -eq 7 ]
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
   [ "${lines[1]}" = "$CANONICAL_DIR/repoA rev-list" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[3]}" = "$CANONICAL_DIR/repoA rev-list" ]
   [[ "$output" != *"$CANONICAL_DIR/repoA push"* ]]
-  [ "${lines[2]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[4]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[5]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[6]}" = "$SET_DIR/repoA rebase" ]
 }
 
 @test "sync-fetch --set: canonical with NO 'origin' remote at all skips the push step cleanly" {
@@ -1786,15 +1884,17 @@ _sync_fetch_init_members() {
 
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
-  # Exactly one canonical-side call: 'remote' fails immediately (no origin),
-  # so rev-list/push/health checks are never reached at all.
-  [ "${#lines[@]}" -eq 4 ]
+  # 'remote' fails immediately (no origin), TWICE -- once for the pre-flight
+  # sweep, once for the existing per-member push pre-step -- so rev-list/
+  # push/health checks are never reached at all, either time.
+  [ "${#lines[@]}" -eq 5 ]
   [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoA remote" ]
   [[ "$output" != *"$CANONICAL_DIR/repoA rev-list"* ]]
   [[ "$output" != *"$CANONICAL_DIR/repoA push"* ]]
-  [ "${lines[1]}" = "$SET_DIR/repoA status" ]
-  [ "${lines[2]}" = "$SET_DIR/repoA fetch" ]
-  [ "${lines[3]}" = "$SET_DIR/repoA rebase" ]
+  [ "${lines[2]}" = "$SET_DIR/repoA status" ]
+  [ "${lines[3]}" = "$SET_DIR/repoA fetch" ]
+  [ "${lines[4]}" = "$SET_DIR/repoA rebase" ]
 }
 
 @test "sync-fetch --set: canonical push REJECTED (non-fast-forward) halts before any fetch/rebase, exit 10" {
@@ -1822,11 +1922,12 @@ _sync_fetch_init_members() {
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
   # The push attempt is the LAST canonical call for repoA; its own
-  # status/fetch/rebase on the SET worktree never run, and repoB is never
-  # reached either.
+  # status/fetch/rebase on the SET worktree never run. repoB's SET worktree
+  # is never reached either -- only its canonical saw the pre-flight sweep's
+  # own (harmless, no-op: no .mock-has-origin) 'remote' probe.
   [[ "$output" == *"$CANONICAL_DIR/repoA push"* ]]
   [[ "$output" != *"$SET_DIR/repoA"* ]]
-  [[ "$output" != *"repoB"* ]]
+  [[ "$output" != *"$SET_DIR/repoB"* ]]
 }
 
 @test "sync-fetch --set: canonical DIRTY (with something to publish) halts as a Tier R anomaly, exit 8, nothing pushed" {
@@ -1854,11 +1955,146 @@ _sync_fetch_init_members() {
   run cat "$MOCK_GIT_LOG"
   [ "$status" -eq 0 ]
   # 'push' is never reached: the health check (status, reporting dirty)
-  # stops it first. Nothing on the SET worktree runs, and repoB is never
-  # reached.
+  # stops it first. Nothing on the SET worktree runs. repoB's SET worktree
+  # is never reached either -- only its canonical saw the pre-flight sweep's
+  # own (harmless, no-op: no .mock-has-origin) 'remote' probe.
   [[ "$output" != *"$CANONICAL_DIR/repoA push"* ]]
   [[ "$output" != *"$SET_DIR/repoA"* ]]
-  [[ "$output" != *"repoB"* ]]
+  [[ "$output" != *"$SET_DIR/repoB"* ]]
+}
+
+# --- sync-fetch: the ahead-and-behind pre-flight sweep (bd tc-p08nv) ------
+# The bug this bead exists to fix: a canonical clone that is BOTH ahead of
+# AND behind origin (the routine drain-lands-locally-plus-peer-pushes state)
+# used to be discovered only when the per-member loop reached that member,
+# after already pushing/fetching/rebasing every earlier member and leaving
+# every LATER member completely unreported. These tests pin the NEW
+# behavior: detect it for every present member up front, report the whole
+# picture in one message, and halt (exit 11) before touching ANY member --
+# distinct from the ahead-only push race (exit 10, proven above) and naming
+# the reconciliation needed (ahead/behind counts, merge-base) instead of a
+# generic "reconcile by hand" hint.
+#
+# New mock marker beyond the ones the push-pre-step section above already
+# introduced: `.mock-canonical-behind-count` drives the BEHIND direction.
+
+@test "sync-fetch --set: an ahead-and-behind canonical halts the WHOLE run before touching ANY member, exit 11" {
+  # repoB (the SECOND member in topo order, not the first) is the one that
+  # is ahead-and-behind -- pinning that the sweep does not merely react to
+  # the FIRST member, which was the whole defect (bd tc-p08nv's observed
+  # incident: the offender was reached mid-walk, not first).
+  _stage_write_lock repoA repoB repoC
+  _sync_fetch_init_members repoA repoB repoC
+  touch "$CANONICAL_DIR/repoB/.mock-has-origin"
+  echo 19 >"$CANONICAL_DIR/repoB/.mock-canonical-ahead-count"
+  echo 77 >"$CANONICAL_DIR/repoB/.mock-canonical-behind-count"
+  echo 58003183 >"$CANONICAL_DIR/repoB/.mock-canonical-merge-base"
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  # 11: the NEW ahead-and-behind exit code, distinct from every fetch/rebase
+  # code (2-7), the canonical-anomaly code (8), the ahead-status-unknown code
+  # (9), and the ahead-only-push-race code (10) -- `pnwf sync-fetch --help`
+  # documents it and consumers classify on it.
+  [ "$status" -eq 11 ]
+  [[ "$output" == *"repoB"* ]]
+  [[ "$output" == *"BOTH ahead of AND behind"* ]]
+  # Names the specific reconciliation needed: ahead/behind counts and
+  # merge-base, not a generic "reconcile by hand" hint.
+  [[ "$output" == *"ahead 19"* ]]
+  [[ "$output" == *"behind 77"* ]]
+  [[ "$output" == *"58003183"* ]]
+  [[ "$output" == *"ahead-and-behind"* ]]
+  # R-3/R-8 preserved: no auto-rebase, human decision required.
+  [[ "$output" == *"HUMAN rebase/merge decision"* ]]
+  [[ "$output" == *"R-3/R-8"* ]]
+  [[ "$output" != *"'git rebase'"* ]]
+
+  # The report covers EVERY present member, not just the offender -- repoA
+  # and repoC (both clean) are named too, so the operator sees the whole
+  # picture in one message.
+  [[ "$output" == *"repoA"* ]]
+  [[ "$output" == *"repoC"* ]]
+
+  run cat "$MOCK_GIT_LOG"
+  [ "$status" -eq 0 ]
+  # NOTHING was pushed, fetched, or rebased for ANY member -- only the
+  # read-only pre-flight probes ran, on every present member's CANONICAL
+  # clone. repoA and repoC are ahead=0 by default (clean, no behind check);
+  # repoB is ahead>0 so its behind AND merge-base are both asked.
+  [[ "$output" != *"push"* ]]
+  [[ "$output" != *"fetch"* ]]
+  [[ "$output" != *"rebase"* ]]
+  [[ "$output" != *"$SET_DIR/"* ]]
+  [ "${#lines[@]}" -eq 6 ]
+  [ "${lines[0]}" = "$CANONICAL_DIR/repoA remote" ]
+  [ "${lines[1]}" = "$CANONICAL_DIR/repoB remote" ]
+  [ "${lines[2]}" = "$CANONICAL_DIR/repoB rev-list" ]
+  [ "${lines[3]}" = "$CANONICAL_DIR/repoB rev-list" ]
+  [ "${lines[4]}" = "$CANONICAL_DIR/repoB merge-base" ]
+  [ "${lines[5]}" = "$CANONICAL_DIR/repoC remote" ]
+}
+
+@test "sync-fetch --set: an ahead-ONLY canonical does NOT trigger the ahead-and-behind halt" {
+  # Distinguishes the two cases at the pre-flight layer itself: ahead-only
+  # (behind == 0) is the retryable push race and must proceed normally,
+  # never exit 11.
+  _stage_write_lock repoA
+  _sync_fetch_init_members repoA
+  touch "$CANONICAL_DIR/repoA/.mock-has-origin"
+  echo 3 >"$CANONICAL_DIR/repoA/.mock-canonical-ahead-count"
+  # No .mock-canonical-behind-count -- behind defaults to "0".
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ahead-and-behind"* ]]
+
+  run cat "$MOCK_GIT_LOG"
+  [ "$status" -eq 0 ]
+  # merge-base is asked ONLY for an ahead-and-behind repo -- never here.
+  [[ "$output" != *"merge-base"* ]]
+  [[ "$output" == *"$CANONICAL_DIR/repoA push"* ]]
+}
+
+@test "sync-fetch --set: an ahead-and-behind FIRST member also halts before touching later members" {
+  # The degenerate case of the fix: even when the offender IS first in topo
+  # order, the sweep must still cover repoB before halting, so the report
+  # names both -- proving the sweep runs to completion rather than
+  # short-circuiting on the first hit.
+  _stage_write_lock repoA repoB
+  _sync_fetch_init_members repoA repoB
+  touch "$CANONICAL_DIR/repoA/.mock-has-origin"
+  echo 5 >"$CANONICAL_DIR/repoA/.mock-canonical-ahead-count"
+  echo 2 >"$CANONICAL_DIR/repoA/.mock-canonical-behind-count"
+
+  MOCK_GIT_LOG="$TEST_DIR/git.log"
+  : >"$MOCK_GIT_LOG"
+  export MOCK_GIT_LOG
+  _sync_fetch_write_git_mock
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  [ "$status" -eq 11 ]
+  [[ "$output" == *"repoA"* ]]
+  [[ "$output" == *"repoB"* ]]
+
+  run cat "$MOCK_GIT_LOG"
+  [ "$status" -eq 0 ]
+  # repoB's canonical WAS still probed (the sweep does not stop at the first
+  # ahead-and-behind hit -- it covers every present member before deciding).
+  [[ "$output" == *"$CANONICAL_DIR/repoB remote"* ]]
+  [[ "$output" != *"$SET_DIR/"* ]]
 }
 
 # --- update-relock -------------------------------------------------------

@@ -742,6 +742,118 @@ pnwf_fetch_and_rebase() {
   fi
 }
 
+# Classifies canonical_dir's local <primary> divergence against
+# 'origin/<primary>' -- read-only, never pushes/fetches/rebases anything.
+# Backs `pnwf sync-fetch`'s PRE-FLIGHT divergence sweep (bd tc-p08nv): that
+# sweep calls this once per present member, for EVERY member, BEFORE any
+# push/fetch/rebase is attempted for ANY of them, so an ahead-and-behind
+# canonical is detected and reported across the whole set up front rather
+# than discovered mid-walk on whichever member happens to be first in topo
+# order (bd tc-p08nv's observed incident: the offending member was reached
+# only after several others had already been pushed/fetched/rebased, and
+# every member AFTER it was left completely unreported).
+#
+# This is DELIBERATELY NOT reused by pnwf_push_canonical_primary_if_ahead
+# below, which keeps its own, independent ahead computation exactly as it
+# was before this bead: that function's job is to DECIDE whether to push and
+# it must remain correct and fully testable on its own (it is the function
+# that actually mutates origin), while this one exists purely to CLASSIFY and
+# REPORT for the multi-member sweep. Duplicating the (cheap, local, no-
+# network) ahead rev-list between them was judged a smaller risk than
+# threading a shared result through two independently-tested call sites.
+#
+# Prints ONE line: "<state>\t<ahead>\t<behind>\t<merge_base>\t<detail>".
+# ahead/behind/merge_base are "-" wherever they were never computed (no-remote,
+# clean stops before computing behind, indeterminate stops before whichever
+# rev-list failed). state is one of:
+#   no-remote          canonical_dir has no 'origin' remote configured at all
+#                       -- nothing to compare against; not this bead's concern.
+#   clean               <primary> is NOT ahead of 'origin/<primary>' (ahead ==
+#                       0). Whether it is BEHIND is irrelevant here -- that is
+#                       an ordinary fast-forward the fetch+rebase step already
+#                       handles -- so behind is never even computed for this
+#                       state (one fewer git call for the overwhelmingly
+#                       common case).
+#   ahead-only          ahead > 0 and behind == 0: a plain `git push` will
+#                       fast-forward 'origin/<primary>'. This is the
+#                       RETRYABLE case -- a peer's push landing in the
+#                       narrow window between this probe and the actual push
+#                       (pnwf_push_canonical_primary_if_ahead) can still
+#                       reject it non-fast-forward, but that is a genuine
+#                       race, not a steady-state condition this probe could
+#                       have caught by reading local refs alone.
+#   ahead-and-behind    ahead > 0 AND behind > 0: a plain push is IMPOSSIBLE
+#                       by construction (git rejects it non-fast-forward
+#                       every time) and reconciling it needs a HUMAN
+#                       rebase/merge decision -- this is the routine
+#                       drain-lands-locally-plus-peer-pushes state bd
+#                       tc-p08nv exists to report clearly instead of via a
+#                       generic "reconcile by hand" hint.
+#   indeterminate       ahead and/or behind could not be computed (an 'origin'
+#                       remote IS configured, but 'origin/<primary>' does not
+#                       resolve -- never fetched, or <primary> never published
+#                       under this name). merge_base is always "-" here.
+# Never aborts under set -e; every non-obvious state's `detail` field explains
+# what was (or was not) established, matching this file's convention of never
+# asserting a cause that was not read.
+pnwf_canonical_divergence() {
+  local canonical_dir="$1" primary="$2"
+
+  # (1) No 'origin' remote at all: nothing to diverge from.
+  if ! git -C "$canonical_dir" remote get-url origin >/dev/null 2>&1; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "no-remote" "-" "-" "-" "no 'origin' remote configured"
+    return 0
+  fi
+
+  # (2) Ahead? Reuses pnwf_ahead_of_primary the same way
+  # pnwf_push_canonical_primary_if_ahead does: "branch" is canonical's own
+  # LOCAL <primary>, "primary" is the remote-tracking ref, so the count is
+  # commits reachable from local <primary> but not 'origin/<primary>' --
+  # "ahead of origin". stderr discarded: an unresolvable
+  # 'origin/<primary>..<primary>' is an EXPECTED case here (reported as
+  # "indeterminate" below, not a generic error).
+  local ahead ahead_rc=0
+  ahead=$(pnwf_ahead_of_primary "$canonical_dir" "$primary" "origin/$primary" 2>/dev/null) || ahead_rc=$?
+  if [ "$ahead_rc" -ne 0 ]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "indeterminate" "-" "-" "-" \
+      "could not determine whether '$primary' is ahead of 'origin/$primary' (rev-list rc=$ahead_rc) -- 'origin' is configured but 'origin/$primary' does not resolve there; it may never have been fetched, or '$primary' may never have been published under this name"
+    return 0
+  fi
+
+  if [ "$ahead" -eq 0 ]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "clean" "0" "-" "-" "not ahead of 'origin/$primary'"
+    return 0
+  fi
+
+  # (3) Something is ahead: is it ALSO behind? Same primitive, args reversed
+  # -- "branch" is now the remote-tracking ref, "primary" is canonical's own
+  # local <primary>, so the count is commits reachable from
+  # 'origin/<primary>' but not local <primary> -- "behind origin".
+  local behind behind_rc=0
+  behind=$(pnwf_ahead_of_primary "$canonical_dir" "origin/$primary" "$primary" 2>/dev/null) || behind_rc=$?
+  if [ "$behind_rc" -ne 0 ]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "indeterminate" "$ahead" "-" "-" \
+      "ahead $ahead commit(s), but could not determine whether '$primary' is also behind 'origin/$primary' (rev-list rc=$behind_rc)"
+    return 0
+  fi
+
+  if [ "$behind" -eq 0 ]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "ahead-only" "$ahead" "0" "-" "ahead $ahead, behind 0 -- a plain push will fast-forward 'origin/$primary'"
+    return 0
+  fi
+
+  # (4) Ahead AND behind: name the merge-base too, so the halt this backs can
+  # point straight at the reconciliation point instead of just the counts.
+  # Best-effort (guarded): a merge-base that cannot be read still reports the
+  # ahead-and-behind verdict -- the counts alone already establish it.
+  local merge_base mb_rc=0
+  merge_base=$(git -C "$canonical_dir" merge-base "$primary" "origin/$primary" 2>/dev/null) || mb_rc=$?
+  [ "$mb_rc" -eq 0 ] || merge_base="unknown"
+
+  printf '%s\t%s\t%s\t%s\t%s\n' "ahead-and-behind" "$ahead" "$behind" "$merge_base" \
+    "ahead $ahead, behind $behind (merge-base $merge_base) -- a plain push is impossible; reconciling needs a human rebase/merge decision"
+}
+
 # Publishes canonical_dir's local <primary> to origin IF it is locally ahead
 # of origin/<primary> -- the PREVENTION half of bd pg2-xl9ez. Backs `pnwf
 # sync-fetch`'s new pre-step, called once per member on that member's

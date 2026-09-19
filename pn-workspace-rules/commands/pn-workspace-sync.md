@@ -300,6 +300,20 @@ and it is bounded:
   pipeline) and HALT and report rather than assume the old cause. A plain
   `behind` (no `ahead`), a `Skipped` line (remote comparison skipped / remote
   rev unresolved), or any other shape is unchanged: nothing here converges it.
+
+  Bd `tc-p08nv` closed a SEPARATE ahead-and-behind mechanism that `pg2-xl9ez`
+  did not cover: a canonical that is genuinely ahead-and-behind BEFORE Stage 2
+  ever runs (the routine drain-lands-locally-plus-a-peer-pushes state, not
+  fallout from sync-fetch's own rebase). `pnwf sync-fetch` now probes every
+  present member's canonical divergence UP FRONT, before Stage 2 pushes,
+  fetches, or rebases anything, and halts the whole run immediately (exit 11,
+  its own distinct reason from the ahead-only push race's exit 10) if any
+  member is ahead-and-behind — naming that member's ahead/behind counts and
+  merge-base directly, rather than a generic "reconcile by hand" hint. In
+  practice this means Stage 2 itself now halts on this class of divergence
+  BEFORE Stage 3's `doctor` check above could ever see it, which makes an
+  ahead-and-behind `branch-synced` finding reaching THIS check even more
+  clearly the genuinely-new-anomaly case above, never the routine one.
   (`branch-synced` is primary-mode only, so this MUST be run from the canonical
   root, not from the set. It is READ-ONLY: you MUST NOT pass `--fix`.)
 

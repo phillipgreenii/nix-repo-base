@@ -1118,6 +1118,87 @@ _add_local_commit() {
   command git -C "$REPO" commit -q -m "$marker"
 }
 
+# --- pnwf_canonical_divergence --------------------------------------------
+# Backs `pnwf sync-fetch`'s pre-flight divergence sweep (bd tc-p08nv): a
+# read-only classifier of canonical_dir's local <primary> against
+# 'origin/<primary>' that never pushes, fetches, or rebases anything. Real
+# git throughout, reusing the same fixture helpers as the push tests below.
+
+@test "pnwf_canonical_divergence: no 'origin' remote at all is 'no-remote'" {
+  run bash -c "command git -C '$REPO' remote"
+  [ -z "$output" ]
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_divergence '$REPO' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "no-remote"$'\t'*"no 'origin' remote configured"* ]]
+}
+
+@test "pnwf_canonical_divergence: NOT ahead of origin is 'clean', behind never computed" {
+  _setup_push_test_origin
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_divergence '$REPO' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "clean"$'\t'"0"$'\t'"-"$'\t'"-"$'\t'*"not ahead of 'origin/main'"* ]]
+}
+
+@test "pnwf_canonical_divergence: ahead-only (behind 0) names the RETRYABLE push-race case" {
+  _setup_push_test_origin
+  _add_local_commit ahead-one
+  _add_local_commit ahead-two
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_divergence '$REPO' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "ahead-only"$'\t'"2"$'\t'"0"$'\t'"-"$'\t'*"ahead 2, behind 0"*"fast-forward"* ]]
+}
+
+@test "pnwf_canonical_divergence: ahead-and-behind names both counts, the merge-base, and needs a human decision" {
+  _setup_push_test_origin
+  local common_ancestor
+  common_ancestor=$(command git -C "$REPO" rev-parse main)
+  _add_local_commit ahead-one
+
+  # A peer publishes directly to origin, via a THIRD clone -- $REPO's own
+  # remote-tracking ref only reflects it once $REPO itself fetches (this
+  # function never fetches on its own, matching pnwf_push_canonical_primary_
+  # if_ahead's own "no extra network call" invariant).
+  local peer="$TEST_DIR/peer-clone"
+  command git clone -q "$ORIGIN" "$peer"
+  command git -C "$peer" config user.email "test@example.com"
+  command git -C "$peer" config user.name "Test"
+  echo peer-advance >"$peer/peer.txt"
+  command git -C "$peer" add peer.txt
+  command git -C "$peer" commit -q -m "peer advance"
+  command git -C "$peer" push -q origin main
+  command git -C "$REPO" fetch -q origin
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_divergence '$REPO' main"
+  [ "$status" -eq 0 ]
+  local state ahead behind mb detail
+  IFS=$'\t' read -r state ahead behind mb detail <<<"$output"
+  [ "$state" = "ahead-and-behind" ]
+  [ "$ahead" = "1" ]
+  [ "$behind" = "1" ]
+  [ "$mb" = "$common_ancestor" ]
+  [[ "$detail" == *"ahead 1, behind 1"* ]]
+  [[ "$detail" == *"$common_ancestor"* ]]
+  [[ "$detail" == *"impossible"* ]]
+  [[ "$detail" == *"human rebase/merge decision"* ]]
+}
+
+@test "pnwf_canonical_divergence: 'origin' configured but never fetched is 'indeterminate'" {
+  # Mirrors pnwf_push_canonical_primary_if_ahead's own indeterminate fixture:
+  # remote added, but no fetch ever ran, so 'origin/main..main' cannot
+  # resolve.
+  ORIGIN="$TEST_DIR/origin.git"
+  command git clone -q --bare "$REPO" "$ORIGIN"
+  command git -C "$REPO" remote add origin "$ORIGIN"
+  _add_local_commit ahead-one
+
+  run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_canonical_divergence '$REPO' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "indeterminate"$'\t'"-"$'\t'"-"$'\t'"-"$'\t'*"could not determine whether 'main' is ahead of 'origin/main'"* ]]
+}
+
 @test "pnwf_push_canonical_primary_if_ahead: NOT ahead of origin is a silent no-op" {
   _setup_push_test_origin
   run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_push_canonical_primary_if_ahead '$REPO' main"
