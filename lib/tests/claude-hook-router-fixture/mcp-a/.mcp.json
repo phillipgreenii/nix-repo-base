@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "bar-baz": { "command": "mcp-a-server" }
+  }
+}

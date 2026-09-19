@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          { "type": "command", "command": "echo d", "contract": "observe" }
+        ]
+      }
+    ]
+  }
+}

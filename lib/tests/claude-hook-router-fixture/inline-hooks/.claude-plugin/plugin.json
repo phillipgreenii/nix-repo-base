@@ -1,0 +1,17 @@
+{
+  "name": "inline-hooks",
+  "version": "0.0.1",
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo standalone",
+            "contract": "observe"
+          }
+        ]
+      }
+    ]
+  }
+}

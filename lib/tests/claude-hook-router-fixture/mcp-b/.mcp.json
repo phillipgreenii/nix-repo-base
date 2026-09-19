@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "baz": { "command": "mcp-b-server" }
+  }
+}

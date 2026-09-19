@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "foo.bar",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo lookalike",
+            "contract": "observe"
+          }
+        ]
+      }
+    ]
+  }
+}
