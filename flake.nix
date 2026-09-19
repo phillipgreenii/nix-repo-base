@@ -471,6 +471,22 @@
                   "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
               );
 
+            # A2 (ADR 0071, bead tc-rjzd3.3): pure-eval unit tests for
+            # mkClaudeHookRouterPlugin (lib/claude-marketplace.nix), covering what is
+            # provable without realizing a derivation -- see
+            # lib/claude-hook-router-tests.nix's own header for what this suite can and
+            # cannot assert (and why A3, above/below, exists to cover the rest).
+            claude-hook-router-lib =
+              let
+                failures = pkgs.lib.runTests (import ./lib/claude-hook-router-tests.nix { inherit pkgs; });
+              in
+              pkgs.runCommand "check-claude-hook-router-lib" { } (
+                if failures == [ ] then
+                  "touch $out"
+                else
+                  "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
+              );
+
             # A3 (ADR 0071, bead tc-rjzd3.4): builds a mkClaudeHookRouterPlugin-generated
             # fixture plugin and runs `claude plugin validate ./result` against it — the one
             # Tier-3 (docs/claude-marketplaces.md) validation step confirmed local/no-network
