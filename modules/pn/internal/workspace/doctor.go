@@ -66,6 +66,28 @@ func (r *DoctorReport) hasAny() bool {
 
 // ExitCode maps the report to 0 (clean), 1 (errors, or any finding under strict).
 // Code 2 (doctor itself failed) is returned by Doctor's error path, not here.
+//
+// GAP 3 ruling (bd tc-atsmj): a Skipped finding (e.g. branch-synced's "remote
+// comparison skipped" / "remote rev unresolved") NEVER fails the exit code,
+// not even under --strict — see hasAny below and
+// TestReportExitCode_SkippedErrorNotCounted. This is intentional, not an
+// oversight: "could not verify" and "verified fine" are genuinely different
+// for a human reading doctor's output, and collapsing them into a failure
+// would make --strict fire on things like an unresolvable remote (e.g. no
+// upstream configured) that are not actually broken.
+//
+// The tradeoff this creates, deliberately accepted rather than silently
+// fixed: any AUTOMATED gate that keys only on doctor's exit code cannot
+// distinguish "this repo's sync state could not be verified" from "this repo
+// is in sync" — both are exit 0. A pipeline author who needs that distinction
+// (e.g. a gate that must treat "could not verify" as a hard stop) MUST NOT
+// rely on the exit code alone; inspect `doctor --json`'s Findings for
+// `"Skipped": true` entries directly (this is what
+// pn-workspace-rules:validate-workforest's doctor-gate jq already does, since
+// it classifies by CheckID/fields in the JSON rather than trusting the exit
+// code). Documented here, next to the semantics it governs, and at the
+// --strict flag definition (internal/cli/workspace.go), for anyone gating a
+// pipeline on `pn workspace doctor`.
 func (r *DoctorReport) ExitCode(strict bool) int {
 	if r.HasErrors() {
 		return 1
@@ -233,6 +255,7 @@ func (ws *Workspace) registerChecks() []check {
 		{id: "terminal", run: ws.checkTerminal},
 		{id: "flake-lock", run: ws.checkFlakeLockFresh},
 		{id: "hooks", run: ws.checkHookExpressions},
+		{id: "hooks-trusted", run: ws.checkHooksTrusted},
 		{id: "ruff-pin", run: ws.checkRuffPin},
 	}
 }

@@ -573,6 +573,12 @@ func workspaceDoctorCmd(terminal *string) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "with --fix: print the fix plan, change nothing")
 	cmd.Flags().BoolVar(&offline, "offline", false, "skip remote-dependent checks")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit findings as JSON")
+	// NOTE (bd tc-atsmj, GAP 3 ruling): --strict still never fails on a Skipped
+	// finding (e.g. branch-synced's "remote comparison skipped" / "remote rev
+	// unresolved") — that's deliberate, see workspace.DoctorReport.ExitCode's
+	// doc comment. A pipeline that must distinguish "could not verify" from
+	// "verified clean" cannot rely on the exit code (strict or not) and should
+	// inspect `--json`'s Findings for `"Skipped": true` instead.
 	cmd.Flags().BoolVar(&strict, "strict", false, "treat warnings as errors for the exit code")
 	return cmd
 }

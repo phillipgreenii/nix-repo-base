@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
 // checkHookExpressions emits advisory (SevWarning) findings about per-repo event
@@ -54,6 +55,57 @@ func (ws *Workspace) checkHookExpressions(ctx context.Context, env *doctorEnv) [
 		}
 	}
 	return fs
+}
+
+// checkHooksTrusted emits a finding when the workspace's hooks are untrusted:
+// pn-workspace.toml was never allowed, or has changed since the last `pn
+// workspace allow` (bd tc-atsmj, evidence bd tc-hm3uh). It reuses
+// internal/trust's existing predicate (trust.IsAllowed) rather than
+// reimplementing the hash comparison — the same predicate build.go/apply.go's
+// ensureExecTrusted and nix_hooks.go's RunEventHooks gate execution on.
+//
+// This is a workspace-level finding (Repo left empty), since trust is recorded
+// per workspace root, not per member repo.
+//
+// GAP 2 ruling (tc-atsmj, recorded here and in the commit message): the pn test
+// suite's own assertions show build/apply deliberately hard-abort on an
+// untrusted workspace (TestBuild_UntrustedAborts, TestApply_UntrustedAborts),
+// while push and post-clone hooks are deliberately trust-skipped with a
+// scrollback warning and the command still succeeds
+// (TestRunEventHooks_UntrustedPostWarnsAndSkips, the post-clone equivalent).
+// That asymmetry is intended, not a bug: refusing to publish because a hook is
+// untrusted would be worse than skipping it. This check is the compensating
+// control the asymmetry relies on — without it, the warn-and-succeed half had
+// no other way to become visible (tc-hm3uh: a post-push hook sat disarmed ~6h
+// with nothing surfacing it).
+//
+// Severity is SevWarning, deliberately (see the commit message for the full
+// reasoning): being untrusted is a normal, expected transient state — right
+// after a clone, or right after a reviewed-but-not-yet-allowed edit to
+// pn-workspace.toml — not a structural break, and it sits beside
+// hook-never-fires/hook-nix-run-output, which are advisory for the same
+// reason. A pipeline that wants this to hard-fail its gate can opt in with
+// --strict (see doctor.go's ExitCode doc for the exact semantics: warnings
+// fail under --strict, skipped findings never do).
+func (ws *Workspace) checkHooksTrusted(_ context.Context, _ *doctorEnv) []Finding {
+	allowed, err := trust.IsAllowed(ws.root)
+	if err != nil {
+		return []Finding{{
+			CheckID: "hooks-trusted", Severity: SevError,
+			Message: fmt.Sprintf("could not determine workspace hook trust state: %v", err),
+		}}
+	}
+	if allowed {
+		return nil
+	}
+	return []Finding{{
+		CheckID: "hooks-trusted", Severity: SevWarning,
+		Message: fmt.Sprintf(
+			"workspace hooks in %s are not trusted (pn-workspace.toml never allowed, or changed since); event hooks and build_command/apply_command execution are disarmed until it is reviewed and allowed",
+			ws.root,
+		),
+		Manual: "review pn-workspace.toml, then run: pn workspace allow",
+	}}
 }
 
 // hookNeverFires reports whether none of h's events can ever process repo. It is
