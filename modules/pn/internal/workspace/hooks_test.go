@@ -2,12 +2,32 @@ package workspace
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+// captureStderr runs fn with os.Stderr redirected to a pipe and returns
+// whatever fn wrote to it. Mirrors the pattern already used in
+// edges_test.go for the same purpose.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	fn()
+	_ = w.Close()
+	os.Stderr = oldStderr
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	return string(buf[:n])
+}
 
 func TestResolveHookPath_Absolute(t *testing.T) {
 	got, err := resolveHookPath("/usr/bin/echo", "/workspace")
@@ -89,6 +109,48 @@ func TestRunHooks_PostFailureWarnsButDoesNotAbort(t *testing.T) {
 	calls := f.Calls()
 	if len(calls) != 2 {
 		t.Errorf("expected both post hooks to run, got %d calls", len(calls))
+	}
+}
+
+// TestRunHooks_PostSuccessAcknowledged closes the tc-5cfwb reproduction: a
+// post-hook that ran and succeeded must leave evidence in pn's output, so it
+// is distinguishable from one that never fired at all.
+func TestRunHooks_PostSuccessAcknowledged(t *testing.T) {
+	f := exec.NewFakeRunner()
+	f.AddResponse("sh", []string{"-c", "echo mirrors-synced"}, exec.Result{Stdout: []byte("mirrors-synced\n")}, nil)
+
+	var runErr error
+	out := captureStderr(t, func() {
+		runErr = RunHooks(context.Background(), f, []string{"echo mirrors-synced"}, "/workspace", HookPhasePost)
+	})
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+	if !strings.Contains(out, "echo mirrors-synced") {
+		t.Errorf("expected a one-line acknowledgement naming the hook; got stderr: %q", out)
+	}
+	// The acknowledgement must NOT relay the hook's own stdout body — only
+	// prove that it ran (see the decision in RunHooks' doc comment).
+	if strings.Contains(out, "mirrors-synced") && !strings.Contains(out, "echo mirrors-synced") {
+		t.Errorf("acknowledgement appears to relay hook stdout body, not just name it: %q", out)
+	}
+}
+
+// TestRunHooks_PreSuccessStaysSilent: pre-hooks are gates, and a gate passing
+// silently is conventional (bd tc-5cfwb) — success must not print anything.
+func TestRunHooks_PreSuccessStaysSilent(t *testing.T) {
+	f := exec.NewFakeRunner()
+	f.AddResponse("sh", []string{"-c", "echo gate-passed"}, exec.Result{Stdout: []byte("gate-passed\n")}, nil)
+
+	var runErr error
+	out := captureStderr(t, func() {
+		runErr = RunHooks(context.Background(), f, []string{"echo gate-passed"}, "/workspace", HookPhasePre)
+	})
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+	if out != "" {
+		t.Errorf("expected pre-hook success to stay silent; got stderr: %q", out)
 	}
 }
 

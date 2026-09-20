@@ -40,9 +40,33 @@ func resolveHookPath(cmd, workspaceRoot string) (string, error) {
 // argument handling.
 //
 // Phase semantics:
-//   - HookPhasePre: any non-zero exit aborts. Returns that error.
+//   - HookPhasePre: any non-zero exit aborts. Returns that error. Stdout is
+//     discarded on success, deliberately: a pre-hook is a gate, and a gate
+//     that passes silently is conventional (bd tc-5cfwb) — there is no
+//     RAN-vs-never-ran ambiguity to resolve here the way there is for
+//     post-hooks, because a pre-hook that never ran would instead have
+//     skipped the command it gates entirely, which is already observable.
 //   - HookPhasePost: non-zero exits print stderr to os.Stderr but do not
-//     abort or propagate as an error.
+//     abort or propagate as an error. On success, a one-line "ran ..."
+//     acknowledgement (not the hook's stdout body) is written to os.Stderr —
+//     see the decision below.
+//
+// Decision (bd tc-5cfwb): a successful post-hook's stdout was previously
+// discarded entirely, making a hook that ran-and-succeeded indistinguishable
+// from one that never fired at all (e.g. because its `when` never matched).
+// Of the three options considered — always relay full stdout, gate it behind
+// a new verbosity flag, or print a one-line acknowledgement — this picks the
+// one-line acknowledgement:
+//   - "always" would dump arbitrary hook stdout into `pn workspace push`
+//     output that is already long across many repos, and a hook's stdout is
+//     not formatted for that context.
+//   - a verbosity flag would need new CLI plumbing (no such flag exists on
+//     pn today) for a problem that a one-liner already solves.
+//   - a one-line acknowledgement is the minimal change that satisfies the
+//     actual requirement: RAN and DID-NOT-RUN must stop being
+//     indistinguishable. It doesn't relay the hook's payload, so it doesn't
+//     add to the verbosity problem the previous silence was presumably
+//     trying to avoid.
 func RunHooks(ctx context.Context, runner exec.Runner, entries []string, workspaceRoot string, phase HookPhase) error {
 	for _, raw := range entries {
 		resolved, err := rewriteFirstToken(raw, workspaceRoot)
@@ -51,6 +75,9 @@ func RunHooks(ctx context.Context, runner exec.Runner, entries []string, workspa
 		}
 		res, err := runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: workspaceRoot})
 		if err == nil {
+			if phase == HookPhasePost {
+				_, _ = fmt.Fprintf(os.Stderr, "ran post-hook: %s\n", raw)
+			}
 			continue
 		}
 		if phase == HookPhasePre {
