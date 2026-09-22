@@ -95,6 +95,32 @@ if any stage halts.
      read `dirty: []` on an update halt as "nothing to look at", and MUST NOT
      re-run the relock before the path is dispositioned — it will refuse
      identically.
+   - **`incomplete-update`: the halt may mean "still running," not "died."**
+     Stage 2's `600000` ms timeout is the Bash tool's own documented maximum
+     explicit timeout, not an estimate — a real relock can legitimately
+     outlast it (this fleet's own scheduled updater budgets 60 minutes for a
+     SINGLE repo; `update-relock` relocks every member of the set). A
+     foreground Bash call that outruns its timeout is auto-backgrounded by
+     the harness rather than killed, so the relock may still be proceeding
+     cleanly when the runner halts (bd `pg2-7u02k`). The runner's `detail`
+     for this halt names whether its own `lsof -a -d cwd +D <SETDIR>`
+     liveness probe found anything still anchored under the set; if it did
+     (or that detail is absent because you're handling a halt from before
+     this probe existed), verify and wait BEFORE dispositioning any residue.
+     Re-run the probe yourself to double check —
+     `lsof -a -d cwd +D <SETDIR>` (recursive; empty output means nothing is
+     anchored there). If it shows a live process, wait for it to exit —
+     Monitor with an until-loop, never a `sleep`-then-check pair. Once it
+     exits, re-derive state (`cd <SETDIR> && pnwf residue --set` reports
+     clean) and resume Stage 3 directly in THIS session —
+     `cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace build`,
+     then `pn workspace doctor` — rather than re-dispatching the runner: its
+     own second-attempt resume has been observed to report a completed
+     status with no accompanying hand-back content (inconclusive, not
+     confirmed as a distinct bug, but not to be relied on here). Only fall
+     back to the residue-disposition recovery above if the probe finds
+     nothing live (the job genuinely died) or the resumed validate itself
+     then fails.
    - **`done`** → proceed to the main-session landing stages below.
    - If `model_env` is not `unset`/`sonnet`, WARN the user before continuing
      (silent-Opus guard: an env override may have forced a non-Sonnet model).

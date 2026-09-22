@@ -247,12 +247,33 @@ does NOT merge, so there is NO rebase and NO resumable conflict here.
   refusal as dirtiness, and MUST NOT infer "nothing to look at" from an empty
   `dirty` array: a member pnwf could not read is one the R4 probe cannot read
   either.
-- **timed out** (the `600000` ms ceiling hit, so you have no exit status) → the
-  relock was killed mid-member. You MUST return `halt` with `stage: "update"`,
-  `reason: "incomplete-update"`, and `detail` saying the step exceeded the
-  foreground ceiling rather than failing. You MUST NOT report `done`, and MUST
-  NOT re-run the step hoping it finishes — its pre-flight refuses the dirty
-  member it just left.
+- **timed out** (the `600000` ms ceiling hit, so you have no exit status) → you
+  do NOT know that the relock was killed. The harness auto-backgrounds a
+  foreground Bash call that outruns its explicit timeout rather than killing
+  it, so the underlying `update-relock` process tree may still be running and
+  could finish cleanly minutes later — you simply cannot observe that from
+  inside your own one-turn lifetime (bd `pg2-7u02k`). Before returning the
+  halt, run one more quick, non-waiting liveness probe so the main
+  session — which DOES survive across turns — does not have to guess:
+
+  ```bash
+  lsof -a -d cwd +D <SETDIR> 2>/dev/null || true
+  ```
+
+  This is the same recursive cwd-anchoring technique `audit-worktrees` uses
+  for worktree liveness (`lsof -a -d cwd +D <path>`), applied to the set
+  directory instead: any line printed names a process still anchored
+  somewhere under the set — i.e. still working; no output means nothing is
+  anchored there. This is a single immediate check, not a wait, so it does
+  NOT violate R1.
+
+  You MUST return `halt` with `stage: "update"`, `reason: "incomplete-update"`,
+  and `detail` saying the step exceeded the foreground ceiling rather than
+  failing, PLUS the liveness probe's verdict verbatim (its output, or "no
+  process anchored under the set" if it printed nothing). You MUST NOT report
+  `done`, and MUST NOT re-run the step yourself regardless of what the probe
+  shows — even a live, healthy job is a main-session resume decision, not
+  yours to act on.
 
 Every `stage: "update"` halt — failed, incomplete, or timed out — MUST carry the
 [R4](#constraint-one-turn-foreground-only) residue probe's result in `dirty`, so
