@@ -170,7 +170,11 @@ func Doctor(ctx context.Context, root string, runner exec.Runner, opts DoctorOpt
 	mode := ws.workspaceMode(ctx)
 	report.Mode = mode
 	refRev, skipped := ws.resolveRefRevs(ctx, mode, opts.Offline)
-	effLock, _, _ := ws.effectiveLock(ctx) // best-effort; nil-safe checks handle a bad lock
+	// best-effort: downstream nil-safe checks handle a bad/nil lock by
+	// producing fewer findings, but that degradation is silent on its own —
+	// effLockErr is surfaced explicitly below (bd tc-b3wxl) so a derivation
+	// failure is never indistinguishable from "nothing wrong."
+	effLock, _, effLockErr := ws.effectiveLock(ctx)
 	env := &doctorEnv{
 		ws:       ws,
 		mode:     mode,
@@ -183,6 +187,9 @@ func Doctor(ctx context.Context, root string, runner exec.Runner, opts DoctorOpt
 
 	checks := ws.registerChecks()
 	report.Findings = append(report.Findings, runChecks(ctx, env, checks)...)
+	if effLockErr != nil {
+		report.Findings = append(report.Findings, effectiveLockDerivationFinding(effLockErr))
+	}
 	report.Skipped = collectSkipped(report.Findings)
 	sortFindings(report.Findings)
 
