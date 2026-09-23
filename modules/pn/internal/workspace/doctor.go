@@ -267,5 +267,6 @@ func (ws *Workspace) registerChecks() []check {
 		{id: "ruff-pin", run: ws.checkRuffPin},
 		{id: "nix-cache-trusted", run: ws.checkNixCacheTrusted},
 		{id: "extra-remotes-synced", run: ws.checkExtraRemotesSynced},
+		{id: "applied-state-current", run: ws.checkAppliedStateCurrent},
 	}
 }
