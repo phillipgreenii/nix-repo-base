@@ -113,7 +113,18 @@ const installPreCommitHooksAttr = "install-pre-commit-hooks"
 // pure no-op anyway — most notably a freshly-materialized worktree, where
 // the file is simply absent.
 func preCommitConfigLive(dir string) bool {
-	link := filepath.Join(dir, ".pre-commit-config.yaml")
+	return symlinkLiveInNixStore(filepath.Join(dir, ".pre-commit-config.yaml"))
+}
+
+// symlinkLiveInNixStore is the detection primitive preCommitConfigLive
+// applies to the generated .pre-commit-config.yaml, generalized to an
+// arbitrary path so the doctor pre-commit-hook-live check (bd tc-wdwnl) can
+// reuse it against .git/hooks/pre-commit rather than reimplementing it. Live
+// only for a symlink resolving into a currently-present /nix/store entry; a
+// missing link, a non-symlink, a symlink outside /nix/store, or a dangling
+// /nix/store symlink (the store path was garbage-collected — the failure
+// mode bd tc-0wzp documents) all return false.
+func symlinkLiveInNixStore(link string) bool {
 	target, err := os.Readlink(link)
 	if err != nil {
 		return false // absent, or not a symlink at all
