@@ -146,4 +146,24 @@ fi
 export PTR_JQ="${PG_TEST_RUNNER_JQ_BIN:-jq}"
 export PTR_TIMEOUT="${PG_TEST_RUNNER_TIMEOUT_BIN:-timeout}"
 
+# A test invocation may `git commit` inside its OWN ephemeral/hermetic
+# fixture repo (e.g. a bats test_helper's setup_test_repo, which
+# intentionally sets a placeholder local identity like
+# user.email=test@example.com). This machine's global core.hooksPath (the
+# pg-git-check-identity hook) fires for every repo, including a nested
+# fixture one, and rejects that placeholder identity -- `git var
+# GIT_AUTHOR_IDENT`/`GIT_COMMITTER_IDENT` resolve the GIT_AUTHOR_*/
+# GIT_COMMITTER_* env vars ahead of user.name/user.email config (see
+# pg-git-check-identity.bash), so exporting a valid, non-placeholder
+# identity here -- inherited by every child process this script runs --
+# overrides the fixture's own local config and lets the commit through.
+# "test.invalid" mirrors the domain modules/pn's own smoke-test fixtures
+# already use for the same reason (a real .invalid domain, not one of
+# pg-git-check-identity's recognized fake-fixture domains). Default-if-unset
+# so a caller that already exported a real identity is left alone.
+export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-pg-test-runner}"
+export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-pg-test-runner@test.invalid}"
+export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-pg-test-runner}"
+export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-pg-test-runner@test.invalid}"
+
 ptr_run "$MODE" "$LABELS" "$CONFIG_PATH" "${POSITIONAL_ARGS[@]}"
