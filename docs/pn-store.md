@@ -78,9 +78,21 @@ It processes these sections, in order, pruning per the retention rule above:
 4. `Devbox Global`
 5. `Devbox Util`
 6. `Devbox Projects` (from `search_dirs`)
-7. `Result Symlinks` — `result` / `result-*` symlinks pointing into `/nix/store` under `search_dirs`.
-8. `Stale Nix Profiles` — symlinks under `~/.nix-profiles/` older than `keep_days`.
-9. `NH Temp Roots` — `nh-darwin*/result` symlinks under `$TMPDIR`.
+7. `Flox` — **report-only, prunes nothing.** Shows the combined disk usage of Flox's global data
+   dirs (`~/.local/share/flox` + `~/.cache/flox`) and, per `.flox` environment found directly under
+   `search_dirs` (no git-worktree following — see below), its own disk usage. Flox has no local
+   generation history analogous to the others: `flox generations` operates only on environments
+   pushed to FloxHub (verified live, flox 1.17.0 — a local-only environment errors with
+   "Generations are only available for environments pushed to floxhub"), and each local
+   environment already keeps exactly one GC-rooted build per name via a
+   `.flox/run/<system>.<name>` indirect root, which `/nix/var/nix/gcroots/auto/` already protects
+   correctly. (The earlier idea of also symlinking `~/.local/share/flox/environments/` into
+   `/nix/var/nix/gcroots/flox-environments` was investigated and rejected: it targets a path that
+   doesn't exist on this machine and Flox already self-registers its own GC roots — see bead
+   `pg2-8k05k`.)
+8. `Result Symlinks` — `result` / `result-*` symlinks pointing into `/nix/store` under `search_dirs`.
+9. `Stale Nix Profiles` — symlinks under `~/.nix-profiles/` older than `keep_days`.
+10. `NH Temp Roots` — `nh-darwin*/result` symlinks under `$TMPDIR`.
 
 Then a `Summary`:
 
@@ -115,7 +127,10 @@ Keeps only the most recent + current generation everywhere.
 ### First run / no config
 
 Works with built-in defaults (`keep_days=14`, `keep_count=3`, no `search_dirs`).
-`Devbox Projects` / `Result Symlinks` report empty until you add `search_dirs`.
+`Devbox Projects` / `Result Symlinks` report empty until you add `search_dirs`. `Flox` reports
+`(not installed)` until either Flox has been used on the machine (its global data dirs exist) or
+`search_dirs` are added (so it has somewhere to look for a per-project `.flox`) — either way, it
+never prunes anything.
 
 ```mermaid
 flowchart TD
@@ -146,8 +161,13 @@ flowchart LR
         DNH["nhTempRoots (TMPDIR)"]
     end
 
+    subgraph FLOXD["flox.go (report-only)"]
+        DFE["floxEnvironments (walks search_dirs; no worktrees)"]
+    end
+
     SD --> DDP
     SD --> DRS
+    SD --> DFE
 
     subgraph RETENTION["generations.go (UNION keep)"]
         GP["generationsToPrune:<br/>keep if (date >= now - keep_days) OR (top keep_count) OR current"]
@@ -158,6 +178,7 @@ flowchart LR
 
     DISCOVERY --> AUDIT["audit.go sections"]
     DISCOVERY --> CLEAN["deepclean.go sections"]
+    FLOXD --> CLEAN
     GP --> CLEAN
 
     KS["--keep-since Nd|Nw (0d=off)"] -.overrides.-> KD

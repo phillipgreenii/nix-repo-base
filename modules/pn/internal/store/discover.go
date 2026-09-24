@@ -363,6 +363,10 @@ func (s *Store) homeManagerGenLinks() []string {
 //
 // devbox-projects: profile path is <project>/.devbox/nix/profile/default —
 // climb 4 dirnames to reach the project dir, then apply ~ substitution.
+//
+// flox: profile path IS the project's .flox dir directly (<project>/.flox) —
+// climb 1 dirname to reach the project dir, then apply the same ~
+// substitution.
 func (s *Store) formatProfileLabel(profile, category string) string {
 	switch category {
 	case "system", "home-manager", "devbox-global", "devbox-util":
@@ -371,17 +375,26 @@ func (s *Store) formatProfileLabel(profile, category string) string {
 		return filepath.Base(profile)
 	case "devbox-projects":
 		// Climb 4 dirs: default → profile → nix → .devbox → project
-		projDir := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(profile))))
-		if s.env.Home != "" && strings.HasPrefix(projDir, s.env.Home+string(filepath.Separator)) {
-			return "~" + strings.TrimPrefix(projDir, s.env.Home)
-		}
-		if s.env.Home != "" && projDir == s.env.Home {
-			return "~"
-		}
-		return projDir
+		return s.tildeLabel(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(profile)))))
+	case "flox":
+		// Climb 1 dir: .flox → project
+		return s.tildeLabel(filepath.Dir(profile))
 	default:
 		return profile
 	}
+}
+
+// tildeLabel renders dir with $HOME abbreviated to "~", or the dir unchanged
+// if it isn't under $HOME (or Home is unset). Shared by the devbox-projects
+// and flox cases of formatProfileLabel.
+func (s *Store) tildeLabel(dir string) string {
+	if s.env.Home != "" && strings.HasPrefix(dir, s.env.Home+string(filepath.Separator)) {
+		return "~" + strings.TrimPrefix(dir, s.env.Home)
+	}
+	if s.env.Home != "" && dir == s.env.Home {
+		return "~"
+	}
+	return dir
 }
 
 // ─── isOrphanedStandaloneHMProfile ────────────────────────────────────────────

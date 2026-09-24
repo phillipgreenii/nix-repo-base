@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -145,6 +146,34 @@ func runtimeRootsSummary(ctx context.Context, r exec.Runner) string {
 	}
 	return fmt.Sprintf("%d store %s held only by running processes (up to %s reclaimable)\n"+
 		"  Tip: Restarting applications and re-running may free additional space", len(lsofOnly), word, size)
+}
+
+// duSize returns the disk usage of path in bytes via `du -sk`, or ok=false if
+// path is absent or du fails. Used for reporting Flox's on-disk footprint,
+// which is plain files/directories rather than a Nix store path (so
+// nix path-info -S, used by profileClosureSize/deadPathsSize, does not
+// apply). Callers Stat first so a missing path never spawns a subprocess.
+//
+// du's line is "<kb>\t<path>" -- the KB count is the FIRST field, unlike
+// `nix path-info -S`'s "<path> <bytes>" (second field, secondFieldFromLine's
+// shape), so this parses it directly rather than reusing that helper.
+func duSize(ctx context.Context, r exec.Runner, path string) (int64, bool) {
+	if _, err := os.Stat(path); err != nil {
+		return 0, false
+	}
+	res, err := r.Run(ctx, "du", []string{"-sk", path}, exec.RunOptions{})
+	if err != nil {
+		return 0, false
+	}
+	fields := strings.Fields(string(res.Stdout))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	kb, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return kb * 1024, true
 }
 
 // --- small helpers ---

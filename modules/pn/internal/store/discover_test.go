@@ -72,6 +72,12 @@ func TestFormatProfileLabel_AllCategories(t *testing.T) {
 		{home + "/projects/myapp/.devbox/nix/profile/default", "devbox-projects", "~/projects/myapp"},
 		// devbox-projects outside $HOME
 		{"/work/repo/.devbox/nix/profile/default", "devbox-projects", "/work/repo"},
+		// flox inside $HOME: profile IS the project's .flox dir directly (1 climb).
+		{home + "/projects/myapp/.flox", "flox", "~/projects/myapp"},
+		// flox outside $HOME
+		{"/work/repo/.flox", "flox", "/work/repo"},
+		// flox project dir IS $HOME itself
+		{home + "/.flox", "flox", "~"},
 	}
 
 	for _, tc := range cases {
@@ -310,6 +316,80 @@ func TestDevboxProjects_MissingSearchDirWarnsToErrOut(t *testing.T) {
 	}
 	if !bytes.Contains(errBuf.Bytes(), []byte(nonExistent)) {
 		t.Errorf("warning %q should mention the missing dir %q", warning, nonExistent)
+	}
+}
+
+// ─── floxEnvironments ─────────────────────────────────────────────────────────
+
+func TestFloxEnvironments_DiscoversUnderSearchDirs(t *testing.T) {
+	root := t.TempDir()
+
+	// Project with a .flox dir directly under root.
+	proj := filepath.Join(root, "myproj")
+	floxDir := filepath.Join(proj, ".flox")
+	if err := os.MkdirAll(floxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A plain sibling dir with no .flox must not appear.
+	if err := os.MkdirAll(filepath.Join(root, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(nil, Env{})
+	got := s.floxEnvironments([]string{root})
+
+	if len(got) != 1 || got[0] != floxDir {
+		t.Fatalf("floxEnvironments = %v, want exactly [%q]", got, floxDir)
+	}
+}
+
+func TestFloxEnvironments_MissingSearchDirSkipsSilently(t *testing.T) {
+	s := NewWithEnv(nil, Env{})
+	nonExistent := "/nonexistent-dir-" + t.Name()
+
+	got := s.floxEnvironments([]string{nonExistent})
+	if len(got) != 0 {
+		t.Errorf("expected empty result for missing dir, got %v", got)
+	}
+}
+
+func TestFloxEnvironments_NoWorktreeExpansion(t *testing.T) {
+	// Unlike devboxProjects, floxEnvironments takes no Runner/errOut and must
+	// never shell out to `git worktree list` -- confirmed structurally: its
+	// signature has no exec.Runner to script a response into, so a .git dir
+	// with worktrees elsewhere on disk simply cannot be followed. This test
+	// only pins that the direct (non-worktree) search dir itself still works
+	// when a .git dir happens to be present alongside .flox.
+	root := t.TempDir()
+	proj := filepath.Join(root, "myrepo")
+	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	floxDir := filepath.Join(proj, ".flox")
+	if err := os.MkdirAll(floxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(nil, Env{})
+	got := s.floxEnvironments([]string{root})
+	if len(got) != 1 || got[0] != floxDir {
+		t.Fatalf("floxEnvironments = %v, want exactly [%q]", got, floxDir)
+	}
+}
+
+func TestFloxEnvironments_Deduplicates(t *testing.T) {
+	root := t.TempDir()
+	floxDir := filepath.Join(root, "proj", ".flox")
+	if err := os.MkdirAll(floxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(nil, Env{})
+	// Same root listed twice among the search dirs.
+	got := s.floxEnvironments([]string{root, root})
+	if len(got) != 1 {
+		t.Fatalf("floxEnvironments = %v, want exactly 1 deduplicated entry", got)
 	}
 }
 

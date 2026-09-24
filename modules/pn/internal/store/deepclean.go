@@ -59,6 +59,9 @@ var prunedCategories = []string{
 	"devbox-global",
 	"devbox-util",
 	"devbox-projects",
+	// NB: "flox" is deliberately absent from this list. Flox has no local
+	// generation history to prune (see flox.go) -- its section is
+	// report-only and never contributes to prunedCounts.
 	"result-symlinks",
 	"stale-nix-profiles",
 	"nh-temp-roots",
@@ -67,7 +70,9 @@ var prunedCategories = []string{
 // DeepClean prunes old profile generations, orphaned standalone home-manager
 // profiles, stale ~/.nix-profiles entries, result symlinks, NH temp roots, and
 // (in non-dry-run mode) runs `sudo nix-store --gc` followed by
-// `nix store optimise`, then reports a summary.
+// `nix store optimise`, then reports a summary. It also reports (but never
+// prunes) Flox's on-disk footprint -- Flox has no local generation history
+// analogous to the others; see flox.go.
 //
 // Output is sectioned (one `=== <Title> ===` header per category, each followed
 // by a blank line). Warnings from devboxProjects (missing search dirs) go to
@@ -139,17 +144,24 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	}
 	fmt.Fprintln(out)
 
-	// ─── 7. Result Symlinks ────────────────────────────────────────────────────
+	// ─── 7. Flox ───────────────────────────────────────────────────────────────
+	// Report-only: Flox keeps no local generation history to prune. See the
+	// file-level comment in flox.go for why.
+	fmt.Fprintln(out, "=== Flox ===")
+	s.reportFlox(ctx, out, cfg.SearchDirs)
+	fmt.Fprintln(out)
+
+	// ─── 8. Result Symlinks ────────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== Result Symlinks ===")
 	s.processResultSymlinks(out, prunedCounts, cfg.SearchDirs, opts.DryRun)
 	fmt.Fprintln(out)
 
-	// ─── 8. Stale Nix Profiles ─────────────────────────────────────────────────
+	// ─── 9. Stale Nix Profiles ─────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== Stale Nix Profiles ===")
 	s.processStaleNixProfiles(out, prunedCounts, keepDays, now, opts.DryRun)
 	fmt.Fprintln(out)
 
-	// ─── 9. NH Temp Roots ──────────────────────────────────────────────────────
+	// ─── 10. NH Temp Roots ─────────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== NH Temp Roots ===")
 	s.processNHTempRoots(out, prunedCounts, opts.DryRun)
 	fmt.Fprintln(out)
@@ -264,6 +276,54 @@ func (s *Store) processHomeManager(ctx context.Context, out io.Writer, counts ma
 		return
 	}
 	s.processProfile(ctx, out, counts, "home-manager", hm, "home-manager", false, keepDays, keepCount, now, dryRun)
+}
+
+// reportFlox emits the Flox section: report-only disk-usage figures (Flox's
+// global data dirs, plus any per-project .flox environments discovered under
+// searchDirs) and a fixed explanation of why nothing here is ever pruned. See
+// the file-level comment in flox.go for the full research finding.
+//
+// "(not installed)" (like the Devbox Global/Util sections) covers the case
+// where Flox's global data dirs are both absent AND no search dirs are even
+// configured to look for a per-project .flox elsewhere -- i.e. there is
+// nothing further this section could check. Once EITHER signal is present
+// (global data exists, or search dirs are configured), the section always
+// reports something instead of short-circuiting.
+func (s *Store) reportFlox(ctx context.Context, out io.Writer, searchDirs []string) {
+	var globalTotal int64
+	installed := false
+	for _, p := range s.floxGlobalPaths() {
+		if size, ok := duSize(ctx, s.runner, p); ok {
+			globalTotal += size
+			installed = true
+		}
+	}
+
+	if !installed && len(searchDirs) == 0 {
+		fmt.Fprintln(out, "  (not installed)")
+		return
+	}
+
+	if installed {
+		fmt.Fprintf(out, "  Global data (~/.local/share/flox + ~/.cache/flox): %s\n", formatSize(globalTotal))
+	}
+	if len(searchDirs) == 0 {
+		fmt.Fprintln(out, "  (no search dirs configured)")
+	} else if envs := s.floxEnvironments(searchDirs); len(envs) == 0 {
+		fmt.Fprintln(out, "  no .flox environments found under search dirs")
+	} else {
+		for _, e := range envs {
+			label := s.formatProfileLabel(e, "flox")
+			if size, ok := duSize(ctx, s.runner, e); ok {
+				fmt.Fprintf(out, "  %s: %s\n", label, formatSize(size))
+			} else {
+				fmt.Fprintf(out, "  %s: unknown\n", label)
+			}
+		}
+	}
+	fmt.Fprintln(out, "  nothing to prune: Flox keeps no local generation history --")
+	fmt.Fprintln(out, "    `flox generations` is FloxHub-only, and each environment's current")
+	fmt.Fprintln(out, "    build is already GC-rooted via .flox/run/<system>.<name>")
 }
 
 // processResultSymlinks reports and (on a live run) removes result symlinks under

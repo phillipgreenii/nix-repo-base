@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -148,5 +149,51 @@ func TestDeadPathsSize_SudoFailureUnknown(t *testing.T) {
 
 	if got := deadPathsSize(context.Background(), f, true); got != "unknown" {
 		t.Fatalf("deadPathsSize on sudo failure = %q, want unknown", got)
+	}
+}
+
+// ─── duSize ─────────────────────────────────────────────────────────────────
+
+// TestDuSize_AbsentPathNeverSpawnsDu asserts the Stat-first short circuit: a
+// missing path returns ok=false WITHOUT calling `du` at all -- an empty
+// FakeRunner (no scripted response) would fail the test if `du` were invoked.
+func TestDuSize_AbsentPathNeverSpawnsDu(t *testing.T) {
+	f := exec.NewFakeRunner()
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist")
+
+	size, ok := duSize(context.Background(), f, missing)
+	if ok {
+		t.Fatalf("duSize(%q) ok=true, want false for an absent path", missing)
+	}
+	if size != 0 {
+		t.Errorf("duSize(%q) size=%d, want 0", missing, size)
+	}
+	if len(f.Calls()) != 0 {
+		t.Errorf("duSize must not spawn `du` for an absent path; calls=%+v", f.Calls())
+	}
+}
+
+func TestDuSize_ParsesKilobytesToBytes(t *testing.T) {
+	f := exec.NewFakeRunner()
+	dir := t.TempDir()
+	f.AddResponse("du", []string{"-sk", dir}, exec.Result{Stdout: []byte("48\t" + dir + "\n")}, nil)
+
+	size, ok := duSize(context.Background(), f, dir)
+	if !ok {
+		t.Fatalf("duSize(%q) ok=false, want true", dir)
+	}
+	if size != 48*1024 {
+		t.Errorf("duSize(%q) = %d, want %d (48 KiB in bytes)", dir, size, 48*1024)
+	}
+}
+
+func TestDuSize_DuFailureReturnsFalse(t *testing.T) {
+	f := exec.NewFakeRunner()
+	dir := t.TempDir()
+	f.AddResponse("du", []string{"-sk", dir}, exec.Result{ExitCode: 1}, errors.New("du: permission denied"))
+
+	if _, ok := duSize(context.Background(), f, dir); ok {
+		t.Fatalf("duSize(%q) ok=true, want false on du failure", dir)
 	}
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -830,4 +831,166 @@ func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 			t.Errorf("expected runtime roots summary after header; got tail:\n%q", afterHeader)
 		}
 	})
+}
+
+// ─── 18. TestDeepClean_Flox* ─────────────────────────────────────────────────
+//
+// Flox has no local generation history to prune (see flox.go); these tests
+// cover the report-only "=== Flox ===" section instead of a prune count.
+
+// floxSection extracts the body of the "=== Flox ===" section (between its
+// header and the next blank line) from a DeepClean output string.
+func floxSection(t *testing.T, out string) string {
+	t.Helper()
+	idx := strings.Index(out, "=== Flox ===\n")
+	if idx < 0 {
+		t.Fatalf("no Flox section in output:\n%s", out)
+	}
+	rest := out[idx+len("=== Flox ===\n"):]
+	end := strings.Index(rest, "\n\n")
+	if end < 0 {
+		t.Fatalf("Flox section has no trailing blank line; got:\n%s", rest)
+	}
+	return rest[:end]
+}
+
+func TestDeepClean_FloxNotInstalledNoSearchDirs(t *testing.T) {
+	env, f := deepcleanFixture(t, false) // dry-run: no extra Flox calls needed
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: true, KeepSince: "0d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	got := floxSection(t, buf.String())
+	if got != "  (not installed)" {
+		t.Fatalf("Flox section = %q, want %q", got, "  (not installed)")
+	}
+}
+
+func TestDeepClean_FloxGlobalDataInstalledNoSearchDirs(t *testing.T) {
+	env, f := deepcleanFixture(t, false)
+	shareDir := filepath.Join(env.Home, ".local/share/flox")
+	if err := os.MkdirAll(shareDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.AddResponse("du", []string{"-sk", shareDir},
+		exec.Result{Stdout: []byte("48\t" + shareDir + "\n")}, nil)
+
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: true, KeepSince: "0d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	got := floxSection(t, buf.String())
+	want := "" +
+		"  Global data (~/.local/share/flox + ~/.cache/flox): 48.0 KiB\n" +
+		"  (no search dirs configured)\n" +
+		"  nothing to prune: Flox keeps no local generation history --\n" +
+		"    `flox generations` is FloxHub-only, and each environment's current\n" +
+		"    build is already GC-rooted via .flox/run/<system>.<name>"
+	if got != want {
+		t.Fatalf("Flox section mismatch.\nWANT:\n%q\n\nGOT:\n%q", want, got)
+	}
+}
+
+func TestDeepClean_FloxEnvironmentUnderSearchDirs(t *testing.T) {
+	env, f := deepcleanFixture(t, false)
+	searchDir := filepath.Join(env.Home, "projects")
+	proj := filepath.Join(searchDir, "myapp")
+	floxDir := filepath.Join(proj, ".flox")
+	if err := os.MkdirAll(floxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStoreConfig(t, env, 14, 3, []string{searchDir})
+	f.AddResponse("du", []string{"-sk", floxDir},
+		exec.Result{Stdout: []byte("464\t" + floxDir + "\n")}, nil)
+
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: true, KeepSince: "0d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	got := floxSection(t, buf.String())
+	want := "" +
+		"  ~/projects/myapp: 464.0 KiB\n" +
+		"  nothing to prune: Flox keeps no local generation history --\n" +
+		"    `flox generations` is FloxHub-only, and each environment's current\n" +
+		"    build is already GC-rooted via .flox/run/<system>.<name>"
+	if got != want {
+		t.Fatalf("Flox section mismatch.\nWANT:\n%q\n\nGOT:\n%q", want, got)
+	}
+}
+
+func TestDeepClean_FloxSearchDirsConfiguredNoEnvironmentsFound(t *testing.T) {
+	env, f := deepcleanFixture(t, false)
+	searchDir := filepath.Join(env.Home, "projects")
+	if err := os.MkdirAll(searchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStoreConfig(t, env, 14, 3, []string{searchDir})
+
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: true, KeepSince: "0d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	got := floxSection(t, buf.String())
+	if !strings.HasPrefix(got, "  no .flox environments found under search dirs\n") {
+		t.Fatalf("Flox section = %q, want it to start with the no-environments line", got)
+	}
+}
+
+func TestDeepClean_FloxDuFailureShowsUnknown(t *testing.T) {
+	env, f := deepcleanFixture(t, false)
+	searchDir := filepath.Join(env.Home, "projects")
+	proj := filepath.Join(searchDir, "myapp")
+	floxDir := filepath.Join(proj, ".flox")
+	if err := os.MkdirAll(floxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStoreConfig(t, env, 14, 3, []string{searchDir})
+	f.AddResponse("du", []string{"-sk", floxDir}, exec.Result{ExitCode: 1}, errors.New("du: denied"))
+
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: true, KeepSince: "0d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	got := floxSection(t, buf.String())
+	if !strings.HasPrefix(got, "  ~/projects/myapp: unknown\n") {
+		t.Fatalf("Flox section = %q, want it to start with the unknown-size line", got)
+	}
+}
+
+// TestDeepClean_FloxNotInPrunedCategories locks that "flox" never appears in
+// the Summary's prune-count block -- it is report-only and has no generation
+// count to prune (a regression guard against accidentally wiring it into
+// prunedCategories).
+func TestDeepClean_FloxNotInPrunedCategories(t *testing.T) {
+	env, f := deepcleanFixture(t, false)
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: true, KeepSince: "0d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	out := buf.String()
+	idx := strings.Index(out, "=== Summary ===")
+	if idx < 0 {
+		t.Fatalf("no Summary section in output:\n%s", out)
+	}
+	if strings.Contains(out[idx:], "flox:") {
+		t.Errorf("Summary must not list a flox prune count; got:\n%s", out[idx:])
+	}
 }
