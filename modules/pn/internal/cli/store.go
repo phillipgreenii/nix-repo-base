@@ -133,7 +133,9 @@ Cleans:
 
 Also reports (but never prunes) Flox's on-disk footprint: Flox keeps no local
 generation history to prune ('flox generations' is FloxHub-only, and each
-environment's current build is already its own GC root).
+environment's current build is already its own GC root). Separately prunes
+orphaned Flox activation staging directories under ~/.cache/flox/process/
+(only once confirmed empty and older than --keep-since).
 
 After pruning it runs 'sudo nix-store --gc' then 'nix store optimise' (hard-links
 duplicate files; this is the batched replacement for auto-optimise-store, which

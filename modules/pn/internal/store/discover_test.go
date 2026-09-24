@@ -393,6 +393,212 @@ func TestFloxEnvironments_Deduplicates(t *testing.T) {
 	}
 }
 
+// ─── floxProcessTempDirs / dirEmptyRecursive ──────────────────────────────────
+
+func TestDirEmptyRecursive(t *testing.T) {
+	root := t.TempDir()
+
+	emptyLeaf := filepath.Join(root, "empty-leaf")
+	if err := os.MkdirAll(emptyLeaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !dirEmptyRecursive(emptyLeaf) {
+		t.Errorf("empty leaf dir should be dirEmptyRecursive")
+	}
+
+	nestedEmpty := filepath.Join(root, "nested-empty", "inner")
+	if err := os.MkdirAll(nestedEmpty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !dirEmptyRecursive(filepath.Join(root, "nested-empty")) {
+		t.Errorf("dir containing only a nested empty dir should be dirEmptyRecursive")
+	}
+
+	hasFile := filepath.Join(root, "has-file")
+	if err := os.MkdirAll(hasFile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hasFile, "state.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if dirEmptyRecursive(hasFile) {
+		t.Errorf("dir with a regular file must NOT be dirEmptyRecursive")
+	}
+
+	hasSymlink := filepath.Join(root, "has-symlink")
+	if err := os.MkdirAll(hasSymlink, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/nix/store/x", filepath.Join(hasSymlink, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if dirEmptyRecursive(hasSymlink) {
+		t.Errorf("dir with a symlink must NOT be dirEmptyRecursive")
+	}
+
+	nestedHasFile := filepath.Join(root, "nested-has-file", "inner")
+	if err := os.MkdirAll(nestedHasFile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedHasFile, "leftover"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if dirEmptyRecursive(filepath.Join(root, "nested-has-file")) {
+		t.Errorf("dir with a file nested two levels deep must NOT be dirEmptyRecursive")
+	}
+}
+
+func TestFloxProcessTempDirs_AbsentDirReturnsEmpty(t *testing.T) {
+	s := NewWithEnv(nil, Env{Home: t.TempDir()})
+	got := s.floxProcessTempDirs(14, time.Now())
+	if len(got) != 0 {
+		t.Fatalf("expected empty for absent ~/.cache/flox/process, got %v", got)
+	}
+}
+
+func TestFloxProcessTempDirs_EmptyAndStaleIsPruned(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".cache/flox/process")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, ".tmpAbCdEf")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(nil, Env{Home: home})
+	now := time.Now()
+	got := s.floxProcessTempDirs(14, now)
+	if len(got) != 1 || got[0] != stale {
+		t.Fatalf("floxProcessTempDirs = %v, want exactly [%q]", got, stale)
+	}
+	if got := s.floxProcessTempDirs(60, now); len(got) != 0 {
+		t.Fatalf("expected 0 at 60d keepDays (dir is only 30d old), got %v", got)
+	}
+}
+
+func TestFloxProcessTempDirs_KeepDaysZeroIgnoresAge(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".cache/flox/process")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fresh := filepath.Join(dir, ".tmpFrEsH1")
+	if err := os.MkdirAll(fresh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// mtime left at "now" (freshly created) -- keepDays=0 must still select it.
+
+	s := NewWithEnv(nil, Env{Home: home})
+	got := s.floxProcessTempDirs(0, time.Now())
+	if len(got) != 1 || got[0] != fresh {
+		t.Fatalf("keepDays=0 should prune regardless of age; got %v", got)
+	}
+}
+
+func TestFloxProcessTempDirs_YoungDirIsProtected(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".cache/flox/process")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fresh := filepath.Join(dir, ".tmpFrEsH2")
+	if err := os.MkdirAll(fresh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// mtime is "now" -- well within a 14-day keepDays window.
+
+	s := NewWithEnv(nil, Env{Home: home})
+	got := s.floxProcessTempDirs(14, time.Now())
+	if len(got) != 0 {
+		t.Fatalf("a fresh temp dir must be protected by keepDays; got %v", got)
+	}
+}
+
+func TestFloxProcessTempDirs_NonEmptyDirIsNeverPrunedRegardlessOfAge(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".cache/flox/process")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inUse := filepath.Join(dir, ".tmpInUse1")
+	if err := os.MkdirAll(inUse, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inUse, "state.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-100 * 24 * time.Hour)
+	if err := os.Chtimes(inUse, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(nil, Env{Home: home})
+	got := s.floxProcessTempDirs(14, time.Now())
+	if len(got) != 0 {
+		t.Fatalf("a non-empty dir must never be pruned, even if very old; got %v", got)
+	}
+}
+
+func TestFloxProcessTempDirs_NestedEmptySubdirIsPruned(t *testing.T) {
+	// Mirrors the on-disk shape observed live: a .tmpXXXXXX dir containing
+	// nothing but one nested empty .tmpXXXXXX subdirectory.
+	home := t.TempDir()
+	dir := filepath.Join(home, ".cache/flox/process")
+	nested := filepath.Join(dir, ".tmpOuter1", ".tmpInner1")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outer := filepath.Join(dir, ".tmpOuter1")
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(outer, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(nil, Env{Home: home})
+	got := s.floxProcessTempDirs(14, time.Now())
+	if len(got) != 1 || got[0] != outer {
+		t.Fatalf("floxProcessTempDirs = %v, want exactly [%q]", got, outer)
+	}
+}
+
+func TestFloxProcessTempDirs_IgnoresNonMatchingNames(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".cache/flox/process")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+
+	notTmp := filepath.Join(dir, "not-a-tmp-dir")
+	if err := os.MkdirAll(notTmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(notTmp, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	// A file (not a dir) that happens to match the name pattern must be ignored.
+	tmpFile := filepath.Join(dir, ".tmpNotADir")
+	if err := os.WriteFile(tmpFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tmpFile, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(nil, Env{Home: home})
+	got := s.floxProcessTempDirs(14, time.Now())
+	if len(got) != 0 {
+		t.Fatalf("expected 0 matches (neither entry qualifies), got %v", got)
+	}
+}
+
 // ─── homeManagerGenLinks ──────────────────────────────────────────────────────
 
 func TestHomeManagerGenLinks(t *testing.T) {

@@ -701,7 +701,7 @@ func TestDeepClean_GoldenDryRunSummary(t *testing.T) {
 	}
 	out := buf.String()
 
-	// Lock the entire Summary block (em-dash U+2014, 9-category order,
+	// Lock the entire Summary block (em-dash U+2014, 10-category order,
 	// generation(s) literal, blank-line placement).
 	wantSummary := "" +
 		"=== Summary ===\n" +
@@ -714,6 +714,7 @@ func TestDeepClean_GoldenDryRunSummary(t *testing.T) {
 		"  devbox-global: 0 generation(s)\n" +
 		"  devbox-util: 0 generation(s)\n" +
 		"  devbox-projects: 0 generation(s)\n" +
+		"  flox-temp-dirs: 0 generation(s)\n" +
 		"  result-symlinks: 0 generation(s)\n" +
 		"  stale-nix-profiles: 0 generation(s)\n" +
 		"  nh-temp-roots: 0 generation(s)\n" +
@@ -793,6 +794,7 @@ func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 			"  devbox-global: 0 generation(s)\n" +
 			"  devbox-util: 0 generation(s)\n" +
 			"  devbox-projects: 0 generation(s)\n" +
+			"  flox-temp-dirs: 0 generation(s)\n" +
 			"  result-symlinks: 0 generation(s)\n" +
 			"  stale-nix-profiles: 0 generation(s)\n" +
 			"  nh-temp-roots: 0 generation(s)\n" +
@@ -969,6 +971,143 @@ func TestDeepClean_FloxDuFailureShowsUnknown(t *testing.T) {
 	got := floxSection(t, buf.String())
 	if !strings.HasPrefix(got, "  ~/projects/myapp: unknown\n") {
 		t.Fatalf("Flox section = %q, want it to start with the unknown-size line", got)
+	}
+}
+
+// ─── 19. TestDeepClean_FloxTempDirs* ─────────────────────────────────────────
+//
+// Distinct from the Flox section above: these ARE pruned (bead pg2-td8ut).
+
+// floxTempDirsSection extracts the body of the "=== Flox Temp Dirs ===" section.
+func floxTempDirsSection(t *testing.T, out string) string {
+	t.Helper()
+	idx := strings.Index(out, "=== Flox Temp Dirs ===\n")
+	if idx < 0 {
+		t.Fatalf("no Flox Temp Dirs section in output:\n%s", out)
+	}
+	rest := out[idx+len("=== Flox Temp Dirs ===\n"):]
+	end := strings.Index(rest, "\n\n")
+	if end < 0 {
+		t.Fatalf("Flox Temp Dirs section has no trailing blank line; got:\n%s", rest)
+	}
+	return rest[:end]
+}
+
+func TestDeepClean_FloxTempDirs_NothingToClean(t *testing.T) {
+	env, f := deepcleanFixture(t, false) // no ~/.cache/flox/process at all
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: true, KeepSince: "0d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	got := floxTempDirsSection(t, buf.String())
+	if got != "  nothing to clean" {
+		t.Fatalf("Flox Temp Dirs section = %q, want %q", got, "  nothing to clean")
+	}
+}
+
+func TestDeepClean_FloxTempDirs_DryRunReportsWithoutDeleting(t *testing.T) {
+	env, f := deepcleanFixture(t, false)
+	procDir := filepath.Join(env.Home, ".cache/flox/process")
+	stale := filepath.Join(procDir, ".tmpAbCdEf")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: true, KeepSince: "14d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	got := floxTempDirsSection(t, buf.String())
+	want := "  1 orphaned activation temp dir(s) to remove:\n    .tmpAbCdEf"
+	if got != want {
+		t.Fatalf("Flox Temp Dirs section mismatch.\nWANT:\n%q\n\nGOT:\n%q", want, got)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Errorf("dry-run must NOT delete %s; stat error: %v", stale, err)
+	}
+	out := buf.String()
+	idx := strings.Index(out, "=== Summary ===")
+	if !strings.Contains(out[idx:], "flox-temp-dirs: 1 generation(s)") {
+		t.Errorf("Summary must report flox-temp-dirs: 1 generation(s); got:\n%s", out[idx:])
+	}
+}
+
+func TestDeepClean_FloxTempDirs_LiveRunDeletes(t *testing.T) {
+	env, f := deepcleanFixture(t, true)
+	procDir := filepath.Join(env.Home, ".cache/flox/process")
+	stale := filepath.Join(procDir, ".tmpAbCdEf")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: false, KeepSince: "14d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("live run must delete %s; stat err = %v", stale, err)
+	}
+	out := buf.String()
+	idx := strings.Index(out, "=== Summary ===")
+	if !strings.Contains(out[idx:], "flox-temp-dirs: 1 generation(s)") {
+		t.Errorf("Summary must report flox-temp-dirs: 1 generation(s); got:\n%s", out[idx:])
+	}
+}
+
+func TestDeepClean_FloxTempDirs_YoungAndNonEmptyDirsAreProtected(t *testing.T) {
+	env, f := deepcleanFixture(t, true)
+	procDir := filepath.Join(env.Home, ".cache/flox/process")
+
+	young := filepath.Join(procDir, ".tmpYoung1")
+	if err := os.MkdirAll(young, 0o755); err != nil {
+		t.Fatal(err)
+	} // mtime is "now" -- protected by keepDays.
+
+	nonEmpty := filepath.Join(procDir, ".tmpBusy01")
+	if err := os.MkdirAll(nonEmpty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nonEmpty, "state.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-100 * 24 * time.Hour)
+	if err := os.Chtimes(nonEmpty, old, old); err != nil {
+		t.Fatal(err)
+	} // old but non-empty -- must never be touched.
+
+	s := NewWithEnv(f, env)
+	var buf, errBuf bytes.Buffer
+	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
+		DryRun: false, KeepSince: "14d", Keep: 0,
+	}); err != nil {
+		t.Fatalf("DeepClean: %v", err)
+	}
+	if _, err := os.Stat(young); err != nil {
+		t.Errorf("young empty dir must be protected; stat error: %v", err)
+	}
+	if _, err := os.Stat(nonEmpty); err != nil {
+		t.Errorf("non-empty dir must never be removed; stat error: %v", err)
+	}
+	got := floxTempDirsSection(t, buf.String())
+	if got != "  nothing to clean" {
+		t.Fatalf("Flox Temp Dirs section = %q, want %q (both entries protected)", got, "  nothing to clean")
 	}
 }
 

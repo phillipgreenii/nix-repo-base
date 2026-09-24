@@ -4,7 +4,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
 // ─── Flox ───────────────────────────────────────────────────────────────────
@@ -92,4 +95,113 @@ func walkForFloxDirs(root string, maxDepth int) []string {
 		return nil
 	})
 	return dirs
+}
+
+// ─── Flox process-cache temp-dir litter (bead pg2-td8ut) ───────────────────
+//
+// Separately from the generation-history question above, ~/.cache/flox/process/
+// accumulates orphaned `.tmpXXXXXX` staging directories over time. Root cause
+// (observable evidence only -- Flox is closed-source; nothing here reads its
+// source, only its installed binary's own embedded strings and this machine's
+// live state):
+//
+//   - flox-activations' embedded strings (cli/flox-core/src/activations.rs)
+//     include "too many temporary files exist" -- the Rust `tempfile` crate's
+//     own retry-exhaustion message -- alongside "state_dir", "no existing
+//     activation state, creating new one", and "failed to remove start state
+//     dir after detach". This is consistent with activation bookkeeping
+//     staging a new activation's state as a `tempfile`-created dir (default
+//     naming: ".tmp" + 6 random alphanumeric chars, exactly what is observed
+//     on disk) intended to be populated then atomically moved into place
+//     under ~/.cache/flox/run/activations/<id>/ (where this machine's one
+//     currently-active activation lock actually lives: state.json +
+//     state.lock, confirmed via `ps`+`lsof` -- a different path entirely).
+//   - If the owning process exits (crash, signal, interrupted shell) before
+//     that final move, the staging dir is orphaned in ~/.cache/flox/process/
+//     forever -- nothing ever revisits that directory to clean it up.
+//
+// Confirmed live on this machine (2026-09-24, flox 1.17.0-gd37edfd): 1359 such
+// directories dating back to May, still growing (~30/day recently, 2 in the
+// preceding hour alone) -- i.e. reproducible right now, not a one-time
+// historical artifact. Every single one is recursively empty: 0 regular
+// files, 0 symlinks, at most one nested empty `.tmpXXXXXX` subdirectory (3 of
+// the 1359 had exactly that). `lsof` found zero open file descriptors into
+// ~/.cache/flox/process/ at research time. `flox gc` ("Garbage collects any
+// data for deleted environments") does not cover this -- it targets
+// per-environment registry data, not this staging path -- and no other flox
+// subcommand does either.
+//
+// Safety: a directory this young could plausibly be mid-creation by an
+// in-flight `flox activate`, so removal requires BOTH conditions, never age
+// alone: recursively empty (dirEmptyRecursive; a genuinely in-flight
+// activation still populating its staging dir is never touched, regardless
+// of age) AND older than the keepDays cutoff -- reusing the same `keep_days`
+// / `--keep-since` knob staleNixProfiles already uses for an analogous
+// mtime-staleness judgment (keepDays==0 disables the age check, matching
+// staleNixProfiles' own keepDays==0 semantics).
+
+// floxProcessDir returns ~/.cache/flox/process, the staging directory for
+// orphaned Flox activation temp dirs.
+func (s *Store) floxProcessDir() string {
+	return filepath.Join(s.env.Home, ".cache/flox/process")
+}
+
+// floxTempDirRE matches the Rust `tempfile` crate's default naming for a
+// directory created with prefix ".tmp": ".tmp" followed by 6+ alphanumeric
+// characters.
+var floxTempDirRE = regexp.MustCompile(`^\.tmp[A-Za-z0-9]+$`)
+
+// floxProcessTempDirs discovers orphaned `.tmpXXXXXX` staging directories
+// directly under ~/.cache/flox/process/ that are safe to remove: recursively
+// empty AND (when keepDays != 0) older than now-keepDays days. A missing
+// ~/.cache/flox/process/ (Flox never used, or already clean) returns nil.
+func (s *Store) floxProcessTempDirs(keepDays int, now time.Time) []string {
+	dir := s.floxProcessDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	cutoff := now.Add(-time.Duration(keepDays) * 24 * time.Hour)
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || !floxTempDirRE.MatchString(e.Name()) {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		fi, statErr := os.Lstat(p)
+		if statErr != nil || fi.Mode()&os.ModeSymlink != 0 {
+			continue // never follow/treat a symlink here
+		}
+		if keepDays != 0 && fi.ModTime().After(cutoff) {
+			continue // too young to be confident it's abandoned, not in-flight
+		}
+		if !dirEmptyRecursive(p) {
+			continue // has real content; never touch
+		}
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dirEmptyRecursive reports whether dir contains nothing but (optionally
+// nested) empty directories -- no regular files, symlinks, or any other
+// non-directory entry anywhere in its tree.
+func dirEmptyRecursive(dir string) bool {
+	empty := true
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			empty = false
+			return filepath.SkipAll
+		}
+		if path == dir {
+			return nil
+		}
+		if !d.IsDir() {
+			empty = false
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return empty
 }

@@ -24,7 +24,8 @@ keep_days = 7
 keep_count = 5
 ```
 
-The `keep_days` value is reused as the mtime threshold for stale `~/.nix-profiles/` entries.
+The `keep_days` value is reused as the mtime threshold for stale `~/.nix-profiles/` entries
+and for orphaned Flox activation temp dirs (`Flox Temp Dirs`, deepclean only).
 
 ## Retention semantics — UNION keep
 
@@ -90,9 +91,14 @@ It processes these sections, in order, pruning per the retention rule above:
    `/nix/var/nix/gcroots/flox-environments` was investigated and rejected: it targets a path that
    doesn't exist on this machine and Flox already self-registers its own GC roots — see bead
    `pg2-8k05k`.)
-8. `Result Symlinks` — `result` / `result-*` symlinks pointing into `/nix/store` under `search_dirs`.
-9. `Stale Nix Profiles` — symlinks under `~/.nix-profiles/` older than `keep_days`.
-10. `NH Temp Roots` — `nh-darwin*/result` symlinks under `$TMPDIR`.
+8. `Flox Temp Dirs` — orphaned `.tmpXXXXXX` activation staging directories under
+   `~/.cache/flox/process/`, pruned once confirmed **both** recursively empty and older
+   than `keep_days` (a directory that still has real content, or is too young, is never
+   touched — see `flox.go` for how this staging path leaks and why that heuristic is
+   safe). Separate from the report-only `Flox` section above.
+9. `Result Symlinks` — `result` / `result-*` symlinks pointing into `/nix/store` under `search_dirs`.
+10. `Stale Nix Profiles` — symlinks under `~/.nix-profiles/` older than `keep_days`.
+11. `NH Temp Roots` — `nh-darwin*/result` symlinks under `$TMPDIR`.
 
 Then a `Summary`:
 
@@ -161,8 +167,9 @@ flowchart LR
         DNH["nhTempRoots (TMPDIR)"]
     end
 
-    subgraph FLOXD["flox.go (report-only)"]
-        DFE["floxEnvironments (walks search_dirs; no worktrees)"]
+    subgraph FLOXD["flox.go"]
+        DFE["floxEnvironments (walks search_dirs; no worktrees; report-only)"]
+        DFTD["floxProcessTempDirs (~/.cache/flox/process; mtime+empty; pruned)"]
     end
 
     SD --> DDP
@@ -175,6 +182,7 @@ flowchart LR
     KD --> GP
     KC --> GP
     KD -->|"same threshold"| DSNP
+    KD -->|"same threshold"| DFTD
 
     DISCOVERY --> AUDIT["audit.go sections"]
     DISCOVERY --> CLEAN["deepclean.go sections"]

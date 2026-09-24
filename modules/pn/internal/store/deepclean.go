@@ -61,7 +61,10 @@ var prunedCategories = []string{
 	"devbox-projects",
 	// NB: "flox" is deliberately absent from this list. Flox has no local
 	// generation history to prune (see flox.go) -- its section is
-	// report-only and never contributes to prunedCounts.
+	// report-only and never contributes to prunedCounts. "flox-temp-dirs"
+	// (below) is a separate, narrower category: orphaned activation staging
+	// dirs under ~/.cache/flox/process/, not generation history.
+	"flox-temp-dirs",
 	"result-symlinks",
 	"stale-nix-profiles",
 	"nh-temp-roots",
@@ -151,6 +154,14 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	s.reportFlox(ctx, out, cfg.SearchDirs)
 	fmt.Fprintln(out)
 
+	// ─── 7b. Flox Temp Dirs ────────────────────────────────────────────────────
+	// Separate from the report-only Flox section above: orphaned activation
+	// staging dirs under ~/.cache/flox/process/, safe to prune once confirmed
+	// empty and stale. See the file-level comment in flox.go.
+	fmt.Fprintln(out, "=== Flox Temp Dirs ===")
+	s.processFloxTempDirs(out, prunedCounts, keepDays, now, opts.DryRun)
+	fmt.Fprintln(out)
+
 	// ─── 8. Result Symlinks ────────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== Result Symlinks ===")
 	s.processResultSymlinks(out, prunedCounts, cfg.SearchDirs, opts.DryRun)
@@ -209,7 +220,7 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	return nil
 }
 
-// printPrunedCounts emits the 9-category prune counts in fixed order.
+// printPrunedCounts emits the prunedCategories prune counts in fixed order.
 func (s *Store) printPrunedCounts(out io.Writer, counts map[string]int) {
 	for _, cat := range prunedCategories {
 		fmt.Fprintf(out, "  %s: %d generation(s)\n", cat, counts[cat])
@@ -324,6 +335,28 @@ func (s *Store) reportFlox(ctx context.Context, out io.Writer, searchDirs []stri
 	fmt.Fprintln(out, "  nothing to prune: Flox keeps no local generation history --")
 	fmt.Fprintln(out, "    `flox generations` is FloxHub-only, and each environment's current")
 	fmt.Fprintln(out, "    build is already GC-rooted via .flox/run/<system>.<name>")
+}
+
+// processFloxTempDirs reports and (on a live run) removes orphaned Flox
+// activation staging directories under ~/.cache/flox/process/ -- see the
+// file-level comment in flox.go for what leaves them behind and why removal
+// (recursively empty AND older than keepDays) is safe.
+func (s *Store) processFloxTempDirs(out io.Writer, counts map[string]int, keepDays int, now time.Time, dryRun bool) {
+	dirs := s.floxProcessTempDirs(keepDays, now)
+	counts["flox-temp-dirs"] = len(dirs)
+	if len(dirs) == 0 {
+		fmt.Fprintln(out, "  nothing to clean")
+		return
+	}
+	fmt.Fprintf(out, "  %d orphaned activation temp dir(s) to remove:\n", len(dirs))
+	for _, d := range dirs {
+		fmt.Fprintf(out, "    %s\n", filepath.Base(d))
+	}
+	if !dryRun {
+		for _, d := range dirs {
+			_ = os.RemoveAll(d)
+		}
+	}
 }
 
 // processResultSymlinks reports and (on a live run) removes result symlinks under
