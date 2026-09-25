@@ -10,6 +10,10 @@ result-*
 # beads: local-only (data lives in dolt; nothing under .beads/ is tracked)
 .beads/
 
+# bd/pb gate lock file (stray empty lock left by pb gate; causes spurious
+# dirty-tree failures for ff-merge-to-main landing)
+.beads.gate.lock
+
 # Claude Code per-session worktrees (runtime state, created by EnterWorktree)
 .claude/worktrees/
 
