@@ -49,8 +49,25 @@ func TestDoctor_EffectiveLockDerivationFailureIsSurfaced(t *testing.T) {
 	initRealRepo(t, bbb)
 	bare := setupLocalBareRemote(t, aaa)
 	// bbb points at the SAME bare remote as aaa -> duplicate_remote_url.
+	//
+	// bbb is an INDEPENDENT initRealRepo, not a clone of aaa/bare, so its
+	// "init" commit shares no ancestry with the one aaa already pushed to
+	// bare's main. A plain push is only a fast-forward when the two commits
+	// happen to hash identically (same-second author/committer timestamp,
+	// same tree/message) -- true on a fast, idle machine but NOT guaranteed,
+	// and increasingly unlikely to hold under CPU load, since a slower
+	// initRealRepo(bbb) is more likely to straddle a wall-clock second
+	// boundary from aaa's commit. When it doesn't hold, git rejects the push
+	// as non-fast-forward ("[rejected] main -> main (fetch first)") -- a
+	// deterministic outcome of the hash mismatch, not a transient lock
+	// contention, so retrying the same push would not help (bd pg2-z1l3a:
+	// reproduced 7/60 failures under artificial load, all this exact
+	// rejection). --force sidesteps the coincidence entirely: the test only
+	// needs bbb's config-level URL to match aaa's (duplicate_remote_url is
+	// derived purely from WorkspaceConfig.Repos[*].URL, never from git ref
+	// state), so which commit ends up on bare's main is irrelevant here.
 	runGitT(t, bbb, "remote", "add", "origin", bare)
-	runGitT(t, bbb, "push", "-q", "origin", currentBranch(t, bbb))
+	runGitT(t, bbb, "push", "-qf", "origin", currentBranch(t, bbb))
 
 	cfg := &WorkspaceConfig{
 		Repos: map[string]RepoConfig{
