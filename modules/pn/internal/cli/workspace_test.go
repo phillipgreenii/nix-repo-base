@@ -406,6 +406,26 @@ func TestWorkspaceApply_ErrorOnStderrOnly(t *testing.T) {
 	}
 }
 
+func TestWorkspaceApplyCmd_ForceFlag(t *testing.T) {
+	var terminal string
+	cmd := workspaceApplyCmd(&terminal)
+
+	f := cmd.Flags().Lookup("force")
+	if f == nil {
+		t.Fatal("apply command missing --force flag")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--force default = %q, want %q", f.DefValue, "false")
+	}
+
+	if err := cmd.ParseFlags([]string{"--force"}); err != nil {
+		t.Fatalf("parse --force: %v", err)
+	}
+	if got := cmd.Flags().Lookup("force").Value.String(); got != "true" {
+		t.Errorf("--force parsed = %q, want %q", got, "true")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // flake-check (optional-terminal)
 // ---------------------------------------------------------------------------

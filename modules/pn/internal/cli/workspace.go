@@ -206,7 +206,8 @@ func workspaceBuildCmd(terminal *string) *cobra.Command {
 }
 
 func workspaceApplyCmd(terminal *string) *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Apply nix configurations across workspace repos",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -217,10 +218,12 @@ func workspaceApplyCmd(terminal *string) *cobra.Command {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "apply", func() error {
-				return w.Apply(ctx, out, workspace.ApplyOptions{Terminal: *terminal})
+				return w.Apply(ctx, out, workspace.ApplyOptions{Terminal: *terminal, Force: force})
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "always rebuild, bypassing the skip-when-unchanged gate")
+	return cmd
 }
 
 func workspaceFlakeCheckCmd(terminal *string) *cobra.Command {
