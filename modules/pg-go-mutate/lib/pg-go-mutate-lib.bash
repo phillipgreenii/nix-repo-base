@@ -78,12 +78,31 @@ pgm_sem_acquire() {
       # exact name and still return 0, silently absorbing a concurrent
       # racer's own reclaim attempt instead of failing it. Exactly one racer
       # can win an atomic rename(2).
+      #
+      # Reclaiming immediately re-attempts THIS SAME SLOT's mkdir in THIS SAME
+      # iteration, rather than leaving that to the next outer-loop pass
+      # (pg2-1rcp1). Deferring it was a genuine TOCTOU-style race: the only
+      # thing between a successful reclaim and the next pass's mkdir attempt
+      # was the deadline check two lines down, and that check truncates to
+      # whole seconds via `date +%s`. Reproduced empirically -- 4/50 trials --
+      # with `pgm_sem_acquire 1` returning 3 after 45-62ms of real elapsed
+      # time: `deadline` had been sampled a few milliseconds before a
+      # wall-clock second boundary, so the very next deadline check already
+      # read the clock as past it, timing out a call that had in truth just
+      # freed (and could have claimed) the slot it wanted.
       if [ -f "$sem_dir/$i/pid" ]; then
         pid="$(cat "$sem_dir/$i/pid" 2>/dev/null || true)"
         if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
           stale="$(mktemp -d "$sem_dir/$i.stale.XXXXXX" 2>/dev/null)" && {
             rmdir "$stale"
-            mv "$sem_dir/$i" "$stale" 2>/dev/null && rm -rf "$stale"
+            if mv "$sem_dir/$i" "$stale" 2>/dev/null; then
+              rm -rf "$stale"
+              if mkdir "$sem_dir/$i" 2>/dev/null; then
+                printf '%s\n' "$$" >"$sem_dir/$i/pid"
+                export PGM_SEM_SLOT="$sem_dir/$i"
+                return 0
+              fi
+            fi
           }
         fi
       fi
