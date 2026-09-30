@@ -104,6 +104,120 @@ url = "github:owner/foo"
 }
 
 // ---------------------------------------------------------------------------
+// Ahead-and-behind guard after fetch (bd tc-0q3cp, duplicating bd tc-p08nv's
+// `pnwf sync-fetch` preflight down into `pn workspace rebase` itself so a
+// bare/direct invocation is protected too).
+// ---------------------------------------------------------------------------
+
+// TestRebase_RefusesAheadAndBehindAfterFetch verifies that when a repo's
+// branch is genuinely diverged from its upstream right after the fetch (both
+// ahead and behind), Rebase returns an error naming the repo and the
+// ahead/behind counts instead of running `pull --rebase --autostash` into a
+// content conflict.
+func TestRebase_RefusesAheadAndBehindAfterFetch(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+	repoDir := filepath.Join(root, "foo")
+
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {hasUpstreamVal: true}})
+
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: m})
+
+	f := exec.NewFakeRunner()
+	// Ahead 24, behind 18 -- the exact shape of the tc-0q3cp incident.
+	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"},
+		exec.Result{Stdout: []byte("24\t18\n")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	err = w.Rebase(context.Background(), &out, &errOut, RebaseOptions{})
+	if err == nil {
+		t.Fatalf("expected Rebase to refuse an ahead-and-behind repo, got no error")
+	}
+	for _, want := range []string{"foo", "24", "18"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("expected error to mention %q; got: %v", want, err)
+		}
+	}
+	if len(m.syncOpts) != 0 {
+		t.Errorf("expected no Sync (pull --rebase) call for a diverged repo; got %v", m.syncOpts)
+	}
+}
+
+// TestRebase_AheadOnlyStillSyncs verifies the guard does not fire for a
+// one-sided divergence (ahead-only, the common post-drain-land steady state):
+// pull --rebase must still run normally.
+func TestRebase_AheadOnlyStillSyncs(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+	repoDir := filepath.Join(root, "foo")
+
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {hasUpstreamVal: true}})
+
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: m})
+
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", repoDir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"},
+		exec.Result{Stdout: []byte("3\t0\n")}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{}); err != nil {
+		t.Fatalf("Rebase: %v", err)
+	}
+	if len(m.syncOpts) != 1 || m.syncOpts[0].Onto != "" {
+		t.Errorf("expected exactly one Sync(Onto=\"\") call for an ahead-only repo; got %v", m.syncOpts)
+	}
+}
+
+// TestRebase_OntoIgnoresDivergence verifies the ahead-and-behind guard does
+// NOT apply to the explicit --onto path: Onto is itself the deliberate
+// reconciliation mechanism, so it must still run even when the repo is
+// genuinely diverged.
+func TestRebase_OntoIgnoresDivergence(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.foo]
+url = "github:owner/foo"
+`)
+	repoDir := filepath.Join(root, "foo")
+
+	stubGitOpener(t, map[string]*fakeGitReader{repoDir: {refExists: map[string]bool{"origin/main": true}}})
+
+	m := &fakeGitMutator{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{repoDir: m})
+
+	// No rev-list stubbed at all -- the Onto path must never even query it.
+	f := exec.NewFakeRunner()
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.Rebase(context.Background(), &out, &errOut, RebaseOptions{Onto: "origin/main"}); err != nil {
+		t.Fatalf("Rebase with Onto: %v", err)
+	}
+	if len(m.syncOpts) != 1 || m.syncOpts[0].Onto != "origin/main" {
+		t.Errorf("expected exactly one Sync(Onto=\"origin/main\") call; got %v", m.syncOpts)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Rebase with Onto field (rebase <branch> local-ref form)
 // ---------------------------------------------------------------------------
 
