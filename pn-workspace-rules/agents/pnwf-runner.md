@@ -557,6 +557,7 @@ after it. Use exactly one of these shapes:
 
 `reason` is one of `fetch-failed`, `rebase-indeterminate`,
 `dirtiness-indeterminate`, `sync-fetch-unrecognised`, `incomplete-sync`,
+`canonical-anomaly`, `canonical-ahead-indeterminate`, `canonical-push-failed`,
 `validate-failed`, `permission-denied`, or the `pnwf fork-preflight` reason
 line for a `stage: "fork"` halt.
 

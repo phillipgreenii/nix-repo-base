@@ -66,28 +66,64 @@ flowchart TD
    withheld for a subagent.
 
 2. **Handle the runner's JSON status.**
-   - **`gate` / `fork` / `resume-vs-discard`** → decide WITH the user per
-     `fork-workforest` step 3 (resume the existing set, or discard + re-fork),
-     then continue the SAME runner (send it the decision) — its context is
-     preserved.
+   - **`gate` / `fork` / `resume-vs-discard`** → decide it yourself, using the
+     invocation's standing authorization (per `fork-workforest` step 3): default
+     to RESUME (non-destructive — it keeps whatever the existing set holds)
+     unless inspecting the set shows a concrete reason to discard. Inspection
+     MUST go beyond a bare `pnwf status` table — also run
+     `cd <SETDIR> && pnwf residue --set` (the same read-only probe
+     `pnwf-runner` uses for `incomplete-sync`) to catch a member left dirty or
+     mid-rebase that `status` alone would not surface. Discard when either
+     probe shows corrupted/mid-rebase residue you can't attribute, or the
+     user's own caveats this session say to start clean. Only ask the user
+     when the evidence is genuinely ambiguous. Then continue the SAME runner
+     (send it the decision) — its context is preserved.
    - **`gate` / `sync-fetch` / `rebase-conflict`** → conflicts are the EXPECTED
-     case for sync. Resolve the conflict WITH the user in the reported worktree,
-     run `git -C <path> rebase --continue`, then continue the SAME runner (it
-     re-runs `pnwf sync-fetch`).
+     case for sync; resolve them yourself in the reported worktree. List the
+     conflicted paths (`git -C <path> diff --name-only --diff-filter=U`) before
+     judging confidence — do not guess or eyeball which files git flagged. A
+     `flake.lock`-only conflict is mechanical: pick either side, stage it, run
+     `git -C <path> rebase --continue`, then force-refresh the specific sibling
+     inputs that were actually in conflict with `nix flake update <input...>` in
+     that worktree — **not** a bare `nix flake lock`, which only fills MISSING
+     lock entries and silently leaves an already-pinned input stale (verify by
+     diffing the result against the repo's canonical `flake.lock`) — and commit
+     the relock only if it changed the file. Any other conflicted path — real
+     hand-authored content — resolve it if you're confident in the fix,
+     summarizing the resolution, then `git rebase --continue`. Either way,
+     continue the SAME runner (it re-runs `pnwf sync-fetch`). Only stop and ask
+     the user when you are NOT confident in the resolution — abort the rebase
+     first (`git -C <path> rebase --abort`), leaving the worktree and branch
+     untouched, per `ff-merge-to-main`'s FF-1 discipline.
    - **`gate` / `sync-fetch` / `worktree-dirty`** → the reported member had
      UNCOMMITTED CHANGES, so `pnwf sync-fetch` (exit 6) attempted nothing there —
      no fetch, no rebase. Do NOT treat this as a `rebase-conflict` and do NOT run
      `git rebase --continue` or `--abort`: nothing was started, so there is
-     nothing to continue or abort and either command fails. Show the user
-     `git -C <path> status`, decide WITH them whether that work is committed or
-     stashed, then continue the SAME runner (it re-runs `pnwf sync-fetch`, which
-     fetches and rebases that member for the first time). Expect this gate
-     whenever a member is left deliberately dirty; `pnwf` checks it itself
-     because with `rebase.autoStash` on git would NOT refuse — it would stash,
-     rebase and pop, reporting success even when the pop conflicts, so the run
-     would look clean while that worktree sat at `UU <file>` (bd `pg2-lgzcg`).
-     Same condition and same disposition as `integrate-branch`'s FF-0b
-     `stopped:worktree-dirty` at land time, deliberately sharing its name.
+     nothing to continue or abort and either command fails. Inspect
+     `git -C <path> status --porcelain --untracked-files=normal` AND the diff
+     itself (`git -C <path> diff`) yourself, and disposition it:
+     - If the changes clearly belong to already-completed work this session
+       did (e.g. a prior resolution not yet committed), check the diff doesn't
+       look like it contains secrets or credentials before committing it — this
+       worktree's commits are headed for an unattended push — then commit it.
+     - If it looks like unrelated in-progress work you can't attribute, do NOT
+       use a bare `git stash`/`git stash pop`: the stash stack is shared across
+       every worktree of this repo, so a bare pop can grab a concurrent
+       session's entry. Use `git -C <path> stash push -u -m "<unique-tag>"`,
+       immediately capture the entry's sha
+       (`git -C <path> stash list --format='%H %gs'`), and report the tag and
+       sha to the user in your summary so the stashed work is never silently
+       lost — do not restore it yourself unless you can attribute it later.
+       Then continue the SAME runner (it re-runs `pnwf sync-fetch`, which fetches
+       and rebases that member for the first time). Only ask the user when you
+       cannot tell whether the uncommitted work is safe to commit/stash or needs
+       to be preserved exactly as-is. Expect this gate whenever a member is left
+       deliberately dirty; `pnwf` checks it itself because with `rebase.autoStash`
+       on git would NOT refuse — it would stash, rebase and pop, reporting
+       success even when the pop conflicts, so the run would look clean while
+       that worktree sat at `UU <file>` (bd `pg2-lgzcg`). Same condition and same
+       disposition as `integrate-branch`'s FF-0b `stopped:worktree-dirty` at land
+       time, deliberately sharing its name.
    - **`gate` / `sync-fetch` / `rebase-refused`** → `git rebase` was REFUSED in
      the reported worktree and NEVER STARTED (`pnwf sync-fetch` exit 4), so
      NOTHING there is mid-rebase. Do NOT treat this as a `rebase-conflict` and do
@@ -96,17 +132,68 @@ flowchart TD
      above, and `pnwf` confirmed this tree CLEAN before rebasing): the cause is
      git's own refusal — an `origin/<primary>` that does not resolve, or a
      `pre-rebase` hook veto. Relay `pnwf`'s verbatim stderr and git's message,
-     fix the cause WITH the user, then continue the SAME runner (it re-runs
-     `pnwf sync-fetch`).
-   - **`halt`** → surface the reason and STOP; do NOT work around a canonical
-     anomaly (R-3/R-8) or a broken validate. Reasons are `fetch-failed`,
-     `rebase-indeterminate`, `dirtiness-indeterminate`,
-     `sync-fetch-unrecognised`, `incomplete-sync`,
-     `validate-failed`, or a `fork` reason line. The ONE
-     exception is a `validate-failed` whose every `BLOCKING` line is an
-     unpublished-sibling-lock `flake-lock-fresh` finding — see
-     [the documented escape](#escape-validate-blocks-only-on-unpublished-sibling-locks).
-     Every other `validate-failed` is a hard stop.
+     diagnose and fix the cause yourself (e.g. re-fetch if the ref genuinely
+     doesn't resolve; read and address what a pre-rebase hook vetoed), then
+     continue the SAME runner (it re-runs `pnwf sync-fetch`). Only ask the user
+     when the cause is something only they can decide (e.g. the hook is vetoing
+     on a policy question, not a mechanical defect).
+   - **`halt`** → surface the reason and STOP for most reasons; do NOT work
+     around a genuine canonical anomaly (R-3/R-8) or a broken validate. Reasons
+     are `fetch-failed`, `rebase-indeterminate`, `dirtiness-indeterminate`,
+     `sync-fetch-unrecognised`, `incomplete-sync`, `validate-failed`,
+     `canonical-anomaly`, `canonical-ahead-indeterminate`,
+     `canonical-push-failed`, or a `fork` reason line. Two of these — a
+     `validate-failed` where every `BLOCKING` line is an unpublished-sibling-lock
+     `flake-lock-fresh` finding (see
+     [the documented escape](#escape-validate-blocks-only-on-unpublished-sibling-locks)),
+     and `canonical-push-failed` (below) — have a documented recovery path
+     rather than being a hard stop. Every other reason, including
+     `canonical-anomaly`, is a hard stop: report it, do not touch the canonical
+     clone.
+   - **`halt` / `sync-fetch` / `canonical-push-failed`** → THIS IS THE ROUTINE
+     CASE, not an exception: a canonical clone sitting locally ahead of a moved
+     `origin` — commits landed here but never pushed — is the expected starting
+     state for this command, not an anomaly to escalate. Reconcile it yourself
+     in the named canonical clone:
+     1. `git fetch origin`.
+     2. Confirm the local-only commits are genuinely new — a commit already
+        landed upstream under a different sha needs no replay:
+        ```bash
+        git -C <CC> log --format='%H' origin/<primary>..<primary> | while read -r sha; do
+          git -C <CC> show --no-ext-diff "$sha" | git -C <CC> patch-id --stable
+        done
+        ```
+        compared against the same patch-id computed for each commit in
+        `<primary>..origin/<primary>` — a match means that local commit already
+        landed upstream (under a different sha) and does not need to be
+        replayed as new work.
+     3. `git rebase origin/<primary>`, resolving any conflict per the
+        `rebase-conflict` discipline above.
+     4. Run the repo's checks (pre-commit hooks, `nix flake check` where
+        applicable) against the rebased tree.
+     5. Push.
+        A "fix breakage" step is bounded, not a license to patch over a
+        regression: in scope is a MECHANICAL fix only — regenerating a generated
+        file (lock file, formatting), a one-line reference/import fix the rebase
+        itself broke, or re-running a codegen step. Rewriting logic, silencing or
+        skipping a failing check, or adding exception handling around the
+        failure is OUT of scope regardless of how small it looks — stop and ask
+        the user instead. Likewise stop and ask when the rebase lands a real
+        conflict in hand-authored code you're not confident resolving. Once
+        reconciled, continue the SAME runner (re-run `pnwf sync-fetch --set` — it
+        resumes the sweep from where the canonical anomaly stopped it).
+   - **`halt` / `sync-fetch` / `canonical-anomaly`** → the canonical clone
+     itself is off its primary branch, dirty, or otherwise not in the steady
+     state Tier R requires (R-3/R-8) — a genuinely different problem from
+     `canonical-push-failed`: something is wrong with the clone, not just "not
+     yet pushed". Do NOT reset, check out, or stash it yourself. Report it
+     directly to the user.
+   - **`halt` / `sync-fetch` / `canonical-ahead-indeterminate`** → `origin` is
+     configured on that canonical clone but `origin/<primary>` does not
+     resolve. Try `git fetch origin` there first — it often populates the
+     missing ref — and continue the runner if that resolves it. Ask the user
+     only if the ref still won't resolve (e.g. the remote branch was renamed or
+     deleted).
    - **`halt` / `sync-fetch` / `incomplete-sync`** → the runner's turn ended
      before the fetch+rebase finished. The halt carries a `dirty` array (read it
      as `.dirty // []`) naming each dirty or `mid_rebase` member and its file
