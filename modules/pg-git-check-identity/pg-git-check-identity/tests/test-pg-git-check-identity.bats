@@ -47,6 +47,22 @@ setup() {
   export XDG_CONFIG_HOME="$TEST_DIR/xdg-config"
   export GIT_CONFIG_NOSYSTEM=1
 
+  # pg2-6drqh: a linked-worktree commit hook exports GIT_DIR/GIT_INDEX_FILE,
+  # which git consults BEFORE cwd -- so the `git init` below would re-init the
+  # canonical clone and the later `git config user.*` tests would write into
+  # its shared .git/config. Scrub the family, and pin a ceiling so a fixture
+  # can never resolve to a repo above TEST_DIR.
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
+  GIT_CEILING_DIRECTORIES="$(cd "$TEST_DIR" && pwd -P)"
+  export GIT_CEILING_DIRECTORIES
+
+  # pg-test-runner (the commit-time unit-test hook's runner) exports a valid
+  # GIT_AUTHOR_*/GIT_COMMITTER_* identity into every child, and those env vars
+  # outrank repo config in `git var`. Under that hook the config-path tests
+  # below would then never see the placeholder config they set. Start every
+  # test with no ambient identity env; tests that need one export it.
+  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+
   create_pg_git_check_identity_wrapper
   SCRIPT="$TEST_DIR/run_pg_git_check_identity"
 
@@ -147,4 +163,24 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [ "$status" -ne 3 ]
+}
+
+# Regression for pg2-6drqh: under a leaked GIT_DIR (as in a linked-worktree
+# commit hook) the identity-config tests must not touch the pointed-at repo.
+# Nested bats runs one config-writing test; the filter excludes this test.
+@test "config-writing tests under a leaked GIT_DIR leave that repo's config byte-identical (pg2-6drqh)" {
+  command -v bats >/dev/null || skip "bats not on PATH"
+  local canon before after
+  canon="$(mktemp -d)"
+  env -u GIT_DIR git init -q -b main "$canon"
+  before="$(cat "$canon/.git/config")"
+
+  run env GIT_DIR="$canon/.git" GIT_INDEX_FILE="$canon/.git/index" \
+    SCRIPTS_DIR="$SCRIPTS_DIR" \
+    bats --filter 'set via git config' "$BATS_TEST_FILENAME"
+  [ "$status" -eq 0 ]
+
+  after="$(cat "$canon/.git/config")"
+  [ "$before" = "$after" ]
+  rm -rf "$canon"
 }

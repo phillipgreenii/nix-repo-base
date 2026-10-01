@@ -31,6 +31,13 @@ fi
 # test requires a subprocess (the env-reset tests must not scrub the CURRENT
 # bats shell), or directly when it doesn't.
 
+# Run git with the GIT_DIR family removed, so `-C`/cwd discovery is honoured
+# even when this suite itself runs inside a commit hook (pg2-6drqh).
+_gfh_clean_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    -u GIT_PREFIX -u GIT_OBJECT_DIRECTORY git "$@"
+}
+
 teardown() {
   # Best-effort: any @test that itself called gfh_setup (in-process, not via
   # `run bash -c`) leaves GFH_ROOT set in THIS shell.
@@ -161,10 +168,18 @@ HOOK
   local leaked target
   leaked="$(mktemp -d)"
   target="$(mktemp -d)"
-  command git init -q -b main "$leaked"
-  command git -C "$leaked" config core.hooksPath /dev/null
-  command git -C "$leaked" config user.email "real@example.com"
-  command git -C "$leaked" config user.name "Real User"
+  # pg2-6drqh: this test's OWN setup must be scrubbed too. Run raw under a
+  # commit-hook environment (GIT_DIR exported by a linked-worktree commit),
+  # `git init "$leaked"` re-inits the REAL repo and the three `config` calls
+  # below wrote core.hooksPath=/dev/null, user.email=real@example.com and
+  # user.name="Real User" into the canonical clone's .git/config -- the
+  # exact leaked keys that bead reported. Every git call here (setup AND
+  # assertions: a read under a leaked GIT_DIR would pass vacuously against
+  # the real repo) goes through _gfh_clean_git.
+  _gfh_clean_git init -q -b main "$leaked"
+  _gfh_clean_git -C "$leaked" config core.hooksPath /dev/null
+  _gfh_clean_git -C "$leaked" config user.email "real@example.com"
+  _gfh_clean_git -C "$leaked" config user.name "Real User"
 
   run env GIT_DIR="$leaked/.git" bash -c "
     source '$GFH_LIB'
@@ -173,13 +188,35 @@ HOOK
   [ "$status" -eq 0 ]
 
   # The leaked repo's real identity must survive untouched.
-  [ "$(command git -C "$leaked" config user.email)" = "real@example.com" ]
+  [ "$(_gfh_clean_git -C "$leaked" config user.email)" = "real@example.com" ]
   # The actual target must be the one that got initialised with the fixture
   # identity -- not left without a .git at all (what happened before the fix).
   [ -d "$target/second-repo/.git" ]
-  [ "$(command git -C "$target/second-repo" config user.email)" = "leak-suite@bashfixture.invalid" ]
+  [ "$(_gfh_clean_git -C "$target/second-repo" config user.email)" = "leak-suite@bashfixture.invalid" ]
 
   rm -rf "$leaked" "$target"
+}
+
+# Regression for pg2-6drqh: run the leak test above (and the whole bats file
+# machinery around it) the way a linked-worktree commit hook does -- with
+# GIT_DIR/GIT_INDEX_FILE exported and pointing at a "canonical" repo -- and
+# assert that repo's .git/config is BYTE-IDENTICAL afterwards. Nested bats
+# runs only the pg2-510ya test (filter excludes this test, so no recursion).
+@test "suite run under a leaked GIT_DIR leaves the pointed-at repo's config byte-identical (pg2-6drqh)" {
+  command -v bats >/dev/null || skip "bats not on PATH"
+  local canon before after
+  canon="$(mktemp -d)"
+  _gfh_clean_git init -q -b main "$canon"
+  before="$(cat "$canon/.git/config")"
+
+  run env GIT_DIR="$canon/.git" GIT_INDEX_FILE="$canon/.git/index" \
+    UL_LIB_SCRIPTS_DIR="$(dirname "$GFH_LIB")" \
+    bats --filter 'pg2-510ya' "$BATS_TEST_FILENAME"
+  [ "$status" -eq 0 ]
+
+  after="$(cat "$canon/.git/config")"
+  [ "$before" = "$after" ]
+  rm -rf "$canon"
 }
 
 # --- HOME isolation ----------------------------------------------------------
