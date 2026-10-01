@@ -109,6 +109,10 @@ Prototype in a throwaway clone (`/tmp/hookproto-1790836410`, may be gone), then 
   real-git run (5-22 s) are NOT comparable (they run the full hook set on real files at load 20-40).
   A quiet-machine measurement of old vs new on the SAME real workload is still missing.
 
+The wired-state real-git verification matrix (14 of 14 PASS) and incident log are in
+[the pilot verification evidence](2026-10-01-commit-time-hook-shim-pilot-verification.md); the
+quiet-machine latency measurement remains deferred there for load.
+
 ## 5. Independent review of the rollout plan — verdict: approve with changes
 
 Do not roll out to all repos at once. Findings (facts verified in code by the reviewer):
