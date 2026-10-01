@@ -842,6 +842,72 @@
                   "echo 'mkGoApp silently accepted a caller-passed version (bead pg2-zvt37)' >&2; exit 1"
               );
 
+            # mkGoApp / mkGoBinary default `doCheck` to false (gomod2nix defaults
+            # it to true), so package builds no longer run a second compile plus
+            # `go test`; the test gate is each module's mkGoTest check (operator
+            # ruling 2026-10-01, bead pg2-pla9d.2). Eval-only: reads the
+            # derivations' `doCheck` attribute and compares drvPaths, builds
+            # nothing. Asserts:
+            #   - the default is false for mkGoApp and for mkGoBinary;
+            #   - an explicit `doCheck = true` reaches the derivation, both on
+            #     mkGoApp and threaded through mkGoBinary's closed arg set;
+            #   - an explicit `doCheck = false` yields the SAME drvPath as the
+            #     default, so callers that already passed it (e.g.
+            #     agent-support's claude-extended-tool-approver) keep their hash;
+            #   - mkGoLint / mkGoTest still set `doCheck = false` (they replace
+            #     buildPhase and run nothing in a check phase).
+            go-builders-docheck-default =
+              let
+                appArgs = {
+                  pname = "docheck-probe";
+                  src = ./modules/pn;
+                  gomod2nixToml = ./modules/pn/gomod2nix.toml;
+                  subPackages = [ "cmd/pn" ];
+                };
+                binArgs = {
+                  name = "docheck-probe";
+                  src = ./modules/pn;
+                  gomod2nixToml = ./modules/pn/gomod2nix.toml;
+                  subPackages = [ "cmd/pn" ];
+                };
+                app = goBuilders.mkGoApp appArgs;
+                appOn = goBuilders.mkGoApp (appArgs // { doCheck = true; });
+                appOff = goBuilders.mkGoApp (appArgs // { doCheck = false; });
+                bin = goBuilders.mkGoBinary binArgs;
+                binOn = goBuilders.mkGoBinary (binArgs // { doCheck = true; });
+                binOff = goBuilders.mkGoBinary (binArgs // { doCheck = false; });
+                lint = goBuilders.mkGoLint {
+                  src = ./modules/pn;
+                  gomod2nixToml = ./modules/pn/gomod2nix.toml;
+                  config = ./.golangci.yml;
+                };
+                test = goBuilders.mkGoTest {
+                  src = ./modules/pn;
+                  gomod2nixToml = ./modules/pn/gomod2nix.toml;
+                };
+                cases = {
+                  "mkGoApp default is doCheck = false" = app.doCheck == false;
+                  "mkGoApp doCheck = true reaches the derivation" = appOn.doCheck == true;
+                  "mkGoApp explicit doCheck = false keeps the default drvPath" = appOff.drvPath == app.drvPath;
+                  "mkGoBinary default is doCheck = false" = bin.doCheck == false;
+                  "mkGoBinary doCheck = true reaches mkGoApp's derivation" = binOn.doCheck == true;
+                  "mkGoBinary explicit doCheck = false keeps the default drvPath" = binOff.drvPath == bin.drvPath;
+                  "mkGoLint still sets doCheck = false" = lint.doCheck == false;
+                  "mkGoTest still sets doCheck = false" = test.doCheck == false;
+                };
+                failed = builtins.attrNames (lib.filterAttrs (_: ok: !ok) cases);
+              in
+              pkgs.runCommand "check-go-builders-docheck-default" { } (
+                if failed == [ ] then
+                  "touch $out"
+                else
+                  ''
+                    echo 'mkGoApp/mkGoBinary doCheck default broken (bead pg2-pla9d.2). Failed:' >&2
+                    ${lib.concatMapStringsSep "\n" (n: "echo ${lib.escapeShellArg "  - ${n}"} >&2") failed}
+                    exit 1
+                  ''
+              );
+
             # mkGoBinary's arg set is CLOSED and its mkGoApp call explicit, so
             # `baseVersion`, `ldflags` and `env` were unreachable from a
             # mkGoBinary consumer entirely — a release build could never carry a
@@ -1093,6 +1159,18 @@
               gomod2nixToml = ./modules/jira/gomod2nix.toml;
             };
 
+            # Full Go test gate for pg-go-mutate-tui (own go.mod, cmd/* +
+            # internal/*). Its mkGoBinary build sets no subPackages, so until
+            # mkGoApp/mkGoBinary defaulted doCheck to false (bead pg2-pla9d.2)
+            # the package's own check phase was its only test gate; this check
+            # replaces it. go is on PATH via buildGoApplication, which
+            # cmd/pg-go-mutate-tui/main_test.go needs for its `go build`.
+            pg-go-mutate-tui-go-tests = goBuilders.mkGoTest {
+              pname = "pg-go-mutate-tui";
+              src = ./modules/pg-go-mutate/pg-go-mutate-tui;
+              gomod2nixToml = ./modules/pg-go-mutate/pg-go-mutate-tui/gomod2nix.toml;
+            };
+
             # golangci-lint over each Go module, run OFFLINE via gomod2nix's
             # vendored dep env so it passes in the no-network `nix flake check`
             # sandbox (bead pg2-6wly). Replaces the old network-dependent
@@ -1123,6 +1201,10 @@
             # the fileset root, which has no go.mod ("directory prefix . does not
             # contain main module") — and GREEN after. The -build check pins
             # mkGoApp (already correct) so the whole builder family stays covered.
+            # It opts back into `doCheck = true` (mkGoApp defaults it to false,
+            # bead pg2-pla9d.2) so base's own flake check keeps exercising the
+            # mkGoApp check-phase path (moda has a main_test.go in its "."
+            # subPackage) that opted-in consumers rely on.
             go-builders-patternb-lint = goBuilders.mkGoLint {
               pname = "patternb-fixture";
               src = goPatternBFixtureSrc;
@@ -1142,6 +1224,7 @@
               modRoot = "moda";
               gomod2nixToml = ./lib/tests/fixtures/patternb/moda/gomod2nix.toml;
               subPackages = [ "." ];
+              doCheck = true;
             };
 
             # Hermetically verify the exported darwinModules.default (the aggregate

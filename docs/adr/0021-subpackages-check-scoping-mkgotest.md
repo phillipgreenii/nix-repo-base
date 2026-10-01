@@ -106,3 +106,26 @@ The following apply to every Go module built through `mkGoApp` / `mkGoBinary`:
 - ADR [0006](0006-source-content-digest-versioning.md) — `mkGoTest` versions from the per-source
   content digest, like the other builders.
 - ADR [0005](0005-mkGoBuilders-factory.md) — the `mkGoBuilders` factory that `mkGoTest` extends.
+
+## Amendment (2026-10-01): package builds no longer run a check phase by default (bd pg2-pla9d.2)
+
+Operator ruling, Phillip, 2026-10-01 (recorded in bead `pg2-3i12x`; see the matching amendment
+on ADR [0008](0008-adopt-gomod2nix-for-go-packages.md)): `mkGoApp` and `mkGoBinary` now default
+to `doCheck = false`. Part of this ADR's rationale dissolves with that, and two of its rules
+change:
+
+- The `subPackages` scoping footgun no longer applies to a default package build: there is no
+  check phase to scope. The Context section describes the behavior of a build with
+  `doCheck = true`, which is now opt-in.
+- The "MUST NOT be the package build's own check phase" rule still holds, and is now the
+  default state rather than a discipline.
+- "A module that currently sets no `subPackages` (and so is gated by luck) SHOULD still adopt a
+  dedicated `mkGoTest` check" is SUPERSEDED: such a module is no longer gated at all by its
+  package build, so every Go module with tests MUST have a dedicated test check (normally
+  `mkGoTest`), or its tests run nowhere under `nix flake check`. base's
+  `pg-go-mutate-tui-go-tests` was added for exactly this reason.
+- The sanctioned fallback (a `mkGoApp` check derivation over the whole module without
+  `subPackages`) now MUST also pass `doCheck = true`; without it the derivation builds the
+  binaries and runs no tests.
+- Unchanged: `subPackages` still controls what ships, and `mkGoTest` still controls what is
+  tested, with no `subPackages`, `-trimpath` stripped, and `go vet` on.

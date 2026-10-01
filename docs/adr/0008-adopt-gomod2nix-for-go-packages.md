@@ -192,8 +192,9 @@ regeneration, no hash bump — it is read live from source.
 
 - ADR 0006's per-source-digest **versioning** is retained; its **pinned-FOD-name** half becomes
   moot (no FOD to pin) — 0006 is not superseded, just partially obsoleted.
-- `buildGoApplication` runs tests by default (`doCheck = true`); the wrapper keeps current
-  check behavior.
+- ~~`buildGoApplication` runs tests by default (`doCheck = true`); the wrapper keeps current
+  check behavior.~~ Superseded 2026-10-01: `mkGoApp`/`mkGoBinary` now default `doCheck = false`.
+  See the amendment below.
 - Out-of-scope plain `buildGoModule` packages remain; the fleet is briefly two-builder until/unless
   they migrate.
 
@@ -225,3 +226,28 @@ local-replace freeze without a hack nor removes third-party hash churn.
 - See also: phillipgreenii-nix-support-apps docs/adr/0035-vendor-hash-with-nix-update-for-go-packages.md
   (its `nix-update` decision is superseded for the `mkGoApp` family by this ADR; beads `pg2-sz8f`,
   `pg2-eg1c`, `pg2-b9pb`, `pg2-o0jd`).
+
+## Amendment (2026-10-01): package builds default to `doCheck = false` (bd pg2-pla9d.2)
+
+Operator ruling, Phillip, 2026-10-01 (answer "doCheck=false default (Recommended)", recorded in
+bead `pg2-3i12x`, the check/test tiering plan): `mkGoApp` and `mkGoBinary` MUST default to
+`doCheck = false`. This supersedes the Neutral consequence above that the wrapper "keeps current
+check behavior".
+
+- `buildGoApplication` still defaults `doCheck` to `true` (`attrs.doCheck or true`), so `mkGoApp`
+  passes `doCheck = args.doCheck or false` explicitly. `mkGoBinary` (a closed arg set) gains a
+  `doCheck ? false` argument and threads it into `mkGoApp`.
+- Why: the check phase was a second full compile plus a `go test` run on every Go package build
+  in `pn workspace apply` (bead `pg2-t8807` measured it at about 72% of a steady-state `pg-desk`
+  build), and under `subPackages` it only tested the pinned entrypoint anyway
+  (ADR [0021](0021-subpackages-check-scoping-mkgotest.md)).
+- Where tests run instead: each module's dedicated `mkGoTest` check (`checks.<system>.<name>-go-tests`),
+  and at commit time the `run-unit-tests` hook (`pg-test-runner --labels unit`, which discovers
+  Go modules by their `go.mod`). A package that genuinely relies on its own check phase opts back
+  in with `doCheck = true`; modules whose check phase was their only gate gained a `mkGoTest`
+  check in the same change (base: `pg-go-mutate-tui-go-tests`).
+- `mkGoBinary`'s `testDeps` (the check phase's `nativeCheckInputs`) only matter with
+  `doCheck = true`.
+- Hash impact: every Go package that did not already set `doCheck` gets a new derivation hash
+  (one mass rebuild at the next apply). A caller that already passed `doCheck = false` keeps its
+  hash. The `go-builders-docheck-default` flake check pins all of this.

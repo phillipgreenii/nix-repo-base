@@ -7,6 +7,17 @@
 #     invalidate.
 #   - mkGoBinary: opinionated wrapper over mkGoApp that also generates a man
 #     page (help2man) and shell completions.
+#   - mkGoLint / mkGoTest: offline golangci-lint and `go test ./...` checks in
+#     the same vendored dependency env.
+#
+# Package builds do NOT run tests: mkGoApp and mkGoBinary default to
+# `doCheck = false` (operator ruling 2026-10-01, bead pg2-pla9d.2), overriding
+# gomod2nix's own `doCheck = attrs.doCheck or true`. The check phase was a
+# second full compile plus a test run on every package build in
+# `pn workspace apply`, and under `subPackages` it only tested one entrypoint
+# anyway (ADR 0021). A module's test gate is its dedicated mkGoTest check
+# (`checks.<system>.<name>-go-tests`); a package that genuinely relies on its
+# own check phase opts back in with `doCheck = true`.
 {
   pkgs,
   lib ? pkgs.lib,
@@ -45,6 +56,15 @@ rec {
       # leaving completions.bash/zsh undefined (bead pg2-beppe).
       completions ? { },
       manPage ? true,
+      # Run gomod2nix's check phase (`go test` over the built packages) as part
+      # of the package build. Defaults to false like mkGoApp (see the file
+      # header); threaded explicitly because this arg set is closed. The real
+      # test gate is a dedicated mkGoTest check, not this switch.
+      doCheck ? false,
+      # Tools on PATH during the check phase (nativeCheckInputs). They only
+      # matter when `doCheck = true`; with the default `doCheck = false` the
+      # check phase never runs and these are unused. Tools a module's mkGoTest
+      # suite needs go on that check's own `testDeps`.
       testDeps ? [ ],
       extraPostInstall ? "",
       # Go linker target for the version string (mkGoApp injects it).
@@ -114,6 +134,7 @@ rec {
           ldflags
           gomod2nixToml
           modRoot
+          doCheck
           ;
         nativeBuildInputs = (lib.optional manPage pkgs.help2man) ++ [ pkgs.makeWrapper ];
         nativeCheckInputs = testDeps;
@@ -176,8 +197,9 @@ rec {
         // extraMeta;
       }
       // lib.optionalAttrs (subPackages != null) { inherit subPackages; }
-      # Omit `env` entirely when the caller passed none, so every existing
-      # mkGoBinary consumer's derivation hash is unchanged by this widening.
+      # Omit `env` entirely when the caller passed none, so a consumer that does
+      # not use `env` gets no `env` attribute at all: this argument adds nothing
+      # to the derivation unless it is used.
       // lib.optionalAttrs (env != { }) { inherit env; }
     );
 
@@ -226,6 +248,10 @@ rec {
   #
   # The local-replace symlink in Pattern B resolves because `pwd` and the sibling
   # live in the same rooted store copy.
+  #
+  # Tests: `doCheck` defaults to false (see the file header). Pass
+  # `doCheck = true` to run gomod2nix's check phase in the package build; the
+  # module's test gate is still its mkGoTest check (ADR 0021).
   mkGoApp =
     {
       pname,
@@ -325,6 +351,11 @@ rec {
         inherit pname version pwd;
         inherit (pkgs) go; # pin to our nixpkgs Go, not gomod2nix's
         modules = pwd + "/gomod2nix.toml";
+        # Default the check phase OFF (gomod2nix defaults it on). `args.doCheck`
+        # is already in `forwarded`; restating it here keeps a caller's explicit
+        # value, so a caller that already passed `doCheck = false` produces the
+        # same derivation as before this default changed.
+        doCheck = args.doCheck or false;
         ldflags = ldflags ++ [ "-X ${versionPath}=${version}" ];
         # Default mainProgram merged BENEATH the caller's meta so an explicit
         # meta.mainProgram always wins (last-wins). No key added when nothing was
@@ -335,8 +366,8 @@ rec {
       }
       // hoistedCgo
       # Re-add `env` only when something other than CGO_ENABLED was in it, so
-      # callers that pass no `env` (or only `env.CGO_ENABLED`) keep a derivation
-      # with no `env` attribute at all — hash-neutral for every existing caller.
+      # callers that pass no `env` (or only `env.CGO_ENABLED`) get a derivation
+      # with no `env` attribute at all; the shim adds nothing for them.
       // lib.optionalAttrs (envRest != { }) { env = envRest; }
     );
 

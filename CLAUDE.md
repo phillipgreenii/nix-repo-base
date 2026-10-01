@@ -65,6 +65,13 @@ Rules for this family:
   `src = lib.fileset.toSource { root = ./..; fileset = lib.fileset.unions [ ./. ../sibling ]; };`
   plus `modRoot = "<name>";`. `mkGoApp` then sets `pwd = src + "/<name>"` and `buildGoApplication`
   resolves the replace natively via a symlink (no vendoring, no hash).
+- **Package builds do not run tests.** `mkGoApp` / `mkGoBinary` default to `doCheck = false`
+  (operator ruling 2026-10-01, bead pg2-pla9d.2; ADR 0008 and ADR 0021 amendments), overriding
+  gomod2nix's default of `true`. A green package build is NOT a test result. Every Go module with
+  tests MUST have its own `goBuilders.mkGoTest` check (`checks.<system>.<name>-go-tests`, e.g.
+  `pn-go-tests`, `pg-go-mutate-tui-go-tests`). Pass `doCheck = true` only for a package that
+  genuinely relies on its own check phase, and say why. `mkGoBinary`'s `testDeps` only matter
+  with `doCheck = true`; tools the mkGoTest suite needs go on that check's `testDeps`.
 
 Note: raw `buildGoModule` packages that do **not** go through these helpers (e.g. third-party
 repackages) keep their own `vendorHash` — this guidance is scoped to the `mkGoApp`/`mkGoBinary`

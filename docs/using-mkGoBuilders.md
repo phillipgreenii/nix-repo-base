@@ -51,7 +51,8 @@ symbol is missing.
 | ------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `description`      | `""`                                        | One-line summary. Fed to `help2man --name=` for the man page (see note below).                                                                              |
 | `runtimeDeps`      | `[]`                                        | Runtime deps wrapped onto PATH (e.g., `pkgs.git` for shell-outs). Propagated to consumers. NOT for static linking — Go binaries link statically by default. |
-| `testDeps`         | `[]`                                        | Extra packages on PATH during `go test` (e.g., `pkgs.git` for tests that invoke `git`).                                                                     |
+| `doCheck`          | `false`                                     | Run gomod2nix's check phase (`go test`) inside the package build. Off by default; the test gate is a separate `mkGoTest` check (see section 4).             |
+| `testDeps`         | `[]`                                        | Extra packages on PATH during the check phase. Only used when `doCheck = true`; put tools the `mkGoTest` suite needs on that check's `testDeps`.            |
 | `manPage`          | `true`                                      | When `false`, skips help2man man-page generation. Useful for binaries without a `--help` that help2man can parse.                                           |
 | `completions`      | `{ bash = true; zsh = true; fish = true; }` | Per-shell completion generation. Set e.g. `completions.fish = false` to skip a shell.                                                                       |
 | `versionPath`      | `"main.Version"`                            | Go linker symbol the version is injected into via `-X`. Override if your `main` exports it under a different name (e.g. `main.version`).                    |
@@ -111,35 +112,39 @@ delegating to `buildGoApplication`. There is **no** factory-level rejection of `
 derived version is never `"dev"`. A tool that wants to refuse non-Nix builds enforces that
 with its own runtime guard in `main` (the `bin/pn` sentinel above), not in the factory.
 
-### 4. Tests wired into `nix flake check`
+### 4. Tests wired into `nix flake check` (via `mkGoTest`)
 
-Go tests are run with `-race`:
+The package build does **not** run your tests: `mkGoBinary` and `mkGoApp` default to
+`doCheck = false` (operator ruling 2026-10-01, bead pg2-pla9d.2; see the ADR
+[0008](adr/0008-adopt-gomod2nix-for-go-packages.md) and ADR
+[0021](adr/0021-subpackages-check-scoping-mkgotest.md) amendments). Before that date the gomod2nix
+check phase recompiled the module and ran `go test` on every package build, and under
+`subPackages` it only tested the pinned entrypoint. A green package build is therefore not a
+test result.
 
-```
-go test -race ./...
-```
-
-Hook them into your flake's `checks.<system>.<name>` output so `nix flake check`
-runs them. The minimal pattern wraps `go test` in `pkgs.runCommand`:
+Every module with tests MUST add a dedicated `mkGoTest` check to its flake's
+`checks.<system>` output. It runs `go test -race ./...` over the whole module, offline, in the
+same gomod2nix vendored dependency env:
 
 ```nix
 # In your flake.nix's checks output (per-system):
-checks.my-tool-go-tests = pkgs.runCommand "my-tool-go-tests" {
-  src = ./.;  # path to your Go module
-  nativeBuildInputs = [ pkgs.go ];
-} ''
-  export HOME=$TMPDIR
-  cp -r $src/* .
-  go test -race ./...
-  touch $out
-'';
+my-tool-go-tests = goBuilders.mkGoTest {
+  pname = "my-tool";
+  src = ./modules/my-tool;                         # the Go module
+  gomod2nixToml = ./modules/my-tool/gomod2nix.toml;
+  testDeps = [ pkgs.git ];                         # tools the tests shell out to
+};
 ```
 
-The actual implementation may differ slightly — for example, a vendored module
-needs `GOFLAGS="-mod=vendor"` and the vendored `vendor/` directory copied in, and a
-module that hits the network during tests needs explicit fixtures. Reference the
-`pn` module's flake wiring (Task 18 of the nix-\* refactor plan) once it lands for a
-fully worked example.
+For a Pattern-B module (local `replace => ../sibling`), pass the same parent-rooted `src` and
+`modRoot` the package uses. `mkGoTest` also accepts `testFlags` (e.g. `[ "-tags" "smoke" ]`) and
+`enableRace` (default `true`). Worked examples: `pn-go-tests`, `pjira-go-tests` and
+`pg-go-mutate-tui-go-tests` in this repo's `flake.nix`.
+
+Pass `doCheck = true` to `mkGoBinary` / `mkGoApp` only when a package genuinely relies on its own
+check phase, and say why in a comment. At commit time the `run-unit-tests` hook
+(`pg-test-runner --labels unit`) also runs the unit tests of every touched Go module, found by
+its `go.mod`.
 
 ## Version format
 
