@@ -87,6 +87,12 @@ personal and agent-support, then support-apps; ZR last, and only after its auto-
 **Conclusion criteria:** the experiment ends with a bead for the operator to decide: change HK-2, add
 a scoped exception, or abandon the shim. Until then ADR-0016's gitignore rule stays in force.
 
+## Related
+
+Full design, evidence, independent review, remaining work and operator commands:
+[`docs/superpowers/plans/2026-10-01-commit-time-hook-shim-experiment.md`](../superpowers/plans/2026-10-01-commit-time-hook-shim-experiment.md).
+HK-2 decision bead: `pg2-d1ngb`.
+
 ## Rollback
 
 Set the option to `false`, re-run `nix run .#install-pre-commit-hooks` (restores the legacy installer
