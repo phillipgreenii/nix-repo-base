@@ -634,6 +634,88 @@
               touch $out
             '';
 
+            # Regression guard for the dropped full-flake-check land gate (bead
+            # pg2-pla9d.1; operator ruling 2026-10-01). The ff-merge-to-main land
+            # step that ran a full nix flake check was removed, and so was every
+            # duplicate "run a full nix flake check before landing/committing"
+            # mandate. This greps the agent-facing MARKDOWN fileset (CLAUDE.md
+            # and pn-workspace-rules/**/*.md, minus docs/superpowers/** and
+            # docs/adr/** — dated/point-in-time records) so a mandate cannot creep
+            # back. flake.nix is deliberately NOT scanned: the patterns below
+            # would self-match. Allowed phrasing: a line that also carries one of
+            # the `allowed` phrases (the canonical ruling sentence) is exempt.
+            # A synthetic bad fixture is scanned first so the check cannot pass
+            # vacuously, and the Completion Gate MUST still state the ruling and
+            # FF-1b's skip-with-one-notice behaviour.
+            land-gate-rule-docs =
+              let
+                docs = lib.fileset.toSource {
+                  root = ./.;
+                  fileset = lib.fileset.unions [
+                    ./CLAUDE.md
+                    (lib.fileset.fileFilter (file: file.hasExt "md") ./pn-workspace-rules)
+                  ];
+                };
+              in
+              pkgs.runCommand "check-land-gate-rule-docs" { } ''
+                set -euo pipefail
+                forbidden=(
+                  'FF-2a'
+                  'flake-check-failed'
+                  '[Tt]ier 1 completion gate'
+                  'nix flake check`?\)? (MUST|must|should|SHOULD) (pass|run|succeed)'
+                  'nix flake check`? (before|prior to|at) (land|commit|merg)'
+                  '(MUST|must|SHOULD|should|[Aa]lways) (run|pass)[^.|]*nix flake check[^.|]*(before|at) (land|commit|merg)'
+                )
+                allowed=(
+                  'is NOT a per-change or land-time gate'
+                  'is NOT a land-time gate'
+                )
+
+                # scan FILE...: print every forbidden, non-allowlisted line; exit 1 if any.
+                scan() {
+                  local bad=0 pat hits
+                  for pat in "''${forbidden[@]}"; do
+                    hits="$(grep -nHE -- "$pat" "$@" || true)"
+                    for a in "''${allowed[@]}"; do
+                      hits="$(printf '%s\n' "$hits" | grep -vF -- "$a" || true)"
+                    done
+                    if [ -n "$hits" ]; then
+                      printf '%s\n' "$hits" >&2
+                      bad=1
+                    fi
+                  done
+                  return "$bad"
+                }
+
+                printf '%s\n' 'Test with `nix flake check` before committing.' >bad.md
+                if scan bad.md 2>/dev/null; then
+                  echo "FAIL: scan passed a known-bad fixture — the check is vacuous" >&2
+                  exit 1
+                fi
+
+                mapfile -t files < <(find ${docs} -type f -name '*.md' \
+                  -not -path '*/docs/superpowers/*' -not -path '*/docs/adr/*' | sort)
+                [ "''${#files[@]}" -gt 1 ] || { echo "FAIL: no markdown files found to scan" >&2; exit 1; }
+                if ! scan "''${files[@]}"; then
+                  echo "FAIL: the lines above name the dropped land gate or mandate a full nix flake check at land/before committing (bead pg2-pla9d.1). Reword, e.g. 'a full nix flake check is NOT a land-time gate'." >&2
+                  exit 1
+                fi
+
+                gate=${docs}/pn-workspace-rules/skills/pn-workspace-rules/SKILL.md
+                for needle in \
+                  'A full `nix flake check` is NOT a per-change or land-time gate' \
+                  'skips `prek` with one notice line'; do
+                  grep -qF -- "$needle" "$gate" || {
+                    echo "$gate: missing required text: $needle" >&2
+                    exit 1
+                  }
+                done
+
+                echo "ok: ''${#files[@]} markdown files free of full-flake-check land mandates"
+                touch $out
+              '';
+
             activation-lib =
               let
                 failures = pkgs.lib.runTests (import ./lib/activation-tests.nix { inherit (pkgs) lib; });

@@ -276,7 +276,7 @@ on them — so a verification step MUST name which binary it drives:
 ## treefmt markdown formatting (prettier)
 
 treefmt formats markdown/yaml/json with prettier (version UNPINNED — it comes from
-`nix/dev-env.nix` `mkTreefmtConfig` via `programs.prettier.enable = true`, so it tracks nixpkgs).
+`flake-modules/treefmt.nix` via `programs.prettier.enable = true`, so it tracks nixpkgs).
 prettier is NON-IDEMPOTENT on some markdown: wide-unicode tables plus star-emphasis next to
 underscored identifiers need 2+ passes to reach a fixed point. A file committed at a non-fixed
 point reds BOTH `nix flake check` (`checks.treefmt`) and prek — they run the IDENTICAL
@@ -284,7 +284,7 @@ prettier, so it is never a version skew. Always run treefmt/prek TO CONVERGENCE 
 markdown. Decision (Phillip, after `pg2-qe48`): prettier was chosen only as the treefmt-nix
 batteries-included default, never vetted for markdown idempotency — if non-idempotency recurs,
 evaluate switching the markdown formatter (dprint or mdformat via treefmt `extraPrograms`) in
-`mkTreefmtConfig` here, instead of chasing prettier fixed points.
+`flake-modules/treefmt.nix` here, instead of chasing prettier fixed points.
 
 ## Consumer input alignment
 
