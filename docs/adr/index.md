@@ -32,3 +32,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0025](0025-applied-state-records-the-terminal-locked-revs.md)   | Applied-state records the terminal's locked revs at apply time             | Accepted (amends 0012)                                |
 | [0026](0026-mutation-sweep-state-contract.md)                    | Mutation-sweep durable state: layout, ledger schema, exit-code allocation  | Superseded by 0027                                    |
 | [0027](0027-pg-go-mutate-tui-state-contract.md)                  | `pg-go-mutate-tui` state contract: ledger, guard cache, semaphore, beads   | Accepted (supersedes 0026)                            |
+| [0028](0028-pn-nix-telemetry.md)                                 | pn / nix build telemetry: Phase 1 spike findings and golden files          | Proposed                                              |
