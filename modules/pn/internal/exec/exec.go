@@ -15,7 +15,14 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
+
+// killGrace is how long a child gets to exit after SIGTERM (sent on context
+// cancel) before os/exec escalates to SIGKILL. A package var so tests can
+// shorten it.
+var killGrace = 10 * time.Second
 
 // Runner runs external commands.
 type Runner interface {
@@ -69,6 +76,12 @@ func NewRealRunner() Runner {
 
 func (r *realRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) (Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// On cancel, ask the child to terminate (SIGTERM) so it can clean up and
+	// flush; only if it is still running after WaitDelay does os/exec SIGKILL
+	// it. The default (immediate SIGKILL) gives children no chance to exit
+	// cleanly.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = killGrace
 	if opts.Dir != "" {
 		cmd.Dir = opts.Dir
 	}

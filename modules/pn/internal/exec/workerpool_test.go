@@ -3,6 +3,8 @@ package exec
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -141,5 +143,41 @@ func TestWorkerPool_RunMethodDispatchesToInnerRunner(t *testing.T) {
 	}
 	if string(res.Stdout) != "hi\n" {
 		t.Errorf("Run stdout: %q", res.Stdout)
+	}
+}
+
+// TestWorkerPool_CancelFansOutToAllChildren proves a single context cancel
+// terminates every in-flight real subprocess across the pool's workers.
+func TestWorkerPool_CancelFansOutToAllChildren(t *testing.T) {
+	const n = 3
+	dir := t.TempDir()
+	pool := NewWorkerPool(NewRealRunner(), n)
+	defer pool.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		marker := filepath.Join(dir, "marker"+string(rune('a'+i)))
+		ready := filepath.Join(dir, "ready"+string(rune('a'+i)))
+		wg.Add(1)
+		pool.Submit(func() {
+			defer wg.Done()
+			_, _ = pool.Run(ctx, "sh", []string{"-c", cancelScript, "sh", marker, ready, "exit"}, RunOptions{})
+		})
+	}
+	for i := 0; i < n; i++ {
+		waitForFile(t, filepath.Join(dir, "ready"+string(rune('a'+i))))
+	}
+	cancel()
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("not all children terminated after cancel")
+	}
+	for i := 0; i < n; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "marker"+string(rune('a'+i)))); err != nil {
+			t.Errorf("child %d did not get SIGTERM: %v", i, err)
+		}
 	}
 }

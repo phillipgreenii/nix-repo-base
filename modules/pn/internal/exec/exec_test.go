@@ -3,9 +3,11 @@ package exec
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRealRunner_StreamsLiveWhileCapturing(t *testing.T) {
@@ -104,5 +106,83 @@ func TestCommandError_IncludesStderr(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exited 2") {
 		t.Errorf("expected error to mention exit code 2, got %q", err.Error())
+	}
+}
+
+// cancelScript traps SIGTERM (recording it to $1), then signals readiness via
+// $2 and waits. If $3 is "ignore" the trap does not exit, so only SIGKILL ends it.
+const cancelScript = `
+marker="$1"; ready="$2"; mode="$3"
+if [ "$mode" = ignore ]; then
+  trap 'echo term > "$marker"' TERM
+else
+  trap 'echo term > "$marker"; exit 0' TERM
+fi
+touch "$ready"
+while :; do sleep 0.05; done
+`
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
+func TestRealRunner_CancelDeliversSIGTERM(t *testing.T) {
+	dir := t.TempDir()
+	marker, ready := filepath.Join(dir, "marker"), filepath.Join(dir, "ready")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := NewRealRunner().Run(ctx, "sh", []string{"-c", cancelScript, "sh", marker, ready, "exit"}, RunOptions{})
+		done <- err
+	}()
+	waitForFile(t, ready)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("child did not observe SIGTERM: %v", err)
+	}
+}
+
+func TestRealRunner_SIGTERMIgnoringChildKilledAfterWaitDelay(t *testing.T) {
+	old := killGrace
+	killGrace = 300 * time.Millisecond
+	t.Cleanup(func() { killGrace = old })
+
+	dir := t.TempDir()
+	marker, ready := filepath.Join(dir, "marker"), filepath.Join(dir, "ready")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := NewRealRunner().Run(ctx, "sh", []string{"-c", cancelScript, "sh", marker, ready, "ignore"}, RunOptions{})
+		done <- err
+	}()
+	waitForFile(t, ready)
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected error from killed child")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("SIGTERM-ignoring child was never SIGKILLed")
+	}
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
+		t.Errorf("returned in %v, before WaitDelay elapsed", elapsed)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("child should have received SIGTERM first: %v", err)
 	}
 }

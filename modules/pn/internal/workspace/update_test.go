@@ -722,6 +722,34 @@ url = "github:owner/foo"
 	}
 }
 
+// TestUpdate_RealRunnerCancelledContext is the regression check that the
+// SIGTERM-based cancel in the real runner keeps Update's cancellation
+// behavior: a cancelled context still yields a prompt cancellation error.
+func TestUpdate_RealRunnerCancelledContext(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+`)
+	w, err := Open(root, exec.NewRealRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer w.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = w.Update(ctx, &bytes.Buffer{}, UpdateOptions{InPlace: true})
+	if err == nil {
+		t.Fatal("expected error on pre-cancelled context")
+	}
+	if !strings.Contains(err.Error(), "interrupted") && !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error should reflect cancellation; got %q", err.Error())
+	}
+}
+
 // TestIsDirty proves the probe distinguishes the `git diff --quiet` "changes
 // exist" signal (exit 1 -> dirty) from a genuine probe failure (exit 128 -> a
 // non-nil error, NOT silently reported as dirty). Prior code conflated any
