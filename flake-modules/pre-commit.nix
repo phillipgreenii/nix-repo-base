@@ -56,6 +56,45 @@ in
         other generated/vendored paths; definitions concatenate.
       '';
     };
+    commitTimeShim = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          EXPERIMENT (bead pg2-z19ad; operator ruling 2026-10-01, ADR 0029). Opt in
+          to COMMIT-TIME hook resolution: committed `.githooks/<stage>` shims run
+          `nix run .#git-hook`, which runs the hook set via
+          `prek hook-impl --config <store configFile>`. Nothing in the checkout then
+          carries a store path to be garbage-collected, diverge per worktree, or be
+          absent in a fresh worktree.
+
+          This is a deliberate, labelled EXCEPTION to HK-2 (a git hook MUST NOT
+          invoke nix; see the AMENDED HK-2 comment in this file). HK-2 itself is
+          UNCHANGED and still binds every repo that has not opted in. The experiment
+          exists to produce the evidence for a later operator decision: change HK-2,
+          add a scoped exception, or abandon the shim.
+
+          When enabled: `.pre-commit-config.yaml` is still (re)generated as a
+          symlink (tooling such as ff-merge-to-main FF-1b and `prek run` reads it),
+          `prek install` and the `core.hooksPath` relativization are NOT run, and
+          `packages.install-pre-commit-hooks` (never the devShell) sets
+          `core.hooksPath` to the relative `.githooks`. A branch or worktree whose
+          tree lacks `.githooks/` is silently UNGATED by that setting, so the
+          `pre-commit-githooks-wired` check is mandatory while enabled.
+        '';
+      };
+      stages = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "pre-commit" ];
+        description = ''
+          Git hook stages that get a `.githooks/<stage>` shim. MUST equal the union
+          of the stages the configured hooks actually use (`pre-commit-githooks-wired`
+          fails on any missing or extra stage). Set it explicitly: a repo with a
+          `pre-rebase` or `pre-push` hook must list that stage, or the hook is silently
+          dropped once `core.hooksPath` points at `.githooks`.
+        '';
+      };
+    };
   };
 
   config.perSystem =
@@ -192,6 +231,13 @@ in
           # `extraHooks` entry instead (see repo-base's own `run-unit-tests` hook,
           # top-level in this repo's flake.nix, for the shape) -- never one that
           # invokes nix.
+          #
+          # EXPERIMENT EXCEPTION (operator ruling 2026-10-01, ADR 0029, bead
+          # pg2-z19ad): HK-2 is UNCHANGED. The opt-in `commitTimeShim` option
+          # (default off) installs git-hook shims that invoke `nix run` by design,
+          # as a labelled research experiment to decide whether HK-2 should change,
+          # gain a scoped exception, or stand. No `extraHooks` entry may invoke nix
+          # either way; the exception covers only the generated `.githooks` shims.
         }
         // resolvedExtraHooks;
       };
@@ -573,7 +619,7 @@ in
       # racing a later step's own shim rewrite (see its own comment above for
       # why re-running `prek install` instead, in a different order, would
       # conflict with `hardenPrePushHook`'s hardcoded relative `-c` argument).
-      preCommitShellHook = ''
+      legacyPreCommitShellHook = ''
         ${neutralizeHigherScopeHooksPath}
         ${preCommit.shellHook}
         ${restoreHigherScopeHooksPath}
@@ -581,6 +627,124 @@ in
         ${hardenPrePushHook}
         ${absolutizeHookConfigPath}
       '';
+
+      # ---- EXPERIMENT: commit-time hook shim (option commitTimeShim; ADR 0029) ----
+      #
+      # Opt-in replacement for `legacyPreCommitShellHook`. HK-2 forbids a git hook
+      # from invoking nix; the shim does exactly that, so it is gated OFF by default
+      # and exists only to gather evidence for a later HK-2 decision (bead pg2-z19ad).
+      shimCfg = topLevelCfg.commitTimeShim;
+
+      # `nix run` evaluates the WORKTREE'S flake, so editing a hook definition takes
+      # effect on the next commit with no reinstall, and no store path lives in the
+      # checkout (GC-safe by construction).
+      gitHookPackage = pkgs.writeShellApplication {
+        name = "git-hook";
+        runtimeInputs = [
+          pkgs.prek
+          pkgs.git
+        ];
+        text = ''
+          exec prek hook-impl --config ${preCommit.config.configFile} \
+            --hook-type "$1" --hook-dir "$PWD" -- "''${@:2}"
+        '';
+      };
+
+      # Exact text every committed `.githooks/<stage>` shim MUST have; the
+      # `pre-commit-githooks-wired` check compares byte-for-byte.
+      shimText = stage: ''
+        #!/bin/sh
+        exec nix run --quiet .#git-hook -- ${stage} "$@"
+      '';
+
+      # Keeps `.pre-commit-config.yaml` as a symlink to the current store config:
+      # ff-merge-to-main FF-1b, the drain/wtnew isolate linking, pn doctor checks and
+      # the `prek run` instructions all read it. Commit GATING no longer depends on
+      # it (the shim resolves the config via `nix run`). Safe in a devShell: it writes
+      # a gitignored file only, never git config.
+      shimLinkConfig = ''
+        _pgii_top="$(${lib.getExe' pkgs.git "git"} rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ -n "$_pgii_top" ]; then
+          ln -sfn ${preCommit.config.configFile} "$_pgii_top/.pre-commit-config.yaml"
+        fi
+        unset _pgii_top
+      '';
+
+      # Wiring, run ONLY by `packages.install-pre-commit-hooks` (operator/pn-run),
+      # NEVER by the devShell: an agent entering `nix develop` must not write
+      # `core.hooksPath` (a protected key, pg2-szadj). Idempotent. With the RELATIVE
+      # value, a branch/worktree lacking `.githooks/` is silently ungated, so WARN.
+      shimWireHooksPath = ''
+        _pgii_git=${lib.getExe' pkgs.git "git"}
+        if $_pgii_git rev-parse --git-dir >/dev/null 2>&1; then
+          if [ "$($_pgii_git config --local --get core.hooksPath 2>/dev/null || true)" != ".githooks" ]; then
+            $_pgii_git config --local core.hooksPath .githooks
+          fi
+          _pgii_top="$($_pgii_git rev-parse --show-toplevel)"
+          for _pgii_stage in ${lib.escapeShellArgs shimCfg.stages}; do
+            if [ ! -x "$_pgii_top/.githooks/$_pgii_stage" ]; then
+              echo "WARNING: core.hooksPath=.githooks but $_pgii_top/.githooks/$_pgii_stage is missing or not executable: that stage is UNGATED here." >&2
+            fi
+          done
+          unset _pgii_top _pgii_stage
+        fi
+        unset _pgii_git
+      '';
+
+      preCommitShellHook = if shimCfg.enable then shimLinkConfig else legacyPreCommitShellHook;
+
+      # Guards the failure the relative `core.hooksPath=.githooks` introduces: a
+      # tree that lacks (or has stale/non-executable/extra) shims is ungated with
+      # no warning. Also pins the shim STAGES to the stages the generated config
+      # really uses, so a hook on e.g. `pre-rebase`/`pre-push` cannot be silently
+      # dropped. Build-time only (reads the config JSON as a build input; no IFD).
+      shimWiredCheck =
+        let
+          stageFile = stage: pkgs.writeText "githook-${stage}" (shimText stage);
+          expectedStages = lib.concatStringsSep "\n" (lib.sort lib.lessThan shimCfg.stages);
+        in
+        pkgs.runCommand "pre-commit-githooks-wired"
+          {
+            nativeBuildInputs = [
+              pkgs.jq
+              pkgs.diffutils
+            ];
+          }
+          ''
+            set -eu
+            hooks=${topLevelCfg.src}/.githooks
+            if [ ! -d "$hooks" ]; then
+              echo "FAIL: .githooks/ is missing (commitTimeShim.enable = true requires committed shims)." >&2
+              exit 1
+            fi
+            ${lib.concatMapStringsSep "\n" (stage: ''
+              f="$hooks/${stage}"
+              if [ ! -f "$f" ]; then echo "FAIL: .githooks/${stage} is missing" >&2; exit 1; fi
+              if [ ! -x "$f" ]; then echo "FAIL: .githooks/${stage} is not executable" >&2; exit 1; fi
+              if ! diff -u ${stageFile stage} "$f" >&2; then
+                echo "FAIL: .githooks/${stage} differs from the expected shim text (diff above)" >&2
+                exit 1
+              fi
+            '') shimCfg.stages}
+            for f in "$hooks"/*; do
+              [ -e "$f" ] || continue
+              name="$(basename "$f")"
+              case " ${lib.concatStringsSep " " shimCfg.stages} " in
+                *" $name "*) ;;
+                *) echo "FAIL: unexpected .githooks/$name (only the configured stages may be shimmed; bd/other chained hooks are bypassed by core.hooksPath and must be decided explicitly)" >&2; exit 1 ;;
+              esac
+            done
+            # The generated file opens with two `#` comment lines before the JSON.
+            configured="$(sed '/^#/d' ${preCommit.config.configFile} | jq -r '[(.default_stages // [])[], (.repos[]?.hooks[]?.stages // [])[]] | unique | .[]' | sort)"
+            expected="$(printf '%s\n' "${expectedStages}" | sort)"
+            if [ "$configured" != "$expected" ]; then
+              echo "FAIL: shim stages do not match the stages the hook config uses." >&2
+              echo "configured by hooks:" >&2; printf '%s\n' "$configured" >&2
+              echo "commitTimeShim.stages:" >&2; printf '%s\n' "$expected" >&2
+              exit 1
+            fi
+            touch "$out"
+          '';
 
       # Regression guard for pg2-ohng1, asserting the OBSERVABLE OUTCOME rather
       # than the config text: after `correctRelativeHooksPath` runs, does a git
@@ -1218,21 +1382,30 @@ in
         pre-commit-hooks-config-path-absolute = absolutizeHookConfigPathCheck;
         pre-commit-higher-scope-hookspath-install = higherScopeHooksPathInstallCheck;
         pre-commit-higher-scope-hookspath-xdg-only = higherScopeHooksPathXdgOnlyCheck;
+      }
+      // lib.optionalAttrs shimCfg.enable {
+        pre-commit-githooks-wired = shimWiredCheck;
       };
-      packages.install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
-        ${preCommitShellHook}
-        echo "Pre-commit hooks installed successfully!"
-        echo "Run 'pre-commit run --all-files' to test them."
-      '';
+      packages = {
+        install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
+          ${preCommitShellHook}
+          ${lib.optionalString shimCfg.enable shimWireHooksPath}
+          echo "Pre-commit hooks installed successfully!"
+          echo "Run 'pre-commit run --all-files' to test them."
+        '';
 
-      # Autofix helper for the `statix` pre-commit hook. Runs `statix fix` over
-      # the CURRENT working directory (or the paths given as args) — NOT ${./.},
-      # which resolves to a read-only /nix/store copy statix can never write to.
-      # Auto-contributed to every consumer that imports this flakeModule, so the
-      # six hand-rolled per-repo copies (five of them broken with the ${./.} bug)
-      # are deleted in favour of this single source of truth (bead pg2-7vhvn).
-      packages.fix-lint = pkgs.writeShellScriptBin "fix-lint" ''
-        exec ${pkgs.lib.getExe pkgs.statix} fix "''${@:-.}"
-      '';
+        # Autofix helper for the `statix` pre-commit hook. Runs `statix fix` over
+        # the CURRENT working directory (or the paths given as args) — NOT ${./.},
+        # which resolves to a read-only /nix/store copy statix can never write to.
+        # Auto-contributed to every consumer that imports this flakeModule, so the
+        # six hand-rolled per-repo copies (five of them broken with the ${./.} bug)
+        # are deleted in favour of this single source of truth (bead pg2-7vhvn).
+        fix-lint = pkgs.writeShellScriptBin "fix-lint" ''
+          exec ${pkgs.lib.getExe pkgs.statix} fix "''${@:-.}"
+        '';
+      }
+      // lib.optionalAttrs shimCfg.enable {
+        git-hook = gitHookPackage;
+      };
     };
 }
