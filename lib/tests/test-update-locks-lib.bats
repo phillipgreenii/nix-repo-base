@@ -490,6 +490,82 @@ HOOK
   [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
 }
 
+# --- _ul_ensure_pre_commit_hooks: commit-time shim awareness (pg2-m68an, ADR 0029) ---
+#
+# A repo with the shim opted in commits .githooks/ and has core.hooksPath=.githooks.
+# The shims name no /nix/store path, so the legacy GC scan has nothing to say; what
+# can go stale is the WIRING. A repo WITHOUT .githooks/ keeps the legacy audit
+# (covered by the Tier 2 tests above, unchanged).
+
+@test "_ul_ensure_pre_commit_hooks shim mode: wired + executable shim does NOT reinstall" {
+  mkdir -p "$TEST_DIR/.githooks"
+  printf '#!/bin/sh\nexec nix run --quiet .#git-hook -- pre-commit "$@"\n' > "$TEST_DIR/.githooks/pre-commit"
+  chmod +x "$TEST_DIR/.githooks/pre-commit"
+  git -C "$TEST_DIR" config --local core.hooksPath .githooks
+  _seed_pre_commit_hook_check_env
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ ! $output =~ "hook not found" ]]
+  [[ ! $output =~ "not wired" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks shim mode: legacy absolute core.hooksPath triggers reinstall" {
+  mkdir -p "$TEST_DIR/.githooks" "$TEST_DIR/.git/hooks"
+  printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/.githooks/pre-commit"
+  chmod +x "$TEST_DIR/.githooks/pre-commit"
+  # The legacy hook is live and names no store path: the OLD logic saw nothing wrong.
+  printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/.git/hooks/pre-commit"
+  git -C "$TEST_DIR" config --local core.hooksPath "$TEST_DIR/.git/hooks"
+  _seed_pre_commit_hook_check_env
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ $output =~ "not wired" ]]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks shim mode: non-executable shim triggers reinstall" {
+  mkdir -p "$TEST_DIR/.githooks"
+  printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/.githooks/pre-commit"
+  chmod -x "$TEST_DIR/.githooks/pre-commit"
+  git -C "$TEST_DIR" config --local core.hooksPath .githooks
+  _seed_pre_commit_hook_check_env
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ $output =~ "not executable" ]]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks shim mode: warns when the flake lacks install-pre-commit-hooks" {
+  mkdir -p "$TEST_DIR/.githooks"
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+echo "error: flake does not provide attribute 'packages.x.install-pre-commit-hooks'" >&2
+exit 1
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ $output =~ "commit-time shim" ]]
+}
+
 # --- ul_run_step: success path ---
 
 @test "ul_run_step commits changes on success" {

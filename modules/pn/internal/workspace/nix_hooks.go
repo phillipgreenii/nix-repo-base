@@ -271,7 +271,12 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 				// are already current. A fresh worktree (config absent) or a
 				// genuinely-changed hook set (config missing/dangling) falls
 				// through and installs normally, exactly as before this gate.
-				if m := nixRunTokenRe.FindStringSubmatch(raw); m != nil && m[1] == installPreCommitHooksAttr && preCommitConfigLive(dir) {
+				// Commit-time shim (ADR 0029, pg2-m68an): a live config does NOT
+				// mean the shim is wired — an existing clone has a live config yet
+				// no core.hooksPath=.githooks — so the skip also requires the
+				// wiring to be in place (trivially true for a repo with no
+				// .githooks/, leaving the legacy path unchanged).
+				if m := nixRunTokenRe.FindStringSubmatch(raw); m != nil && m[1] == installPreCommitHooksAttr && preCommitConfigLive(dir) && shimHooksPathWired(dir) {
 					continue
 				}
 				var vars nixHookVars

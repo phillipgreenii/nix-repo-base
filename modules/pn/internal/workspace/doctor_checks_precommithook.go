@@ -71,7 +71,11 @@ func (ws *Workspace) preCommitHookLiveFinding(repo, repoDir string) *Finding {
 		return nil
 	}
 
-	hookPath := filepath.Join(repoDir, ".git", "hooks", "pre-commit")
+	// Resolve the hooks dir git ACTUALLY uses (core.hooksPath, worktrees), not a
+	// hard-coded .git/hooks: with the commit-time shim (ADR 0029) the legacy
+	// .git/hooks shim is bypassed and goes dead once its store paths are GC'd.
+	// With core.hooksPath unset this resolves to .git/hooks, as before.
+	hookPath := filepath.Join(resolvedHooksDir(repoDir), "pre-commit")
 	reason := preCommitHookDeadReason(hookPath)
 	if reason == "" {
 		return nil

@@ -553,3 +553,45 @@ func TestRunEventHooks_OtherNixRunAttrsUnaffectedByGate(t *testing.T) {
 		t.Errorf("a non-install-pre-commit-hooks {nix_run} hook must still fire; want 1 sh call, got %d", n)
 	}
 }
+
+// TestRunEventHooks_ShimUnwiredStillInstallsWhenConfigLive (pg2-m68an, ADR 0029):
+// an existing clone of a shim repo has a LIVE config symlink but no
+// core.hooksPath=.githooks. The pg2-19rcj skip must not apply, or the wiring
+// never reaches existing clones.
+func TestRunEventHooks_ShimUnwiredStillInstallsWhenConfigLive(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	w := openHookWS(t,
+		"[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-clone\"]\nrun=[\"{nix_run install-pre-commit-hooks}\"]\n",
+		[]string{"a"}, lk)
+	target := existingNixStoreEntry(t)
+	if target == "" {
+		t.Skip("no /nix/store entries available in this environment")
+	}
+	repoDir := filepath.Join(w.root, "a")
+	runGitT(t, repoDir, "init", "-q", "-b", "main")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".githooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(repoDir, ".pre-commit-config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	f := w.runner.(*exec.FakeRunner)
+	f.AddResponse("sh", []string{"-c", "nix run '" + repoDir + "#install-pre-commit-hooks'"}, exec.Result{}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "clone", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatalf("RunEventHooks: %v", err)
+	}
+	if n := len(shCalls(f)); n != 1 {
+		t.Errorf("unwired shim repo must still install; want 1 sh call, got %d", n)
+	}
+
+	// Once wired, the skip applies again (idempotent).
+	runGitT(t, repoDir, "config", "--local", "core.hooksPath", ".githooks")
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "clone", []string{"a"}, &out, &errOut); err != nil {
+		t.Fatalf("RunEventHooks: %v", err)
+	}
+	if n := len(shCalls(f)); n != 1 {
+		t.Errorf("wired shim repo must skip; want still 1 sh call, got %d", n)
+	}
+}

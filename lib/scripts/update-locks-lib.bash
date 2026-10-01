@@ -392,6 +392,34 @@ _ul_restore_fsmonitor() {
   fi
 }
 
+# Commit-time shim mode (ADR 0029, pg2-m68an): the repo commits a .githooks/
+# directory and wires core.hooksPath to it. Detected from the committed dir, so a
+# repo with the option OFF (no .githooks/) keeps the legacy store-path audit.
+_ul_shim_mode() {
+  [[ -d .githooks ]]
+}
+
+# Shim-mode audit: the shims hold no /nix/store paths (they `nix run` the flake),
+# so the legacy GC scan can never fire. What CAN go stale is the WIRING: the local
+# core.hooksPath must be exactly `.githooks` and every committed shim executable.
+# Returns 0 when wiring is healthy, 1 (after printing why) when reinstall is needed.
+_ul_shim_wiring_ok() {
+  local hp shim
+  hp=$(git config --local --get core.hooksPath 2>/dev/null || true)
+  if [[ $hp != ".githooks" ]]; then
+    echo "==> commit-time shim not wired (core.hooksPath='${hp}'), installing..."
+    return 1
+  fi
+  for shim in .githooks/*; do
+    [[ -e $shim ]] || continue
+    if [[ ! -x $shim ]]; then
+      echo "==> commit-time shim $shim is not executable, reinstalling..."
+      return 1
+    fi
+  done
+  return 0
+}
+
 _ul_ensure_pre_commit_hooks() {
   # Tier 1: does the flake declare install-pre-commit-hooks?
   # --no-link avoids polluting the project dir. Distinguish "flake does not
@@ -405,6 +433,12 @@ _ul_ensure_pre_commit_hooks() {
     err=$(<"$errfile")
     rm -f "$errfile"
     if [[ $err == *"does not provide attribute"* ]]; then
+      if _ul_shim_mode; then
+        # A committed .githooks/ means the repo opted into the commit-time shim
+        # (ADR 0029), whose wiring (core.hooksPath) is done ONLY by this
+        # installer. Silently skipping would leave staleness undetectable.
+        echo "==> warning: .githooks/ present (commit-time shim) but the flake declares no install-pre-commit-hooks; core.hooksPath cannot be wired" >&2
+      fi
       return 0 # attribute not declared → nothing to install
     fi
     echo "==> warning: 'nix build .#install-pre-commit-hooks' failed (not an attr-missing error); skipping hook install:" >&2
@@ -434,7 +468,10 @@ _ul_ensure_pre_commit_hooks() {
   hook_file="${hooks_dir}/pre-commit"
   needs_install=false
 
-  if [[ -f $hook_file ]]; then
+  if _ul_shim_mode; then
+    # Shim-aware branch (pg2-m68an): skip the store-path scan (nothing to scan).
+    _ul_shim_wiring_ok || needs_install=true
+  elif [[ -f $hook_file ]]; then
     # The GC test is FORMAT-AGNOSTIC by design: scan the hook for every
     # /nix/store path it NAMES, wherever it names it, and reinstall if any is
     # gone. It must NOT key on a particular line shape. The previous version
