@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
@@ -38,11 +39,15 @@ type BuildOptions struct {
 // Build builds the terminal flake, injecting --override-input for
 // every non-terminal workspace repo. It does not activate.
 // Formatting is a separate step: run `pn workspace format` before building.
-func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions) error {
+func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions) (err error) {
 	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
 	if err != nil {
 		return err
 	}
+	// pn.repo span for the terminal repo this verb builds/applies; ended with the
+	// verb's final error.
+	ctx, endRepo := telemetry.StartRepo(ctx, terminal)
+	defer func() { endRepo(err) }()
 	terminalRepoDir := filepath.Join(ws.root, terminal)
 	if td, ok := opts.OverridePaths[terminal]; ok {
 		terminalRepoDir = td

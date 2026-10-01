@@ -44,39 +44,44 @@ func (w *Workspace) Clone(ctx context.Context, out io.Writer, opts CloneOptions)
 		}
 
 		// Determine clone URL and branch.
-		cloneURL, branch, err := cloneURLAndBranch(r)
-		if err != nil {
-			return fmt.Errorf("clone %s: %w", name, err)
-		}
-
-		// Blank line between repo blocks (not before the first).
-		if !first {
-			fmt.Fprintln(out)
-		}
-		first = false
-		fmt.Fprintf(out, "  --== clone %s ==--  \n", name)
-		// Migrated onto x/gitclient's Clone constructor + RemoteManager.AddRemote
-		// (bead pg2-8bfb5, design pg2-migib §7a). Clone's own cloneArgs preserves
-		// the "--" guard against a leading-dash URL (bead pg2-3j8b2) — see
-		// argv.go's cloneArgs/addRemoteArgs in x/gitclient.
-		client, h, err := cloneGitRepo(ctx, cloneURL, repoDir, gitclient.CloneOptions{Branch: branch})
-		if err != nil {
-			return fmt.Errorf("clone %s: %w", name, err)
-		}
-		h.AttachStream(out, out)
-		if err := h.Wait(); err != nil {
-			return fmt.Errorf("clone %s: %w", name, err)
-		}
-
-		// Add extra remotes declared in [[repos.X.remotes]].
-		for _, rm := range r.Remotes {
-			if rm.Name == "origin" {
-				// Origin was set by git clone; skip adding it again.
-				continue
+		if err := inRepoSpan(ctx, name, func(ctx context.Context) error {
+			cloneURL, branch, err := cloneURLAndBranch(r)
+			if err != nil {
+				return fmt.Errorf("clone %s: %w", name, err)
 			}
-			if err := client.AddRemote(ctx, rm.Name, rm.URL); err != nil {
-				return fmt.Errorf("clone %s: add remote %s: %w", name, rm.Name, err)
+
+			// Blank line between repo blocks (not before the first).
+			if !first {
+				fmt.Fprintln(out)
 			}
+			first = false
+			fmt.Fprintf(out, "  --== clone %s ==--  \n", name)
+			// Migrated onto x/gitclient's Clone constructor + RemoteManager.AddRemote
+			// (bead pg2-8bfb5, design pg2-migib §7a). Clone's own cloneArgs preserves
+			// the "--" guard against a leading-dash URL (bead pg2-3j8b2) — see
+			// argv.go's cloneArgs/addRemoteArgs in x/gitclient.
+			client, h, err := cloneGitRepo(ctx, cloneURL, repoDir, gitclient.CloneOptions{Branch: branch})
+			if err != nil {
+				return fmt.Errorf("clone %s: %w", name, err)
+			}
+			h.AttachStream(out, out)
+			if err := h.Wait(); err != nil {
+				return fmt.Errorf("clone %s: %w", name, err)
+			}
+
+			// Add extra remotes declared in [[repos.X.remotes]].
+			for _, rm := range r.Remotes {
+				if rm.Name == "origin" {
+					// Origin was set by git clone; skip adding it again.
+					continue
+				}
+				if err := client.AddRemote(ctx, rm.Name, rm.URL); err != nil {
+					return fmt.Errorf("clone %s: add remote %s: %w", name, rm.Name, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 	return nil

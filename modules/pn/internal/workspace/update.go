@@ -11,6 +11,7 @@ import (
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/eventlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 )
 
 // ulResultPrefix is the machine-readable line update-locks.sh prints from
@@ -190,6 +191,8 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			return fmt.Errorf("update interrupted: %w", err)
 		}
 		repoDir := filepath.Join(ws.root, name)
+		// pn.repo span for this repo's whole update; every exit below ends it.
+		ctx, endRepo := telemetry.StartRepo(ctx, name)
 
 		// Blank line between repo blocks (not before the first).
 		if !first {
@@ -204,12 +207,14 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			fmt.Fprintf(out, "  ⊘ skipping %s — could not check working tree: %v\n", name, dirtyErr)
 			_ = opts.Log.Emit("warn", "project_result", "project skipped (dirty-check failed)",
 				map[string]any{"name": name, "outcome": "skipped", "error": dirtyErr.Error()})
+			endRepo(dirtyErr)
 			continue
 		}
 		if dirty {
 			fmt.Fprintf(out, "  ⊘ skipping %s — working tree has uncommitted changes\n", name)
 			_ = opts.Log.Emit("warn", "project_result", "project skipped (dirty working tree)",
 				map[string]any{"name": name, "outcome": "skipped"})
+			endRepo(nil)
 			continue
 		}
 
@@ -222,6 +227,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 
 		if hasUp {
 			if err := ctx.Err(); err != nil {
+				endRepo(err)
 				return fmt.Errorf("update interrupted: %w", err)
 			}
 			if _, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "pull", "--rebase", "--autostash"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
@@ -238,6 +244,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		relockFailed := false
 		if !pullFailed {
 			if err := ctx.Err(); err != nil {
+				endRepo(err)
 				return fmt.Errorf("update interrupted: %w", err)
 			}
 			switch {
@@ -277,6 +284,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			_ = opts.Log.Emit("error", "project_result", "project aborted", map[string]any{
 				"name": name, "outcome": "aborted", "failed_step": "update-locks", "transient": transient,
 			})
+			endRepo(errors.New("update aborted: environmental/resource failure"))
 			break
 		}
 		// NO PUSH. update leaves every commit local; `pn workspace push` publishes
@@ -293,6 +301,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			_ = opts.Log.Emit("error", "project_result", "project failed", map[string]any{
 				"name": name, "outcome": "failed", "failed_step": step, "transient": transient,
 			})
+			endRepo(fmt.Errorf("update failed at %s", step))
 		} else {
 			// A green repo with transient steps is escalated to warn: update-locks
 			// exited 0, but a permanently-transient step keeps silently skipping an
@@ -305,6 +314,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			_ = opts.Log.Emit(level, "project_result", msg, map[string]any{
 				"name": name, "outcome": "ok", "transient": transient,
 			})
+			endRepo(nil)
 		}
 	}
 

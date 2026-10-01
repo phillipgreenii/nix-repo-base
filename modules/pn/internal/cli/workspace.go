@@ -481,7 +481,7 @@ func workspaceDiscoverCmd(terminal *string) *cobra.Command {
 				return err
 			}
 			defer w.Close()
-			repos, err := w.Discover(workspace.DiscoverOptions{Terminal: *terminal})
+			repos, err := w.Discover(cmd.Context(), workspace.DiscoverOptions{Terminal: *terminal})
 			if err != nil {
 				return err
 			}

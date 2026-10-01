@@ -69,9 +69,12 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 // realRunner wraps os/exec.
 type realRunner struct{}
 
-// NewRealRunner returns a Runner backed by os/exec.
+// NewRealRunner returns a Runner backed by os/exec, wrapped in the pn.exec
+// tracing decorator (a no-op unless telemetry is enabled in the context). Every
+// production caller goes through here, so every subprocess pn spawns via the
+// Runner is spanned.
 func NewRealRunner() Runner {
-	return &realRunner{}
+	return WithTracing(&realRunner{})
 }
 
 func (r *realRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) (Result, error) {

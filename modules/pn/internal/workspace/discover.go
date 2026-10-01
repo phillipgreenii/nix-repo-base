@@ -27,8 +27,7 @@ type DiscoverOptions struct {
 // in parallel via the workspace's worker pool. Per-repo failures are tolerated
 // (the repo simply contributes no out-edges); errors that prevent graph
 // construction (slug conflicts, terminal ambiguity, cycles) are returned.
-func (ws *Workspace) Discover(opts DiscoverOptions) ([]Repo, error) {
-	ctx := context.Background()
+func (ws *Workspace) Discover(ctx context.Context, opts DiscoverOptions) ([]Repo, error) {
 	// Alpha (not topoAlpha): Discover runs before any lock exists and feeds
 	// the lock-derivation pipeline — using topoAlpha would be circular.
 	// Iteration is parallel via the worker pool anyway.
@@ -43,8 +42,13 @@ func (ws *Workspace) Discover(opts DiscoverOptions) ([]Repo, error) {
 		wg.Add(1)
 		ws.pool.Submit(func() {
 			defer wg.Done()
-			inputs, _ := readFlakeInputs(ctx, ws.runner, repoDir)
-			remotes, _ := readGitRemotes(ctx, ws.runner, repoDir)
+			var inputs map[string]string
+			var remotes map[string]string
+			_ = inRepoSpan(ctx, n, func(ctx context.Context) error {
+				inputs, _ = readFlakeInputs(ctx, ws.runner, repoDir)
+				remotes, _ = readGitRemotes(ctx, ws.runner, repoDir)
+				return nil
+			})
 			mu.Lock()
 			repoInputs[n] = inputs
 			gitRemotesByRepo[n] = remotes

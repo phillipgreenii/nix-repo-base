@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/x/gitclient"
 )
 
@@ -48,11 +49,13 @@ func (ws *Workspace) Status(ctx context.Context, w io.Writer, errOut io.Writer, 
 	names := ws.topoAlpha(ctx)
 	first := true
 	for _, name := range names {
+		ctx, endRepo := telemetry.StartRepo(ctx, name)
 		repoDir := filepath.Join(ws.root, name)
 		shortLines, err := ws.gitStatusShort(ctx, repoDir)
 		if err != nil {
 			fmt.Fprintf(errOut, "%s (error)\n", name)
 			fmt.Fprintf(errOut, "%s\n", err)
+			endRepo(err)
 			continue
 		}
 
@@ -150,6 +153,7 @@ func (ws *Workspace) Status(ctx context.Context, w io.Writer, errOut io.Writer, 
 					suffixArrows(ws.deltaArrows(ctx, repoDir, "refs/heads/"+b, "refs/heads/"+defBranch)))
 			}
 		}
+		endRepo(nil)
 	}
 	return nil
 }

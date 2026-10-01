@@ -186,10 +186,45 @@ func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer
 		// Local-ref rebase: no fetch/pull; skip repos where ref is absent.
 		first := true
 		for _, name := range names {
+			if err := inRepoSpan(ctx, name, func(ctx context.Context) error {
+				repoDir := filepath.Join(ws.root, name)
+				if !ws.resolveRef(ctx, repoDir, opts.Onto) {
+					fmt.Fprintf(errOut, "pn workspace rebase: skipping %s — ref %q not found\n", name, opts.Onto)
+					return nil
+				}
+				// Blank line between repo blocks (not before the first).
+				if !first {
+					fmt.Fprintln(out)
+				}
+				first = false
+				fmt.Fprintf(out, "  --== rebase %s ==--  \n", name)
+				client, err := openGitMutator(ctx, repoDir)
+				if err != nil {
+					return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
+				}
+				h, err := client.Sync(ctx, gitclient.SyncOptions{Onto: opts.Onto})
+				if err != nil {
+					return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
+				}
+				h.AttachStream(out, out)
+				if err := h.Wait(); err != nil {
+					return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Default: fetch + pull --rebase --autostash onto tracked upstream.
+	first := true
+	for _, name := range names {
+		if err := inRepoSpan(ctx, name, func(ctx context.Context) error {
 			repoDir := filepath.Join(ws.root, name)
-			if !ws.resolveRef(ctx, repoDir, opts.Onto) {
-				fmt.Fprintf(errOut, "pn workspace rebase: skipping %s — ref %q not found\n", name, opts.Onto)
-				continue
+			if !ws.hasUpstream(ctx, repoDir) {
+				return nil
 			}
 			// Blank line between repo blocks (not before the first).
 			if !first {
@@ -199,46 +234,18 @@ func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer
 			fmt.Fprintf(out, "  --== rebase %s ==--  \n", name)
 			client, err := openGitMutator(ctx, repoDir)
 			if err != nil {
-				return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
+				return fmt.Errorf("git fetch in %s: %w", name, err)
 			}
-			h, err := client.Sync(ctx, gitclient.SyncOptions{Onto: opts.Onto})
+			fh, err := client.Fetch(ctx, gitclient.FetchOptions{})
 			if err != nil {
-				return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
+				return fmt.Errorf("git fetch in %s: %w", name, err)
 			}
-			h.AttachStream(out, out)
-			if err := h.Wait(); err != nil {
-				return fmt.Errorf("git rebase --autostash %s in %s: %w", opts.Onto, name, err)
+			fh.AttachStream(out, out)
+			if err := fh.Wait(); err != nil {
+				return fmt.Errorf("git fetch in %s: %w", name, err)
 			}
-		}
-		return nil
-	}
-
-	// Default: fetch + pull --rebase --autostash onto tracked upstream.
-	first := true
-	for _, name := range names {
-		repoDir := filepath.Join(ws.root, name)
-		if !ws.hasUpstream(ctx, repoDir) {
-			continue
-		}
-		// Blank line between repo blocks (not before the first).
-		if !first {
-			fmt.Fprintln(out)
-		}
-		first = false
-		fmt.Fprintf(out, "  --== rebase %s ==--  \n", name)
-		client, err := openGitMutator(ctx, repoDir)
-		if err != nil {
-			return fmt.Errorf("git fetch in %s: %w", name, err)
-		}
-		fh, err := client.Fetch(ctx, gitclient.FetchOptions{})
-		if err != nil {
-			return fmt.Errorf("git fetch in %s: %w", name, err)
-		}
-		fh.AttachStream(out, out)
-		if err := fh.Wait(); err != nil {
-			return fmt.Errorf("git fetch in %s: %w", name, err)
-		}
-		if err := ws.syncDefault(ctx, client, out, name, repoDir); err != nil {
+			return ws.syncDefault(ctx, client, out, name, repoDir)
+		}); err != nil {
 			return err
 		}
 	}

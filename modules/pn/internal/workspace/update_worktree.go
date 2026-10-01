@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 )
 
 // linkPreCommitConfig recreates canonicalDir's preCommitConfigName symlink
@@ -201,7 +202,13 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 			fmt.Fprintln(out)
 		}
 		first = false
-		oc := ws.updateRepoViaWorktree(ctx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name), opts.SiblingsOnly)
+		repoCtx, endRepo := telemetry.StartRepo(ctx, name)
+		oc := ws.updateRepoViaWorktree(repoCtx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name), opts.SiblingsOnly)
+		if oc.status != statusOK {
+			endRepo(fmt.Errorf("update %s: %s", name, oc.status))
+		} else {
+			endRepo(nil)
+		}
 		level, outcome := "info", statusOK
 		msg := "project " + oc.status
 		switch {

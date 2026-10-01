@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,7 +74,7 @@ url = "github:o/personal"
 			createFlake: true,
 		},
 	})
-	repos, err := w.Discover(DiscoverOptions{})
+	repos, err := w.Discover(context.Background(), DiscoverOptions{})
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -123,7 +124,7 @@ url = "github:o/personal"
 			createFlake: true,
 		},
 	})
-	repos, err := w.Discover(DiscoverOptions{})
+	repos, err := w.Discover(context.Background(), DiscoverOptions{})
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -154,7 +155,7 @@ url = "github:o/foo"
 			createFlake: false,
 		},
 	})
-	_, err := w.Discover(DiscoverOptions{})
+	_, err := w.Discover(context.Background(), DiscoverOptions{})
 	if err == nil {
 		t.Fatal("expected remote-agreement error")
 	}
@@ -200,7 +201,7 @@ url = "github:o/alt"
 		},
 	})
 	// With flagTerminal = "alt", the terminal should be alt, not personal.
-	repos, err := w.Discover(DiscoverOptions{Terminal: "alt"})
+	repos, err := w.Discover(context.Background(), DiscoverOptions{Terminal: "alt"})
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -225,7 +226,7 @@ name = "empty"
 		t.Fatalf("Open: %v", err)
 	}
 	defer w.Close()
-	repos, err := w.Discover(DiscoverOptions{})
+	repos, err := w.Discover(context.Background(), DiscoverOptions{})
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}

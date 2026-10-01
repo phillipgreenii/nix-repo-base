@@ -53,7 +53,10 @@ func (ws *Workspace) PreCommitCheck(ctx context.Context, out io.Writer, errOut i
 		first = false
 		fmt.Fprintf(out, "  --== pre-commit %s ==--  \n", name)
 		cmd, args := preCommitCheckCommand(repoDir)
-		if _, err := ws.runner.Run(ctx, cmd, args, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out}); err != nil {
+		if err := inRepoSpan(ctx, name, func(ctx context.Context) error {
+			_, err := ws.runner.Run(ctx, cmd, args, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out})
+			return err
+		}); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("%s in %s: %w", cmd, name, err)
 			}

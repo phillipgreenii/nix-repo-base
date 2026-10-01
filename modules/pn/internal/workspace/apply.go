@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 )
 
 // ApplyOptions configures Apply.
@@ -29,11 +30,15 @@ type ApplyOptions struct {
 // when nothing changed, diffs the system profile via nvd when available, and
 // records the applied state. Formatting is a separate step: run
 // `pn workspace format` before applying.
-func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions) error {
+func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions) (err error) {
 	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
 	if err != nil {
 		return err
 	}
+	// pn.repo span for the terminal repo this verb builds/applies; ended with the
+	// verb's final error.
+	ctx, endRepo := telemetry.StartRepo(ctx, terminal)
+	defer func() { endRepo(err) }()
 	terminalRepoDir := filepath.Join(ws.root, terminal)
 	if td, ok := opts.OverridePaths[terminal]; ok {
 		terminalRepoDir = td

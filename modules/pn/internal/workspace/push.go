@@ -324,51 +324,56 @@ func (ws *Workspace) Push(ctx context.Context, out io.Writer, errOut io.Writer, 
 	completed := make([]string, 0, len(names))
 	first := true
 	for _, name := range names {
-		repoDir := filepath.Join(ws.root, name)
-		// Blank line between repo blocks (not before the first). Placed ahead of
-		// any per-repo output (including the optional sibling-relock output below)
-		// so a repo's relock chatter and its push banner stay in the same block.
-		if !first {
-			fmt.Fprintln(out)
-		}
-		first = false
-		if propagate {
-			if err := ws.relockSiblingsBeforePush(ctx, out, name, repoDir, workspaceAliasesFromLock(edgeLock, name)); err != nil {
+		if err := inRepoSpan(ctx, name, func(ctx context.Context) error {
+			repoDir := filepath.Join(ws.root, name)
+			// Blank line between repo blocks (not before the first). Placed ahead of
+			// any per-repo output (including the optional sibling-relock output below)
+			// so a repo's relock chatter and its push banner stay in the same block.
+			if !first {
+				fmt.Fprintln(out)
+			}
+			first = false
+			if propagate {
+				if err := ws.relockSiblingsBeforePush(ctx, out, name, repoDir, workspaceAliasesFromLock(edgeLock, name)); err != nil {
+					return abortedPushError(err, completed)
+				}
+			}
+			if ws.hasUpstream(ctx, repoDir) {
+				fmt.Fprintf(out, "  --== push %s ==--  \n", name)
+				if err := ws.gitPush(ctx, out, repoDir, gitclient.PushOptions{NoVerify: opts.NoVerify}); err != nil {
+					return abortedPushError(fmt.Errorf("git push in %s: %w", name, err), completed)
+				}
+				completed = append(completed, name)
+				return nil
+			}
+			if !opts.SetUpstream {
+				completed = append(completed, name)
+				return nil
+			}
+			branch, err := ws.currentBranch(ctx, repoDir)
+			if err != nil {
 				return abortedPushError(err, completed)
 			}
-		}
-		if ws.hasUpstream(ctx, repoDir) {
+			remote, err := resolvePushRemote(ctx, ws.runner, repoDir, branch, opts.Remote)
+			if err != nil {
+				fmt.Fprintf(errOut, "pn: push skipped %s: %v\n", name, err)
+				completed = append(completed, name)
+				return nil
+			}
 			fmt.Fprintf(out, "  --== push %s ==--  \n", name)
-			if err := ws.gitPush(ctx, out, repoDir, gitclient.PushOptions{NoVerify: opts.NoVerify}); err != nil {
-				return abortedPushError(fmt.Errorf("git push in %s: %w", name, err), completed)
+			if err := ws.gitPush(ctx, out, repoDir, gitclient.PushOptions{
+				NoVerify:    opts.NoVerify,
+				SetUpstream: true,
+				Remote:      remote,
+				Branch:      branch,
+			}); err != nil {
+				return abortedPushError(fmt.Errorf("git push -u %s %s in %s: %w", remote, branch, name, err), completed)
 			}
 			completed = append(completed, name)
-			continue
-		}
-		if !opts.SetUpstream {
-			completed = append(completed, name)
-			continue
-		}
-		branch, err := ws.currentBranch(ctx, repoDir)
-		if err != nil {
-			return abortedPushError(err, completed)
-		}
-		remote, err := resolvePushRemote(ctx, ws.runner, repoDir, branch, opts.Remote)
-		if err != nil {
-			fmt.Fprintf(errOut, "pn: push skipped %s: %v\n", name, err)
-			completed = append(completed, name)
-			continue
-		}
-		fmt.Fprintf(out, "  --== push %s ==--  \n", name)
-		if err := ws.gitPush(ctx, out, repoDir, gitclient.PushOptions{
-			NoVerify:    opts.NoVerify,
-			SetUpstream: true,
-			Remote:      remote,
-			Branch:      branch,
+			return nil
 		}); err != nil {
-			return abortedPushError(fmt.Errorf("git push -u %s %s in %s: %w", remote, branch, name, err), completed)
+			return err
 		}
-		completed = append(completed, name)
 	}
 	return nil
 }
