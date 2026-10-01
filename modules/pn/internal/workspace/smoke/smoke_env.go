@@ -28,6 +28,10 @@ import (
 //   - GIT_SSH_COMMAND (BatchMode, StrictHostKeyChecking=accept-new)
 //   - GIT_AUTHOR_NAME/EMAIL, GIT_COMMITTER_NAME/EMAIL (fixed values)
 //   - PN_WORKSPACE_ROOT → wsRoot (the scenario temp dir)
+//   - OTEL_*, TRACEPARENT, TRACESTATE are REMOVED, so pn never exports telemetry
+//     or inherits a trace parent from the developer shell; with HOME pointed at a
+//     temp dir the real ~/.config/pn/telemetry.toml is never read either
+//   - PG_NIX_LOG_DISABLE and PN_TRACE_HINT are emptied (inert) for the same reason
 //
 // This approach is safe for t.Parallel() because it does NOT mutate the
 // process environment — it builds a new env slice passed per-subprocess.
@@ -71,6 +75,8 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 		"GIT_COMMITTER_EMAIL": "pn-smoke@test.invalid",
 		"PN_WORKSPACE_ROOT":   wsRoot,
 		"UL_LIB_DIR":          ulLib,
+		"PG_NIX_LOG_DISABLE":  "",
+		"PN_TRACE_HINT":       "",
 	}
 
 	// Build a new env slice from os.Environ(), replacing overridden keys.
@@ -83,6 +89,9 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 			continue
 		}
 		key := kv[:idx]
+		if isTelemetryEnvKey(key) {
+			continue
+		}
 		if val, ok := overrides[key]; ok {
 			env = append(env, fmt.Sprintf("%s=%s", key, val))
 			applied[key] = true
@@ -97,4 +106,10 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 		}
 	}
 	return env
+}
+
+// isTelemetryEnvKey reports whether key is an OpenTelemetry / trace-context
+// variable that must not leak from the developer's shell into a smoke run.
+func isTelemetryEnvKey(key string) bool {
+	return strings.HasPrefix(key, "OTEL_") || key == "TRACEPARENT" || key == "TRACESTATE"
 }

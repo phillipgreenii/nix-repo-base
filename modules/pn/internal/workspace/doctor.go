@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetrycfg"
 )
 
 type Severity int
@@ -105,6 +106,9 @@ type DoctorOptions struct {
 	JSON     bool
 	Strict   bool
 	Terminal string
+	// Telemetry is the CLI-resolved telemetry configuration (ADR 0028). Nil
+	// or !Enabled makes the telemetry check silent.
+	Telemetry *telemetrycfg.Resolution
 }
 
 // doctorEnv is the shared context passed to every check.
@@ -116,6 +120,8 @@ type doctorEnv struct {
 	refRev   map[string]string
 	skipped  map[string]bool
 	lock     *Lock // effective lock (derived if the disk lock is stale)
+
+	telemetry *telemetrycfg.Resolution // resolved telemetry config; nil = not provided
 }
 
 type check struct {
@@ -183,6 +189,8 @@ func Doctor(ctx context.Context, root string, runner exec.Runner, opts DoctorOpt
 		refRev:   refRev,
 		skipped:  skipped,
 		lock:     effLock,
+
+		telemetry: opts.Telemetry,
 	}
 
 	checks := ws.registerChecks()
@@ -269,5 +277,6 @@ func (ws *Workspace) registerChecks() []check {
 		{id: "nix-cache-trusted", run: ws.checkNixCacheTrusted},
 		{id: "extra-remotes-synced", run: ws.checkExtraRemotesSynced},
 		{id: "applied-state-current", run: ws.checkAppliedStateCurrent},
+		{id: telemetryCheckID, run: ws.checkTelemetry},
 	}
 }

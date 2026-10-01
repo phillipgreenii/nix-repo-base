@@ -14,9 +14,23 @@ import (
 
 // Writer is a JSONL event-log writer. Safe for concurrent use; nil-safe.
 type Writer struct {
-	mu  sync.Mutex
-	f   *os.File
-	Now func() time.Time // injectable clock; New defaults it to time.Now
+	mu      sync.Mutex
+	f       *os.File
+	traceID string
+	Now     func() time.Time // injectable clock; New defaults it to time.Now
+}
+
+// SetTraceID records the OpenTelemetry trace id of the current pn run. Every
+// run_start and run_end record emitted afterwards carries it as "trace_id", so
+// a human can find a run's trace from Loki or the file without any stdout
+// change. An empty id (telemetry off) adds nothing. A nil Writer is a no-op.
+func (w *Writer) SetTraceID(id string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.traceID = id
+	w.mu.Unlock()
 }
 
 // DefaultMaxBytes is the size at or above which New rotates the event log when
@@ -82,13 +96,16 @@ func (w *Writer) Emit(level, kind, msg string, fields map[string]any) error {
 	rec["level"] = level
 	rec["kind"] = kind
 	rec["msg"] = msg
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.traceID != "" && (kind == "run_start" || kind == "run_end") {
+		rec["trace_id"] = w.traceID
+	}
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	_, err = w.f.Write(b)
 	return err
 }

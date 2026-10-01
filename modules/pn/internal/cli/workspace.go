@@ -12,6 +12,7 @@ import (
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/eventlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetrycfg"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/workspace"
 )
@@ -40,7 +41,17 @@ Environment variables:
   PN_WORKSPACE_ROOT          Override workspace root (path to dir with pn-workspace.toml)
   PN_WORKSPACE_OVERRIDE_PATHS  Comma-separated name=path pairs to pin repo locations
   XDG_STATE_HOME             Override the apply-cache state parent dir (default ~/.local/state)
-  NO_COLOR                   Disable ANSI colour codes in tree output`,
+  NO_COLOR                   Disable ANSI colour codes in tree output
+  OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP collector URL; telemetry is ON only when an endpoint
+                             resolves (--otlp-endpoint, then this, then ~/.config/pn/telemetry.toml)
+  OTEL_SDK_DISABLED          true forces telemetry off (pn and pg-nix-log-wrapped)
+  PG_NIX_LOG_DISABLE         1 forces telemetry off; pg-nix-log-wrapped then execs CMD unmodified
+  PG_NIX_LOG_DEBUG           1 makes pg-nix-log-wrapped print diagnostics to stderr
+  PN_TRACE_HINT              1 prints "trace: <trace_id>" to stderr at the end of a run
+                             (also printed under -v/--verbose; stdout is never changed)
+
+Telemetry is optional: with no endpoint pn behaves exactly as without it. See
+'pn --help' for the escape-hatch table and ADR-0028.`,
 	}
 	// --terminal is a persistent flag inherited by all subcommands.
 	ws.PersistentFlags().StringVar(&terminalFlag, "terminal", "", "override the terminal repo (the flake build/apply targets)")
@@ -418,6 +429,7 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "pn: event log unavailable: %v\n", err)
 			} else {
 				defer func() { _ = lw.Close() }()
+				lw.SetTraceID(telemetrycfg.RunStateFrom(ctx).TraceID())
 			}
 
 			return runWithHooks(ctx, w, "update", func() error {
@@ -557,6 +569,10 @@ func workspaceDoctorCmd(terminal *string) *cobra.Command {
 			opts := workspace.DoctorOptions{
 				Fix: fix, DryRun: dryRun, Offline: offline, JSON: jsonOut,
 				Strict: strict, Terminal: *terminal,
+			}
+			if st := telemetrycfg.RunStateFrom(cmd.Context()); st != nil {
+				res := st.Res
+				opts.Telemetry = &res
 			}
 			report, derr := workspace.Doctor(cmd.Context(), root, exec.NewRealRunner(), opts)
 			if derr != nil {

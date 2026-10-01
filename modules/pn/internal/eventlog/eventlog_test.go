@@ -199,3 +199,48 @@ func TestNilLoggerIsSafe(t *testing.T) {
 		t.Errorf("nil Close should be a no-op, got %v", err)
 	}
 }
+
+func TestEmit_traceIDOnRunStartAndRunEndOnly(t *testing.T) {
+	const id = "4bf92f3577b34da6a3ce929d0e0e4736"
+	p := filepath.Join(t.TempDir(), "events.jsonl")
+	w, err := New(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetTraceID(id)
+	_ = w.Emit("info", "run_start", "started", nil)
+	_ = w.Emit("info", "project_result", "one", map[string]any{"name": "a"})
+	// A caller-supplied trace_id must not be able to spoof the run's id.
+	_ = w.Emit("info", "run_end", "finished", map[string]any{"trace_id": "spoofed"})
+	_ = w.Close()
+
+	recs := readAll(t, p)
+	if len(recs) != 3 {
+		t.Fatalf("got %d records, want 3", len(recs))
+	}
+	if recs[0]["trace_id"] != id {
+		t.Errorf("run_start trace_id = %v; want %s", recs[0]["trace_id"], id)
+	}
+	if _, ok := recs[1]["trace_id"]; ok {
+		t.Errorf("project_result must not carry trace_id: %v", recs[1])
+	}
+	if recs[2]["trace_id"] != id {
+		t.Errorf("run_end trace_id = %v; want %s", recs[2]["trace_id"], id)
+	}
+}
+
+func TestEmit_noTraceIDAddsNothing(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "events.jsonl")
+	w, err := New(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetTraceID("") // telemetry off
+	_ = w.Emit("info", "run_start", "started", nil)
+	_ = w.Close()
+	if _, ok := readAll(t, p)[0]["trace_id"]; ok {
+		t.Fatal("telemetry off: run_start must be byte-identical to today (no trace_id key)")
+	}
+	var nilW *Writer
+	nilW.SetTraceID("x") // must not panic
+}
