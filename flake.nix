@@ -68,6 +68,12 @@
       # phillipgreenii.{src, pre-commit.src} default to inputs.self via the
       # checks and pre-commit modules; no explicit settings needed here.
 
+      # EXPERIMENT (pg2-z19ad, ADR 0029): this repo is the pilot for the opt-in
+      # commit-time hook shim. HK-2 is UNCHANGED; this is the labelled exception.
+      # Rollback: set to false, re-run `nix run .#install-pre-commit-hooks`, restore
+      # core.hooksPath to the absolute <repo>/.git/hooks, delete .githooks/.
+      phillipgreenii.pre-commit.commitTimeShim.enable = true;
+
       # prek rewiring (design spec
       # docs/superpowers/specs/2026-08-24-pg-test-runner-design.md, section 3;
       # bead pg2-lxz3o, workstream 5). This REPLACES the former

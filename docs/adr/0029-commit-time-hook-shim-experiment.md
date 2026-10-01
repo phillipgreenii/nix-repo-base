@@ -53,6 +53,12 @@ flowchart LR
     D --> E["hooks: treefmt, shellcheck, ..."]
 ```
 
+**Pilot:** `phillipg-nix-repo-base` itself enables the option (committed `.githooks/pre-commit`).
+Wiring `core.hooksPath` is performed by `nix run .#install-pre-commit-hooks`, run by the operator or
+a `pn` hook, never by an agent. Consumers adopt in waves after the producer is pushed: overlay, then
+personal and agent-support, then support-apps; ZR last, and only after its auto-commit daemon has
+`nix` on its PATH.
+
 ## Evidence gathered (prototype, 2026-10-01)
 
 - Real `git commit` / `git push` fire the hook in a canonical clone, a nested worktree, a sibling
