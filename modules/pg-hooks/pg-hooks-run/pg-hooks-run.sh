@@ -34,32 +34,6 @@ Exit status: prek's, or 12 when the bundle is broken, 2 on a usage error.
 HELP
 }
 
-PGH_PROGRESS_PID=""
-
-# pgh_progress_start <seconds> <message>: after <seconds>, print <message> once
-# to stderr unless pgh_progress_stop ran first.
-pgh_progress_start() {
-  local after=$1 msg=$2
-  (
-    sp=""
-    trap 'if [ -n "$sp" ]; then kill "$sp" 2>/dev/null; fi; exit 0' TERM
-    sleep "$after" >/dev/null 2>&1 &
-    sp=$!
-    if wait "$sp"; then
-      printf '%s\n' "$msg" >&2
-    fi
-  ) &
-  PGH_PROGRESS_PID=$!
-}
-
-pgh_progress_stop() {
-  if [[ -n $PGH_PROGRESS_PID ]]; then
-    kill "$PGH_PROGRESS_PID" 2>/dev/null || true
-    wait "$PGH_PROGRESS_PID" 2>/dev/null || true
-    PGH_PROGRESS_PID=""
-  fi
-}
-
 case ${1:-} in
 -h | --help)
   show_help

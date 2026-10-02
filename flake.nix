@@ -335,6 +335,10 @@
             # runner (spec docs/superpowers/specs/2026-08-24-pg-test-runner-design.md).
             pg-test-runner = pgTestRunnerScripts.pg-test-runner.script;
 
+            # pg-hooks: inspect and run the per-clone hook bundle (status, list,
+            # explain, run). Per-clone hook bundle program, bead pg2-pla9d.
+            pg-hooks = pgHooksScripts.pg-hooks.script;
+
             # gogate: sequential Go validation gate (fmt/build/vet/test) with
             # fixed output truncation and a machine-readable PASS/FAIL verdict.
             gogate = gogateScripts.gogate.script;
@@ -1736,6 +1740,7 @@
           pg-go-mutate = import ./home/pg-go-mutate/default.nix;
           pg-go-mutate-tui = import ./home/pg-go-mutate-tui/default.nix;
           pg-test-runner = import ./home/pg-test-runner/default.nix;
+          pg-hooks = import ./home/pg-hooks/default.nix;
           gogate = import ./home/gogate/default.nix;
           install-metadata = ./home-modules/install-metadata.nix;
           # Light capability model framework (Plan 5): declares the shared
@@ -1770,6 +1775,7 @@
             pg-go-mutate
             pg-go-mutate-tui
             pg-test-runner
+            pg-hooks
             gogate
             pg-git-check-identity
             ;

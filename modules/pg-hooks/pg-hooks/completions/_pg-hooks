@@ -1,0 +1,20 @@
+#compdef pg-hooks
+
+local -a stages
+stages=(pre-commit pre-merge-commit pre-push pre-rebase commit-msg prepare-commit-msg post-checkout post-commit post-merge post-rewrite manual pre-land)
+
+_arguments -C \
+  '(-h --help)'{-h,--help}'[show help]' \
+  '(-v --version)'{-v,--version}'[show version information]' \
+  '1:command:(status list explain run fix)' \
+  '*::arg:->args'
+
+case $state in
+args)
+  case $words[1] in
+  status) _arguments '--porcelain[machine-readable key=value output]' ;;
+  explain) _arguments '1:stage:(${stages})' ;;
+  run) _arguments '1:stage:(${stages})' '--all-files[run on every tracked file]' '*:file:_files' ;;
+  esac
+  ;;
+esac

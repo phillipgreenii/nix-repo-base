@@ -284,6 +284,46 @@ pgh_msg_hooks_failed() {
     "$1" "$2" >&2
 }
 
+# pgh_msg_unreachable <common-dir> <value> <origin> <canonical>
+pgh_msg_unreachable() {
+  printf 'pg-hooks: git does not run hooks from %s/hooks (core.hooksPath=%s from %s). Operator: git -C %s config --local --unset core.hooksPath\n' \
+    "$1" "$2" "$3" "$4" >&2
+}
+
+# pgh_msg_relocated <clone_path> <reinstall>
+pgh_msg_relocated() {
+  printf 'pg-hooks: this clone moved from %s; its bundle is no longer GC-rooted. Rebuild: %s\n' \
+    "$1" "$2" >&2
+}
+
+# --- progress line (noise policy: at most one line after N seconds) ---------
+
+PGH_PROGRESS_PID=""
+
+# pgh_progress_start <seconds> <message>: after <seconds>, print <message> once
+# to stderr unless pgh_progress_stop ran first.
+pgh_progress_start() {
+  local after=$1 msg=$2
+  (
+    sp=""
+    trap 'if [ -n "$sp" ]; then kill "$sp" 2>/dev/null; fi; exit 0' TERM
+    sleep "$after" >/dev/null 2>&1 &
+    sp=$!
+    if wait "$sp"; then
+      printf '%s\n' "$msg" >&2
+    fi
+  ) &
+  PGH_PROGRESS_PID=$!
+}
+
+pgh_progress_stop() {
+  if [[ -n ${PGH_PROGRESS_PID:-} ]]; then
+    kill "$PGH_PROGRESS_PID" 2>/dev/null || true
+    wait "$PGH_PROGRESS_PID" 2>/dev/null || true
+    PGH_PROGRESS_PID=""
+  fi
+}
+
 # --- staleness (spec 4.5) --------------------------------------------------
 
 # _pgh_overrides_changed <source.json>: print " (override <name> changed)" for

@@ -426,3 +426,24 @@ _stale_fixture() {
   [ "$status" -eq 0 ]
   [[ $stderr == "pg-hooks: no hook bundle for "* ]]
 }
+
+# --- messages used by pg-hooks status ----------------------------------------
+
+@test "pgh_msg_unreachable and pgh_msg_relocated print the spec 5.4 texts on stderr" {
+  run --separate-stderr pgh_msg_unreachable /c/.git .githooks /c/.git/config /c
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$stderr" = "pg-hooks: git does not run hooks from /c/.git/hooks (core.hooksPath=.githooks from /c/.git/config). Operator: git -C /c config --local --unset core.hooksPath" ]
+
+  run --separate-stderr pgh_msg_relocated /old/place/.git "(cd /c && nix run .#install-pre-commit-hooks)"
+  [ -z "$output" ]
+  [ "$stderr" = "pg-hooks: this clone moved from /old/place/.git; its bundle is no longer GC-rooted. Rebuild: (cd /c && nix run .#install-pre-commit-hooks)" ]
+}
+
+@test "progress line: printed after the threshold, never when stopped first" {
+  run --separate-stderr bash -c 'source "$1"; pgh_progress_start 1 "pg-hooks: working"; sleep 2; pgh_progress_stop' _ "$PGH_T_LIB"
+  [ "$stderr" = "pg-hooks: working" ]
+
+  run --separate-stderr bash -c 'source "$1"; pgh_progress_start 2 "pg-hooks: working"; pgh_progress_stop; sleep 3' _ "$PGH_T_LIB"
+  [ -z "$stderr" ]
+}

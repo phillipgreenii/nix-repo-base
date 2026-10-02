@@ -4,9 +4,10 @@
 # Exposes (consumed by later tasks of the per-clone hook bundle program):
 #   pg-hooks-lib   the shared library (bundle resolution, pointer, stamp, messages)
 #   pg-hooks-run   the bundle's stage runner (internal: not a PATH package)
+#   pg-hooks       the user-facing CLI (status, list, explain, run)
 #   libDir         a directory holding pg-hooks-lib.bash, for the bundle's lib/
 #   stubTemplate   stub.sh.in (@STAGE@ placeholder), rendered by the installer
-#   checks.test-pg-hooks-lib, checks.test-pg-hooks-run
+#   checks.test-pg-hooks-lib, checks.test-pg-hooks-run, checks.test-pg-hooks
 {
   pkgs,
   bashBuilders,
@@ -33,8 +34,14 @@ let
     inherit pkgs pg-hooks-lib testSupport;
   };
 
+  pg-hooks = pkgs.callPackage ./pg-hooks {
+    inherit (bashBuilders) mkBashScript;
+    inherit pkgs pg-hooks-lib testSupport;
+  };
+
   allScripts = [
     pg-hooks-run
+    pg-hooks
   ];
 
   libDir = pkgs.runCommand "pg-hooks-lib-dir" { } ''
@@ -43,7 +50,12 @@ let
   '';
 in
 {
-  inherit pg-hooks-lib pg-hooks-run libDir;
+  inherit
+    pg-hooks-lib
+    pg-hooks-run
+    pg-hooks
+    libDir
+    ;
 
   stubTemplate = ./stub.sh.in;
 
@@ -54,5 +66,6 @@ in
   checks = {
     test-pg-hooks-lib = pg-hooks-lib.check;
     test-pg-hooks-run = pg-hooks-run.check;
+    test-pg-hooks = pg-hooks.check;
   };
 }
