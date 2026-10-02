@@ -173,7 +173,7 @@ post_gc_commands = [["bad-tool", "--x"], ["good-tool"]]
 	bad := callIndex(calls, "bad-tool", "--x")
 	good := callIndex(calls, "good-tool")
 	opt := callIndex(calls, "nix", "store", "optimise")
-	if !(gc >= 0 && bad > gc && good > bad && opt > good) {
+	if gc < 0 || bad <= gc || good <= bad || opt <= good {
 		t.Errorf("want gc < bad-tool < good-tool < optimise, got gc=%d bad=%d good=%d opt=%d", gc, bad, good, opt)
 	}
 	if _, statErr := os.Lstat(dir); !os.IsNotExist(statErr) {
