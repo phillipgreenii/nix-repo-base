@@ -68,11 +68,21 @@
       # phillipgreenii.{src, pre-commit.src} default to inputs.self via the
       # checks and pre-commit modules; no explicit settings needed here.
 
-      # EXPERIMENT (pg2-z19ad, ADR 0029): this repo is the pilot for the opt-in
-      # commit-time hook shim. HK-2 is UNCHANGED; this is the labelled exception.
-      # Rollback: set to false, re-run `nix run .#install-pre-commit-hooks`, restore
-      # core.hooksPath to the absolute <repo>/.git/hooks, delete .githooks/.
-      phillipgreenii.pre-commit.commitTimeShim.enable = true;
+      # Per-clone hook bundle (pg2-pla9d, design spec
+      # docs/superpowers/specs/2026-10-01-per-clone-hook-bundle-design.md,
+      # section 7.2 step 2): repo-base is cut over from the commit-time shim
+      # experiment (pg2-z19ad, ADR 0029) to the bundle. The shim is off and
+      # `.githooks/` is deleted; `nix run .#install-pre-commit-hooks` in the
+      # canonical clone roots the bundle (the operator then points
+      # core.hooksPath at the absolute <repo>/.git/hooks).
+      phillipgreenii.pre-commit = {
+        bundle.enable = true;
+        commitTimeShim.enable = false;
+        stampPaths = [
+          "flake-modules/pre-commit.nix"
+          "modules/pg-git-check-identity"
+        ];
+      };
 
       # prek rewiring (design spec
       # docs/superpowers/specs/2026-08-24-pg-test-runner-design.md, section 3;

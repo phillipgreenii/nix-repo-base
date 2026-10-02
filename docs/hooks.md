@@ -473,9 +473,11 @@ code.
   `pre-commit-fix`, the `fixers`, `stampPaths` and `bundle.enable` options, the bundle output, the pn
   reader, install gate, private set bundles, doctor checks and dual-mode callers, the global
   dispatcher, FF-1b via `pg-hooks run pre-land`, FF-4a, and the agent rules.
-- `bundle.enable` defaults to `false` and no repo has cut over yet, so `pg-hooks status` reports
-  `legacy` (or `unreachable`, in repo-base while its local `core.hooksPath` is still `.githooks`).
-- Not available yet: the repo-base cutover (`bundle.enable = true`, deleting `.githooks/`), consumer
-  waves, the cleanup that deletes the legacy shim code, link code and dual-mode branches, the ADR
-  superseding 0029 and 0016, the drift guard, and the `post-land` entry point (deferred,
-  `pg2-na2nr`).
+- repo-base is cut over in the tree (`bundle.enable = true`, `commitTimeShim.enable = false`,
+  `.githooks/` deleted). Its canonical clone still needs `nix run .#install-pre-commit-hooks` and the
+  operator's `core.hooksPath` reset (spec 7.2 steps 3-4); until then `pg-hooks status` reports
+  `unreachable` there. `bundle.enable` defaults to `false` elsewhere, so every other repo reports
+  `legacy`.
+- Not available yet: consumer waves, the cleanup that deletes the legacy shim code, link code and
+  dual-mode branches, the ADR superseding 0029 and 0016, the drift guard, and the `post-land` entry
+  point (deferred, `pg2-na2nr`).
