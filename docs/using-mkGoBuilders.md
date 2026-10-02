@@ -17,7 +17,8 @@
   # Required: the gomod2nix lockfile committed beside go.mod (ADR 0008). The
   # gomod2nix engine reads pinned dependency hashes from it — there is no
   # vendorHash. Generate / refresh and commit it with:
-  #   go mod tidy && nix run github:nix-community/gomod2nix -- generate
+  #   go mod tidy && nix run github:nix-community/gomod2nix/<locked rev> -- generate --with-deps
+  # (--with-deps is required: a plain `generate` drops the build-cache list; ADR 0031)
   gomod2nixToml = ./gomod2nix.toml;
 }
 ```

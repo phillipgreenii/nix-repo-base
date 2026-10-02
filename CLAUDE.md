@@ -56,9 +56,12 @@ Rules for this family:
   `localReplaceModules`, or `buildGoModule` for these packages.
 - Commit a **`gomod2nix.toml`** beside each package's `go.mod`. It must be git-tracked — an
   untracked toml is invisible to flake builds (and to `pn workspace apply`).
-- Bump dependencies with **`go mod tidy && nix run github:nix-community/gomod2nix -- generate`**
-  (not `nix-update`, no `vendorHash` dance). Regenerate + commit the toml when deps change; pure
-  first-party edits (incl. a local-replace sibling) need no regeneration.
+- Bump dependencies with **`go mod tidy && nix run github:nix-community/gomod2nix/<locked rev> -- generate --with-deps`**
+  (not `nix-update`, no `vendorHash` dance; `<locked rev>` is the `gomod2nix` rev in `flake.lock`).
+  `--with-deps` is REQUIRED: it writes the `cachePackages` list that primes the Go build cache, and a
+  plain `generate` silently removes it (ADR [0031](docs/adr/0031-go-build-cache-decoupled-from-src.md)).
+  Regenerate + commit the toml when deps change; pure first-party edits (incl. a local-replace
+  sibling) need no regeneration.
 - **Pattern A** — single module at the package root: `src = lib.cleanSource ./.;`, no `modRoot`.
 - **Pattern B** — a local `replace => ../sibling` in `go.mod`: root the source at the parent so the
   sibling is in one store tree —

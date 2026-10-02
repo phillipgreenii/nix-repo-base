@@ -12,7 +12,7 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0005](0005-mkGoBuilders-factory.md)                             | `mkGoBuilders` factory for Go applications                                 | Accepted (version contract superseded by 0006)        |
 | [0006](0006-source-content-digest-versioning.md)                 | Per-source content-digest versioning for custom artifacts                  | Accepted (amended by 0011)                            |
 | [0007](0007-local-replace-go-modules-overlay.md)                 | Keep first-party local-replace Go modules "live" via `mkGoApp` overlay     | Superseded by 0008                                    |
-| [0008](0008-adopt-gomod2nix-for-go-packages.md)                  | Adopt `gomod2nix` for Go packages (`mkGoApp`/`mkGoBinary`)                 | Accepted                                              |
+| [0008](0008-adopt-gomod2nix-for-go-packages.md)                  | Adopt `gomod2nix` for Go packages (`mkGoApp`/`mkGoBinary`)                 | Accepted (amended by 0031)                            |
 | [0009](0009-pn-workspace-update-worktree-isolation.md)           | `pn workspace update` isolates per-repo work in ephemeral git worktrees    | Proposed (push/propagation amended by 0023)           |
 | [0010](0010-claude-marketplace-builder-and-identity.md)          | `mkClaudeMarketplace` builder + local-marketplace identity convention      | Accepted                                              |
 | [0011](0011-source-digest-in-derivation-version.md)              | Per-source digest in the derivation `version` for bash & python            | Accepted                                              |
@@ -35,3 +35,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0028](0028-pn-nix-telemetry.md)                                 | pn / nix build telemetry: findings, config precedence, escape hatches      | Accepted                                              |
 | [0029](0029-commit-time-hook-shim-experiment.md)                 | Commit-time hook shim: opt-in experiment against HK-2 (`pg2-z19ad`)        | Proposed (experiment; HK-2 unchanged)                 |
 | [0030](0030-pg-nix-log-wrapped.md)                               | `pg-nix-log-wrapped`: a fail-open nix telemetry wrapper                    | Proposed                                              |
+| [0031](0031-go-build-cache-decoupled-from-src.md)                | `mkGoApp` Go build cache decoupled from `src`; `--with-deps` required      | Accepted (amends 0008)                                |

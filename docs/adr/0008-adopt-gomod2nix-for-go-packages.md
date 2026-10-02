@@ -134,11 +134,17 @@ sibling live in the same rooted store copy.
 cd packages/<name>
 go get <module>@<version>     # or edit go.mod
 go mod tidy
-nix run github:nix-community/gomod2nix -- generate   # rewrites gomod2nix.toml; commit it
+nix run github:nix-community/gomod2nix/1201ddd1279c35497754f016ef33d5e060f3da8d -- generate --with-deps
+                                                      # rewrites gomod2nix.toml; commit it
 nix build .#<name>                                    # verify
 ```
 
 No `vendorHash`, no `lib.fakeHash` dance, no `nix-update`. Just regenerate + commit the toml.
+
+`--with-deps` is required, not optional: it writes the `cachePackages` list that primes the Go build
+cache, and a plain `generate` **removes** it (silently — the build still succeeds, cold). The
+generator rev should be the `gomod2nix` rev locked in `flake.lock`. See the amendment below and
+ADR [0031](0031-go-build-cache-decoupled-from-src.md).
 
 **How to edit a first-party local module (e.g. `claude-transcript`):** just edit it. No toml
 regeneration, no hash bump — it is read live from source.
@@ -251,3 +257,15 @@ check behavior".
 - Hash impact: every Go package that did not already set `doCheck` gets a new derivation hash
   (one mass rebuild at the next apply). A caller that already passed `doCheck = false` keeps its
   hash. The `go-builders-docheck-default` flake check pins all of this.
+
+## Amendment (2026-10-02): the Go build cache is decoupled from `src`, and `--with-deps` is required (bd pg2-t8807)
+
+`mkGoApp` no longer lets `buildGoApplication` build its `go-cache-env`: it passes
+`disableGoCache = true` and attaches a cache env derived from `go.mod` / `go.sum` /
+`gomod2nix.toml` only (source-independent vendor env, local-replace roots dropped, the ADR 0006
+version ldflag not an input), so the cache env changes iff the dependency set does. `mkGoLint` and
+`mkGoTest` pass `disableGoCache = true`. Every Go module MUST be regenerated with
+`gomod2nix generate --with-deps` so its toml carries `cachePackages`. The package derivation keeps
+its per-source `version` and `-X` ldflag, so the ADR 0006 invariant in this ADR's Decision is
+unchanged. Full rationale and consequences: ADR
+[0031](0031-go-build-cache-decoupled-from-src.md).
