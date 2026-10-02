@@ -470,6 +470,16 @@ func TestSmoke_S36_WorkspaceInfoApplied(t *testing.T) {
 	runScenario(t, "s36-workspace-info-applied")
 }
 
+// TestSmoke_S37_HookBundleMatrix is the per-clone hook bundle acceptance matrix
+// (pg2-pla9d.10): a canonical clone, a plain worktree and a workforest set with a
+// producer change each commit with stand-in hooks; the set uses its private
+// bundle, the others the shared one, and nothing is written into any working
+// tree. A stand-in `nix` (the scenario's path-prepend dir) lays out the
+// installer's on-disk shape; no real nix install runs.
+func TestSmoke_S37_HookBundleMatrix(t *testing.T) {
+	runScenario(t, "s37-hook-bundle-matrix")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -533,6 +543,11 @@ func runScenario(t *testing.T, name string) {
 			t.Fatalf("setup.sh: %v", err)
 		}
 	}
+
+	// A scenario whose setup.sh creates stand-in executables (a fake `nix`) lists
+	// their wsRoot-relative directories in a path-prepend file; they go first on
+	// PATH for every command and extra assertion (setup.sh itself ran without).
+	env = prependScenarioPath(t, scenarioDir, wsRoot, env)
 
 	// Read commands.
 	commandsPath := filepath.Join(scenarioDir, "command.txt")
@@ -674,7 +689,38 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS35WorkforestAddRemoveRepo(t, wsRoot, pnBin, env)
 	case "s36-workspace-info-applied":
 		assertS36WorkspaceInfoApplied(t, lastResult)
+	case "s37-hook-bundle-matrix":
+		assertS37HookBundleMatrix(t, wsRoot, pnBin, env)
 	}
+}
+
+// prependScenarioPath returns env with each directory listed (one per line,
+// relative to wsRoot) in the scenario's path-prepend file placed at the front of
+// PATH. Without the file it returns env unchanged.
+func prependScenarioPath(t *testing.T, scenarioDir, wsRoot string, env []string) []string {
+	t.Helper()
+	dirs, err := readLines(filepath.Join(scenarioDir, "path-prepend"))
+	if err != nil {
+		t.Fatalf("read path-prepend: %v", err)
+	}
+	if len(dirs) == 0 {
+		return env
+	}
+	var front []string
+	for _, d := range dirs {
+		abs := filepath.Join(wsRoot, d)
+		if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+			t.Fatalf("path-prepend dir %s was not created by setup.sh", abs)
+		}
+		front = append(front, abs)
+	}
+	path := os.Getenv("PATH")
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			path = v
+		}
+	}
+	return setEnv(env, "PATH", strings.Join(front, string(os.PathListSeparator))+string(os.PathListSeparator)+path)
 }
 
 // --- S1 extra: re-run lock and assert byte-identical output ---

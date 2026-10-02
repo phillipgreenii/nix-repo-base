@@ -22,3 +22,8 @@ hook).
 - `UL_LIB_DIR` is injected via `buildScrubbedEnv` (tempHome/ullib), satisfying the worktree
   flow's non-empty requirement.
 - Bare remotes are `file://` via `smoke_bare_remote.go` — no network.
+- A scenario that needs stand-in executables (e.g. s37's fake `nix`) creates them in `setup.sh`
+  under the workspace root and lists their root-relative directories, one per line, in a
+  `path-prepend` file; `runScenario` puts them first on `PATH` for every command and extra
+  assertion. A stand-in that shadows a real tool MUST delegate every call it does not handle to
+  the real one (strip its own directory from `PATH` by physical path, then `exec`), or it loops.

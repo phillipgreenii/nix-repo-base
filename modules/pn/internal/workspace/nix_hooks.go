@@ -141,6 +141,53 @@ func symlinkLiveInNixStore(link string) bool {
 	return true
 }
 
+// installHookUpToDate is the "already installed" gate for
+// {nix_run install-pre-commit-hooks} (bead pg2-19rcj, rekeyed by pg2-pla9d.10,
+// spec 4.4): true when running the installer would be a pure no-op, so the hook
+// can be skipped before a `nix run --override-input` re-evaluates the whole
+// flake graph.
+//
+//   - A hook bundle in state present (pointer valid, bundle live, stamp matching,
+//     and every recorded override's HEAD and dirty state equal to now) skips.
+//     In a linked worktree the bundle must be the worktree's OWN private one:
+//     the shared bundle being present does not give a set its private bundle.
+//   - stale, broken and relocated run the installer, and so does a bundle whose
+//     GC root dangles.
+//   - With NO bundle pointer at all (state legacy, missing, or unreachable by a
+//     shim's core.hooksPath), and for a directory that is not a git work tree,
+//     the dual-mode gate that predates bundles applies: the generated config
+//     resolves live AND the commit-time shim wiring is in place (trivially true
+//     for a repo with no .githooks/). Operator note: a clone that still holds a
+//     live legacy config keeps being skipped until its bundle is installed once
+//     by hand (runbook 7.3 step 3) after the repo enables bundle.enable.
+func installHookUpToDate(dir string) bool {
+	state, info, err := ReadHookBundleState(dir)
+	if err != nil {
+		return preCommitConfigLive(dir) && shimHooksPathWired(dir)
+	}
+	if info.Gen == "" {
+		return preCommitConfigLive(dir) && shimHooksPathWired(dir)
+	}
+	return state == HookBundlePresent && (!info.Linked || info.Private)
+}
+
+// privateInstallArgs renders the installer arguments for a linked worktree:
+// `--private` plus one `--override <alias>=<path>` per `--override-input
+// <alias> git+file://<path>` pin in overrideArgs (the triples
+// overrideInputArgs emits), so the installer records the same pins nix got.
+func privateInstallArgs(overrideArgs []string) []string {
+	args := []string{"--private"}
+	for i := 0; i+2 < len(overrideArgs); i++ {
+		if overrideArgs[i] != "--override-input" {
+			continue
+		}
+		args = append(args, "--override",
+			overrideArgs[i+1]+"="+strings.TrimPrefix(overrideArgs[i+2], "git+file://"))
+		i += 2
+	}
+	return args
+}
+
 // eventName returns the "<phase>-<command>" event string.
 func eventName(phase HookPhase, cmd string) string {
 	if phase == HookPhasePre {
@@ -175,8 +222,9 @@ func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string
 // overrides. Pre-hooks abort on first failure; post-hooks warn and continue.
 // A per-repo {nix_run install-pre-commit-hooks} entry is additionally skipped
 // (for every event, every caller — workforest add/add-repo included) when
-// that repo's generated config already resolves live; see
-// installPreCommitHooksAttr / preCommitConfigLive.
+// that repo's hook bundle is present and current (legacy repos: when the
+// generated config already resolves live); see installHookUpToDate. In a linked
+// worktree the installer is invoked with `--private` and the set's pins.
 func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out, errOut io.Writer) error {
 	ev := eventName(phase, cmd)
 
@@ -271,17 +319,23 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 				// are already current. A fresh worktree (config absent) or a
 				// genuinely-changed hook set (config missing/dangling) falls
 				// through and installs normally, exactly as before this gate.
-				// Commit-time shim (ADR 0029, pg2-m68an): a live config does NOT
-				// mean the shim is wired — an existing clone has a live config yet
-				// no core.hooksPath=.githooks — so the skip also requires the
-				// wiring to be in place (trivially true for a repo with no
-				// .githooks/, leaving the legacy path unchanged).
-				if m := nixRunTokenRe.FindStringSubmatch(raw); m != nil && m[1] == installPreCommitHooksAttr && preCommitConfigLive(dir) && shimHooksPathWired(dir) {
+				// Per-clone hook bundle (pg2-pla9d, spec 4.4): the gate is keyed on
+				// the bundle state, see installHookUpToDate. A legacy repo (no
+				// bundle) keeps the old config-symlink + shim-wiring gate.
+				m := nixRunTokenRe.FindStringSubmatch(raw)
+				isInstall := m != nil && m[1] == installPreCommitHooksAttr
+				if isInstall && installHookUpToDate(dir) {
 					continue
 				}
 				var vars nixHookVars
 				if nixRunTokenRe.MatchString(raw) {
 					vars = varsFor(key)
+					// A linked worktree (a set member) never touches the shared
+					// bundle: it builds its own private one, recording the set's
+					// pins so a later producer change shows up as stale.
+					if isInstall && isLinkedWorktree(dir) {
+						vars.InstallArgs = privateInstallArgs(vars.OverrideArgs)
+					}
 				}
 				cmdStr, _, err := expandNixRunTokens(raw, vars)
 				if err == nil {

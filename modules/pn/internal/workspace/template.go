@@ -228,6 +228,10 @@ type nixHookVars struct {
 	NixExe       string
 	OverrideArgs []string
 	FlakeDir     string
+	// InstallArgs, when non-empty, are appended after ` -- ` to a
+	// {nix_run install-pre-commit-hooks} expansion only (the installer's own
+	// flags, e.g. `--private --override name=path`); other attrs ignore them.
+	InstallArgs []string
 }
 
 // expandNixRunTokens replaces a single "{nix_run <attr>}" token in raw with the
@@ -262,6 +266,17 @@ func expandNixRunTokens(raw string, v nixHookVars) (string, []string, error) {
 	}
 	b.WriteString(" ")
 	b.WriteString(shSingleQuote(v.FlakeDir + "#" + attr))
+	if attr == installPreCommitHooksAttr && len(v.InstallArgs) > 0 {
+		b.WriteString(" --")
+		for _, a := range v.InstallArgs {
+			b.WriteString(" ")
+			if strings.HasPrefix(a, "--") {
+				b.WriteString(a) // a flag: unquoted
+			} else {
+				b.WriteString(shSingleQuote(a)) // a value (name=path): shell-safe
+			}
+		}
+	}
 	return raw[:locs[0][0]] + b.String() + raw[locs[0][1]:], []string{attr}, nil
 }
 
