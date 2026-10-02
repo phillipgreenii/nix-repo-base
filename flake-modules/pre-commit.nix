@@ -11,6 +11,49 @@ producerInputs:
 }:
 let
   topLevelCfg = config.phillipgreenii.pre-commit;
+
+  # One fixer (spec 5.1/5.2). Deliberately a strict submodule: a `stages` key (a
+  # fixer attached to a prek stage) is an unknown option and fails evaluation.
+  fixerType = lib.types.submodule {
+    options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        description = "Unique fixer name; also the anchor name for `after`/`before`.";
+      };
+      command = lib.mkOption {
+        type = lib.types.str;
+        description = "Command (store paths allowed) the staged file paths are appended to.";
+      };
+      mode = lib.mkOption {
+        type = lib.types.enum [
+          "files"
+          "per-file"
+        ];
+        default = "files";
+        description = "`files`: one invocation per batch of files; `per-file`: one per file.";
+      };
+      includes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Globs a staged file must match (empty: every file).";
+      };
+      excludes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Globs a staged file must not match.";
+      };
+      after = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Insert directly after the fixer with this name.";
+      };
+      before = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Insert directly before the fixer with this name.";
+      };
+    };
+  };
 in
 {
   imports = [ (import ./treefmt.nix producerInputs) ];
@@ -54,6 +97,56 @@ in
         harmless no-op here while giving every nvfetcher-using consumer correct
         behaviour with zero per-repo config. Consumers can extend this list for
         other generated/vendored paths; definitions concatenate.
+      '';
+    };
+    fixers = lib.mkOption {
+      type = lib.types.listOf fixerType;
+      default = [ ];
+      example = lib.literalExpression ''
+        [
+          {
+            name = "sort-claude-permissions";
+            command = "''${pkgs.sort-claude-permissions}/bin/sort-claude-permissions";
+            includes = [ ".claude/settings.json" ];
+            after = "statix";
+          }
+        ]
+      '';
+      description = ''
+        Fixers that `pg-hooks fix` (alias `pre-commit-fix`) runs over the staged files,
+        in addition to the shared defaults (treefmt, statix once per `*.nix` file,
+        treefmt again, trailing-whitespace, end-of-file-fixer). A fixer without
+        `after`/`before` is appended after the defaults; with an anchor it is inserted
+        directly after/before the named fixer (anchors MAY name another added fixer).
+        Fixers are NOT prek hooks: they never run from a git hook (HK-2), a fixer MUST
+        NOT carry a stage, and no prek hook's `entry` may invoke `pg-hooks fix` or
+        `pre-commit-fix` (evaluation fails, only when `bundle.enable`). `mode = "per-file"`
+        runs the command once per file (e.g. `statix fix`, which takes one target).
+        Resolved into the bundle's `fixers.json` (a flat ordered list) at evaluation time.
+      '';
+    };
+    stampPaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Repo-relative paths, in addition to `flake.lock` and `flake.nix`, whose tracked
+        content is hashed (`git ls-files -s -- <paths> | git hash-object --stdin`) into
+        the hook bundle's staleness stamp. Needed only where hook definitions live in
+        the repo itself rather than arriving through `flake.lock` (repo-base).
+        Recorded in the bundle's `meta.json`.
+      '';
+    };
+    bundle.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Render the per-clone hook bundle (`packages.<system>.pg-hooks-bundle`: prek,
+        prek config, fixers, stage list, runner and library) and stop the devShell
+        and `install-pre-commit-hooks` from running the legacy installer fragments
+        (spec docs/superpowers/specs/2026-10-01-per-clone-hook-bundle-design.md,
+        sections 4.2 and 5.1). MUST NOT be combined with `commitTimeShim.enable`
+        (evaluation fails). The derivation is also exposed regardless of this option
+        as `legacyPackages.<system>.pgHooksBundle`, so a check can build it before cutover.
       '';
     };
     commitTimeShim = {
@@ -144,6 +237,10 @@ in
         inherit pkgs;
         bashBuilders = pgGitCheckIdentityBashBuilders;
       };
+      # The base fixer hooks' entries, shared with the bundle's default fixers
+      # (fixers.json) so `pg-hooks fix` and the prek check hooks run the same tools.
+      trailingWhitespaceEntry = "${pkgs.python3Packages.pre-commit-hooks}/bin/trailing-whitespace-fixer";
+      endOfFileFixerEntry = "${pkgs.python3Packages.pre-commit-hooks}/bin/end-of-file-fixer";
       preCommit = producerInputs.git-hooks.lib.${system}.run {
         # `excludes` becomes a top-level pre-commit `exclude` regex applied to
         # every hook (git-hooks modules/pre-commit.nix). Single source of truth
@@ -178,11 +275,11 @@ in
           check-merge-conflicts.enable = true;
           trailing-whitespace = {
             enable = true;
-            entry = "${pkgs.python3Packages.pre-commit-hooks}/bin/trailing-whitespace-fixer";
+            entry = trailingWhitespaceEntry;
           };
           end-of-file-fixer = {
             enable = true;
-            entry = "${pkgs.python3Packages.pre-commit-hooks}/bin/end-of-file-fixer";
+            entry = endOfFileFixerEntry;
           };
           check-case-conflicts.enable = true;
           # Rejects a commit whose author or committer identity looks like a
@@ -634,6 +731,7 @@ in
       # from invoking nix; the shim does exactly that, so it is gated OFF by default
       # and exists only to gather evidence for a later HK-2 decision (bead pg2-z19ad).
       shimCfg = topLevelCfg.commitTimeShim;
+      bundleCfg = topLevelCfg.bundle;
 
       # `nix run` evaluates the WORKTREE'S flake, so editing a hook definition takes
       # effect on the next commit with no reinstall, and no store path lives in the
@@ -691,7 +789,16 @@ in
         unset _pgii_git
       '';
 
-      preCommitShellHook = if shimCfg.enable then shimLinkConfig else legacyPreCommitShellHook;
+      # With `bundle.enable` NOTHING is installed from here (spec 4.4: the devShell
+      # MUST NOT install anything; the installer is the only writer). The legacy
+      # fragments and the shim config link are both skipped.
+      preCommitShellHook =
+        if bundleCfg.enable then
+          ""
+        else if shimCfg.enable then
+          shimLinkConfig
+        else
+          legacyPreCommitShellHook;
 
       # Guards the failure the relative `core.hooksPath=.githooks` introduces: a
       # tree that lacks (or has stale/non-executable/extra) shims is ungated with
@@ -1372,11 +1479,208 @@ in
 
             touch "$out"
           '';
+
+      # ----- Per-clone hook bundle (spec 4.2, 5.1, 5.2; bead pg2-pla9d.7) -----
+
+      # pg-hooks scripts, built SELF-CONTAINED here exactly like
+      # pgGitCheckIdentityScripts above: a consumer's perSystem `pkgs` lacks this
+      # repo's overlay, so the bundle must not reach for `pkgs.pg-hooks-run`.
+      pgHooksBashBuilders = (import ../nix/packages.nix { }).mkBashBuilders {
+        inherit pkgs;
+        inherit (pkgs) lib;
+        inherit (inputs) self;
+      };
+      pgHooksScripts = import ../modules/pg-hooks/scripts.nix {
+        inherit pkgs;
+        bashBuilders = pgHooksBashBuilders;
+      };
+
+      enabledHooks = lib.filterAttrs (_: hook: hook.enable) preCommit.config.hooks;
+
+      # stages.json: `default_stages` UNION every enabled hook's `stages` (the same
+      # set the pre-commit-githooks-wired check derives with jq from the rendered
+      # config), each stage mapped to the hooks that run at it. Entry shape
+      # `{ id, reason }` is what modules/pg-hooks/pg-hooks reads for `list` and
+      # `explain`; `reason` is the hook's `description` (first line) or its id.
+      stageNames = lib.sort lib.lessThan (
+        lib.unique (
+          preCommit.config.default_stages ++ lib.concatMap (hook: hook.stages) (lib.attrValues enabledHooks)
+        )
+      );
+      hookReason =
+        id: hook:
+        let
+          firstLine = builtins.head (lib.splitString "\n" hook.description);
+        in
+        if firstLine != "" then firstLine else id;
+      stagesData = lib.genAttrs stageNames (
+        stage:
+        lib.mapAttrsToList (id: hook: {
+          inherit id;
+          reason = hookReason id hook;
+        }) (lib.filterAttrs (_: hook: builtins.elem stage hook.stages) enabledHooks)
+      );
+
+      # fixers.json: the shared default order, then the repo's `fixers` resolved
+      # against it by `after`/`before` anchors into ONE flat ordered list. A fixer
+      # without an anchor is appended after the defaults; several fixers on the same
+      # anchor keep their declared order; anchors may name another added fixer.
+      defaultFixers =
+        map
+          (
+            fixer:
+            {
+              mode = "files";
+              includes = [ ];
+              excludes = [ ];
+              after = null;
+              before = null;
+            }
+            // fixer
+          )
+          [
+            {
+              name = "treefmt";
+              command = "${config.treefmt.build.wrapper}/bin/treefmt";
+            }
+            {
+              # `statix fix` takes ONE target, hence per-file.
+              name = "statix";
+              command = "${pkgs.statix}/bin/statix fix";
+              mode = "per-file";
+              includes = [ "*.nix" ];
+            }
+            {
+              name = "treefmt-final";
+              command = "${config.treefmt.build.wrapper}/bin/treefmt";
+            }
+            {
+              name = "trailing-whitespace";
+              command = trailingWhitespaceEntry;
+            }
+            {
+              name = "end-of-file-fixer";
+              command = endOfFileFixerEntry;
+            }
+          ];
+      addedFixers = topLevelCfg.fixers;
+      allFixers = defaultFixers ++ addedFixers;
+      afterOf = name: lib.filter (fixer: fixer.after == name) addedFixers;
+      beforeOf = name: lib.filter (fixer: fixer.before == name) addedFixers;
+      expandFixer =
+        fixer:
+        lib.concatMap expandFixer (beforeOf fixer.name)
+        ++ [ fixer ]
+        ++ lib.concatMap expandFixer (afterOf fixer.name);
+      resolvedFixers = lib.concatMap expandFixer (
+        defaultFixers ++ lib.filter (fixer: fixer.after == null && fixer.before == null) addedFixers
+      );
+      fixersData = map (fixer: {
+        inherit (fixer)
+          name
+          command
+          mode
+          includes
+          excludes
+          ;
+      }) resolvedFixers;
+
+      metaData = {
+        # Empty: the runner and CLI fall back to the canonical clone's basename.
+        repo = "";
+        inherit (topLevelCfg) stampPaths;
+        stages = stageNames;
+      };
+
+      fixerNames = map (fixer: fixer.name) allFixers;
+      invokesFix =
+        entry: builtins.length (builtins.split "pg-hooks[[:space:]]+fix|pre-commit-fix" entry) > 1;
+      # Evaluation-time assertions (spec 5.1). The bundle/commitTimeShim exclusion
+      # always applies; the fixer and hook checks apply only with `bundle.enable`,
+      # so a repo that has not opted in evaluates exactly as before. An unknown
+      # stage name is rejected by git-hooks.nix's own `stages` enum type, which the
+      # stage-list computation above forces; a fixer carrying a `stages` key is
+      # rejected by the strict `fixerType` submodule.
+      bundleFailures =
+        lib.optional (bundleCfg.enable && shimCfg.enable)
+          "bundle.enable and commitTimeShim.enable MUST NOT both be true (the shim experiment and the bundle both own the commit-time hook path)."
+        ++ lib.optionals bundleCfg.enable (
+          lib.optional (lib.length (lib.unique fixerNames) != lib.length fixerNames)
+            "fixer names MUST be unique (anchors address them by name); got: ${lib.concatStringsSep ", " fixerNames}."
+          ++ lib.concatMap (
+            fixer:
+            lib.optional (
+              fixer.after != null && fixer.before != null
+            ) "fixer '${fixer.name}' sets both after and before; set exactly one."
+            ++
+              lib.concatMap
+                (
+                  anchor:
+                  lib.optional (
+                    anchor != null && !(lib.elem anchor fixerNames)
+                  ) "fixer '${fixer.name}' anchors on unknown fixer '${anchor}'."
+                )
+                [
+                  fixer.after
+                  fixer.before
+                ]
+          ) addedFixers
+          ++ lib.optional (
+            lib.length resolvedFixers != lib.length allFixers
+          ) "fixer anchors do not resolve (a cycle, or an anchor chain that never reaches a default fixer)."
+          ++ lib.mapAttrsToList (
+            id: _:
+            "prek hook '${id}' invokes pg-hooks fix / pre-commit-fix; fixers are never run from a hook (use `fixers`)."
+          ) (lib.filterAttrs (_: hook: invokesFix hook.entry) enabledHooks)
+        );
+      guard =
+        value:
+        if bundleFailures == [ ] then
+          value
+        else
+          throw "phillipgreenii.pre-commit:\n  - ${lib.concatStringsSep "\n  - " bundleFailures}";
+
+      pgHooksBundle =
+        pkgs.runCommand "pg-hooks-bundle"
+          {
+            nativeBuildInputs = [ pkgs.jq ];
+            # Evaluation-time view of the same data, for lib/pg-hooks-bundle-tests.nix.
+            passthru.bundleData = {
+              fixers = fixersData;
+              stages = stagesData;
+              meta = metaData;
+            };
+            stagesJson = builtins.toJSON stagesData;
+            fixersJson = builtins.toJSON fixersData;
+            metaJson = builtins.toJSON metaData;
+            passAsFile = [
+              "stagesJson"
+              "fixersJson"
+              "metaJson"
+            ];
+          }
+          ''
+            mkdir -p $out/bin $out/lib
+            ln -s ${pkgs.prek}/bin/prek $out/bin/prek
+            ln -s ${pgHooksScripts.pg-hooks-run.script}/bin/pg-hooks-run $out/bin/pg-hooks-run
+            cp ${pgHooksScripts.libDir}/pg-hooks-lib.bash $out/lib/pg-hooks-lib.bash
+            # git-hooks.nix writes a leading "# DO NOT MODIFY" comment block; strip it
+            # so the file is plain JSON. The store paths in its hook entries stay in
+            # the text, which is what roots their closure.
+            sed '/^#/d' ${preCommit.config.configFile} >$out/prek-config.json
+            jq empty $out/prek-config.json
+            jq . "$stagesJsonPath" >$out/stages.json
+            jq . "$fixersJsonPath" >$out/fixers.json
+            jq . "$metaJsonPath" >$out/meta.json
+          '';
     in
     {
-      _module.args.preCommitShellHook = preCommitShellHook;
+      _module.args.preCommitShellHook = guard preCommitShellHook;
+      # Exposed whether or not bundle.enable is set, so a check can build the real
+      # bundle before cutover (Task 5's real-tools check).
+      legacyPackages.pgHooksBundle = guard pgHooksBundle;
       checks = {
-        pre-commit = preCommit;
+        pre-commit = guard preCommit;
         pre-commit-config-gitignored = preCommitConfigGitignoredCheck;
         pre-commit-hooks-path-worktree-safe = hooksPathWorktreeSafeCheck;
         pre-commit-hooks-config-path-absolute = absolutizeHookConfigPathCheck;
@@ -1387,12 +1691,21 @@ in
         pre-commit-githooks-wired = shimWiredCheck;
       };
       packages = {
-        install-pre-commit-hooks = pkgs.writeShellScriptBin "install-pre-commit-hooks" ''
-          ${preCommitShellHook}
-          ${lib.optionalString shimCfg.enable shimWireHooksPath}
-          echo "Pre-commit hooks installed successfully!"
-          echo "Run 'pre-commit run --all-files' to test them."
-        '';
+        install-pre-commit-hooks = guard (
+          pkgs.writeShellScriptBin "install-pre-commit-hooks" (
+            if bundleCfg.enable then
+              ''
+                echo "install-pre-commit-hooks: bundle.enable is set but the bundle installer is not wired yet; nothing was installed." >&2
+              ''
+            else
+              ''
+                ${preCommitShellHook}
+                ${lib.optionalString shimCfg.enable shimWireHooksPath}
+                echo "Pre-commit hooks installed successfully!"
+                echo "Run 'pre-commit run --all-files' to test them."
+              ''
+          )
+        );
 
         # Autofix helper for the `statix` pre-commit hook. Runs `statix fix` over
         # the CURRENT working directory (or the paths given as args) — NOT ${./.},
@@ -1406,6 +1719,9 @@ in
       }
       // lib.optionalAttrs shimCfg.enable {
         git-hook = gitHookPackage;
+      }
+      // lib.optionalAttrs bundleCfg.enable {
+        pg-hooks-bundle = guard pgHooksBundle;
       };
     };
 }

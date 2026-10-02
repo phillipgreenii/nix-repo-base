@@ -576,6 +576,47 @@
                   "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
               );
 
+            # Per-clone hook bundle (bead pg2-pla9d.7): eval tests for the
+            # fixers / stampPaths / bundle.enable options and the pg-hooks-bundle
+            # output of flake-modules/pre-commit.nix. Pure evaluation; the real
+            # bundle's layout is built and inspected by pg-hooks-bundle-layout.
+            pg-hooks-bundle-tests =
+              let
+                failures = pkgs.lib.runTests (
+                  import ./lib/pg-hooks-bundle-tests.nix { inherit pkgs inputs system; }
+                );
+              in
+              pkgs.runCommand "check-pg-hooks-bundle-tests" { } (
+                if failures == [ ] then
+                  "touch $out"
+                else
+                  "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
+              );
+
+            # Builds the real bundle (exposed pre-cutover as
+            # legacyPackages.<system>.pgHooksBundle) and asserts its layout: the
+            # files spec 4.2 lists, executable bin/, plain-JSON config, and that
+            # stages.json has the `{ stage: [ { id, reason } ] }` shape the
+            # pg-hooks CLI reads (modules/pg-hooks/pg-hooks/pg-hooks.sh).
+            pg-hooks-bundle-layout =
+              pkgs.runCommand "check-pg-hooks-bundle-layout" { nativeBuildInputs = [ pkgs.jq ]; }
+                ''
+                  b=${self.legacyPackages.${system}.pgHooksBundle}
+                  test -x "$b/bin/prek"
+                  test -x "$b/bin/pg-hooks-run"
+                  test -f "$b/lib/pg-hooks-lib.bash"
+                  for f in prek-config.json stages.json fixers.json meta.json; do
+                    test -s "$b/$f" || { echo "missing or empty: $f" >&2; exit 1; }
+                  done
+                  jq -e '.repos | length > 0' "$b/prek-config.json" >/dev/null
+                  jq -e 'type == "object" and ([.[][]] | all(has("id") and has("reason")))' "$b/stages.json" >/dev/null
+                  jq -e 'has("pre-commit")' "$b/stages.json" >/dev/null
+                  jq -e 'type == "array" and (map(.name) | index("statix")) != null and all(has("command") and has("mode"))' "$b/fixers.json" >/dev/null
+                  jq -e '.stampPaths == [] or (.stampPaths | type == "array")' "$b/meta.json" >/dev/null
+                  jq -e '.stages == (input | keys)' "$b/meta.json" "$b/stages.json" >/dev/null
+                  touch $out
+                '';
+
             # A3 (ADR 0071, bead tc-rjzd3.4): builds a mkClaudeHookRouterPlugin-generated
             # fixture plugin and runs `claude plugin validate ./result` against it — the one
             # Tier-3 (docs/claude-marketplaces.md) validation step confirmed local/no-network
