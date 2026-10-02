@@ -34,3 +34,4 @@ Index of ADRs for `phillipg-nix-repo-base`. See `0000-use-architecture-decision-
 | [0027](0027-pg-go-mutate-tui-state-contract.md)                  | `pg-go-mutate-tui` state contract: ledger, guard cache, semaphore, beads   | Accepted (supersedes 0026)                            |
 | [0028](0028-pn-nix-telemetry.md)                                 | pn / nix build telemetry: Phase 1 spike findings and golden files          | Proposed                                              |
 | [0029](0029-commit-time-hook-shim-experiment.md)                 | Commit-time hook shim: opt-in experiment against HK-2 (`pg2-z19ad`)        | Proposed (experiment; HK-2 unchanged)                 |
+| [0030](0030-pg-nix-log-wrapped.md)                               | `pg-nix-log-wrapped`: a fail-open nix telemetry wrapper                    | Proposed                                              |

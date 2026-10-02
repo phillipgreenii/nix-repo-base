@@ -1,0 +1,120 @@
+{"action":"start","id":25215752994816,"level":6,"parent":0,"text":"querying info about missing paths","type":0}
+{"action":"start","fields":["/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925","https://cache.numtide.com"],"id":25215752994817,"level":4,"parent":0,"text":"querying info about '/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925' on 'https://cache.numtide.com'","type":109}
+{"action":"start","fields":["https://cache.numtide.com/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo"],"id":25215752994818,"level":4,"parent":25215752994817,"text":"downloading 'https://cache.numtide.com/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo'","type":101}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[6528,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[6528,0,0,0],"id":25215752994818,"type":105}
+{"action":"result","fields":[6528,0,0,0],"id":25215752994818,"type":105}
+{"action":"stop","id":25215752994817}
+{"action":"stop","id":25215752994818}
+{"action":"start","fields":["/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925","https://cache.nixos.org"],"id":25215752994819,"level":4,"parent":0,"text":"querying info about '/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925' on 'https://cache.nixos.org'","type":109}
+{"action":"start","fields":["https://cache.nixos.org/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo"],"id":25215752994820,"level":4,"parent":25215752994819,"text":"downloading 'https://cache.nixos.org/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo'","type":101}
+{"action":"result","fields":[0,0,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[3,3,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[3,3,0,0],"id":25215752994820,"type":105}
+{"action":"result","fields":[3,3,0,0],"id":25215752994820,"type":105}
+{"action":"stop","id":25215752994819}
+{"action":"stop","id":25215752994820}
+{"action":"start","fields":["/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925","https://nix-community.cachix.org"],"id":25215752994821,"level":4,"parent":0,"text":"querying info about '/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925' on 'https://nix-community.cachix.org'","type":109}
+{"action":"start","fields":["https://nix-community.cachix.org/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo"],"id":25215752994822,"level":4,"parent":25215752994821,"text":"downloading 'https://nix-community.cachix.org/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo'","type":101}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[15,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[15,0,0,0],"id":25215752994822,"type":105}
+{"action":"result","fields":[15,0,0,0],"id":25215752994822,"type":105}
+{"action":"stop","id":25215752994821}
+{"action":"stop","id":25215752994822}
+{"action":"start","fields":["/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925","https://nix-darwin.cachix.org"],"id":25215752994823,"level":4,"parent":0,"text":"querying info about '/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925' on 'https://nix-darwin.cachix.org'","type":109}
+{"action":"start","fields":["https://nix-darwin.cachix.org/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo"],"id":25215752994824,"level":4,"parent":25215752994823,"text":"downloading 'https://nix-darwin.cachix.org/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo'","type":101}
+{"action":"result","fields":[0,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[15,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[15,0,0,0],"id":25215752994824,"type":105}
+{"action":"result","fields":[15,0,0,0],"id":25215752994824,"type":105}
+{"action":"stop","id":25215752994823}
+{"action":"stop","id":25215752994824}
+{"action":"start","fields":["/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925","https://cache.flox.dev"],"id":25215752994825,"level":4,"parent":0,"text":"querying info about '/nix/store/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9-kq2-slow-1790833925' on 'https://cache.flox.dev'","type":109}
+{"action":"start","fields":["https://cache.flox.dev/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo"],"id":25215752994826,"level":4,"parent":25215752994825,"text":"downloading 'https://cache.flox.dev/dag1wvjj3zw09fd0q8gcvllvvzjcrnb9.narinfo'","type":101}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[152,152,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[152,152,0,0],"id":25215752994826,"type":105}
+{"action":"result","fields":[152,152,0,0],"id":25215752994826,"type":105}
+{"action":"stop","id":25215752994825}
+{"action":"stop","id":25215752994826}
+{"action":"stop","id":25215752994816}
+{"action":"msg","level":3,"msg":"this derivation will be built:"}
+{"action":"msg","level":3,"msg":"  /nix/store/2xq2jf32c2x8f465sw1g1man7zryiby4-kq2-slow-1790833925.drv"}
+{"action":"start","id":25215752994827,"level":0,"parent":0,"text":"","type":102}
+{"action":"start","id":25215752994828,"level":0,"parent":0,"text":"","type":104}
+{"action":"start","id":25215752994829,"level":0,"parent":0,"text":"","type":103}
+{"action":"result","fields":[0,0,0,0],"id":25215752994828,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994829,"type":105}
+{"action":"result","fields":[101,0],"id":25215752994827,"type":106}
+{"action":"result","fields":[100,0],"id":25215752994827,"type":106}
+{"action":"start","id":25215752994830,"level":6,"parent":0,"text":"querying info about missing paths","type":0}
+{"action":"stop","id":25215752994830}
+{"action":"result","fields":[0,1,0,0],"id":25215752994828,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994829,"type":105}
+{"action":"result","fields":[101,0],"id":25215752994827,"type":106}
+{"action":"result","fields":[100,0],"id":25215752994827,"type":106}
+{"action":"start","fields":["/nix/store/2xq2jf32c2x8f465sw1g1man7zryiby4-kq2-slow-1790833925.drv","",1,1],"id":25215752994831,"level":3,"parent":0,"text":"building '/nix/store/2xq2jf32c2x8f465sw1g1man7zryiby4-kq2-slow-1790833925.drv'","type":105}
+{"action":"result","fields":[0,1,1,0],"id":25215752994828,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994829,"type":105}
+{"action":"result","fields":[101,0],"id":25215752994827,"type":106}
+{"action":"result","fields":[100,0],"id":25215752994827,"type":106}
+{"action":"result","fields":["start"],"id":25215752994831,"type":101}
+{"action":"result","fields":[1,2,0,0],"id":25215752994828,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":25215752994829,"type":105}
+{"action":"result","fields":[101,0],"id":25215752994827,"type":106}
+{"action":"result","fields":[100,0],"id":25215752994827,"type":106}
+{"action":"stop","id":25215752994831}
+{"action":"stop","id":25215752994829}
+{"action":"stop","id":25215752994828}
+{"action":"stop","id":25215752994827}

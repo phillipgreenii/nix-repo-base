@@ -312,6 +312,13 @@
             # pjira Go binary (generic Atlassian Jira access tool).
             pjira = pkgs.callPackage ./modules/jira { inherit self; };
 
+            # pg-nix-log-wrapped: sibling Go module (own go.mod) that runs a nix
+            # command unchanged and tails its json-log-path stream into OTel
+            # spans and delta metrics. NOT a second cmd/ inside modules/pn (that
+            # would break lib.getExe pkgs.pn); pn consumes only its binary path.
+            # Surfaced through overlays.default as pkgs.pg-nix-log-wrapped. ADR 0030.
+            pg-nix-log-wrapped = pkgs.callPackage ./modules/pg-nix-log-wrapped { inherit self; };
+
             # pg-go-mutate: reports which assertions a Go package's tests are
             # missing (bash CLI wrapping the pinned gomu mutation engine).
             # Mirrors how pnwf/wsplan expose their module's script above.
@@ -1159,6 +1166,18 @@
               gomod2nixToml = ./modules/jira/gomod2nix.toml;
             };
 
+            # Full Go test gate for pg-nix-log-wrapped (own go.mod). The package
+            # build runs no tests (doCheck defaults to false), so this check is
+            # the real gate. It needs no testDeps: the process-level tests
+            # re-execute the test binary as the wrapper and as a fake nix, and
+            # the real-nix canary skips itself inside a nix builder
+            # (NIX_BUILD_TOP) and wherever nix is absent.
+            pg-nix-log-wrapped-go-tests = goBuilders.mkGoTest {
+              pname = "pg-nix-log-wrapped";
+              src = ./modules/pg-nix-log-wrapped;
+              gomod2nixToml = ./modules/pg-nix-log-wrapped/gomod2nix.toml;
+            };
+
             # Full Go test gate for pg-go-mutate-tui (own go.mod, cmd/* +
             # internal/*). Its mkGoBinary build sets no subPackages, so until
             # mkGoApp/mkGoBinary defaulted doCheck to false (bead pg2-pla9d.2)
@@ -1189,6 +1208,26 @@
               gomod2nixToml = ./modules/jira/gomod2nix.toml;
               config = ./.golangci.yml;
             };
+            pg-nix-log-wrapped-golangci = goBuilders.mkGoLint {
+              pname = "pg-nix-log-wrapped";
+              src = ./modules/pg-nix-log-wrapped;
+              gomod2nixToml = ./modules/pg-nix-log-wrapped/gomod2nix.toml;
+              config = ./.golangci.yml;
+            };
+
+            # overlays.default MUST expose pkgs.pg-nix-log-wrapped: the pn
+            # telemetry home-manager option defaults its wrapperPath to
+            # lib.getExe pkgs.pg-nix-log-wrapped, which fails at eval in any
+            # consumer whose overlay set lacks the entry. Lazy attribute check
+            # only; nothing is built.
+            pg-nix-log-wrapped-overlay-entry =
+              let
+                applied = self.overlays.default pkgs pkgs;
+              in
+              if applied ? pg-nix-log-wrapped then
+                pkgs.runCommand "pg-nix-log-wrapped-overlay-entry" { } "touch $out"
+              else
+                throw "overlays.default does not expose pg-nix-log-wrapped";
 
             # Pattern-B regression guard for the Go builders (bead pg2-sjxhy).
             # base has no Pattern-B (local `replace`) module of its own, so
@@ -1554,6 +1593,7 @@
             pn
             pn-workspace-toml-enforce
             pjira
+            pg-nix-log-wrapped
             pg-go-mutate
             pg-go-mutate-tui
             pg-test-runner

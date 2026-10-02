@@ -1,0 +1,26 @@
+{"action":"start","id":217806381514752,"level":6,"parent":0,"text":"querying info about missing paths","type":0}
+{"action":"stop","id":217806381514752}
+{"action":"msg","level":3,"msg":"this derivation will be built:"}
+{"action":"msg","level":3,"msg":"  /nix/store/lm7jl7dwv3qdc4qlgrs77db44h9rkw23-kq2-longfix-52121705.drv"}
+{"action":"start","id":217806381514753,"level":0,"parent":0,"text":"","type":102}
+{"action":"start","id":217806381514754,"level":0,"parent":0,"text":"","type":104}
+{"action":"start","id":217806381514755,"level":0,"parent":0,"text":"","type":103}
+{"action":"result","fields":[0,0,0,0],"id":217806381514754,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":217806381514755,"type":105}
+{"action":"result","fields":[101,0],"id":217806381514753,"type":106}
+{"action":"result","fields":[100,0],"id":217806381514753,"type":106}
+{"action":"start","id":217806381514756,"level":6,"parent":0,"text":"querying info about missing paths","type":0}
+{"action":"stop","id":217806381514756}
+{"action":"result","fields":[0,1,0,0],"id":217806381514754,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":217806381514755,"type":105}
+{"action":"result","fields":[101,0],"id":217806381514753,"type":106}
+{"action":"result","fields":[100,0],"id":217806381514753,"type":106}
+{"action":"start","id":217806381514757,"level":1,"parent":0,"text":"waiting for lock on \u001b[35;1m'/nix/store/0zibnzqdrbiy5yrfw2zcg0sfd37x4hh6-kq2-longfix-52121705'\u001b[0m","type":111}
+{"action":"stop","id":217806381514757}
+{"action":"result","fields":[0,1,0,0],"id":217806381514754,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":217806381514755,"type":105}
+{"action":"result","fields":[101,0],"id":217806381514753,"type":106}
+{"action":"result","fields":[100,0],"id":217806381514753,"type":106}
+{"action":"stop","id":217806381514755}
+{"action":"stop","id":217806381514754}
+{"action":"stop","id":217806381514753}
