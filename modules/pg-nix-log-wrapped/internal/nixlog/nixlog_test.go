@@ -49,7 +49,7 @@ func feedFileStep(t *testing.T, name string, opts Options, step time.Duration) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	c := &collect{}
 	p := NewProcessor(c, opts)
 	sc := bufio.NewScanner(f)

@@ -193,7 +193,7 @@ func deadAddr(t *testing.T) string {
 		t.Fatal(err)
 	}
 	a := l.Addr().String()
-	l.Close()
+	_ = l.Close()
 	return a
 }
 

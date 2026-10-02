@@ -85,7 +85,7 @@ func TestCreateNamesModeAndExclusivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if !filepath.IsAbs(path) {
 		t.Errorf("path not absolute: %s", path)
 	}
@@ -102,7 +102,7 @@ func TestCreateNamesModeAndExclusivity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		g.Close()
+		_ = g.Close()
 		if seen[p] {
 			t.Fatalf("duplicate file name %s", p)
 		}

@@ -162,7 +162,7 @@ func appendLine(path, line string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fmt.Fprintln(f, line)
 }
 
@@ -189,7 +189,7 @@ func writeLog(s Spec) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if s.ChunkBytes <= 0 {
 		_, _ = f.Write(data)
 		return
@@ -209,7 +209,6 @@ func writeLog(s Spec) {
 type Dir struct {
 	path string
 	bin  string
-	n    int
 	mu   sync.Mutex
 }
 
@@ -228,13 +227,13 @@ func NewDir() (*Dir, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	dst, err := os.OpenFile(d.bin, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
 	if err != nil {
 		return nil, err
 	}
 	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
+		_ = dst.Close()
 		return nil, err
 	}
 	return d, dst.Close()

@@ -281,8 +281,8 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 		return nil, err
 	}
 	fail := func(err error) (*session, error) {
-		f.Close()
-		os.Remove(logPath)
+		_ = f.Close()
+		_ = os.Remove(logPath)
 		return nil, err
 	}
 	if strings.ContainsAny(logPath, "\r\n") {
@@ -399,8 +399,8 @@ func (s *session) run() int {
 // abandon releases everything when CMD never started.
 func (s *session) abandon() {
 	s.inv.End()
-	s.logFile.Close()
-	os.Remove(s.logPath)
+	_ = s.logFile.Close()
+	_ = os.Remove(s.logPath)
 	s.shutdown()
 }
 
@@ -437,7 +437,7 @@ func (s *session) finish(code int) {
 	}
 	s.inv.End(trace.WithTimestamp(end)) // (d)
 	s.rec.Invocation(filepath.Base(s.opts.Cmd[0]), end.Sub(s.start), code != 0)
-	s.logFile.Close()
+	_ = s.logFile.Close()
 	s.shutdown() // (e) bounded flush
 }
 
@@ -507,7 +507,7 @@ func writable(dir string, euid int) error {
 		return err
 	}
 	name := f.Name()
-	f.Close()
+	_ = f.Close()
 	return os.Remove(name)
 }
 

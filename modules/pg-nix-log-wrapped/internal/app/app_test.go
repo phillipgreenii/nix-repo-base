@@ -848,7 +848,7 @@ func TestCheck(t *testing.T) {
 	t.Run("unreachable", func(t *testing.T) {
 		l, _ := net.Listen("tcp", "127.0.0.1:0")
 		addr := l.Addr().String()
-		l.Close()
+		_ = l.Close()
 		r := newRig(t, fakecmd.Spec{})
 		r.setEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://"+addr)
 		r.d.Dial = dial
@@ -883,7 +883,7 @@ func TestCheck(t *testing.T) {
 func TestDeadCollectorNeverChangesExitCodeOrStderrAndIsBounded(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := l.Addr().String()
-	l.Close() // nothing listens: connection refused
+	_ = l.Close() // nothing listens: connection refused
 	r := newRig(t, fakecmd.Spec{Fixture: golden("local-build.jsonl"), Exit: 7, Stderr: "child-says-hi\n"})
 	r.d.NewTelemetry = DefaultDeps("x").NewTelemetry
 	r.d.FlushTimeout = 400 * time.Millisecond

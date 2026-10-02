@@ -29,7 +29,7 @@ func newFile(t *testing.T) (*os.File, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { f.Close() })
+	t.Cleanup(func() { _ = f.Close() })
 	return f, p
 }
 
@@ -39,7 +39,7 @@ func appendTo(t *testing.T, p, s string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.WriteString(s); err != nil {
 		t.Fatal(err)
 	}
