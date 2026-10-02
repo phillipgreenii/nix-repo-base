@@ -36,6 +36,24 @@ func TestStoreDeepClean_HasFlags(t *testing.T) {
 	}
 }
 
+// TestStoreDeepClean_HelpDocumentsPostGCKeys guards that the post-GC store.toml
+// keys (bead pg2-rvw5m) are documented in `pn store deepclean --help`.
+func TestStoreDeepClean_HelpDocumentsPostGCKeys(t *testing.T) {
+	root := newRootCmd("1.0.0")
+	root.SetArgs([]string{"store", "deepclean", "--help"})
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"post_gc_clear_dirs", "post_gc_commands"} {
+		if !bytes.Contains(buf.Bytes(), []byte(k)) {
+			t.Errorf("deepclean --help missing %s", k)
+		}
+	}
+}
+
 // TestConfirmDeepClean exercises the confirmation gate (bead pg2-w0y8u) without
 // touching the real runner: a dry run or --yes proceeds; a non-interactive run
 // without --yes is refused; an interactive run honors the y/N answer.

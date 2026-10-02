@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -73,7 +74,9 @@ var prunedCategories = []string{
 // DeepClean prunes old profile generations, orphaned standalone home-manager
 // profiles, stale ~/.nix-profiles entries, result symlinks, NH temp roots, and
 // (in non-dry-run mode) runs `sudo nix-store --gc` followed by
-// `nix store optimise`, then reports a summary. It also reports (but never
+// `nix store optimise`, then reports a summary. Right after the GC it also
+// clears the caches / runs the commands configured as post_gc_clear_dirs /
+// post_gc_commands in store.toml (see postgc.go). It also reports (but never
 // prunes) Flox's on-disk footprint -- Flox has no local generation history
 // analogous to the others; see flox.go.
 //
@@ -189,13 +192,22 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 		// nonInteractive=false: deepclean is interactive/mutating, so sudo may
 		// prompt here as before (unlike read-only `audit --full`).
 		fmt.Fprintf(out, "%s\n", deadPathsSize(ctx, s.runner, false))
+		s.printPostGCPlan(out, cfg)
 		return nil
 	}
 
 	// Live run.
 	fmt.Fprintf(out, "Store before: %s\n", storeSize(ctx, s.runner))
-	if _, err := s.runner.Run(ctx, "sudo", []string{"nix-store", "--gc"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
-		return fmt.Errorf("nix-store --gc: %w", err)
+	_, gcErr := s.runner.Run(ctx, "sudo", []string{"nix-store", "--gc"}, exec.RunOptions{Stdout: out, Stderr: out})
+	// Post-GC cache clearing (store.toml post_gc_clear_dirs / post_gc_commands)
+	// runs even when the GC itself failed: a GC that died midway may already
+	// have deleted store paths that cached binaries link to, and clearing a
+	// regenerable cache needlessly is harmless while leaving a dangling one is
+	// not. A post-GC failure never stops the optimise step; it is reported and
+	// surfaces in the returned error at the end.
+	postErr := s.runPostGC(ctx, out, errOut, cfg)
+	if gcErr != nil {
+		return errors.Join(fmt.Errorf("nix-store --gc: %w", gcErr), wrapPostGC(postErr))
 	}
 	// Hard-link duplicate files in the surviving store paths. Runs AFTER the GC
 	// so it never optimises paths that are about to be deleted. This is the
@@ -206,7 +218,7 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	// privileged hard-linking on the caller's behalf.
 	fmt.Fprintln(out, "Optimising store (hard-linking duplicate files)...")
 	if _, err := s.runner.Run(ctx, "nix", []string{"store", "optimise"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
-		return fmt.Errorf("nix store optimise: %w", err)
+		return errors.Join(fmt.Errorf("nix store optimise: %w", err), wrapPostGC(postErr))
 	}
 	fmt.Fprintf(out, "Store after:  %s\n", storeSize(ctx, s.runner))
 	fmt.Fprintln(out)
@@ -217,7 +229,15 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	if summary := runtimeRootsSummary(ctx, s.runner); summary != "" {
 		fmt.Fprintln(out, summary)
 	}
-	return nil
+	return wrapPostGC(postErr)
+}
+
+// wrapPostGC labels a post-GC step failure (nil stays nil).
+func wrapPostGC(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("post-GC cleanup: %w", err)
 }
 
 // printPrunedCounts emits the prunedCategories prune counts in fixed order.

@@ -12,12 +12,22 @@ type Config struct {
 	SearchDirs []string
 	KeepDays   int
 	KeepCount  int
+	// PostGCClearDirs are directories removed (rm -rf) after the GC finishes,
+	// for caches that may hold references into store paths the GC just deleted.
+	// A leading "~" or "~/" expands to $HOME; anything else must be absolute.
+	PostGCClearDirs []string
+	// PostGCCommands are argv-form commands run (in order) after the GC and
+	// after PostGCClearDirs. A failing command is reported but does not stop
+	// the remaining ones.
+	PostGCCommands [][]string
 }
 
 type rawConfig struct {
-	SearchDirs []string `toml:"search_dirs"`
-	KeepDays   *int     `toml:"keep_days"`
-	KeepCount  *int     `toml:"keep_count"`
+	SearchDirs      []string   `toml:"search_dirs"`
+	KeepDays        *int       `toml:"keep_days"`
+	KeepCount       *int       `toml:"keep_count"`
+	PostGCClearDirs []string   `toml:"post_gc_clear_dirs"`
+	PostGCCommands  [][]string `toml:"post_gc_commands"`
 }
 
 // defaultConfig returns the built-in defaults (14d / 3 / no search dirs).
@@ -34,6 +44,8 @@ func parseStoreConfig(data []byte) Config {
 		return c
 	}
 	c.SearchDirs = raw.SearchDirs
+	c.PostGCClearDirs = raw.PostGCClearDirs
+	c.PostGCCommands = raw.PostGCCommands
 	if raw.KeepDays != nil {
 		c.KeepDays = *raw.KeepDays
 	}

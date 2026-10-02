@@ -74,7 +74,8 @@ Subcommands:
   audit      Read-only report of profile generations, closure sizes, and store usage.
   deepclean  Prune old generations and stale GC roots, garbage-collect, then optimise the store.
 
-Configuration lives in ~/.config/pn/store.toml (search_dirs, keep_days, keep_count).
+Configuration lives in ~/.config/pn/store.toml (search_dirs, keep_days, keep_count,
+post_gc_clear_dirs, post_gc_commands).
 See docs/pn-store.md for user journeys and retention semantics.`,
 	}
 	s.AddCommand(storeAuditCmd())
@@ -140,6 +141,15 @@ orphaned Flox activation staging directories under ~/.cache/flox/process/
 After pruning it runs 'sudo nix-store --gc' then 'nix store optimise' (hard-links
 duplicate files; this is the batched replacement for auto-optimise-store, which
 is disabled so flake-update fetches stay fast).
+
+Right after the GC it runs the post-GC step configured in ~/.config/pn/store.toml,
+for caches whose binaries may link to store paths the GC just deleted:
+  post_gc_clear_dirs = ["~/.cache/some-binary-cache"]   # dirs removed (rm -rf); "~/" expands to $HOME,
+                                                        # otherwise absolute; a missing dir is skipped
+  post_gc_commands   = [["some-tool", "--clear"]]       # argv-form commands run after the dirs
+A failing entry is reported and does not stop the others (nor 'nix store optimise'),
+but makes deepclean exit non-zero. The step also runs if the GC itself fails, and
+--dry-run only lists what would run. Neither key is set by default.
 
 Finally, shows runtime roots summary (store paths held by running processes that
 could be freed by restarting applications).`,

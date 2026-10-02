@@ -10,11 +10,13 @@
 
 ## Configuration — `~/.config/pn/store.toml`
 
-| Key           | Type       | Default | Meaning                                                                              |
-| ------------- | ---------- | ------- | ------------------------------------------------------------------------------------ |
-| `search_dirs` | `[string]` | `[]`    | Roots scanned for devbox project profiles and `result` symlinks. Use absolute paths. |
-| `keep_days`   | `int`      | `14`    | Time-based retention: generations newer than this are protected from pruning.        |
-| `keep_count`  | `int`      | `3`     | Count-based retention: the N most recent generations are protected from pruning.     |
+| Key                  | Type         | Default | Meaning                                                                                                                                      |
+| -------------------- | ------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_dirs`        | `[string]`   | `[]`    | Roots scanned for devbox project profiles and `result` symlinks. Use absolute paths.                                                         |
+| `keep_days`          | `int`        | `14`    | Time-based retention: generations newer than this are protected from pruning.                                                                |
+| `keep_count`         | `int`        | `3`     | Count-based retention: the N most recent generations are protected from pruning.                                                             |
+| `post_gc_clear_dirs` | `[string]`   | `[]`    | Directories removed (`rm -rf`) right after the GC (`deepclean` only). `~/` expands to `$HOME`; otherwise absolute. A missing dir is skipped. |
+| `post_gc_commands`   | `[[string]]` | `[]`    | Argv-form commands run, in order, after the GC and after `post_gc_clear_dirs`.                                                               |
 
 A missing file or missing key falls back to the defaults above. Example:
 
@@ -23,6 +25,28 @@ search_dirs = ["/Users/me/projects"]
 keep_days = 7
 keep_count = 5
 ```
+
+### Post-GC hook (`post_gc_clear_dirs`, `post_gc_commands`)
+
+Some caches hold executables that link to `/nix/store` paths; `nix-store --gc` can delete those
+paths and leave the cached binaries dangling. `pn` stays generic: the repo that owns such a cache
+lists it in its home config (`phillipgreenii.pn.store.postGcClearDirs` / `postGcCommands` in the
+home-manager module, rendered into `store.toml`), and `pn` knows no tool-specific paths.
+
+```toml
+post_gc_clear_dirs = ["~/.cache/some-binary-cache"]
+post_gc_commands = [["some-tool", "--clear"]]
+```
+
+Semantics (`pn store deepclean`, live runs only):
+
+- Runs immediately after `sudo nix-store --gc`, before `nix store optimise`, and also when the GC
+  itself fails (a GC that died midway may already have deleted linked paths).
+- Every entry is attempted. A failing entry is reported on stderr, does not stop the others (or the
+  optimise step), and makes `deepclean` exit non-zero. A missing directory is not a failure.
+- `$HOME` itself, `/`, and relative paths are refused.
+- `--dry-run` only lists what would run (`Would run after GC:`). With neither key set nothing is
+  printed.
 
 The `keep_days` value is reused as the mtime threshold for stale `~/.nix-profiles/` entries
 and for orphaned Flox activation temp dirs (`Flox Temp Dirs`, deepclean only).

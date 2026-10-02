@@ -69,6 +69,8 @@ let
     search_dirs = cfg.store.searchDirs;
     keep_days = cfg.store.keepDays;
     keep_count = cfg.store.keepCount;
+    post_gc_clear_dirs = cfg.store.postGcClearDirs;
+    post_gc_commands = cfg.store.postGcCommands;
   };
 in
 {
@@ -94,6 +96,37 @@ in
         type = types.ints.unsigned;
         default = 3;
         description = "pn store-deepclean: keep at least this many most-recent generations regardless of age.";
+      };
+
+      postGcClearDirs = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "/Users/me/.cache/some-binary-cache" ];
+        description = ''
+          pn store-deepclean: directories removed (rm -rf) right after the store
+          GC, written to `store.toml` as `post_gc_clear_dirs`. For caches whose
+          binaries may link to store paths the GC just deleted. A leading `~/`
+          expands to $HOME at run time; anything else must be an absolute path.
+          A missing directory is skipped. pn itself knows no tool-specific
+          paths: the repo that owns the cache supplies them here.
+        '';
+      };
+
+      postGcCommands = mkOption {
+        type = types.listOf (types.listOf types.str);
+        default = [ ];
+        example = [
+          [
+            "some-tool"
+            "--clear-cache"
+          ]
+        ];
+        description = ''
+          pn store-deepclean: argv-form commands run, in order, after the store
+          GC and after `postGcClearDirs`. Written to `store.toml` as
+          `post_gc_commands`. A failing command is reported and does not stop
+          the others, but makes deepclean exit non-zero.
+        '';
       };
     };
 
@@ -132,12 +165,14 @@ in
     # The wrapper package is added ONLY when telemetry is enabled.
     home.packages = [ cfg.package ] ++ lib.optional tcfg.enable pkgs.pg-nix-log-wrapped;
 
-    # Install store config only when searchDirs is non-empty (unchanged gating;
-    # keepDays/keepCount default to the tool's prior hardcoded 14/3).
+    # Install store config when searchDirs or any post-GC hook is set
+    # (keepDays/keepCount default to the tool's prior hardcoded 14/3).
     home.file =
-      lib.optionalAttrs (cfg.store.searchDirs != [ ]) {
-        ".config/pn/store.toml".source = storeToml;
-      }
+      lib.optionalAttrs
+        (cfg.store.searchDirs != [ ] || cfg.store.postGcClearDirs != [ ] || cfg.store.postGcCommands != [ ])
+        {
+          ".config/pn/store.toml".source = storeToml;
+        }
       // lib.optionalAttrs tcfg.enable {
         ".config/pn/telemetry.toml".source = telemetryToml;
       };
