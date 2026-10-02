@@ -89,10 +89,12 @@ _field() {
   [[ $stderr == "pg-hooks: unknown command: frobnicate"* ]]
 }
 
-@test "fix is not available yet and exits 2" {
-  run --separate-stderr "$PGH_T_SUT" fix
+@test "fix takes no arguments (exit 2)" {
+  _present
+  run --separate-stderr "$PGH_T_SUT" fix somefile
   [ "$status" -eq 2 ]
-  [[ $stderr == "pg-hooks: fix is not implemented yet"* ]]
+  [ -z "$output" ]
+  [[ $stderr == "pg-hooks: fix: unexpected argument: somefile"* ]]
 }
 
 # --- status ------------------------------------------------------------------
@@ -627,4 +629,386 @@ _fake_legacy_prek() {
   [ "$status" -eq 0 ]
   [ "$(_logged_args | tail -n 1)" = "a dir/f g.txt" ]
   [ "$(grep '^pwd=' "$PGH_T_LOG" | sed 's/^pwd=//')" = "$(cd "$real/repo" && pwd -P)" ]
+}
+
+# --- fix ---------------------------------------------------------------------
+#
+# Stand-in fixers live in the fake bundle's bin/ (they are NOT on PATH), log to
+# $GFH_ROOT/fixer.log, and are described by a fake fixers.json.
+
+# _mk_fixer <name> <sed-script>: a fixer that applies <sed-script> to each
+# argument in place and logs "<name> <argv>" (one line per invocation).
+_mk_fixer() {
+  local name=$1 script=$2
+  {
+    printf '#!/bin/sh\n'
+    printf 'printf '\''%%s %%s\\n'\'' '\''%s'\'' "$*" >>'\''%s'\''\n' "$name" "$GFH_ROOT/fixer.log"
+    printf 'for f in "$@"; do\n'
+    printf '  sed '\''%s'\'' "$f" >"$f.fixtmp" && cat "$f.fixtmp" >"$f"\n' "$script"
+    printf '  rm -f "$f.fixtmp"\n'
+    printf 'done\n'
+    printf 'exit 0\n'
+  } >"$PGH_T_BUNDLE/bin/$name"
+  chmod +x "$PGH_T_BUNDLE/bin/$name"
+}
+
+# _fixers <json>: write fixers.json into the fake bundle; @BIN@ is replaced
+# with the bundle's bin directory.
+_fixers() {
+  printf '%s\n' "${1//@BIN@/$PGH_T_BUNDLE/bin}" >"$PGH_T_BUNDLE/fixers.json"
+}
+
+# _one_fixer: the common case, a single fixer turning "bad" into "good".
+_one_fixer() {
+  _mk_fixer fixbad 's/bad/good/g'
+  _fixers '[{"name":"fixbad","command":"@BIN@/fixbad","mode":"files","includes":[],"excludes":[]}]'
+}
+
+# _stage <path>...: write "bad" into each file and git add it.
+_stage() {
+  local f
+  for f in "$@"; do
+    mkdir -p "$(dirname "$f")"
+    printf 'bad\n' >"$f"
+    command git add -- "$f"
+  done
+}
+
+_fixer_log() { cat "$GFH_ROOT/fixer.log" 2>/dev/null || true; }
+
+_staged_content() { command git show ":$1"; }
+
+@test "fix fixes and restages only staged files" {
+  _present
+  _one_fixer
+  _stage a.txt
+  printf 'bad\n' >b.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+  [ "$(cat a.txt)" = good ]
+  [ "$(_staged_content a.txt)" = good ]
+  [ "$(_fixer_log)" = "fixbad a.txt" ]
+  # the fixer lives in the bundle, not on PATH
+  ! command -v fixbad
+}
+
+@test "fix leaves untracked and unstaged files untouched" {
+  _present
+  _one_fixer
+  printf 'bad\n' >>file.txt
+  printf 'bad\n' >untracked.txt
+  _stage a.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log)" = "fixbad a.txt" ]
+  grep -q bad file.txt
+  [ "$(cat untracked.txt)" = bad ]
+  [ "$(command git status --porcelain)" = "A  a.txt
+ M file.txt
+?? untracked.txt" ]
+}
+
+@test "fix skips a file with staged and unstaged changes, lists every skipped file, exit 11" {
+  _present
+  _one_fixer
+  _stage s1.txt "s two.txt" g.txt
+  printf 'more\n' >>s1.txt
+  printf 'more\n' >>"s two.txt"
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 11 ]
+  [ -z "$output" ]
+  [ "$stderr" = "pg-hooks: fix skipped s two.txt: it has staged and unstaged changes. Run: git add s\\ two.txt && pg-hooks fix (or git restore --staged s\\ two.txt)
+pg-hooks: fix skipped s1.txt: it has staged and unstaged changes. Run: git add s1.txt && pg-hooks fix (or git restore --staged s1.txt)" ]
+  # the clean file was fixed and restaged; the skipped ones are untouched
+  [ "$(cat g.txt)" = good ]
+  [ "$(_staged_content g.txt)" = good ]
+  [ "$(_fixer_log)" = "fixbad g.txt" ]
+  [ "$(_staged_content s1.txt)" = bad ]
+  [ "$(cat s1.txt)" = "bad
+more" ]
+}
+
+@test "fix refuses during a merge (exit 2)" {
+  _present
+  _one_fixer
+  command git checkout -q -b other
+  printf 'o\n' >other.txt
+  command git add other.txt
+  command git commit -q -m other
+  command git checkout -q main
+  command git merge -q --no-commit --no-ff other
+  [ -e "$(command git rev-parse --absolute-git-dir)/MERGE_HEAD" ]
+  _stage a.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 2 ]
+  [[ $stderr == "pg-hooks: fix refused: a merge is in progress"* ]]
+  [ "$(cat a.txt)" = bad ]
+  [ -z "$(_fixer_log)" ]
+}
+
+@test "fix refuses during a rebase or a cherry-pick (exit 2)" {
+  _present
+  _one_fixer
+  _stage a.txt
+  local gd
+  gd=$(command git rev-parse --absolute-git-dir)
+  mkdir "$gd/rebase-merge"
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 2 ]
+  [[ $stderr == "pg-hooks: fix refused: a rebase is in progress"* ]]
+  rmdir "$gd/rebase-merge"
+  : >"$gd/CHERRY_PICK_HEAD"
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 2 ]
+  [[ $stderr == "pg-hooks: fix refused: a cherry-pick is in progress"* ]]
+  [ "$(cat a.txt)" = bad ]
+}
+
+@test "fix runs fixers in fixers.json order" {
+  _present
+  _mk_fixer first 's/bad/bad/'
+  _mk_fixer second 's/bad/bad/'
+  _mk_fixer inserted 's/bad/bad/'
+  _fixers '[
+    {"name":"first","command":"@BIN@/first","mode":"files","includes":[],"excludes":[]},
+    {"name":"inserted","command":"@BIN@/inserted","mode":"files","includes":[],"excludes":[]},
+    {"name":"second","command":"@BIN@/second","mode":"files","includes":[],"excludes":[]}
+  ]'
+  _stage a.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log)" = "first a.txt
+inserted a.txt
+second a.txt" ]
+}
+
+@test "fix per-file mode calls a fixer once per staged .nix file" {
+  _present
+  _mk_fixer statix 's/bad/good/'
+  _fixers '[{"name":"statix","command":"@BIN@/statix fix","mode":"per-file","includes":["*.nix"],"excludes":[]}]'
+  _stage a.nix sub/b.nix c.nix d.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log | sort)" = "statix fix a.nix
+statix fix c.nix
+statix fix sub/b.nix" ]
+  [ "$(cat sub/b.nix)" = good ]
+  [ "$(cat d.txt)" = bad ]
+}
+
+@test "fix accepts an argv array command and passes the arguments through" {
+  _present
+  _mk_fixer ruff 's/bad/good/'
+  _fixers '[{"name":"ruff","command":["@BIN@/ruff","check","--fix"],"mode":"files","includes":["*.py"],"excludes":[]}]'
+  _stage a.py
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log)" = "ruff check --fix a.py" ]
+  [ "$(_staged_content a.py)" = good ]
+}
+
+@test "fix never adds an unsafe-fixes flag to a ruff command" {
+  _present
+  _mk_fixer ruff 's/bad/good/'
+  _fixers '[{"name":"ruff","command":"@BIN@/ruff check --fix","mode":"files","includes":["*.py"],"excludes":[]}]'
+  _stage a.py b.py
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log)" = "ruff check --fix a.py b.py" ]
+  ! _fixer_log | grep -q -e '--unsafe-fixes'
+}
+
+@test "fix runs treefmt to convergence within 5 passes; a second run is a no-op" {
+  _present
+  # One hop per invocation: step1 -> step2 -> step3 -> done.
+  _mk_fixer treefmt 's/step3/done/;s/step2/step3/;s/step1/step2/'
+  _fixers '[{"name":"treefmt","command":"@BIN@/treefmt","mode":"files","includes":[],"excludes":[]}]'
+  printf 'step1\n' >a.md
+  command git add a.md
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(cat a.md)" = "done" ]
+  [ "$(_staged_content a.md)" = "done" ]
+  [ "$(_fixer_log | wc -l | tr -d ' ')" = 4 ]
+  local before
+  before=$(command git ls-files -s)
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(command git ls-files -s)" = "$before" ]
+  [ "$(_fixer_log | wc -l | tr -d ' ')" = 5 ]
+}
+
+@test "fix caps treefmt at 5 passes and says so when it does not converge" {
+  _present
+  _mk_fixer treefmt 's/$/x/'
+  _fixers '[{"name":"treefmt","command":"@BIN@/treefmt","mode":"files","includes":[],"excludes":[]}]'
+  _stage a.md
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log | wc -l | tr -d ' ')" = 5 ]
+  [ "$stderr" = "pg-hooks: fixer treefmt did not converge in 5 passes; the files may change again on the next run." ]
+}
+
+@test "fix applies the repo excludes as a grep -E regex and fixer includes/excludes as globs" {
+  _present
+  _mk_fixer mdfix 's/bad/good/'
+  _fixers '[{"name":"mdfix","command":"@BIN@/mdfix","mode":"files","includes":["*.md"],"excludes":["docs/skip/*"]}]'
+  printf '{"exclude":"(^_sources/|[.]lock$)"}\n' >"$PGH_T_BUNDLE/prek-config.json"
+  _stage a.md docs/skip/b.md docs/c.md d.txt _sources/e.md x.lock
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log | tr ' ' '\n' | sort | tr '\n' ' ')" = "a.md docs/c.md mdfix " ]
+  [ "$(cat _sources/e.md)" = bad ]
+  [ "$(cat docs/skip/b.md)" = bad ]
+  [ "$(cat d.txt)" = bad ]
+}
+
+@test "fix batches at most 200 paths per invocation" {
+  _present
+  _one_fixer
+  local i
+  for i in $(seq 1 450); do
+    printf 'bad\n' >"f$i.txt"
+  done
+  command git add -- f*.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log | awk '{print NF - 1}' | tr '\n' ' ')" = "200 200 50 " ]
+  [ "$(command git diff --name-only | wc -l | tr -d ' ')" = 0 ]
+  [ "$(_staged_content f450.txt)" = good ]
+}
+
+@test "fix handles paths with spaces and runs from a subdirectory" {
+  _present
+  _one_fixer
+  _stage "a dir/f g.txt"
+  cd "a dir"
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$(_fixer_log)" = "fixbad a dir/f g.txt" ]
+  [ "$(_staged_content "a dir/f g.txt")" = good ]
+}
+
+@test "fix reports a failing fixer with its name, files and full output, exit 10" {
+  _present
+  printf '#!/bin/sh\necho "boom line one"\necho "boom line two" >&2\nexit 3\n' >"$PGH_T_BUNDLE/bin/boom"
+  chmod +x "$PGH_T_BUNDLE/bin/boom"
+  _mk_fixer after 's/bad/good/'
+  _fixers '[
+    {"name":"boom","command":"@BIN@/boom","mode":"files","includes":[],"excludes":[]},
+    {"name":"after","command":"@BIN@/after","mode":"files","includes":[],"excludes":[]}
+  ]'
+  _stage x.txt y.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 10 ]
+  [ -z "$output" ]
+  [ "$stderr" = "pg-hooks: fixer boom failed on x.txt y.txt (exit 3); its output follows:
+boom line one
+boom line two
+Fix by hand, git add the file(s), then rerun pg-hooks fix." ]
+  [ -z "$(_fixer_log)" ]
+}
+
+@test "fix treats a fixer that exits 1 after fixing a file as success" {
+  _present
+  {
+    printf '#!/bin/sh\nrc=0\n'
+    printf 'for f in "$@"; do\n'
+    printf '  if grep -q bad "$f"; then\n'
+    printf '    sed '\''s/bad/good/'\'' "$f" >"$f.fixtmp" && cat "$f.fixtmp" >"$f"\n'
+    printf '    rm -f "$f.fixtmp"\n    rc=1\n  fi\ndone\nexit "$rc"\n'
+  } >"$PGH_T_BUNDLE/bin/fixes-and-fails"
+  chmod +x "$PGH_T_BUNDLE/bin/fixes-and-fails"
+  _fixers '[{"name":"eof","command":"@BIN@/fixes-and-fails","mode":"files","includes":[],"excludes":[]}]'
+  _stage a.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  [ "$(_staged_content a.txt)" = good ]
+}
+
+@test "fix appends one timings.jsonl line per fixer that ran" {
+  _present
+  _mk_fixer one 's/bad/good/'
+  _mk_fixer two 's/x/x/'
+  _mk_fixer skipped 's/x/x/'
+  _fixers '[
+    {"name":"one","command":"@BIN@/one","mode":"files","includes":[],"excludes":[]},
+    {"name":"two","command":"@BIN@/two","mode":"files","includes":[],"excludes":[]},
+    {"name":"skipped","command":"@BIN@/skipped","mode":"files","includes":["*.nomatch"],"excludes":[]}
+  ]'
+  _stage a.txt b.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  local t="$HOME/.local/state/pg-hooks/timings.jsonl"
+  [ "$(wc -l <"$t" | tr -d ' ')" = 2 ]
+  jq -e -s '
+    all(.[]; (keys | sort) == ["exit", "files", "seconds", "tool"]
+      and (.files | type == "number") and (.seconds | type == "number") and (.exit == 0))
+    and (map(.tool) == ["one", "two"]) and (.[0].files == 2)' "$t" >/dev/null
+  # a second run appends (does not truncate)
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$(wc -l <"$t" | tr -d ' ')" = 4 ]
+}
+
+@test "fix honours XDG_STATE_HOME and tolerates an unwritable state dir" {
+  _present
+  _one_fixer
+  _stage a.txt
+  export XDG_STATE_HOME="$GFH_ROOT/xdg"
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ -s "$GFH_ROOT/xdg/pg-hooks/timings.jsonl" ]
+  # a regular file where the directory should be: mkdir fails, the run does not
+  : >"$GFH_ROOT/notadir"
+  export XDG_STATE_HOME="$GFH_ROOT/notadir"
+  _stage b.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  [ "$(_staged_content b.txt)" = good ]
+}
+
+@test "fix prints one progress line after the threshold and none below it" {
+  _present
+  printf '#!/bin/sh\nsleep 2\n' >"$PGH_T_BUNDLE/bin/slow"
+  chmod +x "$PGH_T_BUNDLE/bin/slow"
+  _fixers '[{"name":"slow","command":"@BIN@/slow","mode":"files","includes":[],"excludes":[]}]'
+  _stage a.txt
+  PG_HOOKS_PROGRESS_AFTER_S=1 run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "pg-hooks: running fixers in fixture..." ]
+  PG_HOOKS_PROGRESS_AFTER_S=99 run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+}
+
+@test "fix with no bundle prints the notice and exits 13" {
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 13 ]
+  [ -z "$output" ]
+  [ "$stderr" = "pg-hooks: no hook bundle for repo; fix hooks not run. Fix: (cd $(dirname "$(_common_dir)") && nix run .#install-pre-commit-hooks)" ]
+}
+
+@test "fix on a bundle without a usable fixers.json exits 12" {
+  _present
+  _stage a.txt
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 12 ]
+  [[ $stderr == "pg-hooks: hook bundle for fixture is broken (fixers.json is missing or invalid)"* ]]
+}
+
+@test "fix with nothing staged exits 0 silently; outside a repo exits 2" {
+  _present
+  _one_fixer
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 0 ]
+  [ -z "$output$stderr" ]
+  mkdir -p "$GFH_WORK/nonrepo"
+  cd "$GFH_WORK/nonrepo"
+  run --separate-stderr "$PGH_T_SUT" fix
+  [ "$status" -eq 2 ]
+  [[ $stderr == pg-hooks:* ]]
 }

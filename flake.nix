@@ -339,6 +339,10 @@
             # explain, run). Per-clone hook bundle program, bead pg2-pla9d.
             pg-hooks = pgHooksScripts.pg-hooks.script;
 
+            # pre-commit-fix: the second name for `pg-hooks fix` (its own tiny
+            # wrapper: agents and tool approvers match commands by exact name).
+            pre-commit-fix = pgHooksScripts.pre-commit-fix.script;
+
             # gogate: sequential Go validation gate (fmt/build/vet/test) with
             # fixed output truncation and a machine-readable PASS/FAIL verdict.
             gogate = gogateScripts.gogate.script;
@@ -614,6 +618,93 @@
                   jq -e 'type == "array" and (map(.name) | index("statix")) != null and all(has("command") and has("mode"))' "$b/fixers.json" >/dev/null
                   jq -e '.stampPaths == [] or (.stampPaths | type == "array")' "$b/meta.json" >/dev/null
                   jq -e '.stages == (input | keys)' "$b/meta.json" "$b/stages.json" >/dev/null
+                  touch $out
+                '';
+
+            # `pg-hooks fix` against the REAL bundle's fixers (bead pg2-pla9d.9):
+            # the bats suite uses stand-in fixers, so this is the one place the
+            # shipped treefmt / statix / trailing-whitespace / end-of-file-fixer
+            # commands run end to end. A fixture repo with an unformatted .nix,
+            # .md and .txt file is staged, fixed, and fixed again: the first run
+            # MUST change every file (the check is not vacuous) and restage them
+            # with no unstaged remainder; the second run MUST be a no-op.
+            pg-hooks-fix-real-tools =
+              pkgs.runCommand "check-pg-hooks-fix-real-tools"
+                {
+                  nativeBuildInputs = [
+                    pkgs.git
+                    pkgs.jq
+                  ];
+                }
+                ''
+                  bundle=${self.legacyPackages.${system}.pgHooksBundle}
+                  pgh=${pgHooksScripts.pg-hooks.script}/bin/pg-hooks
+                  export HOME="$TMPDIR/home" GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null
+                  mkdir -p "$HOME"
+
+                  repo="$TMPDIR/repo"
+                  mkdir -p "$repo"
+                  cd "$repo"
+                  git init -q -b main
+                  git config user.email check@bashfixture.invalid
+                  git config user.name "pg-hooks-fix-real-tools"
+                  git config core.hooksPath /dev/null
+                  # treefmt's project root marker (projectRootFile = "flake.nix").
+                  printf '{ }\n' >flake.nix
+                  git add flake.nix
+                  git commit -q -m root
+
+                  # Install the real bundle the way the installer lays it out.
+                  mkdir -p .git/pg-hooks/gen-1
+                  ln -s "$bundle" .git/pg-hooks/gen-1/bundle
+                  printf 'gen-1\n' >.git/pg-hooks/current
+
+                  printf '{a=1;b   =  2;}\n' >bad.nix
+                  printf 'foo: if foo == true then 1 else 2\n' >lint.nix
+                  printf '#   Title\n\n*   item one\n*   item two\n\n|a|b|\n|-|-|\n|1|2|\n' >bad.md
+                  printf 'hello   \nworld' >bad.txt
+                  cp bad.nix bad.nix.orig
+                  cp lint.nix lint.nix.orig
+                  cp bad.md bad.md.orig
+                  cp bad.txt bad.txt.orig
+                  git add bad.nix lint.nix bad.md bad.txt
+
+                  "$pgh" fix || { echo "FAIL: first pg-hooks fix exited $?" >&2; exit 1; }
+
+                  for f in bad.nix lint.nix bad.md bad.txt; do
+                    if [ "$(git show ":$f" | git hash-object --stdin)" = "$(git hash-object "$f.orig")" ]; then
+                      echo "FAIL: $f was not changed by pg-hooks fix (vacuous check)" >&2
+                      exit 1
+                    fi
+                  done
+                  if ! git diff --quiet -- bad.nix lint.nix bad.md bad.txt; then
+                    echo "FAIL: pg-hooks fix left unstaged changes (it must restage)" >&2
+                    git diff --no-ext-diff --stat >&2
+                    exit 1
+                  fi
+                  if git show :lint.nix | grep -q '== true'; then
+                    echo "FAIL: statix did not fix lint.nix" >&2
+                    exit 1
+                  fi
+                  if git show :bad.txt | grep -q ' $'; then
+                    echo "FAIL: trailing whitespace remains in bad.txt" >&2
+                    exit 1
+                  fi
+                  if [ -n "$(git show :bad.txt | tail -c 1)" ]; then
+                    echo "FAIL: bad.txt does not end in a newline" >&2
+                    exit 1
+                  fi
+
+                  before=$(git ls-files -s)
+                  "$pgh" fix || { echo "FAIL: second pg-hooks fix exited $?" >&2; exit 1; }
+                  if [ "$(git ls-files -s)" != "$before" ]; then
+                    echo "FAIL: second pg-hooks fix changed the index (not idempotent)" >&2
+                    exit 1
+                  fi
+                  if ! git diff --quiet -- bad.nix lint.nix bad.md bad.txt; then
+                    echo "FAIL: second pg-hooks fix left unstaged changes" >&2
+                    exit 1
+                  fi
                   touch $out
                 '';
 
@@ -1817,6 +1908,7 @@
             pg-go-mutate-tui
             pg-test-runner
             pg-hooks
+            pre-commit-fix
             gogate
             pg-git-check-identity
             ;

@@ -23,7 +23,8 @@ Commands:
   run <stage> [files...|--all-files] [-- prek-args]
                          Run a stage's hooks now (staged files by default)
   run pre-land [<ref>]   Run the pre-commit hooks over the branch diff
-  fix                    Apply the formatters to staged files (not yet available)
+  fix                    Apply the repo's fixers to the staged files and restage them
+                         (also installed as: pre-commit-fix)
 
 Common tasks:
   before committing:  git add <files>; pg-hooks fix; git commit
@@ -37,16 +38,18 @@ Options:
 Exit codes:
   0   success or nothing to do (a legacy repo counts as success)
   2   usage error, unknown stage, refused operation, or not in a git repo
-  10  a hook failed
+  10  a hook or fixer failed
   11  file(s) skipped (staged and unstaged changes)
   12  bundle broken (pointer invalid or bin/prek not runnable)
-  13  no bundle
+  13  no bundle (run, fix, list, explain)
   14  status only: bundle stale
   15  status only: hooks unreachable (core.hooksPath bypasses <common-dir>/hooks)
   16  status only: clone relocated
 
 Environment:
   PG_HOOKS_PROGRESS_AFTER_S  print one progress line after N seconds (default 3; 0 disables)
+  XDG_STATE_HOME             fix appends timings to $XDG_STATE_HOME/pg-hooks/timings.jsonl
+                             (default ~/.local/state)
 HELP
 }
 
@@ -600,6 +603,315 @@ cmd_run() {
   return 0
 }
 
+# --- fix ---------------------------------------------------------------------
+#
+# pg-hooks fix (spec 5.2): run the bundle's fixers over the STAGED files of this
+# checkout, in the order of the bundle's fixers.json, and restage only the files
+# a fixer changed. Never `prek run`: prek's hooks are check-mode.
+
+FIX_BATCH=200
+FIX_CONVERGE_MAX=5
+
+# fix_refuse_in_progress: exit 2 while a merge, rebase, cherry-pick, revert or
+# `git am` is in progress in this checkout (its git dir is per worktree).
+fix_refuse_in_progress() {
+  local g=$PGH_GITDIR what=""
+  if [[ -e $g/MERGE_HEAD ]]; then
+    what=merge
+  elif [[ -d $g/rebase-merge || -d $g/rebase-apply ]]; then
+    what=rebase
+  elif [[ -e $g/CHERRY_PICK_HEAD ]]; then
+    what=cherry-pick
+  elif [[ -e $g/REVERT_HEAD ]]; then
+    what=revert
+  fi
+  if [[ -n $what ]]; then
+    die "fix refused: a $what is in progress in this checkout; finish or abort it first (fixers restage files, which would corrupt it)"
+  fi
+  return 0
+}
+
+# fix_glob_match <path> <glob>...: status 0 when <path> matches any glob. A glob
+# is a shell pattern, so `*` also crosses `/` (`*.nix` matches a/b/c.nix).
+fix_glob_match() {
+  local f=$1 g
+  shift
+  for g in "$@"; do
+    # shellcheck disable=SC2254  # the glob is meant to be a pattern, not a literal
+    case $f in $g) return 0 ;; esac
+  done
+  return 1
+}
+
+# fix_hash_files <file>...: fill FIX_HASHES (parallel to the arguments) with the
+# content hash of each file; "-" for a file that cannot be read.
+fix_hash_files() {
+  local -a all=("$@") batch
+  local i=0 n=$# out h f
+  FIX_HASHES=()
+  while ((i < n)); do
+    batch=("${all[@]:i:FIX_BATCH}")
+    if out=$(git hash-object -- "${batch[@]}" 2>/dev/null); then
+      while IFS= read -r h; do
+        FIX_HASHES+=("$h")
+      done <<<"$out"
+    else
+      for f in "${batch[@]}"; do
+        if h=$(git hash-object -- "$f" 2>/dev/null); then
+          FIX_HASHES+=("$h")
+        else
+          FIX_HASHES+=("-")
+        fi
+      done
+    fi
+    i=$((i + FIX_BATCH))
+  done
+  return 0
+}
+
+# fix_record_timing <tool> <files> <seconds> <exit>: append one JSON line to
+# ${XDG_STATE_HOME:-$HOME/.local/state}/pg-hooks/timings.jsonl. An unwritable
+# state dir MUST NOT fail the run.
+fix_record_timing() {
+  local dir=${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}
+  [[ -n $dir ]] || return 0
+  dir=$dir/pg-hooks
+  {
+    mkdir -p "$dir" &&
+      jq -nc --arg tool "$1" --argjson files "$2" --argjson seconds "$3" --argjson exit "$4" \
+        '{tool: $tool, files: $files, seconds: $seconds, exit: $exit}' >>"$dir/timings.jsonl"
+  } 2>/dev/null || true
+  return 0
+}
+
+# fix_invoke: run FX_ARGV over the batch FX_BATCH once; sets FIX_RC and leaves
+# the tool's combined output in $FIX_TMP/out. Two behaviors beyond a plain call:
+#  - a nonzero exit is retried once on the same files. Several fixers (the
+#    pre-commit-hooks trailing-whitespace and end-of-file fixers) exit 1 AFTER
+#    fixing a file; the retry sees the fixed file and exits 0, while a real
+#    failure fails again.
+#  - treefmt runs to convergence: repeated until the files stop changing, at
+#    most FIX_CONVERGE_MAX passes (prettier markdown can need 2+).
+fix_invoke() {
+  local out=$FIX_TMP/out pass=0 converge=0 before="" after=""
+  FIX_RC=0
+  if [[ $FX_MODE == files && ${FX_ARGV[0]##*/} == treefmt ]]; then
+    converge=1
+  fi
+  while :; do
+    pass=$((pass + 1))
+    if ((converge)); then
+      fix_hash_files "${FX_BATCH[@]}"
+      before="${FIX_HASHES[*]}"
+    fi
+    FIX_RC=0
+    "${FX_ARGV[@]}" "${FX_BATCH[@]}" >"$out" 2>&1 </dev/null || FIX_RC=$?
+    if ((FIX_RC != 0)); then
+      FIX_RC=0
+      "${FX_ARGV[@]}" "${FX_BATCH[@]}" >"$out" 2>&1 </dev/null || FIX_RC=$?
+      if ((FIX_RC != 0)); then
+        return 0
+      fi
+    fi
+    if ((!converge)); then
+      return 0
+    fi
+    fix_hash_files "${FX_BATCH[@]}"
+    after="${FIX_HASHES[*]}"
+    if [[ $before == "$after" ]]; then
+      return 0
+    fi
+    if ((pass >= FIX_CONVERGE_MAX)); then
+      printf 'pg-hooks: fixer %s did not converge in %s passes; the files may change again on the next run.\n' \
+        "$FX_NAME" "$FIX_CONVERGE_MAX" >&2
+      return 0
+    fi
+  done
+}
+
+# fix_run_fixer: run the fixer described by FX_NAME / FX_MODE / FX_ARGV over
+# FX_FILES, in batches of at most FIX_BATCH paths (one path per call in
+# per-file mode). Exits 10 on a failure.
+fix_run_fixer() {
+  local started=$SECONDS total=${#FX_FILES[@]} i=0 step=$FIX_BATCH elapsed
+  if [[ $FX_MODE == per-file ]]; then
+    step=1
+  fi
+  while ((i < total)); do
+    FX_BATCH=("${FX_FILES[@]:i:step}")
+    fix_invoke
+    if ((FIX_RC != 0)); then
+      elapsed=$((SECONDS - started))
+      fix_record_timing "$FX_NAME" "$total" "$elapsed" "$FIX_RC"
+      pgh_progress_stop
+      printf 'pg-hooks: fixer %s failed on %s (exit %s); its output follows:\n' \
+        "$FX_NAME" "${FX_BATCH[*]}" "$FIX_RC" >&2
+      cat "$FIX_TMP/out" >&2
+      printf 'Fix by hand, git add the file(s), then rerun pg-hooks fix.\n' >&2
+      exit "$PGH_FAILED"
+    fi
+    i=$((i + step))
+  done
+  elapsed=$((SECONDS - started))
+  fix_record_timing "$FX_NAME" "$total" "$elapsed" 0
+  return 0
+}
+
+cmd_fix() {
+  case ${1:-} in
+  "") ;;
+  -h | --help)
+    show_help
+    return 0
+    ;;
+  *) die "fix: unexpected argument: $1 (fix takes no arguments; it works on the staged files)" ;;
+  esac
+
+  need_repo --work-tree
+  fix_refuse_in_progress
+  if ! require_bundle; then
+    no_bundle_exit fix
+  fi
+  local repo fixers_file=$RB_BUNDLE/fixers.json
+  repo=$(bundle_repo "$RB_BUNDLE")
+  if [[ ! -f $fixers_file ]] || ! jq -e 'type == "array"' "$fixers_file" >/dev/null 2>&1; then
+    pgh_msg_broken "$repo" "fixers.json is missing or invalid" "$RB_DIR"
+    return "$PGH_BROKEN"
+  fi
+
+  cd "$PGH_TOP" || die "cannot enter $PGH_TOP"
+
+  # The staged files that still exist (added, copied, modified, renamed).
+  local f
+  local -a staged=() unstaged=() cand=() skipped=()
+  while IFS= read -r -d '' f; do
+    staged+=("$f")
+  done < <(git diff --cached --name-only -z --no-ext-diff --diff-filter=ACMR)
+  if ((${#staged[@]} == 0)); then
+    return 0
+  fi
+
+  # Repo excludes are prek regexes (the top-level `exclude` of the prek config),
+  # applied with grep -E.
+  local exclude="" rc=0
+  FIX_TMP=$(mktemp -d)
+  trap 'pgh_progress_stop; rm -rf "$FIX_TMP"' EXIT
+  if [[ -f $RB_BUNDLE/prek-config.json ]]; then
+    exclude=$(jq -r '.exclude // ""' "$RB_BUNDLE/prek-config.json" 2>/dev/null) || exclude=""
+  fi
+  local -a kept=()
+  if [[ -n $exclude ]]; then
+    printf '%s\0' "${staged[@]}" | grep -zEv -- "$exclude" >"$FIX_TMP/kept" || rc=$?
+    if ((rc > 1)); then
+      die "cannot apply the repo excludes: $exclude is not a valid extended regex" 1
+    fi
+    while IFS= read -r -d '' f; do
+      kept+=("$f")
+    done <"$FIX_TMP/kept"
+  else
+    kept=("${staged[@]}")
+  fi
+
+  # A kept file with both staged and unstaged changes is skipped untouched.
+  while IFS= read -r -d '' f; do
+    unstaged+=("$f")
+  done < <(git diff --name-only -z --no-ext-diff)
+  local k u hit
+  for k in ${kept[@]+"${kept[@]}"}; do
+    hit=0
+    for u in ${unstaged[@]+"${unstaged[@]}"}; do
+      if [[ $u == "$k" ]]; then
+        hit=1
+        break
+      fi
+    done
+    if ((hit)); then
+      skipped+=("$k")
+    else
+      cand+=("$k")
+    fi
+  done
+
+  local -a before_hashes=() after_hashes=() changed=()
+  if ((${#cand[@]} > 0)); then
+    fix_hash_files "${cand[@]}"
+    before_hashes=("${FIX_HASHES[@]}")
+
+    local progress_after=${PG_HOOKS_PROGRESS_AFTER_S:-3}
+    if [[ $progress_after =~ ^[0-9]+$ ]] && ((progress_after > 0)); then
+      pgh_progress_start "$progress_after" "pg-hooks: running fixers in $repo..."
+    fi
+
+    local n i j count line
+    local -a inc exc
+    n=$(jq 'length' "$fixers_file")
+    for ((i = 0; i < n; i++)); do
+      FX_NAME=$(jq -r --argjson i "$i" '.[$i].name' "$fixers_file")
+      FX_MODE=$(jq -r --argjson i "$i" '.[$i].mode // "files"' "$fixers_file")
+      FX_ARGV=()
+      # `command` is an argv array, or a string split on whitespace (store paths
+      # contain no spaces).
+      while IFS= read -r line; do
+        FX_ARGV+=("$line")
+      done < <(jq -r --argjson i "$i" \
+        '.[$i].command | if type == "array" then . else (split(" ") | map(select(length > 0))) end | .[]' \
+        "$fixers_file")
+      if ((${#FX_ARGV[@]} == 0)); then
+        pgh_progress_stop
+        pgh_msg_broken "$repo" "fixer $FX_NAME has no command" "$RB_DIR"
+        return "$PGH_BROKEN"
+      fi
+      inc=()
+      while IFS= read -r line; do
+        inc+=("$line")
+      done < <(jq -r --argjson i "$i" '.[$i].includes // [] | .[]' "$fixers_file")
+      exc=()
+      while IFS= read -r line; do
+        exc+=("$line")
+      done < <(jq -r --argjson i "$i" '.[$i].excludes // [] | .[]' "$fixers_file")
+
+      FX_FILES=()
+      for f in "${cand[@]}"; do
+        if ((${#inc[@]} > 0)) && ! fix_glob_match "$f" "${inc[@]}"; then
+          continue
+        fi
+        if ((${#exc[@]} > 0)) && fix_glob_match "$f" "${exc[@]}"; then
+          continue
+        fi
+        FX_FILES+=("$f")
+      done
+      if ((${#FX_FILES[@]} > 0)); then
+        fix_run_fixer
+      fi
+    done
+    pgh_progress_stop
+
+    # Restage only the files a fixer changed.
+    fix_hash_files "${cand[@]}"
+    after_hashes=("${FIX_HASHES[@]}")
+    count=${#cand[@]}
+    for ((j = 0; j < count; j++)); do
+      if [[ ${before_hashes[j]} != "${after_hashes[j]}" && -e ${cand[j]} ]]; then
+        changed+=("${cand[j]}")
+      fi
+    done
+    i=0
+    while ((i < ${#changed[@]})); do
+      git add -- "${changed[@]:i:FIX_BATCH}"
+      i=$((i + FIX_BATCH))
+    done
+  fi
+
+  if ((${#skipped[@]} > 0)); then
+    for f in "${skipped[@]}"; do
+      printf 'pg-hooks: fix skipped %s: it has staged and unstaged changes. Run: git add %q && pg-hooks fix (or git restore --staged %q)\n' \
+        "$f" "$f" "$f" >&2
+    done
+    return "$PGH_SKIPPED"
+  fi
+  return 0
+}
+
 # --- dispatch ----------------------------------------------------------------
 
 if [[ $# -eq 0 ]]; then
@@ -618,7 +930,7 @@ status) cmd_status "$@" ;;
 list) cmd_list "$@" ;;
 explain) cmd_explain "$@" ;;
 run) cmd_run "$@" ;;
-fix) die "fix is not implemented yet; it ships with the pg-hooks fix task of the per-clone hook bundle program" ;;
+fix) cmd_fix "$@" ;;
 *)
   printf 'pg-hooks: unknown command: %s\n\n' "$cmd" >&2
   show_help >&2

@@ -4,12 +4,13 @@
 # Exposes (consumed by later tasks of the per-clone hook bundle program):
 #   pg-hooks-lib   the shared library (bundle resolution, pointer, stamp, messages)
 #   pg-hooks-run   the bundle's stage runner (internal: not a PATH package)
-#   pg-hooks       the user-facing CLI (status, list, explain, run)
+#   pg-hooks       the user-facing CLI (status, list, explain, run, fix)
+#   pre-commit-fix the second name for `pg-hooks fix` (tiny wrapper)
 #   pg-hooks-install  the installer behind install-pre-commit-hooks (internal)
 #   libDir         a directory holding pg-hooks-lib.bash, for the bundle's lib/
 #   stubTemplate   stub.sh.in (@STAGE@ placeholder), rendered by the installer
 #   checks.test-pg-hooks-lib, checks.test-pg-hooks-run, checks.test-pg-hooks,
-#   checks.test-pg-hooks-install
+#   checks.test-pg-hooks-install, checks.test-pre-commit-fix
 {
   pkgs,
   bashBuilders,
@@ -41,6 +42,14 @@ let
     inherit pkgs pg-hooks-lib testSupport;
   };
 
+  # pg-hooks.script is a runtime fallback of the wrapper (--suffix), so the
+  # wrapper works on a machine where only pre-commit-fix is installed.
+  pre-commit-fix = pkgs.callPackage ./pre-commit-fix {
+    inherit (bashBuilders) mkBashScript;
+    inherit pkgs testSupport;
+    pg-hooks = pg-hooks.script;
+  };
+
   pg-hooks-install = pkgs.callPackage ./pg-hooks-install {
     inherit (bashBuilders) mkBashScript;
     inherit pkgs pg-hooks-lib testSupport;
@@ -50,6 +59,7 @@ let
   allScripts = [
     pg-hooks-run
     pg-hooks
+    pre-commit-fix
     pg-hooks-install
   ];
 
@@ -63,6 +73,7 @@ in
     pg-hooks-lib
     pg-hooks-run
     pg-hooks
+    pre-commit-fix
     pg-hooks-install
     libDir
     ;
@@ -77,6 +88,7 @@ in
     test-pg-hooks-lib = pg-hooks-lib.check;
     test-pg-hooks-run = pg-hooks-run.check;
     test-pg-hooks = pg-hooks.check;
+    test-pre-commit-fix = pre-commit-fix.check;
     test-pg-hooks-install = pg-hooks-install.check;
   };
 }
