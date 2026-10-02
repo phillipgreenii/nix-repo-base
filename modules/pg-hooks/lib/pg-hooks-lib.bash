@@ -186,6 +186,38 @@ pgh_bundle() {
   return 0
 }
 
+# pgh_write_pointer <dir> <gen>: point <dir>/current at <gen>. The pointer is a
+# REGULAR file replaced by rename(2) from a temp file in the same directory (a
+# symlink swap is not atomic for concurrent readers on APFS; BSD `mv -f` onto a
+# symlink-to-directory silently fails, so a legacy symlink pointer is removed
+# first: it is an invalid state readers already treat as broken). Returns 2 for
+# an invalid <gen> and 1 when the pointer cannot be written. Used by the
+# installer (Task 4); also callable from tests that race readers against swaps.
+pgh_write_pointer() {
+  local dir=$1 gen=$2 tmp
+  case $gen in
+  gen-*[!0-9]* | gen- | "") return 2 ;;
+  gen-[0-9]*) ;;
+  *) return 2 ;;
+  esac
+  if [[ -d $dir/current && ! -L $dir/current ]]; then
+    return 1
+  fi
+  tmp=$(mktemp "$dir/.current.XXXXXX") || return 1
+  if ! printf '%s\n' "$gen" >"$tmp" || ! chmod 644 "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ -L $dir/current ]]; then
+    rm -f "$dir/current"
+  fi
+  if ! mv -f "$tmp" "$dir/current"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  return 0
+}
+
 # --- stamp -----------------------------------------------------------------
 
 # pgh_stamp <input>...: `git ls-files -s -- <inputs> | git hash-object --stdin`

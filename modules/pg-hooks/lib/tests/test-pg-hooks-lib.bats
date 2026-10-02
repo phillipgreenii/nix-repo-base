@@ -447,3 +447,45 @@ _stale_fixture() {
   run --separate-stderr bash -c 'source "$1"; pgh_progress_start 2 "pg-hooks: working"; pgh_progress_stop; sleep 3' _ "$PGH_T_LIB"
   [ -z "$stderr" ]
 }
+
+# --- pointer writing (installer swap primitive) ------------------------------
+
+@test "write_pointer: writes a regular gen-N file and replaces it by rename" {
+  local d="$BATS_TEST_TMPDIR/wp"
+  mkdir -p "$d"
+  run pgh_write_pointer "$d" gen-3
+  [ "$status" -eq 0 ]
+  [ -f "$d/current" ]
+  [ ! -L "$d/current" ]
+  [ "$(cat "$d/current")" = gen-3 ]
+  ln "$d/current" "$d/held"
+  run pgh_write_pointer "$d" gen-4
+  [ "$status" -eq 0 ]
+  [ "$(cat "$d/held")" = gen-3 ]
+  [ "$(pgh_read_pointer "$d")" = gen-4 ]
+  # No temp file is left behind.
+  [ -z "$(find "$d" -name '.current.*')" ]
+}
+
+@test "write_pointer: replaces a symlink pointer with a regular file" {
+  local d="$BATS_TEST_TMPDIR/wp"
+  mkdir -p "$d/gen-1"
+  ln -s gen-1 "$d/current"
+  run pgh_write_pointer "$d" gen-2
+  [ "$status" -eq 0 ]
+  [ ! -L "$d/current" ]
+  [ "$(cat "$d/current")" = gen-2 ]
+}
+
+@test "write_pointer: rejects an invalid generation (2) and a directory pointer (1)" {
+  local d="$BATS_TEST_TMPDIR/wp" g
+  mkdir -p "$d"
+  for g in "" gen- gen-x "../x" gen-1x "gen-1/../x"; do
+    run pgh_write_pointer "$d" "$g"
+    [ "$status" -eq 2 ]
+  done
+  [ ! -e "$d/current" ]
+  mkdir "$d/current"
+  run pgh_write_pointer "$d" gen-1
+  [ "$status" -eq 1 ]
+}

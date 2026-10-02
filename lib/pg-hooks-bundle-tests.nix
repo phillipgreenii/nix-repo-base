@@ -514,4 +514,32 @@ in
       disabledInstalls = true;
     };
   };
+
+  "test install-pre-commit-hooks execs pg-hooks-install with the bundle when bundle.enable" = {
+    expr =
+      let
+        # hasInfix matches by regex, which refuses a string that refers to a store
+        # path, so compare on the text with its string context dropped.
+        noCtx = builtins.unsafeDiscardStringContext;
+        text = noCtx (installerOf enabled).text;
+        plainText = noCtx (installerOf plain).text;
+        bundlePath = noCtx "${bundleOf enabled}";
+      in
+      {
+        execsInstaller =
+          lib.hasInfix "exec " text
+          && lib.hasInfix "/bin/pg-hooks-install --bundle ${bundlePath} \"$@\"" text;
+        # None of the legacy fragments or a hooksPath write.
+        noHooksPathWrite = !(lib.hasInfix "core.hooksPath" text);
+        noLegacyInstall = !(lib.hasInfix "git-hooks.nix: updating" text);
+        # Control: without bundle.enable the legacy installer is unchanged.
+        plainIsLegacy = !(lib.hasInfix "pg-hooks-install" plainText);
+      };
+    expected = {
+      execsInstaller = true;
+      noHooksPathWrite = true;
+      noLegacyInstall = true;
+      plainIsLegacy = true;
+    };
+  };
 }

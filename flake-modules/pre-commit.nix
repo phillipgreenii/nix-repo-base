@@ -1694,8 +1694,13 @@ in
         install-pre-commit-hooks = guard (
           pkgs.writeShellScriptBin "install-pre-commit-hooks" (
             if bundleCfg.enable then
+              # Spec 4.4: the script text embeds the bundle's store path, so
+              # `nix run [--override-input ...] .#install-pre-commit-hooks`
+              # realises the bundle with the same overrides; the installer only
+              # roots it (nix-store --add-root) and never calls `nix build`. No
+              # shimWireHooksPath, no legacy fragments, no core.hooksPath write.
               ''
-                echo "install-pre-commit-hooks: bundle.enable is set but the bundle installer is not wired yet; nothing was installed." >&2
+                exec ${pgHooksScripts.pg-hooks-install.script}/bin/pg-hooks-install --bundle ${pgHooksBundle} "$@"
               ''
             else
               ''
