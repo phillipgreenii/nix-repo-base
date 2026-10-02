@@ -1,0 +1,66 @@
+#!/bin/sh
+# managed-by: pg-hooks
+# Static pg-hooks stub for the @STAGE@ stage (design: per-clone hook bundle,
+# section 4.3). It holds no store path and invokes no nix (HK-2): it finds the
+# clone's bundle through a pointer file and execs the bundle's runner. Do not
+# edit; `install-pre-commit-hooks` rewrites it.
+stage='@STAGE@'
+nl='
+'
+
+# One git process: the absolute common dir, then the absolute git dir.
+dirs=$(git rev-parse --path-format=absolute --git-common-dir --absolute-git-dir 2>/dev/null) || exit 0
+common=${dirs%%"$nl"*}
+gitdir=${dirs#*"$nl"}
+[ -n "$common" ] || exit 0
+
+# The private (per-worktree) bundle wins when it has a pointer, else the shared one.
+priv=$gitdir/pg-hooks
+dir=$common/pg-hooks
+if [ -e "$priv/current" ] || [ -L "$priv/current" ]; then
+  dir=$priv
+fi
+
+# Read the pointer once; it must be a regular file whose first line is gen-N.
+gen=
+if [ -f "$dir/current" ] && [ ! -L "$dir/current" ]; then
+  IFS= read -r gen <"$dir/current" || :
+fi
+case $gen in
+gen-*[!0-9]* | gen- | "") gen= ;;
+gen-[0-9]*) ;;
+*) gen= ;;
+esac
+
+bundle=
+if [ -n "$gen" ] && [ -e "$dir/$gen/bundle/bin/pg-hooks-run" ]; then
+  bundle=$dir/$gen/bundle
+fi
+
+if [ -z "$bundle" ]; then
+  # No bundle: one notice line, exit 0 (a missing bundle never blocks a commit).
+  # This text is duplicated from pgh_msg_no_bundle in pg-hooks-lib.bash; a
+  # test asserts they match.
+  canonical=${common%/*}
+  repo=${canonical##*/}
+  fix="(cd $canonical && nix run .#install-pre-commit-hooks)"
+  if [ "$gitdir" != "$common" ]; then
+    if [ -f "$priv/reinstall" ]; then
+      line=
+      IFS= read -r line <"$priv/reinstall" || :
+      if [ -n "$line" ]; then
+        fix=$line
+      fi
+    fi
+    printf 'pg-hooks: no hook bundle for %s (shared bundle lives in %s); %s hooks not run. Fix: %s\n' \
+      "$repo" "$canonical" "$stage" "$fix" >&2
+  else
+    printf 'pg-hooks: no hook bundle for %s; %s hooks not run. Fix: %s\n' \
+      "$repo" "$stage" "$fix" >&2
+  fi
+  exit 0
+fi
+
+PG_HOOKS_BUNDLE=$bundle
+export PG_HOOKS_BUNDLE
+exec "$bundle/bin/pg-hooks-run" "$stage" "$@"

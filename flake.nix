@@ -192,6 +192,14 @@
           pgTestRunnerScripts = import ./modules/pg-test-runner/scripts.nix {
             inherit pkgs bashBuilders;
           };
+          # pg-hooks (per-clone hook bundle): the shared library, the stub
+          # template and the bundle's stage runner. Consumed by the
+          # pre-commit flake-module's bundle output and the installer in later
+          # tasks of the program (bead pg2-pla9d); this binding only builds and
+          # tests them.
+          pgHooksScripts = import ./modules/pg-hooks/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
           # gogate: sequential Go validation gate (gofmt -l, go build, go vet,
           # go test) with fixed output truncation. No extra threaded package
           # and no engine to bind -- go/gofmt resolve from the ambient PATH
@@ -1636,6 +1644,7 @@
           // pnwfScripts.checks
           // pgGoMutateScripts.checks
           // pgTestRunnerScripts.checks
+          // pgHooksScripts.checks
           // gogateScripts.checks
           // pgGitCheckIdentityScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
