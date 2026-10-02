@@ -40,9 +40,16 @@ teardown() {
 }
 
 @test "pre-commit-fix passes its arguments through" {
+  run "$SUT" extra "an arg"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TEST_DIR/argv")" = "fix extra an arg" ]
+}
+
+@test "pre-commit-fix --help is answered locally" {
   run "$SUT" --help
   [ "$status" -eq 0 ]
-  [ "$(cat "$TEST_DIR/argv")" = "fix --help" ]
+  [[ $output == "pre-commit-fix: a second name for"* ]]
+  [ ! -e "$TEST_DIR/argv" ]
 }
 
 @test "pre-commit-fix propagates pg-hooks fix's exit code" {

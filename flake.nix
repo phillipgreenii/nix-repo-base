@@ -660,7 +660,7 @@
                   printf 'gen-1\n' >.git/pg-hooks/current
 
                   printf '{a=1;b   =  2;}\n' >bad.nix
-                  printf 'foo: if foo == true then 1 else 2\n' >lint.nix
+                  printf 'let x = 1; in { x = x; }\n' >lint.nix
                   printf '#   Title\n\n*   item one\n*   item two\n\n|a|b|\n|-|-|\n|1|2|\n' >bad.md
                   printf 'hello   \nworld' >bad.txt
                   cp bad.nix bad.nix.orig
@@ -682,7 +682,7 @@
                     git diff --no-ext-diff --stat >&2
                     exit 1
                   fi
-                  if git show :lint.nix | grep -q '== true'; then
+                  if git show :lint.nix | grep -q 'x = x'; then
                     echo "FAIL: statix did not fix lint.nix" >&2
                     exit 1
                   fi
