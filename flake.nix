@@ -1384,6 +1384,106 @@
                 grep -q '"concurrency": 3' "$out/home-files/.config/pg-go-mutate-tui/config.json"
               '';
 
+            # Hermetic eval check for home/pn/default.nix's telemetry options
+            # (ADR 0028, bead pg2-kqrrs.6). Proves, with repo-base's
+            # overlays.default applied (the consuming machine repo's job):
+            #   * `lib.getExe pkgs.pg-nix-log-wrapped` resolves (the wrapperPath
+            #     default), and with telemetry.enable it is rendered into
+            #     ~/.config/pn/telemetry.toml next to the endpoint;
+            #   * telemetry.enable = false writes NO telemetry.toml and does NOT
+            #     add the wrapper to home.packages -- and evaluates on a pkgs
+            #     that has no pg-nix-log-wrapped at all (the default is lazy);
+            #   * a null endpoint omits the endpoint key (telemetry stays off).
+            # Same narrow-stub shape as pg-go-mutate-tui-config-rendered above.
+            # TEMPORARY STUB: until Phase 3 (pg2-kqrrs.7) adds
+            # pg-nix-log-wrapped to overlays.default, a placeholder
+            # pg-nix-log-wrapped is overlaid here; once the real overlay entry
+            # exists `withDefault ? pg-nix-log-wrapped` is true and the stub is
+            # never used (delete the stub then).
+            pn-telemetry-hm-options =
+              let
+                withDefault = pkgs.extend self.overlays.default;
+                stubWrapperOverlay = final: _prev: {
+                  pg-nix-log-wrapped = final.writeShellScriptBin "pg-nix-log-wrapped" "exit 0";
+                };
+                pkgsWithOverlay =
+                  if withDefault ? pg-nix-log-wrapped then withDefault else withDefault.extend stubWrapperOverlay;
+                pnStub = pkgs.writeShellScriptBin "pn" "exit 0";
+
+                mkEval =
+                  evalPkgs: tcfg:
+                  pkgs.lib.evalModules {
+                    specialArgs = {
+                      pkgs = evalPkgs;
+                    };
+                    modules = [
+                      {
+                        options.home = {
+                          file = pkgs.lib.mkOption {
+                            type = pkgs.lib.types.attrsOf (
+                              pkgs.lib.types.submodule {
+                                options.source = pkgs.lib.mkOption { type = pkgs.lib.types.path; };
+                              }
+                            );
+                            default = { };
+                          };
+                          packages = pkgs.lib.mkOption {
+                            type = pkgs.lib.types.listOf pkgs.lib.types.package;
+                            default = [ ];
+                          };
+                        };
+                      }
+                      ./home/pn/default.nix
+                      {
+                        config.phillipgreenii.pn = {
+                          enable = true;
+                          package = pnStub;
+                          telemetry = tcfg;
+                        };
+                      }
+                    ];
+                  };
+
+                pkgNames = e: map pkgs.lib.getName e.config.home.packages;
+                wrapperExe = pkgs.lib.getExe pkgsWithOverlay.pg-nix-log-wrapped;
+
+                on = mkEval pkgsWithOverlay {
+                  enable = true;
+                  endpoint = "http://127.0.0.1:4318";
+                };
+                noEndpoint = mkEval pkgsWithOverlay { enable = true; };
+                # `pkgs` here has NO pg-nix-log-wrapped: enable = false must not need it.
+                off = mkEval pkgs { enable = false; };
+                tomlSource = on.config.home.file.".config/pn/telemetry.toml".source;
+                noEndpointToml = noEndpoint.config.home.file.".config/pn/telemetry.toml".source;
+              in
+              if on.config.phillipgreenii.pn.telemetry.wrapperPath != wrapperExe then
+                throw "pn telemetry wrapperPath default is not lib.getExe pkgs.pg-nix-log-wrapped"
+              else if !(pkgs.lib.elem "pg-nix-log-wrapped" (pkgNames on)) then
+                throw "telemetry.enable = true did not add pg-nix-log-wrapped to home.packages"
+              else if pkgs.lib.elem "pg-nix-log-wrapped" (pkgNames off) then
+                throw "telemetry.enable = false still added pg-nix-log-wrapped to home.packages"
+              else if off.config.home.file ? ".config/pn/telemetry.toml" then
+                throw "telemetry.enable = false still rendered ~/.config/pn/telemetry.toml"
+              else
+                pkgs.runCommand "pn-telemetry-hm-options"
+                  {
+                    inherit tomlSource noEndpointToml wrapperExe;
+                  }
+                  ''
+                    cat "$tomlSource"
+                    grep -qxF 'endpoint = "http://127.0.0.1:4318"' "$tomlSource"
+                    grep -qxF "wrapper_path = \"$wrapperExe\"" "$tomlSource"
+                    echo ---
+                    cat "$noEndpointToml"
+                    if grep -q '^endpoint' "$noEndpointToml"; then
+                      echo "null endpoint must not write an endpoint key" >&2
+                      exit 1
+                    fi
+                    grep -qxF "wrapper_path = \"$wrapperExe\"" "$noEndpointToml"
+                    touch "$out"
+                  '';
+
             # Eval-level check: the Light capability framework (Plan 5) behaves —
             # feature/isHuman gating, development subscription, bundle veto, and the
             # account-property typo→error guarantee.

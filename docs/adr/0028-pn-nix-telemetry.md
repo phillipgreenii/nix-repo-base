@@ -1,7 +1,7 @@
-# ADR-0028: pn / nix build telemetry — Phase 1 spike findings
+# ADR-0028: pn / nix build telemetry — spike findings, configuration precedence and escape hatches
 
 **Date:** 2026-10-01
-**Status:** Proposed
+**Status:** Accepted
 **Deciders:** phillipgreenii
 
 ## Context
@@ -9,8 +9,11 @@
 Epic `pg2-kqrrs` plans a `pg-nix-log-wrapped` wrapper (a Proxy at process level with an Observer
 that live-tails nix's `--json-log-path` file and an Adapter that turns nix activity events into OTel
 spans and delta metrics) plus pn-side spans. The plan rests on facts F1-F14 and a wrapper contract
-W-1..W-12. This ADR records the Phase 1 spike (`pg2-kqrrs.2`) that verified the assumptions the plan
-had not yet measured, so Phases 2b and 3 build on observed behavior. The wrapper's own ADR is 0029.
+W-1..W-12. This ADR records (a) the Phase 1 spike (`pg2-kqrrs.2`) that verified the assumptions the
+plan had not yet measured, so Phases 2b and 3 build on observed behavior, and (b) the pn-side
+configuration, security and user-facing decisions finalized in Phase 2d (`pg2-kqrrs.6`). The
+wrapper's own ADR is a separate document written in Phase 3 (number 0029 is already taken by the
+commit-time hook shim experiment).
 
 All measurements were taken on 2026-10-01, nix `2.34.8+1` (daemon mode), macOS (Darwin 25.6.0,
 aarch64, 11 CPUs, `max-jobs = 11`). The scratch harness (a polling Python tailer that stamps each
@@ -278,15 +281,96 @@ procedure regenerates them.
 
 ## Decision
 
-Proposed, pending operator approval:
+### Spike outcomes (Phase 1)
 
-1. Adopt the findings above as the verified basis for W-1..W-12; the wrapper's design ADR is 0029.
-2. Amend W-7/W-9 per the corrections in item 2 (ANSI stripping, `msg` fallback, dependency failures,
-   late errors, close open activities on kill), item 3 (Go child with SIGINT not ignored), and item 7
-   (parse the output path from the 111 text; queueing is unobservable).
+1. The findings above are the verified basis for W-1..W-12; the wrapper's design ADR is separate.
+2. W-7/W-9 MUST be amended per the corrections in item 2 (ANSI stripping, `msg` fallback, dependency
+   failures, late errors, close open activities on kill), item 3 (Go child with SIGINT not ignored),
+   and item 7 (parse the output path from the 111 text; queueing is unobservable).
 3. Sub-250 ms rule as in item 1.
-4. Treat a cancel of a root wrapper by non-root pn as best-effort (EPERM verified; effect on locks when
-   it fails is UNVERIFIED pending the operator command in item 3).
+4. A cancel of a root wrapper by non-root pn is best-effort (EPERM verified; effect on locks when it
+   fails is UNVERIFIED pending the operator command in item 3).
+
+### Configuration precedence (Phase 2d)
+
+Telemetry is ON only when an OTLP endpoint resolves. For a non-root process the endpoint MUST be
+resolved in this order, first match wins: the `--otlp-endpoint` flag, then
+`OTEL_EXPORTER_OTLP_ENDPOINT`, then `endpoint` in `~/.config/pn/telemetry.toml`. A root process
+MUST NOT read the toml. Any of `--no-telemetry`, `PG_NIX_LOG_DISABLE=1` or `OTEL_SDK_DISABLED=true`
+MUST force telemetry off regardless of any endpoint.
+
+```mermaid
+flowchart TD
+  F["force-off: --no-telemetry, PG_NIX_LOG_DISABLE=1, OTEL_SDK_DISABLED=true"] -->|set| OFF["Null Object: no exporter, no connection, no goroutine, no file"]
+  F -->|unset| P1["--otlp-endpoint"]
+  P1 -->|unset| P2["OTEL_EXPORTER_OTLP_ENDPOINT"]
+  P2 -->|unset| P3["telemetry.toml endpoint, non-root only"]
+  P3 -->|unset| OFF
+  P1 -->|set| ON["telemetry on"]
+  P2 -->|set| ON
+  P3 -->|set| ON
+```
+
+The resolution is a pure decision in `modules/pn/internal/telemetrycfg` (Null Object rule: it opens
+no connection and creates no file); it has no OpenTelemetry dependency. The decision MUST be made
+before cobra runs, because telemetry is created and shut down outside the command tree; the
+command-line flags are therefore pre-scanned from argv (`telemetrycfg.ScanArgs`), which stops at
+`--` and at the `nix` verb of `pn workspace nix` (that verb forwards its arguments, including `-v`,
+to nix). The cobra flags of the same names are registered so `--help` lists them.
+
+### The home-manager module and the config file
+
+`phillipgreenii.pn.telemetry.{enable, endpoint, wrapperPath}` in `home/pn/default.nix` render
+`~/.config/pn/telemetry.toml` (keys `endpoint`, `wrapper_path`) through `pkgs.formats.toml`, like
+`store.toml`. `enable` is a `mkEnableOption` (default false). When `enable = false` the module MUST
+NOT write the file and MUST NOT add the wrapper package to `home.packages`. The `wrapperPath` default
+is `lib.getExe pkgs.pg-nix-log-wrapped`; the consuming machine repo MUST apply this flake's
+`overlays.default`, and the default is lazy so a machine with `enable = false` evaluates without it.
+This layer is below support-apps and MUST NOT call `mkEmitterEnv`; the machine repo sets `endpoint`
+from the observability module's http port option (never a literal) and leaves it null otherwise. The
+flake check `pn-telemetry-hm-options` proves the default resolves, the file renders, and the
+disabled case adds nothing.
+
+### Security of the root path
+
+pn MUST use `wrapper_path` under `sudo` only if its resolved real path (after `EvalSymlinks`) is under
+`/nix/store/` (`telemetrycfg.ValidateSudoWrapper`); otherwise it MUST run the command unwrapped. There
+MUST NOT be an environment override. A user-writable toml therefore cannot make `sudo` execute an
+arbitrary binary. The root wrapper reads no user file (W-1) and writes only to its own root-owned
+directory (W-4). No daemon is added, so the observability logSources/launchd registration assertion
+does not apply, and there is no `pn-workspace.toml` schema change.
+
+### Finding a run's trace without changing stdout
+
+- pn MUST print `trace: <trace_id>` to stderr at the end of a run only under `-v` or
+  `PN_TRACE_HINT=1`, and only if the run has a trace id. stdout MUST stay byte-identical.
+- `pn workspace update` MUST add the same `trace_id` to its `run_start` and `run_end` records in
+  `events.jsonl` (and to no other record kind), so a human can find the trace from Loki or the file.
+- Under `-v`, when telemetry is enabled, pn MUST probe the collector with one TCP connect (bounded to
+  750 ms). If it does not answer, pn MUST print the single line
+  `telemetry disabled: collector unreachable (<endpoint>)` to stderr and MUST run with telemetry off,
+  so the message is true. Without `-v` pn MUST NOT probe; the exporter fails open with a bounded flush.
+- The trace id reaches the hint and the event log through a `RunState` carried in the command
+  context (an Observer-style seam): the root `pn.verb` span setup calls `RunState.SetTraceID`.
+- `pn workspace doctor` MUST include a `telemetry` check that runs `pg-nix-log-wrapped --check` when
+  telemetry is on and reports a missing wrapper or a failing check as a warning (never an error); it
+  MUST be silent when telemetry is off.
+
+### Escape hatches
+
+One table is authoritative; it appears in `modules/pn/README.md` and in `pn --help`.
+
+| Control                                      | Effect                                                             |
+| -------------------------------------------- | ------------------------------------------------------------------ |
+| `phillipgreenii.pn.telemetry.enable = false` | Off permanently (no config file, no wrapper package); the rollback |
+| `pn --no-telemetry`                          | Off for one pn run                                                 |
+| `PG_NIX_LOG_DISABLE=1`                       | Off for pn; the wrapper execs its command unmodified               |
+| `pg-nix-log-wrapped --check`                 | Prints resolved endpoint, reachability and log-dir writability     |
+| `OTEL_SDK_DISABLED=true`                     | Both binaries off                                                  |
+| `PG_NIX_LOG_DEBUG=1`                         | The wrapper prints diagnostics to stderr                           |
+
+`-v`/`--verbose` is introduced as a global pn flag by this change; it replaces cobra's default `-v`
+shorthand for `--version` (use `pn --version`).
 
 ## Consequences
 
