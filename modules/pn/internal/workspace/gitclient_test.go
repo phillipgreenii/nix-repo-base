@@ -112,7 +112,13 @@ type fakeGitMutator struct {
 	createWorktrees    []string                          // "path@branch" per call, in order
 	createWorktreeOpts []gitclient.CreateWorktreeOptions // parallel to createWorktrees
 
-	syncErr  error
+	syncErr error // Sync fails to START (no Handle returned)
+	// syncWaitErr is returned by the Handle's Wait(): the process started but
+	// exited non-zero (e.g. a rebase conflict), with "CONFLICT" on stderr.
+	syncWaitErr error
+	// onSync, when set, runs at the start of Sync (e.g. to cancel a context
+	// mid-sync).
+	onSync   func()
 	syncOpts []gitclient.SyncOptions
 
 	restorePathErr error
@@ -177,8 +183,14 @@ func (f *fakeGitMutator) PruneWorktrees(ctx context.Context) error {
 func (f *fakeGitMutator) Sync(ctx context.Context, opts gitclient.SyncOptions) (*gitclient.Handle, error) {
 	f.record("sync")
 	f.syncOpts = append(f.syncOpts, opts)
+	if f.onSync != nil {
+		f.onSync()
+	}
 	if f.syncErr != nil {
 		return nil, f.syncErr
+	}
+	if f.syncWaitErr != nil {
+		return gitclient.NewFakeHandle(nil, []byte("CONFLICT (content): Merge conflict in file.txt\n"), f.syncWaitErr), nil
 	}
 	return gitclient.NewFakeHandle(nil, nil, nil), nil
 }

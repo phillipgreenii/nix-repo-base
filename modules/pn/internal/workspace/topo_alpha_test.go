@@ -160,6 +160,9 @@ url = "github:o/zzz"
 	})
 
 	f := exec.NewFakeRunner()
+	// One rebase-in-progress pre-probe per repo.
+	scriptNoRebase(t, f, zDir)
+	scriptNoRebase(t, f, aDir)
 	ws, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)

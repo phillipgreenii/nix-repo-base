@@ -350,10 +350,17 @@ func workspaceRebaseCmd(terminal *string) *cobra.Command {
 
 Without [branch]: fetches and runs 'git pull --rebase --autostash' in each
 repo that has a configured upstream. Repos without an upstream are skipped.
+A diverged branch (both ahead and behind) is still attempted. If that rebase
+conflicts it is rolled back ('git rebase --abort'), nothing is rebased in that
+repo, and the command stops with an error; repos earlier in dependency order
+stay rebased. A rebase already in progress in a repo is never aborted: the
+command stops with an error instead.
 
 With [branch]: runs 'git rebase --autostash <branch>' in each repo using the
 given local ref (branch name, remote-tracking ref, etc.). No fetch is
-performed. Repos where the ref does not resolve are skipped with a notice.`,
+performed. Repos where the ref does not resolve are skipped with a notice.
+Unlike the default form, a conflict here is NOT rolled back: the repo is left
+mid-rebase for you to resolve.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
-	"strconv"
+	"strings"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/x/gitclient"
 )
 
@@ -38,42 +40,98 @@ func (ws *Workspace) resolveRef(ctx context.Context, repoDir, ref string) bool {
 	return err == nil && ok
 }
 
-// refuseIfDivergedAfterFetch reports an error naming repoDir when its current
-// branch is BOTH ahead of AND behind its freshly-fetched upstream -- the
-// genuinely-diverged case a plain `git pull --rebase --autostash` cannot
-// safely resolve on its own (bd tc-0q3cp; see the bd tc-p08nv reasoning this
-// duplicates from `pnwf sync-fetch`'s own preflight). It reuses
-// aheadBehindCounts (the same primitive `pn workspace status` and doctor's
-// branch-synced check already use) rather than a fresh rev-list, matching
-// this file's Reuse-First convention.
+// rebaseInProgress reports whether a rebase is currently in progress in
+// repoDir. It asks git where the rebase state directories live
+// (`rev-parse --git-path rebase-merge` / `rebase-apply`) rather than
+// hardcoding `.git/...`, because a linked worktree keeps that state under
+// `.git/worktrees/<n>/`. Both backends are checked: rebase-merge (the merge
+// backend, default since git 2.26) and rebase-apply (the older apply/am
+// backend). A relative answer is anchored on repoDir, since `-C` made repoDir
+// git's cwd and this process's cwd is arbitrary. Modeled on
+// pnwf_rebase_in_progress (modules/pnwf/lib/pnwf-lib.bash).
 //
-// ok=false (no upstream, or the rev-list query failed for any reason) is
-// treated as "cannot tell" and is NOT an error here: aheadBehindCounts already
-// documents that ok=false lets the caller decide how to phrase it, and the
-// existing caller in this file (the default Rebase loop) phrases it as
-// "proceed as before" -- Fetch already ran and hasUpstream already gated
-// entry into this branch, so ok=false here only happens if the rev-list
-// itself could not run, which the pre-existing pull --rebase step will
-// surface on its own if it matters.
-func (ws *Workspace) refuseIfDivergedAfterFetch(ctx context.Context, name, repoDir string) error {
-	ahead, behind, ok := ws.aheadBehindCounts(ctx, repoDir)
-	if !ok {
+// A non-zero git exit comes back from the runner as an error; that is
+// returned as err with inProgress=false, meaning "state unknown" -- callers
+// decide how to treat it (the pre-probe proceeds, the post-probe does not
+// abort).
+func (ws *Workspace) rebaseInProgress(ctx context.Context, repoDir string) (inProgress bool, err error) {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		res, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "rev-parse", "--git-path", name}, exec.RunOptions{})
+		if err != nil {
+			return false, err
+		}
+		path := strings.TrimSpace(string(res.Stdout))
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(repoDir, path)
+		}
+		if fi, statErr := os.Stat(path); statErr == nil && fi.IsDir() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// abortRebase runs `git rebase --abort` in repoDir. A nil return means git
+// reported the abort succeeded; only then may callers claim "rolled back".
+func (ws *Workspace) abortRebase(ctx context.Context, repoDir string) error {
+	res, err := ws.runner.Run(ctx, "git", []string{"-C", repoDir, "rebase", "--abort"}, exec.RunOptions{})
+	if err != nil {
+		if stderr := strings.TrimSpace(string(res.Stderr)); stderr != "" {
+			return fmt.Errorf("%w: %s", err, stderr)
+		}
+		return err
+	}
+	return nil
+}
+
+// syncDefault runs the default-path `git pull --rebase --autostash` for one
+// repo and, if it fails mid-rebase, rolls the repo back. See Rebase's doc
+// comment for the contract.
+func (ws *Workspace) syncDefault(ctx context.Context, client gitMutator, out io.Writer, name, repoDir string) error {
+	// Pre-probe: never abort a rebase the operator started themselves.
+	if inProgress, err := ws.rebaseInProgress(ctx, repoDir); err == nil && inProgress {
+		return fmt.Errorf("rebase already in progress in %s (%s); finish or abort it, then re-run `pn workspace rebase`", name, repoDir)
+	}
+	// A probe error is "state unknown": proceed as before.
+
+	sh, err := client.Sync(ctx, gitclient.SyncOptions{})
+	if err != nil {
+		// The process did not start; nothing to roll back.
+		return fmt.Errorf("git pull --rebase --autostash in %s: %w", name, err)
+	}
+	sh.AttachStream(out, out)
+	syncErr := sh.Wait()
+	if syncErr == nil {
 		return nil
 	}
-	aheadN, aerr := strconv.Atoi(ahead)
-	behindN, berr := strconv.Atoi(behind)
-	if aerr != nil || berr != nil || aheadN == 0 || behindN == 0 {
-		return nil
+	wrapped := fmt.Errorf("git pull --rebase --autostash in %s: %w", name, syncErr)
+	if ctx.Err() != nil {
+		// Cancelled: do not touch the repo further.
+		return fmt.Errorf("%w (interrupted: %s may be mid-rebase and may hold an autostash; "+
+			"check `git -C %s status` and `git -C %s stash list`)", wrapped, name, repoDir, repoDir)
 	}
-	return fmt.Errorf(
-		"pn workspace rebase: %s: local branch is both ahead (%s) and behind (%s) its upstream after fetch -- "+
-			"a plain `git pull --rebase --autostash` there risks replaying local commits onto upstream content "+
-			"that can genuinely conflict (the routine drain-lands-locally-plus-peer-pushes case), and reconciling "+
-			"it needs a human decision, not an automatic rebase (R-3). Nothing was rebased in %s. Resolve by hand "+
-			"(e.g. `git -C %s log --oneline @{upstream}...HEAD` to see both sides, then typically "+
-			"`git -C %s rebase @{upstream}`), then re-run `pn workspace rebase`",
-		name, ahead, behind, repoDir, repoDir, repoDir,
-	)
+	inProgress, probeErr := ws.rebaseInProgress(ctx, repoDir)
+	if probeErr != nil || !inProgress {
+		// No rebase state (network/hook/refusal) or state unknown: report the
+		// original failure unchanged.
+		return wrapped
+	}
+	// The pre-probe saw no rebase, so this attempt created the one now in
+	// progress: roll it back so "nothing was rebased" holds.
+	if abortErr := ws.abortRebase(ctx, repoDir); abortErr != nil {
+		return fmt.Errorf("%w; AND `git rebase --abort` failed (%v): %s is STILL mid-rebase and may hold an "+
+			"autostash -- inspect with `git -C %s status` and `git -C %s stash list`, then finish with "+
+			"`git -C %s rebase --continue` or `git -C %s rebase --abort`",
+			wrapped, abortErr, name, repoDir, repoDir, repoDir, repoDir)
+	}
+	return fmt.Errorf("%w; the rebase conflicted and was rolled back: nothing was rebased in %s "+
+		"(repos earlier in topological order stay rebased). Resolve by hand "+
+		"(`git -C %s log --oneline @{upstream}...HEAD` to see both sides, then `git -C %s rebase @{upstream}`) "+
+		"and re-run `pn workspace rebase`",
+		wrapped, name, repoDir, repoDir)
 }
 
 // Rebase runs git rebase operations across all workspace repos in topological
@@ -81,25 +139,35 @@ func (ws *Workspace) refuseIfDivergedAfterFetch(ctx context.Context, name, repoD
 //
 // Without Onto (default): runs `git fetch` then `git pull --rebase --autostash`
 // in each repo that has a configured upstream. Repos without an upstream are
-// skipped. Immediately after the fetch, if the repo's branch is now BOTH ahead
-// of AND behind its upstream (bd tc-0q3cp, duplicating bd tc-p08nv's
-// ahead-and-behind safeguard from `pnwf sync-fetch` down into this command
-// itself, so a bare/direct `pn workspace rebase` invocation is protected too --
-// not only the pnwf-guided path), the pull is refused: a plain
-// `pull --rebase` there would replay local commits onto content that can
-// genuinely conflict (the routine drain-lands-locally-plus-peer-pushes case),
-// and reconciling that needs a human decision, not an automatic rebase (R-3).
-// On this or any other failure the function returns immediately -- repos
-// already processed earlier in topo order keep whatever state they ended up
-// in; nothing further is touched.
+// skipped. There is deliberately NO divergence (ahead-and-behind) pre-check:
+// a diverged branch often rebases cleanly, so the sync is always attempted and
+// only a real failure is an error. If a rebase is already in progress in a
+// repo before the sync, Rebase returns an error without running anything and
+// without aborting (the operator's own work is never aborted). If the sync
+// fails and left a rebase of its own in progress (a conflict), it is rolled
+// back with `git rebase --abort`, so "nothing was rebased" holds for that repo
+// and the error says so; the error says the repo is STILL mid-rebase only when
+// the abort itself failed. If the sync fails with no rebase in progress
+// (network, hook, refusal) the original error is returned unchanged; a
+// cancelled context is never followed by an abort. On any failure the
+// function returns immediately -- repos already processed earlier in topo
+// order keep whatever state they ended up in; nothing further is touched.
+//
+// Known caveats: a rebase that succeeds but whose autostash pop conflicts
+// exits 0 and leaves unmerged (UU) files plus a kept stash (see
+// pnwf-lib.bash's sync-fetch handling). That is not new for ahead-only or
+// behind-only repos and is now also possible for diverged ones; it is not
+// detected here. A SIGKILL between the rebase starting and the abort leaves
+// the repo mid-rebase.
 //
 // With Onto: runs `git rebase --autostash <Onto>` in each repo, with no
-// fetch/pull, and does NOT apply the ahead-and-behind guard above: Onto is
-// itself the explicit, operator-directed reconciliation mechanism (e.g.
+// fetch/pull and no in-progress probe or rollback: Onto is itself the
+// explicit, operator-directed reconciliation mechanism (e.g.
 // `pn workspace rebase --onto origin/main` after resolving a divergence by
-// hand), so refusing it on exactly the divergence it exists to resolve would
-// defeat its purpose. Repos where the ref does not resolve are skipped with a
-// stderr notice; the rest continue (resilient per-repo style).
+// hand). Unlike the default path, --onto deliberately still leaves a repo
+// mid-rebase on conflict (operator-directed), for the operator to resolve.
+// Repos where the ref does not resolve are skipped with a stderr notice; the
+// rest continue (resilient per-repo style).
 //
 // Rebase is a terminal-optional command: if no terminal is configured it emits
 // a warning to errOut and continues.
@@ -170,16 +238,8 @@ func (ws *Workspace) Rebase(ctx context.Context, out io.Writer, errOut io.Writer
 		if err := fh.Wait(); err != nil {
 			return fmt.Errorf("git fetch in %s: %w", name, err)
 		}
-		if err := ws.refuseIfDivergedAfterFetch(ctx, name, repoDir); err != nil {
+		if err := ws.syncDefault(ctx, client, out, name, repoDir); err != nil {
 			return err
-		}
-		sh, err := client.Sync(ctx, gitclient.SyncOptions{})
-		if err != nil {
-			return fmt.Errorf("git pull --rebase --autostash in %s: %w", name, err)
-		}
-		sh.AttachStream(out, out)
-		if err := sh.Wait(); err != nil {
-			return fmt.Errorf("git pull --rebase --autostash in %s: %w", name, err)
 		}
 	}
 	return nil
