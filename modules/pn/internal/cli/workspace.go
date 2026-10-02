@@ -97,7 +97,8 @@ func workspaceRemovedInstallHooksCmd() *cobra.Command {
 			return fmt.Errorf(
 				"`pn workspace install-hooks` (and `sync-hooks`) was removed: hook resync is now a per-repo event hook. " +
 					"Add to pn-workspace.toml, e.g. [[repos.<key>.hooks]] when=['post-clone','post-rebase','post-update'] " +
-					"run=['{nix_run install-pre-commit-hooks}']; it fires automatically on those commands. See ADR-0019",
+					"run=['{nix_run install-pre-commit-hooks}']; it fires automatically on those commands and installs the repo's " +
+					"hook bundle (or, in a repo not yet cut over, the legacy hook config). See ADR-0019 and docs/hooks.md",
 			)
 		},
 	}

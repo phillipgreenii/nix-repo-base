@@ -26,6 +26,15 @@ Shared Nix infrastructure consumed by other nix-\* flakes via flake-parts module
 | `lib.mkSimplePackageModule` / `mkEnableablePackageModule` / `mkDockRegistration` / `mkProgramModule` | lib function  | Home-manager module factories.                                                                                                                                                                                                                                               |
 | `lib/scripts/update-locks-lib.bash`                                                                  | bash          | Source from your update-locks.sh. CONTRACT documented at the top of the file.                                                                                                                                                                                                |
 
+## Git hooks
+
+`flakeModules.pre-commit` also renders a per-clone hook bundle (opt in with
+`phillipgreenii.pre-commit.bundle.enable = true`) that `install-pre-commit-hooks` roots under
+`<git-common-dir>/pg-hooks/`, and the `pg-hooks` command (`status`, `list`, `explain`, `run`, `fix`)
+to inspect and run it. Repos that have not opted in keep the legacy `.pre-commit-config.yaml`
+symlink. Stages, messages, exit codes, bundle layout and the operator runbook are in
+[docs/hooks.md](docs/hooks.md).
+
 ## Minimum consumer wiring
 
 ```nix

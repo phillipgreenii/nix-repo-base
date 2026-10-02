@@ -440,6 +440,74 @@
               '';
             test-update-locks-lib = checksHelpers.testUpdateLocksLib { };
 
+            # docs/hooks.md names must match the code (per-clone hook bundle, T14).
+            # Each set the page documents is compared with the set the code defines:
+            # the stage vocabulary (PGH_KNOWN_STAGES), the pg-hooks subcommands (the
+            # dispatch `case`), the status states, and the exit codes (PGH_* in the
+            # library, plus the never-branchable generic 1). The page's tables are
+            # found by their header row, so prose and the entry-point table are free.
+            docs-hooks-names-in-sync =
+              pkgs.runCommand "check-docs-hooks-names-in-sync"
+                {
+                  nativeBuildInputs = [
+                    pkgs.gawk
+                    pkgs.gnused
+                    pkgs.gnugrep
+                    pkgs.coreutils
+                    pkgs.diffutils
+                  ];
+                }
+                ''
+                  doc=${./docs/hooks.md}
+                  cli=${./modules/pg-hooks/pg-hooks/pg-hooks.sh}
+                  lib=${./modules/pg-hooks/lib/pg-hooks-lib.bash}
+
+                  # table_rows <header prefix>: the data rows of the markdown table whose
+                  # header row starts with the prefix (separator row dropped).
+                  table_rows() {
+                    awk -v hdr="$1" '
+                      index($0, hdr) == 1 { on = 1; next }
+                      on && $0 !~ /^\|/ { on = 0 }
+                      on && $0 ~ /^\| *-/ { next }
+                      on { print }
+                    ' "$doc"
+                  }
+
+                  rc=0
+                  # compare <label> <documented file> <code file>
+                  compare() {
+                    sort -u "$2" >"$2.s"
+                    sort -u "$3" >"$3.s"
+                    if [ ! -s "$2.s" ] || [ ! -s "$3.s" ]; then
+                      echo "FAIL: $1: an empty set (documented: $(wc -l <"$2.s"), code: $(wc -l <"$3.s")); the table or the source marker moved" >&2
+                      rc=1
+                    elif ! diff -u --label "docs/hooks.md ($1)" --label "code ($1)" "$2.s" "$3.s" >&2; then
+                      echo "FAIL: $1: docs/hooks.md and the code disagree (diff above)" >&2
+                      rc=1
+                    fi
+                  }
+
+                  table_rows '| Stage ' | sed -n 's/^| `\([a-z-]*\)`.*/\1/p' >doc-stages
+                  grep '^PGH_KNOWN_STAGES=' "$cli" | sed 's/^[^"]*"\(.*\)"$/\1/' | tr ' ' '\n' >code-stages
+                  compare "stages" doc-stages code-stages
+
+                  table_rows '| Command ' | sed -n 's/^| `pg-hooks \([a-z-]*\).*/\1/p' >doc-cmds
+                  sed -n 's/^\([a-z-]*\)) cmd_.*/\1/p' "$cli" >code-cmds
+                  compare "subcommands" doc-cmds code-cmds
+
+                  grep '^state=<' "$doc" | sed 's/^state=<\(.*\)>$/\1/' | tr '|' '\n' >doc-states
+                  sed -n 's/^ *state=\([a-z][a-z]*\)$/\1/p' "$cli" >code-states
+                  compare "status states" doc-states code-states
+
+                  table_rows '| Code ' | sed -n 's/^| `\([0-9]*\)`.*/\1/p' >doc-codes
+                  { sed -n 's/^PGH_[A-Z_]*=\([0-9][0-9]*\)$/\1/p' "$lib"; echo 1; } >code-codes
+                  compare "exit codes" doc-codes code-codes
+
+                  if [ "$rc" -ne 0 ]; then exit 1; fi
+                  echo "OK: docs/hooks.md names match pg-hooks.sh and pg-hooks-lib.bash"
+                  touch $out
+                '';
+
             # Hermetic regression test for the run-unit-tests wrapper's
             # core.worktree tripwire (bead pg2-4c4nv). Runs the REAL wrapper in a
             # linked worktree of a throwaway repo against a fake `pg-test-runner`

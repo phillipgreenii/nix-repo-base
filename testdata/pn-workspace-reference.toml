@@ -10,7 +10,10 @@ url = "github:phillipgreenii/nix-repo-base"
 branch = "main"
 # Per-repo event hook (ADR 0019): resync this repo's gate after its checkout or
 # flake inputs change. {nix_run <attr>} expands to an override-injected `nix run`
-# of the repo's flake output, executed with cwd = the repo.
+# of the repo's flake output, executed with cwd = the repo. For
+# install-pre-commit-hooks the resync installs the repo's per-clone hook bundle
+# (or, in a repo that has not cut over yet, the legacy hook config); see
+# docs/hooks.md.
 [[repos.nix-repo-base.hooks]]
 when = ["post-clone", "post-rebase", "post-update"]
 run = ["{nix_run install-pre-commit-hooks}"]
