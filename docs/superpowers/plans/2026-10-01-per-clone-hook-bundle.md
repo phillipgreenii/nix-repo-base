@@ -67,8 +67,9 @@ Spec: 4.2 (pointer rules), 4.3, 4.5, 5.3 (exit codes), 5.4 (messages).
 
 **Files:**
 
-- Create: `modules/pg-hooks/scripts.nix`, `modules/pg-hooks/lib/pg-hooks-lib.bash`, `modules/pg-hooks/lib/tests/test-pg-hooks-lib.bats`, `modules/pg-hooks/stub.sh.in`, `modules/pg-hooks/pg-hooks-run/{default.nix,pg-hooks-run.sh,tests/test-pg-hooks-run.bats}`
-- Modify: `flake.nix` (import `modules/pg-hooks/scripts.nix`; add its `checks`)
+- Create: `modules/pg-hooks/scripts.nix`, `modules/pg-hooks/lib/default.nix` (mkBashLibrary, name `pg-hooks-lib`, `src = ./.`, testDeps git, jq, coreutils; model `modules/pg-go-mutate/lib/default.nix`), `modules/pg-hooks/lib/pg-hooks-lib.bash`, `modules/pg-hooks/lib/tests/test-pg-hooks-lib.bats`, `modules/pg-hooks/stub.sh.in`, `modules/pg-hooks/pg-hooks-run/{default.nix,pg-hooks-run.sh,tests/test-pg-hooks-run.bats}` (`libraries = [ pg-hooks-lib ]`, testDeps/runtimeDeps git + coreutils)
+- Modify: `flake.nix` (import `modules/pg-hooks/scripts.nix` as `pgHooksScripts` in the perSystem let, like `pgTestRunnerScripts` ~192; append `// pgHooksScripts.checks` to `checks`)
+- Test support: the git fixture harness (`lib/scripts/git-fixture-harness.bash`) and `stub.sh.in` are outside every script's `src`, so the sandboxed bats cannot see them. `scripts.nix` passes a `testSupport` runCommand copying both into `$out`; bats source `${BATS_SUPPORT_PATH:-$BATS_TEST_DIRNAME/<relative path>}/git-fixture-harness.bash` (agent-support integrate-branch-support uses this pattern).
 
 **Interfaces (Produces):**
 
@@ -77,8 +78,8 @@ Spec: 4.2 (pointer rules), 4.3, 4.5, 5.3 (exit codes), 5.4 (messages).
   - `pgh_private_dir` → prints `<abs git-dir>/pg-hooks`
   - `pgh_select_dir` → prints the private dir if it holds `current`, else the shared dir
   - `pgh_read_pointer <dir>` → prints `gen-N`; returns 13 if `current` absent, 12 if invalid
-  - `pgh_bundle <dir> <gen>` → prints `<dir>/<gen>/bundle`; returns 12 if `bin/pg-hooks-run` or `bin/prek` missing/not executable
-  - `pgh_stamp <input>...` → prints the stamp; prints `unknown` when no input is tracked
+  - `pgh_bundle <dir> <gen>` → prints `<dir>/<gen>/bundle`; returns 13 (no bundle) if `bin/pg-hooks-run` is missing, 12 (broken) only if the bundle exists but `bin/prek` is not executable
+  - `pgh_stamp <input>...` → prints the stamp; prints `unknown` when no input is tracked. Callers pass `flake.lock flake.nix` plus `meta.json` `stampPaths`, and run it from the toplevel
   - `pgh_stale_check <dir> <gen> <stage>` → prints at most one warning per (checkout, stamp) for stages `pre-commit`/`pre-push`; marker `stale-warned-<stamp>` in `pgh_private_dir`
   - `pgh_msg_no_bundle <repo> <stage>`, `pgh_msg_broken <repo> <reason>`, `pgh_msg_stale <repo> <built_at> <reinstall>`, `pgh_msg_worktree_differs <private reinstall>`, `pgh_msg_hooks_failed <stage> <repo>` → exact texts of spec 5.4 / 4.3 / 4.5
   - `pgh_reinstall <dir>` → prints the `reinstall` file line, else `(cd <canonical> && nix run .#install-pre-commit-hooks)`
@@ -88,24 +89,24 @@ Spec: 4.2 (pointer rules), 4.3, 4.5, 5.3 (exit codes), 5.4 (messages).
 - `stub.sh.in`: POSIX sh, second line `# managed-by: pg-hooks`, no store path; `@STAGE@` substituted by the installer.
 - `scripts.nix` exposes `pg-hooks-run`, `libDir` (for the bundle), `stubTemplate`, and `checks.test-pg-hooks-lib`, `checks.test-pg-hooks-run`.
 
-- [ ] **Step 1: Write failing bats** (`test-pg-hooks-lib.bats`, `test-pg-hooks-run.bats`), using `lib/scripts/git-fixture-harness.bash`; after `gfh_setup`, unset the local `core.hooksPath` and point it at the fixture's `.git/hooks` per test. Stand-ins: a fake bundle dir with `bin/prek` that logs argv, env and stdin to a file.
+- [ ] **Step 1: Write failing bats** (`test-pg-hooks-lib.bats`, `test-pg-hooks-run.bats`), using `lib/scripts/git-fixture-harness.bash` via `testSupport`; the harness sets a local `core.hooksPath=/dev/null`, so after `gfh_setup` UNSET it (git then uses `<common-dir>/hooks`). Stand-ins: a fake bundle dir with `bin/prek` that logs argv, env and stdin to a file.
   - `pointer: valid gen-N resolves`, `pointer: absent -> 13`, `pointer: '../x', empty, 'gen-' and a symlink current -> 12`
   - `select_dir prefers private dir with current over shared`
   - `stamp equals git ls-files -s | git hash-object --stdin over the inputs`; `stamp counts a staged edit`; `stamp is unknown with no tracked inputs`
   - `stale warning printed once across 3 commits`, `stale warning printed once across a 3-commit rebase`, `no stale warning for an edit outside stamp inputs`, `stale warning only on pre-commit and pre-push`, `override head change adds (override <name> changed)`
   - `stub: no bundle prints exact notice on stderr, nothing on stdout, exit 0`; `stub text contains no /nix/store path and the marker line`; `stub notice text equals pgh_msg_no_bundle output`
-  - `runner passes exact prek argv: hook-impl --config <B>/prek-config.json --hook-type <stage> --hook-dir <common-dir>/hooks -- args`
+  - `runner passes exact prek argv: -q hook-impl --config <B>/prek-config.json --hook-type <stage> --hook-dir <common-dir>/hooks --script-version 4 -- args` (prek 0.3.11 has global `-q/--quiet`; `--script-version 4` is what agent-support's prek-generated `.git/hooks/pre-commit` passes; re-verify both on the pinned prek)
   - `runner forwards stdin and args for pre-push (ref lines, remote name, url), pre-rebase ($1 $2), commit-msg, prepare-commit-msg`
   - `runner returns prek status unchanged; prints hooks-failed hint only on nonzero`
   - `runner uses bundle prek even with a decoy prek first on PATH`
-  - `runner works under env -i with no HOME`
+  - `runner works under env -i with no HOME` (in the sandbox: PATH holds only a dir of symlinks to the nix `git` and `sh`; the literal `PATH=/usr/bin:/bin` variant runs only outside the sandbox and is skipped inside)
   - `runner honours GIT_INDEX_FILE and GIT_DIR from git`
-  - `runner calls git at most twice` (PATH git shim counting invocations)
+  - `at most 3 git processes for pre-commit/pre-push (rev-parse, ls-files, hash-object) and at most 1 for other stages` (PATH git shim counting invocations)
   - `broken bundle (prek not executable) exits 12 with the broken message`
   - `stub works when the clone path has a space and a symlinked prefix`
   - `fires at root, subdir and linked worktree` (marker file written by the stand-in shows which tree)
 - [ ] **Step 2: Run** `bats modules/pg-hooks/lib/tests modules/pg-hooks/pg-hooks-run/tests` → FAIL (missing files).
-- [ ] **Step 3: Implement** the library, the stub template and `pg-hooks-run.sh` with the interfaces above. The runner runs prek as a child (not `exec`), passes prek's quiet option if prek 0.3.x `hook-impl` has one that hides "Passed" lines (check `prek hook-impl --help`; record the finding in the commit message), and matches any `--script-version` the existing prek-generated stub in `/Users/phillipg/phillipg_mbp/phillipgreenii-nix-agent-support/.git/hooks/pre-commit` passes.
+- [ ] **Step 3: Implement** the library, the stub template and `pg-hooks-run.sh` with the interfaces above. The runner runs prek as a child (not `exec`) with the argv in the test above; record in the commit message whether `-q` hides the per-hook "Passed" lines on the pinned prek.
 - [ ] **Step 4: Run** the bats → PASS; then `nix build .#checks.aarch64-darwin.test-pg-hooks-lib .#checks.aarch64-darwin.test-pg-hooks-run` in the background → success.
 - [ ] **Step 5: Commit** `feat(pg-hooks): library, stub template and bundle runner (pg2-pla9d)`.
 
@@ -126,6 +127,7 @@ Spec: 5.1 (run semantics, pre-land), 5.3, 5.4, 7.1 (legacy fallback, D1).
 - [ ] **Step 1: Write failing bats** (`test-pg-hooks.bats`):
   - `no args prints usage and the common-tasks block`
   - `status --porcelain` for each state with its exit code: present 0, stale 14, missing 13, broken 12, unreachable 15 (local `core.hooksPath=.githooks`), relocated 16 (`clone_path` differs), legacy 0 (no bundle, usable `.pre-commit-config.yaml` in worktree or canonical)
+  - `state precedence: relocated > unreachable > broken > stale > present; with no bundle: unreachable if hooks are unreachable, else legacy if a usable legacy config exists, else missing`
   - `legacy fallback reads the canonical config in place and creates no file in the worktree`
   - `list` and `explain pre-commit` output from `stages.json`
   - `run pre-commit with no args runs prek run -c <B>/prek-config.json --hook-stage pre-commit on staged files`; `run --all-files passes through`; `run -- <flags> forwards raw flags`; `run cds to the toplevel from a subdirectory`
@@ -144,8 +146,10 @@ Spec: 4.2 (bundle contents), 5.1 (options, assertions), 5.2 (fixers schema).
 
 **Files:**
 
-- Modify: `flake-modules/pre-commit.nix` (new options in `options.phillipgreenii.pre-commit`; new `pgHooksBundle` in `perSystem`; `packages.pg-hooks-bundle` when `bundle.enable`). Do NOT touch the commitTimeShim code paths except the mutual-exclusion assertion.
-- Create: `lib/pg-hooks-bundle-tests.nix`; register it like the other `lib/*-tests.nix`.
+- Modify: `flake-modules/pre-commit.nix` (new options in `options.phillipgreenii.pre-commit`; new `pgHooksBundle` in `perSystem`; `packages.pg-hooks-bundle` when `bundle.enable`; ALSO expose the derivation regardless of `enable` as `legacyPackages.<system>.pgHooksBundle` so Task 5's real-tools check can build it before cutover). Do NOT touch the commitTimeShim code paths except the mutual-exclusion assertion.
+- Create: `lib/pg-hooks-bundle-tests.nix`; register it in `flake.nix` like the other `lib/*-tests.nix` (~439-494).
+- repo-base's own `stampPaths` value is set in Task 18 (inert until the bundle is enabled), not here.
+- Note: the `fixers.mode` field (`files` | `per-file`) extends spec 5.1's schema; spec 5.2's "statix once per file" is expressed with it.
 
 **Interfaces:**
 
@@ -177,7 +181,7 @@ Spec: 4.2 (generations, pruning), 4.4, 6.
 **Interfaces:**
 
 - Consumes: Task 1 library and `stubTemplate`; Task 3 `pgHooksBundle`.
-- Produces: `pg-hooks-install --bundle <store path> [--private] [--override <name>=<path>]...`; layout and `reinstall`/`source.json` contents per spec 4.2/4.4; exit 0, 2 (refused), 1 (unexpected). Uses `${PG_HOOKS_NIX_STORE_BIN:-nix-store} --add-root <gen-N>/bundle --indirect --realise <bundle>`.
+- Produces: `pg-hooks-install --bundle <store path> [--private] [--override <name>=<path>]...`; layout and `reinstall`/`source.json` contents per spec 4.2/4.4; the private `reinstall` line renders each `--override <name>=<path>` as `--override-input <name> git+file://<path>` before `.#install-pre-commit-hooks` and repeats the `--override` pins after `-- --private`; exit 0, 2 (refused), 1 (unexpected). Uses `${PG_HOOKS_NIX_STORE_BIN:-nix-store} --add-root <gen-N>/bundle --indirect --realise <bundle>`.
 
 - [ ] **Step 1: Write failing bats** with a fake `nix-store` (records argv, creates the out-link to a temp "store" dir):
   - `canonical install writes current, reinstall, gen-1/bundle and gen-1/source.json`
@@ -206,7 +210,7 @@ Spec: 5.2, 5.4.
 
 **Files:**
 
-- Modify: `modules/pg-hooks/pg-hooks/pg-hooks.sh`, its bats, `pg-hooks.md`, completions
+- Modify: `modules/pg-hooks/pg-hooks/pg-hooks.sh`, its bats, `pg-hooks.md`, completions; `flake.nix` (`packages.pre-commit-fix`, `overlays.default` entry `pre-commit-fix`, the `pg-hooks-fix-real-tools` check)
 - Create: `modules/pg-hooks/pre-commit-fix/{default.nix,pre-commit-fix.sh}`; add to `scripts.nix`, `home/pg-hooks/default.nix` (installs both names)
 
 **Interfaces:**
@@ -230,11 +234,11 @@ Spec: 5.2, 5.4.
   - `pre-commit-fix forwards to pg-hooks fix`
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → PASS; build checks in the background.
 - [ ] **Step 5: Commit** `feat(pg-hooks): fix subcommand and pre-commit-fix (pg2-pla9d)`.
-- [ ] **Step 6:** add one repo-base flake check `pg-hooks-fix-real-tools` that runs the REAL bundle's fixers on a fixture with an unformatted `.nix` and `.md` and asserts idempotency.
+- [ ] **Step 6:** add one repo-base flake check `pg-hooks-fix-real-tools` that runs the REAL bundle's fixers (from `legacyPackages.<system>.pgHooksBundle`, Task 3, since `bundle.enable` is still false in repo-base) on a fixture with an unformatted `.nix` and `.md` and asserts idempotency.
 
 ### Task 6: pn Go changes: bundle state reader, install gate, sets (repo-base)
 
-Spec: 4.4 (pn changes), 4.6.
+Spec: 4.2, 4.4 (pn changes), 4.5, 4.6.
 
 **Files:**
 
@@ -243,7 +247,7 @@ Spec: 4.4 (pn changes), 4.6.
 
 **Interfaces:**
 
-- Produces: `type HookBundleState string` with values `present stale missing broken unreachable relocated legacy`; `func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error)` reading `current`, `source.json`, `meta.json` directly (no dependency on `pg-hooks` on PATH); stamp computed with two git invocations per spec 4.5.
+- Produces: `type HookBundleState string` with values `present stale missing broken unreachable relocated legacy`; `func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error)` reading `current`, `source.json`, `meta.json` directly (no dependency on `pg-hooks` on PATH); stamp computed per spec 4.5 (`git ls-files -s` piped to `git hash-object --stdin`); state precedence as in Task 2.
 - Gate: skip the install hook when state is `present` AND every recorded override's HEAD and dirty state equal now. Sets: append `--private` and one `--override <alias>=<path>` per pinned input whenever the hook directory is a linked worktree.
 
 - [ ] **Step 1: Write failing Go tests:** each state from a fixture tree; gate skips for present+matching overrides, runs for stale, missing, override HEAD changed, override dirty; `installSetHooks` passes `--private` and the pins in a linked worktree, and not in a canonical clone.
@@ -252,9 +256,9 @@ Spec: 4.4 (pn changes), 4.6.
 
 ### Task 7: pn doctor checks (repo-base)
 
-Spec: 4.1 (doctor), 7.4 (doctor rows).
+Spec: 4.1 (doctor), 5.4 (messages), 7.4 (doctor rows).
 
-**Files:** Modify `doctor_checks_precommithook.go` (57-62, 70, 80-100), `doctor_checks_ruffpin.go` (136, ~152), tests. Move `resolvedHooksDir` and `symlinkLiveInNixStore` from `doctor_checks_githooksshim.go` into a shared file (deletion of that check is Task 16).
+**Files:** Modify `doctor_checks_precommithook.go` (57-62, 70, 80-100), `doctor_checks_ruffpin.go` (136, ~152), tests. Move `resolvedHooksDir` (from `doctor_checks_githooksshim.go` ~43) into a shared file; `symlinkLiveInNixStore` already lives in `nix_hooks.go` ~127 and stays. (Deletion of the githooks-shim check is Task 21.)
 
 **Interfaces:** Consumes Task 6 `ReadHookBundleState`. "Declared" = the repo's `pn-workspace.toml` entry runs `install-pre-commit-hooks`.
 
@@ -264,7 +268,7 @@ Spec: 4.1 (doctor), 7.4 (doctor rows).
 
 ### Task 8: pn pre-commit-check, worktree link and update-locks in dual mode (repo-base)
 
-Spec: 7.1 (dual mode), 7.4 rows.
+Spec: 5.3 (porcelain), 7.1 (dual mode), 7.4 rows.
 
 **Files:** Modify `pre_commit_check.go` (~46), `update_worktree.go` (16-33, 305), `propagate.go` (189), `lib/scripts/update-locks-lib.bash` (395-500), their tests.
 
@@ -276,13 +280,13 @@ Spec: 7.1 (dual mode), 7.4 rows.
 
 Spec: 4.1. Repo: `/Users/phillipg/phillipg_mbp/phillipgreenii-nix-personal`.
 
-**Files:** Modify `home/programs/git/default.nix` (~66-80; today `programs.git.hooks.pre-commit = pg-git-check-identity`). Create `home/programs/git/pg-hook-dispatch.sh` and `home/programs/git/tests/test-pg-hook-dispatch.bats` (vendor or import the git fixture harness; set `GIT_CONFIG_GLOBAL` after setup, no local `core.hooksPath`).
+**Files:** Create `home/programs/git/pg-hook-dispatch/{default.nix,pg-hook-dispatch.sh,tests/test-pg-hook-dispatch.bats}` (mkBashScript layout) and wire it into `home/programs/git/scripts.nix` (today only `git-mu`; personal's `test-git-scripts` check iterates `gitScripts.checks`). Modify `home/programs/git/default.nix`: replace the single `programs.git.hooks.pre-commit` (line ~81; comment block 66-80) with the dispatcher registered under every stage name. Test support: the personal lock includes the git-fixture-harness package; use `testSupport = "${harnessPkg}/lib/scripts"`, unset the harness's local `core.hooksPath` and export `GIT_CONFIG_GLOBAL` after setup.
 
-**Interfaces:** one script installed under every name from `git help githooks` except `fsmonitor-watchman`, `push-to-checkout`, `sendemail-validate`, `reference-transaction`, `pre-auto-gc`; stage = `basename "$0"`; git called as `${pkgs.git}/bin/git`.
+**Interfaces:** one script registered under every CLIENT-SIDE hook name from `git help githooks` (git 2.54), excluding `fsmonitor-watchman`, `push-to-checkout`, `sendemail-validate`, `reference-transaction`, `pre-auto-gc` and the server-side `pre-receive`, `update`, `proc-receive`, `post-receive`, `post-update`; stage = `basename "$0"`. mkBashScript constraints: it injects `set -euo pipefail`, so guard the `git rev-parse` lookup with `if`/`|| true` (failure ⇒ exit 0); it reserves a leading `-v`/`--version`; declare NO `runtimeDeps` (a wrapProgram wrapper would make `basename "$0"` `.pg-hook-dispatch-wrapped`); pass `${pkgs.git}/bin/git` and the pg-git-check-identity path via mkBashScript `config` vars. Note: `post-index-change` fires on index writes, so the ~50 ms cost applies there too.
 
-- [ ] **Step 1: Failing bats:** `every listed stage name is installed` (compare with `git help githooks`); `identity check runs first and only on pre-commit, and its failure stops the commit`; `chains to .git/hooks/<stage> with stdin and args`; `exit 0 when no stub, in a bare repo, outside a repo, in a submodule, during git worktree add post-checkout`; `a bd-style post-merge hook is chained`.
+- [ ] **Step 1: Failing bats:** `every listed stage name is installed` (pin the literal list; compare with `man githooks` only when `man` is available, skip in the sandbox); `assembled script driven through symlinks named pre-commit and post-merge picks the right stage`; `identity check runs first and only on pre-commit, and its failure stops the commit`; `chains to .git/hooks/<stage> with stdin and args`; `exit 0 when no stub, in a bare repo, outside a repo, in a submodule, during git worktree add post-checkout`; `a bd-style post-merge hook is chained`.
 - [ ] **Step 2-4:** FAIL → implement → PASS (build the personal check in the background).
-- [ ] **Step 5:** Before landing, list executable non-sample files under `.git/hooks` of every repo on the machine and paste the list into the bead (spec 4.1).
+- [ ] **Step 5:** Before landing, list executable non-`.sample` files under `.git/hooks` of every repo in `pn-workspace.toml`, any other `.git` under `/Users/phillipg/phillipg_mbp` (depth 2), and `/Volumes/gitrepos/ziprecruiter/pristine` if mounted; paste the list into the bead (spec 4.1).
 - [ ] **Step 6: Commit** `feat(git): global hook dispatcher chaining to .git/hooks (pg2-pla9d)`.
 
 ### Task 10: FF-1b, integrate-branch-support and FF-4 refresh (agent-support)
@@ -299,11 +303,11 @@ Spec: 4.5 (FF-4 refresh, D5), 5.3 (127 handling), 7.4 rows FF-1b and integrate-b
 
 ### Task 11: drain isolate and wtnew in dual mode (agent-support)
 
-Spec: 7.1, 7.4 rows.
+Spec: 5.3 (porcelain), 7.1, 7.4 rows. Blocked by Task 10 (shared `PRECOMMIT=` vocabulary).
 
 **Files:** `packages/pb/internal/drain/isolate.go` (113, 176-201), `packages/pb/cmd/pb/drain_isolate.go:31`, `packages/pb/README.md:152`, `isolate_test.go`; `packages/wtnew/wtnew/{wtnew.bash (47-110), wtnew.sh}`, bats.
 
-- [ ] **Step 1: Failing tests:** link only when `pg-hooks status --porcelain` says `legacy`; with a bundle, no file written and the result reports the bundle state; `pg-hooks` absent (127) → today's behavior.
+- [ ] **Step 1: Failing tests:** link only when `pg-hooks status --porcelain` says `legacy`; with a bundle, no file written and the result reports the bundle state; `pg-hooks` absent (127) → today's behavior; `wtnew` prints the `PRECOMMIT=` facts block with the SAME vocabulary Task 10 defines (`bundle|stale|legacy|missing|broken`, `wtnew.bash:49`).
 - [ ] **Step 2-4:** FAIL → implement → PASS.
 - [ ] **Step 5: Commit** `feat(pb,wtnew): link prek config only for legacy repos (pg2-pla9d)`.
 
@@ -338,24 +342,24 @@ Spec: 5.3 (127 fallback), 7.4 rows agent rules / drain-beads / docs.
 
 ### Task 16: ZR enablement and docs (phillipg-nix-ziprecruiter)
 
-**Files:** `darwin/system/default.nix` (~82; import `inputs.phillipgreenii-nix-base.homeModules.pg-hooks`), `machines/phillipg-mbp-02/default.nix` (~840; `pg-hooks.enable = true;`), `modules/workspace.nix:162`, `modules/workspace-root-CLAUDE.md.txt` (source of the workspace `CLAUDE.md` "prek / pre-commit in Fresh Worktrees" section: rewrite for dual mode), `CLAUDE.md`, `home/ziprecruiter/config/claude-memory/**` files that describe the symlink fix; also support-apps and overlay `CLAUDE.md` mentions.
+**Files:** `darwin/system/default.nix` (~82; import `inputs.phillipgreenii-nix-base.homeModules.pg-hooks`), `machines/phillipg-mbp-02/default.nix` (~840; `pg-hooks.enable = true;`), `modules/workspace-root-CLAUDE.md.txt` (source of the workspace `CLAUDE.md` "prek / pre-commit in Fresh Worktrees" section: rewrite for dual mode), `CLAUDE.md`; support-apps `CLAUDE.md` and overlay `AGENTS.md` (the overlay has no `CLAUDE.md`) mentions. `modules/workspace.nix:162` is a comment and the claude-memory files contain no symlink-fix text (verified 2026-10-01): touch them only if a re-grep shows otherwise.
 
-- [ ] Steps: edit → ZR eval check that `pg-hooks` is enabled for `phillipg-mbp-02` → commit. The ZR lock still pins the old repo-base rev; `pn workspace apply` builds with local overrides, and the relock follows the push (workspace practice: defer sibling relock).
+- [ ] Steps: edit → ZR eval check that `pg-hooks` is enabled for `phillipg-mbp-02`, built with `--override-input phillipgreenii-nix-base git+file:///Users/phillipg/phillipg_mbp/phillipg-nix-repo-base` (the ZR lock still pins a repo-base rev without `homeModules.pg-hooks`; or use `pn workspace build`) → commit. `pn workspace apply` builds with local overrides, and the relock follows the push (workspace practice: defer sibling relock).
 
 ### Task 17: OPERATOR — apply
 
-`human` bead. After Tasks 1-16 land: `pn workspace apply`; confirm `command -v pg-hooks` and `pg-hooks status` in each repo prints `legacy` (or `present` for none yet).
+`human` bead. After Tasks 1-16 land: `pn workspace apply`; confirm `command -v pg-hooks`, and that `pg-hooks status` prints `unreachable` in repo-base (its local `core.hooksPath` is still `.githooks` until Task 19) and `legacy` in every other repo.
 
 ### Task 18: repo-base cutover (repo-base, agent part)
 
 Spec: 7.2 steps 2-3.
 
-- [ ] One commit: `phillipgreenii.pre-commit.bundle.enable = true;`, `commitTimeShim.enable = false;`, `stampPaths` as in Task 3, delete `.githooks/`. Land it.
+- [ ] One commit: `phillipgreenii.pre-commit.bundle.enable = true;`, `commitTimeShim.enable = false;`, `stampPaths = [ "flake-modules/pre-commit.nix" "modules/pg-git-check-identity" ];`, delete `.githooks/`. Land it.
 - [ ] In the canonical clone: `nix run .#install-pre-commit-hooks` (background); `pg-hooks status --porcelain` shows `state=present`.
 
 ### Task 19: OPERATOR — repo-base hooksPath and verification
 
-`human` bead. Spec 7.2 steps 4-5: `git -C /Users/phillipg/phillipg_mbp/phillipg-nix-repo-base config --local core.hooksPath /Users/phillipg/phillipg_mbp/phillipg-nix-repo-base/.git/hooks`; `pg-hooks status`; a real commit in the canonical clone and in a worktree; the latency run (spec 8, not hermetic): pass if hook overhead is within 0.2 s of `prek hook-impl` run directly; record numbers and load on the bead.
+`human` bead. Spec 7.2 steps 4-5: first rebase older repo-base worktrees onto main (spec 7.2); then `git -C /Users/phillipg/phillipg_mbp/phillipg-nix-repo-base config --local core.hooksPath /Users/phillipg/phillipg_mbp/phillipg-nix-repo-base/.git/hooks`; `pg-hooks status`; a real commit in the canonical clone and in a worktree, a real rebase, and a push to a local bare remote (spec 8, not hermetic); the latency run: pass if hook overhead is within 0.2 s of `prek hook-impl` run directly; record numbers and load on the bead.
 
 ### Task 20: consumer waves (existing bead `pg2-uq1km`)
 
@@ -367,7 +371,7 @@ Spec: 7.5. Blocked by Task 20. Delete everything in spec 7.5, the dual-mode lega
 
 ### Task 22: drift guard
 
-Spec: 7.1 step 6, 8 (drift guard row). Blocked by Task 21. Grep checks per repo (no `.githooks`, relative `core.hooksPath`, link code or text outside an allowlist) and a `pn workspace doctor` check that runs `ReadHookBundleState` for every declared repo.
+Spec: 7.1 step 6, 8 (drift guard row). Blocked by Task 21. Grep checks per repo (no `.githooks`, no relative `core.hooksPath` text, no link code or text outside an allowlist) plus doctor drift rows for the same conditions; the per-repo bundle-state doctor check already exists from Task 7.
 
 ### Acceptance matrix (with Task 6)
 
@@ -380,9 +384,10 @@ A pn Go smoke scenario under `modules/pn/internal/workspace/smoke/scenarios/`: c
 ```mermaid
 flowchart TD
   T1["T1 lib + runner"] --> T2["T2 CLI"]
-  T2 --> T5["T5 fix"]
-  T1 --> T3["T3 module + bundle"]
+  T2 --> T3["T3 module + bundle"]
   T3 --> T4["T4 installer"]
+  T4 --> T5["T5 fix"]
+  T10 --> T11
   T4 --> T6["T6 pn reader/gate/sets"]
   T6 --> T7["T7 doctor"]
   T7 --> T8["T8 pn dual mode"]
@@ -413,6 +418,6 @@ flowchart TD
   T21 --> T22["T22 drift guard"]
 ```
 
-Same-file edges are already implied: T1→T2→T5 (shared `modules/pg-hooks`), T3→T4 (`pre-commit.nix`), T6→T7→T8 (`modules/pn/internal/workspace`), T10→T12 (agent-support `flake.nix` grep checks), T14 after T8 (pn help text), T21 after everything it deletes.
+Same-file edges: T1→T2→T3→T4→T5 is one chain because repo-base `flake.nix` and `modules/pg-hooks/scripts.nix` are edited by T1, T2, T3, T4 and T5 (and T5 consumes T3's `fixers.json`); T6→T7→T8 (`modules/pn/internal/workspace`); T10→T11 (shared `PRECOMMIT=` vocabulary) and T10→T12 (agent-support `flake.nix` grep checks); T14 after T5 and T8 (repo-base `flake.nix`, pn help text); T21 after everything it deletes. (Amended 2026-10-01 after the bead review.)
 
 Existing beads: `pg2-ytkax` closes as superseded by T4/T6; `pg2-d1ngb` is blocked by T21 and then closes (shim abandoned, HK-2 stands); `pg2-z19ad` is absorbed into `pg2-pla9d`.
