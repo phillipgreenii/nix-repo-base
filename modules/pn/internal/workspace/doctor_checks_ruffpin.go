@@ -150,12 +150,26 @@ const (
 // keeps it to paths actually executed as ruff.
 var nixStoreRuffRe = regexp.MustCompile(`/nix/store/[0-9a-z]+-ruff-([0-9][^/"'\s]*)/bin/ruff`)
 
+// hookConfigPath is the prek config the repo's hooks run: the live hook
+// bundle's prek-config.json when the checkout has one (per-clone hook bundle,
+// design 7.4), else the legacy generated .pre-commit-config.yaml. Both carry
+// the hook `entry` store paths, so the ruff version is read the same way.
+func hookConfigPath(repoDir string) string {
+	if _, info, err := ReadHookBundleState(repoDir); err == nil && info.Bundle != "" {
+		p := filepath.Join(info.Bundle, "prek-config.json")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return filepath.Join(repoDir, preCommitConfigName)
+}
+
 // nixpkgsRuffVersions returns the sorted distinct nixpkgs ruff versions the
 // repo's generated pre-commit config executes. The file is a symlink into
 // /nix/store, so an unreadable path (never generated, or a dangling symlink
 // after a GC) is reported as absent rather than as a mismatch.
 func nixpkgsRuffVersions(repoDir string) ([]string, ruffConfigStatus) {
-	data, err := os.ReadFile(filepath.Join(repoDir, preCommitConfigName))
+	data, err := os.ReadFile(hookConfigPath(repoDir))
 	if err != nil {
 		return nil, ruffConfigAbsent
 	}

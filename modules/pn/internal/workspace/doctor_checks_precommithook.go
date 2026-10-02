@@ -39,12 +39,25 @@ import (
 // renderHuman) but NEVER fails the exit code, not even under --strict (see
 // doctor.go's ExitCode doc and hasAny/HasErrors, both of which exclude
 // Skipped findings unconditionally).
+//
+// Per-clone hook bundle (pg2-pla9d, design sections 4.1, 7.4): for a repo whose
+// pn-workspace.toml entry runs install-pre-commit-hooks (DECLARED) and that is
+// in bundle mode, the audit is bundleHookFindings instead (errors, not Skipped:
+// a missing pointer, missing or foreign stubs, a dangling bundle and unreachable
+// hooks each mean the gate silently does not run). A repo still on the legacy
+// config keeps the checks above unchanged.
 func (ws *Workspace) checkPreCommitHookLive(_ context.Context, _ *doctorEnv) []Finding {
 	var out []Finding
 	for _, name := range orderedRepoNames(ws.config.Repos) {
 		repoDir := filepath.Join(ws.root, name)
 		if !isGitRepo(repoDir) {
 			continue
+		}
+		if ws.installHookDeclared(name) {
+			if fs, ok := ws.bundleHookFindings(name, repoDir); ok {
+				out = append(out, fs...)
+				continue
+			}
 		}
 		if f := ws.preCommitHookLiveFinding(name, repoDir); f != nil {
 			out = append(out, *f)
