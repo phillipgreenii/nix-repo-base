@@ -25,9 +25,10 @@
   ...
 }:
 assert
-  pkgs ? buildGoApplication
+  (pkgs ? buildGoApplication && pkgs ? mkGoCacheEnv)
   || throw ''
-    mkGoBuilders requires pkgs.buildGoApplication (gomod2nix's overlay).
+    mkGoBuilders requires pkgs.buildGoApplication and pkgs.mkGoCacheEnv (gomod2nix's
+    overlay; mkGoApp builds its own Go cache env, see the cache note on mkGoApp).
     Either:
       - Import phillipgreenii-nix-base.flakeModules.gomod2nix-overlay and
         apply self.overlays.gomod2nix to your pkgs, OR
@@ -220,7 +221,10 @@ rec {
   #      `vendorHash` to bump and no monolithic vendor FOD to invalidate; first-
   #      party local `replace => ../sibling` modules are a native path dep read
   #      live from source. To add/bump a dep: `go get` + `go mod tidy` +
-  #      `nix run github:nix-community/gomod2nix -- generate`, then commit the toml.
+  #      `nix run github:nix-community/gomod2nix/<locked rev> -- generate --with-deps`,
+  #      then commit the toml. `--with-deps` is REQUIRED, not optional: a plain
+  #      `generate` silently REMOVES `cachePackages` and with it the build cache
+  #      (see the cache note below; ADR 0031).
   #
   # Usage (ADR 0008 §"The pattern"). The committed `gomod2nix.toml` always sits
   # beside `go.mod`; the consumer never names it — mkGoApp derives `pwd` and
@@ -252,6 +256,20 @@ rec {
   # Tests: `doCheck` defaults to false (see the file header). Pass
   # `doCheck = true` to run gomod2nix's check phase in the package build; the
   # module's test gate is still its mkGoTest check (ADR 0021).
+  #
+  # Go build cache (ADR 0031): buildGoApplication restores a pre-warmed Go build
+  # cache (`go-cache-env`, a tarball) populated from the `cachePackages` list
+  # that `gomod2nix generate --with-deps` writes into gomod2nix.toml. By default
+  # that env is keyed on the package's `ldflags` (which here carry the per-source
+  # version) and on a vendor env that interpolates the whole `src` store path, so
+  # it would be rebuilt on EVERY source edit and prime nothing. mkGoApp therefore
+  # disables buildGoApplication's own cache env (`disableGoCache = true`) and
+  # builds a decoupled one: from go.mod / go.sum / gomod2nix.toml only, with its
+  # own source-independent vendor env, so it changes iff the dependency set does.
+  # It is attached through `overrideAttrs` and exposed as `passthru.goCacheEnv`.
+  # The package derivation itself is unchanged in the ways ADR 0006 cares about:
+  # `version` is still `baseVersion-<src digest>` and `-X versionPath=version`
+  # still rides in the package's own ldflags.
   mkGoApp =
     {
       pname,
@@ -320,6 +338,88 @@ rec {
         CGO_ENABLED = args.CGO_ENABLED or callerEnv.CGO_ENABLED;
       };
       envRest = builtins.removeAttrs callerEnv [ "CGO_ENABLED" ];
+
+      # --- Go build cache env, decoupled from `src` (ADR 0031) -----------------
+      # Dependency-only view of the module (go.mod / go.sum / gomod2nix.toml),
+      # content-addressed: its store path is stable across source edits.
+      depFiles = lib.cleanSourceWith {
+        src = pwd;
+        filter =
+          path: _type:
+          builtins.elem (baseNameOf path) [
+            "go.mod"
+            "go.sum"
+            "gomod2nix.toml"
+          ];
+        name = "go-dep-files";
+      };
+      # vendor-env built from `depFiles` instead of `pwd`. The stock vendor-env
+      # symlinks every local-replace module into `pwd`'s store path, so in
+      # Pattern B it (and the cache env that depends on it) would change on every
+      # edit of the package OR its sibling. Here the replace symlinks point into
+      # the dep-files path and dangle, which is fine: the cache env never imports
+      # a local-replace package (localReplaceMods below are dropped from its roots).
+      cacheVendorEnv =
+        (pkgs.buildGoApplication {
+          pname = "go-cache-vendor";
+          version = "0";
+          pwd = depFiles;
+          src = depFiles;
+          modules = depFiles + "/gomod2nix.toml";
+          inherit (pkgs) go;
+          disableGoCache = true;
+        }).vendorEnv;
+      # Module paths replaced by a LOCAL path in go.mod (`X => ../sibling`, in
+      # single-line or `replace ( ... )` block form). Their packages appear in
+      # `go list all`, hence in gomod2nix `cachePackages`, but cannot resolve in
+      # the source-independent vendor tree above, so they are dropped from the
+      # cache roots (third-party packages they import stay in the list).
+      localReplaceMods =
+        let
+          lines = lib.splitString "\n" (builtins.readFile (pwd + "/go.mod"));
+          m = map (builtins.match "[[:space:]]*(replace[[:space:]]+)?([^[:space:]]+)([[:space:]]+[^[:space:]]+)?[[:space:]]+=>[[:space:]]+\\.\\.?/.*") lines;
+        in
+        map (x: builtins.elemAt x 1) (builtins.filter (x: x != null) m);
+      modulesStruct0 = builtins.fromTOML (builtins.readFile (pwd + "/gomod2nix.toml"));
+      # The cache env's inputs are ONLY the dependency files plus the caller's
+      # build-environment knobs. Deliberately NOT inputs: `version` / the
+      # `-X versionPath=version` ldflag (it changes on every source edit and the
+      # cache env's `go build` never links with it: ldflags only affect the link
+      # step, not the compiled-package cache entries) and the caller's `ldflags`
+      # (same reason; they were a dead input of mkGoCacheEnv).
+      cacheEnv =
+        (pkgs.mkGoCacheEnv {
+          inherit (pkgs) go;
+          modulesStruct = modulesStruct0 // {
+            cachePackages = builtins.filter (
+              p: !builtins.any (r: p == r || lib.hasPrefix (r + "/") p) localReplaceMods
+            ) (modulesStruct0.cachePackages or [ ]);
+          };
+          goMod = {
+            replace = { };
+          };
+          vendorEnv = cacheVendorEnv;
+          depFilesPath = depFiles;
+          tags = args.tags or [ ];
+          allowGoReference = args.allowGoReference or false;
+          CGO_ENABLED = args.CGO_ENABLED or (hoistedCgo.CGO_ENABLED or pkgs.go.CGO_ENABLED);
+        }).overrideAttrs
+          (old: {
+            # mkGoCacheEnv ends its populate step with `go build ... || true`, so a
+            # stale root, an OS-specific package (this flake builds aarch64-darwin
+            # AND x86_64-linux) or a non-importable `package main` yields a
+            # silently EMPTY cache and every build compiles cold again. Re-run the
+            # build as a hard gate: the packages are already compiled, so this is
+            # near-free on success and fails loudly (with Go's own error) on a
+            # bad root.
+            postBuild = (old.postBuild or "") + ''
+              if [ -f cache.go ]; then
+                echo "Verifying every cachePackages root builds (no silent empty cache)..."
+                go build -mod=vendor cache.go
+              fi
+            '';
+          });
+
       # `meta` is reassembled explicitly (default merged BENEATH args.meta so a
       # caller-supplied mainProgram wins), so strip it from `forwarded` to avoid
       # passing it twice into buildGoApplication. `env` is likewise reassembled
@@ -345,17 +445,25 @@ rec {
     # go.mod) but its location is derived from `pwd`, so it is asserted rather
     # than threaded by value.
     assert gomod2nixToml != null;
-    pkgs.buildGoApplication (
+    (pkgs.buildGoApplication (
       forwarded
       // {
         inherit pname version pwd;
         inherit (pkgs) go; # pin to our nixpkgs Go, not gomod2nix's
         modules = pwd + "/gomod2nix.toml";
+        # buildGoApplication's own cache env is keyed on ldflags (hence on the
+        # version) and, in Pattern B, on the whole `src` path, so it would be
+        # rebuilt on every edit. Disable it; the decoupled `cacheEnv` built above
+        # is attached below (ADR 0031).
+        disableGoCache = true;
         # Default the check phase OFF (gomod2nix defaults it on). `args.doCheck`
         # is already in `forwarded`; restating it here keeps a caller's explicit
         # value, so a caller that already passed `doCheck = false` produces the
         # same derivation as before this default changed.
         doCheck = args.doCheck or false;
+        # The ADR 0006 mechanism is unchanged: the per-source version rides in the
+        # package's OWN ldflags (and its `version` attribute). `cacheEnv` is
+        # computed from dependency files only, so this never reaches go-cache-env.
         ldflags = ldflags ++ [ "-X ${versionPath}=${version}" ];
         # Default mainProgram merged BENEATH the caller's meta so an explicit
         # meta.mainProgram always wins (last-wins). No key added when nothing was
@@ -369,7 +477,16 @@ rec {
       # callers that pass no `env` (or only `env.CGO_ENABLED`) get a derivation
       # with no `env` attribute at all; the shim adds nothing for them.
       // lib.optionalAttrs (envRest != { }) { env = envRest; }
-    );
+    )).overrideAttrs
+      (old: {
+        # goConfigHook restores the cache from `goCacheDir`; passthru.goCacheEnv
+        # is the same derivation, exposed for the base check that asserts the two
+        # agree (go-builders-cache-env).
+        goCacheDir = cacheEnv;
+        passthru = (old.passthru or { }) // {
+          goCacheEnv = cacheEnv;
+        };
+      });
 
   # mkGoLint — run golangci-lint over a Go module OFFLINE, reusing gomod2nix's
   # vendored dependency env (ADR 0008). buildGoApplication's goConfigHook sets up
@@ -413,6 +530,10 @@ rec {
           ;
         inherit (pkgs) go; # pin to our nixpkgs Go, matching mkGoApp
         modules = pwd + "/gomod2nix.toml";
+        # buildPhase below re-exports GOCACHE to a scratch dir, discarding any
+        # restored cache tarball, so a cache env here would be a useless build
+        # input that (in Pattern B) is rebuilt on every source edit (ADR 0031).
+        disableGoCache = true;
         nativeBuildInputs = [ pkgs.golangci-lint ];
         # Skip `go test`; linting only. (<module>-go-tests runs the suite.)
         doCheck = false;
@@ -498,6 +619,9 @@ rec {
           ;
         inherit (pkgs) go; # pin to our nixpkgs Go, matching mkGoApp/mkGoLint
         modules = pwd + "/gomod2nix.toml";
+        # Same reason as mkGoLint: buildPhase re-exports GOCACHE (and the -race
+        # run strips -trimpath), so a restored cache could never be hit (ADR 0031).
+        disableGoCache = true;
         nativeBuildInputs = testDeps;
         # Deliberately NO `subPackages`: the whole point of this builder.
         doCheck = false;

@@ -256,13 +256,30 @@
           # forwarding depends on (bead pg2-sjxhy). Rooted at the parent so the
           # `replace => ../modb` sibling lives in the same store tree, mirroring the
           # real Pattern-B packages (e.g. agent-support's ccpool).
-          goPatternBFixtureSrc = lib.fileset.toSource {
-            root = ./lib/tests/fixtures/patternb;
-            fileset = lib.fileset.unions [
-              ./lib/tests/fixtures/patternb/moda
-              ./lib/tests/fixtures/patternb/modb
-            ];
-          };
+          goPatternBFixtureFileset = lib.fileset.unions [
+            ./lib/tests/fixtures/patternb/moda
+            ./lib/tests/fixtures/patternb/modb
+          ];
+          goPatternBFixtureSrcOf =
+            fileset:
+            lib.fileset.toSource {
+              root = ./lib/tests/fixtures/patternb;
+              inherit fileset;
+            };
+          goPatternBFixtureSrc = goPatternBFixtureSrcOf goPatternBFixtureFileset;
+          # Pattern-B mkGoApp over a given fixture source: the shape the Go cache
+          # env checks (go-builders-cache-env*, ADR 0031) probe. moda's committed
+          # gomod2nix.toml carries cachePackages mixing a local-replace root
+          # (example.com/modb) with a real dependency (github.com/spf13/pflag).
+          goPatternBCacheApp =
+            src:
+            goBuilders.mkGoApp {
+              pname = "patternb-cache-fixture";
+              inherit src;
+              modRoot = "moda";
+              gomod2nixToml = ./lib/tests/fixtures/patternb/moda/gomod2nix.toml;
+              subPackages = [ "." ];
+            };
         in
         {
           _module.args.pkgs = import inputs.nixpkgs {
@@ -1551,6 +1568,118 @@
               subPackages = [ "." ];
               doCheck = true;
             };
+
+            # Go build cache env decoupling (ADR 0031, bead pg2-t8807). Eval-only:
+            # forces derivation attributes and compares drvPaths, builds nothing.
+            # The "source edits" are real fileset changes (a deleted test file in
+            # the package, a deleted source file in the local-replace sibling), so
+            # the package's src path, digest and `version` all change; the cache
+            # env must not. Asserts:
+            #   - the cache env drvPath is invariant under an edit in the package
+            #     and under an edit in the sibling, while the package drvPath and
+            #     version DO change (so the invariance is not vacuous);
+            #   - ADR 0006 still holds: version = baseVersion-<8hex> and the
+            #     package's own ldflags carry `-X main.Version=<version>`;
+            #   - the cache env is the SAME derivation buildGoApplication restores
+            #     from (passthru.goCacheEnv == drvAttrs.goCacheDir);
+            #   - the local-replace root is dropped from the cache roots and the
+            #     real dependency is kept, and the populate step is guarded (no
+            #     `|| true` swallowing a failed root);
+            #   - mkGoLint / mkGoTest build no cache env at all.
+            go-builders-cache-env =
+              let
+                srcNoModaTest = goPatternBFixtureSrcOf (
+                  lib.fileset.difference goPatternBFixtureFileset ./lib/tests/fixtures/patternb/moda/main_test.go
+                );
+                srcNoModbSource = goPatternBFixtureSrcOf (
+                  lib.fileset.difference goPatternBFixtureFileset ./lib/tests/fixtures/patternb/modb/modb.go
+                );
+                app = goPatternBCacheApp goPatternBFixtureSrc;
+                appModaEdit = goPatternBCacheApp srcNoModaTest;
+                appModbEdit = goPatternBCacheApp srcNoModbSource;
+                cacheEnv = app.passthru.goCacheEnv;
+                lint = goBuilders.mkGoLint {
+                  pname = "patternb-fixture";
+                  src = goPatternBFixtureSrc;
+                  modRoot = "moda";
+                  gomod2nixToml = ./lib/tests/fixtures/patternb/moda/gomod2nix.toml;
+                  config = ./.golangci.yml;
+                };
+                test = goBuilders.mkGoTest {
+                  pname = "patternb-fixture";
+                  src = goPatternBFixtureSrc;
+                  modRoot = "moda";
+                  gomod2nixToml = ./lib/tests/fixtures/patternb/moda/gomod2nix.toml;
+                };
+                fixtureToml = builtins.fromTOML (
+                  builtins.readFile ./lib/tests/fixtures/patternb/moda/gomod2nix.toml
+                );
+                cases = {
+                  "fixture toml carries a local-replace root AND a real dependency root" =
+                    builtins.elem "example.com/modb" (fixtureToml.cachePackages or [ ])
+                    && builtins.elem "github.com/spf13/pflag" (fixtureToml.cachePackages or [ ]);
+                  "package edit changes the package version" = app.version != appModaEdit.version;
+                  "package edit changes the package drvPath" = app.drvPath != appModaEdit.drvPath;
+                  "sibling edit changes the package version" = app.version != appModbEdit.version;
+                  "sibling edit changes the package drvPath" = app.drvPath != appModbEdit.drvPath;
+                  "cache env drvPath invariant under a package edit" =
+                    cacheEnv.drvPath == appModaEdit.passthru.goCacheEnv.drvPath;
+                  "cache env drvPath invariant under a local-replace sibling edit" =
+                    cacheEnv.drvPath == appModbEdit.passthru.goCacheEnv.drvPath;
+                  "ADR 0006: version is baseVersion-<8hex>" =
+                    builtins.match "0\\.0\\.0-[0-9a-f]{8}" app.version != null;
+                  "ADR 0006: package ldflags carry -X main.Version=<version>" =
+                    builtins.elem "-X main.Version=${app.version}" app.ldflags;
+                  "passthru.goCacheEnv is the derivation goCacheDir restores from" =
+                    toString app.passthru.goCacheEnv == toString app.drvAttrs.goCacheDir;
+                  "cache env is a real derivation, not the empty default" =
+                    cacheEnv ? drvPath && cacheEnv.name == "go-cache-env";
+                  "local-replace root is dropped from the cache roots" =
+                    !(lib.hasInfix "example.com/modb" cacheEnv.buildPhase);
+                  "real dependency root is kept in the cache roots" =
+                    lib.hasInfix "github.com/spf13/pflag" cacheEnv.buildPhase;
+                  "populate step is re-run as a hard gate (no silent empty cache)" =
+                    lib.hasInfix "go build -mod=vendor cache.go" cacheEnv.postBuild;
+                  "mkGoLint builds no cache env" = lint.goCacheDir == "" && lint.disableGoCache == true;
+                  "mkGoTest builds no cache env" = test.goCacheDir == "" && test.disableGoCache == true;
+                };
+                failed = builtins.attrNames (lib.filterAttrs (_: ok: !ok) cases);
+              in
+              pkgs.runCommand "check-go-builders-cache-env" { } (
+                if failed == [ ] then
+                  "touch $out"
+                else
+                  ''
+                    echo 'mkGoApp Go cache env decoupling broken (ADR 0031, bead pg2-t8807). Failed:' >&2
+                    ${lib.concatMapStringsSep "\n" (n: "echo ${lib.escapeShellArg "  - ${n}"} >&2") failed}
+                    exit 1
+                  ''
+              );
+
+            # The cache env must actually carry a populated Go build cache. With
+            # an empty / all-failed `cachePackages` the tarball is ~100 bytes and
+            # every build silently compiles cold; with this fixture's roots
+            # (std plus pflag) it is multiple MiB. Builds the fixture's cache env,
+            # so unlike go-builders-cache-env this one runs `go build`.
+            go-builders-cache-env-tarball =
+              let
+                cacheEnv = (goPatternBCacheApp goPatternBFixtureSrc).passthru.goCacheEnv;
+                roots =
+                  (builtins.fromTOML (builtins.readFile ./lib/tests/fixtures/patternb/moda/gomod2nix.toml))
+                  .cachePackages or [ ];
+              in
+              assert lib.assertMsg (roots != [ ])
+                "go-builders-cache-env-tarball: fixture has no cachePackages, so the size assertion would be vacuous";
+              pkgs.runCommand "check-go-builders-cache-env-tarball" { inherit cacheEnv; } ''
+                tarball="$cacheEnv/cache.tar.zst"
+                size=$(wc -c < "$tarball")
+                echo "cache tarball: $size bytes (${toString (builtins.length roots)} cachePackages roots)"
+                if [ "$size" -le 1048576 ]; then
+                  echo "FAIL: cache tarball is $size bytes (<= 1 MiB) although cachePackages is non-empty; the cache env is effectively empty (ADR 0031)" >&2
+                  exit 1
+                fi
+                touch $out
+              '';
 
             # Hermetically verify the exported darwinModules.default (the aggregate
             # the machine actually imports) registers logSources.pn, and --

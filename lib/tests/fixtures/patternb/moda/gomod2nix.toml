@@ -1,3 +1,10 @@
 schema = 3
+cachePackages = [
+  'example.com/modb',
+  'github.com/spf13/pflag',
+]
 
 [mod]
+  [mod.'github.com/spf13/pflag']
+    version = 'v1.0.9'
+    hash = 'sha256-YAjyYpq5BXCosVJtvYLWFG1t4gma2ylzc7ILLoj/hD8='
