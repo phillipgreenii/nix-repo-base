@@ -118,21 +118,15 @@
           # pg-test-runner MUST fail loudly, never silently skip -- an
           # absence-keyed skip would let any PATH breakage no-op the only
           # commit-time test gate, which this workspace treats as hook
-          # bypassing.
-          entry = "${pkgs.writeShellScript "run-unit-tests" ''
-            set -eo pipefail
-            if [[ -n "$IN_NIX_BUILD" || -n "$NIX_BUILD_TOP" ]]; then
-              echo "run-unit-tests: inside the nix sandbox; skipping (checks.* already covers this)"
-              exit 0
-            fi
-            if ! command -v pg-test-runner >/dev/null 2>&1; then
-              echo "run-unit-tests: pg-test-runner not found on PATH -- provision it via the HM profile before committing (see docs/superpowers/specs/2026-08-24-pg-test-runner-design.md)" >&2
-              exit 11
-            fi
-            exec pg-test-runner --config ${
-              self.packages.${pkgs.stdenv.hostPlatform.system}.pg-test-runner-repo-config
-            } --labels unit --files "$@"
-          ''}";
+          # bypassing. The wrapper also carries a core.worktree tripwire
+          # (bead pg2-4c4nv): it fails loudly if the shared .git/config's
+          # core.worktree changes while the tests run. Its source lives in
+          # nix/run-unit-tests-wrapper.nix and is exercised by
+          # checks.<system>.run-unit-tests-core-worktree-tripwire.
+          entry = "${import ./nix/run-unit-tests-wrapper.nix {
+            inherit pkgs;
+            configPath = self.packages.${pkgs.stdenv.hostPlatform.system}.pg-test-runner-repo-config;
+          }}";
           pass_filenames = true;
           require_serial = true;
         };
@@ -437,6 +431,76 @@
                 touch $out
               '';
             test-update-locks-lib = checksHelpers.testUpdateLocksLib { };
+
+            # Hermetic regression test for the run-unit-tests wrapper's
+            # core.worktree tripwire (bead pg2-4c4nv). Runs the REAL wrapper in a
+            # linked worktree of a throwaway repo against a fake `pg-test-runner`
+            # and asserts: a clean run passes its exit code through; a runner that
+            # writes core.worktree into the shared config makes the wrapper exit 12
+            # (even when the runner itself passed); the wrapper never edits the
+            # config; and the sandbox skip path is untouched.
+            run-unit-tests-core-worktree-tripwire =
+              let
+                wrapper = import ./nix/run-unit-tests-wrapper.nix {
+                  inherit pkgs;
+                  configPath = "/nonexistent/pg-test-runner-config.json";
+                };
+              in
+              pkgs.runCommand "check-run-unit-tests-core-worktree-tripwire"
+                {
+                  nativeBuildInputs = [
+                    pkgs.git
+                    pkgs.bash
+                  ];
+                }
+                ''
+                  set -euo pipefail
+                  export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+                  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+                  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+                  work="$TMPDIR/work"; mkdir -p "$work/main"
+                  git -C "$work/main" init -q -b main
+                  git -C "$work/main" commit -q --allow-empty -m init
+                  git -C "$work/main" worktree add -q "$work/wt" -b feature
+                  common="$work/main/.git"
+
+                  fakebin="$TMPDIR/fakebin"; mkdir -p "$fakebin"
+                  cat > "$fakebin/pg-test-runner" <<'FAKE'
+                  #!/bin/sh
+                  [ -n "$FAKE_LEAK" ] && git config --file "$FAKE_COMMON/config" core.worktree "$FAKE_LEAK"
+                  exit "''${FAKE_RC:-0}"
+                  FAKE
+                  chmod +x "$fakebin/pg-test-runner"
+
+                  # NIX_BUILD_TOP is set by the builder; the wrapper would skip. Unset
+                  # it per-invocation except for the skip-path case.
+                  run() { (cd "$work/wt" && env -u NIX_BUILD_TOP -u IN_NIX_BUILD PATH="$fakebin:$PATH" FAKE_COMMON="$common" "$@" ${wrapper} some/file) ; }
+
+                  fail() { echo "FAIL: $*" >&2; exit 1; }
+
+                  rc=0; run env FAKE_RC=0 || rc=$?
+                  [ "$rc" -eq 0 ] || fail "clean run should exit 0, got $rc"
+
+                  rc=0; run env FAKE_RC=3 || rc=$?
+                  [ "$rc" -eq 3 ] || fail "runner failure (3) must pass through, got $rc"
+
+                  rc=0; output="$(run env FAKE_RC=0 FAKE_LEAK="$work/wt" 2>&1)" || rc=$?
+                  [ "$rc" -eq 12 ] || fail "leak must exit 12 even when runner passed, got $rc: $output"
+                  echo "$output" | grep -q "TRIPWIRE: core.worktree" || fail "missing TRIPWIRE message: $output"
+                  [ "$(git config --file "$common/config" --get core.worktree)" = "$work/wt" ] || fail "wrapper must not edit the config (report only)"
+
+                  # Pre-existing core.worktree that does not change: warn, no trip.
+                  rc=0; output="$(run env FAKE_RC=0 2>&1)" || rc=$?
+                  [ "$rc" -eq 0 ] || fail "unchanged pre-existing value must not trip, got $rc: $output"
+                  echo "$output" | grep -q "already sets core.worktree" || fail "missing pre-existing warning: $output"
+
+                  # Sandbox skip path (NIX_BUILD_TOP present) still exits 0 without the runner.
+                  rc=0; (cd "$work/wt" && PATH="$fakebin:$PATH" FAKE_RC=9 NIX_BUILD_TOP=/x ${wrapper}) >/dev/null || rc=$?
+                  [ "$rc" -eq 0 ] || fail "sandbox skip should exit 0, got $rc"
+
+                  echo "OK: core.worktree tripwire behaves as specified"
+                  touch $out
+                '';
 
             # Pure-function unit tests for lib/ul-pin.nix:isUnpinnedUpdateLocks,
             # the predicate behind the auto-contributed update-locks-pinned guard
