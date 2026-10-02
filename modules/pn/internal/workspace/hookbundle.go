@@ -376,7 +376,8 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 
 	gen, ptr := readHookPointer(info.Dir)
 	bundleRC := ptr
-	if ptr == hookPtrOK {
+	switch ptr {
+	case hookPtrOK:
 		info.Gen = gen
 		info.Bundle = filepath.Join(info.Dir, gen, "bundle")
 		bundleRC = checkHookBundle(info.Bundle)
@@ -385,7 +386,7 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 		} else if bundleRC != hookPtrOK {
 			info.Bundle = ""
 		}
-	} else if ptr == hookPtrInvalid {
+	case hookPtrInvalid:
 		info.BrokenReason = fmt.Sprintf("pointer %s/current is invalid", info.Dir)
 	}
 
@@ -402,11 +403,8 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 			info.Overrides = src.Overrides
 		}
 	}
-	relocated := false
-	if haveSrc && (bundleRC == hookPtrOK || bundleRC == hookPtrInvalid) &&
-		src.ClonePath != "" && physicalDir(src.ClonePath) != physicalDir(c.Common) {
-		relocated = true
-	}
+	relocated := haveSrc && (bundleRC == hookPtrOK || bundleRC == hookPtrInvalid) &&
+		src.ClonePath != "" && physicalDir(src.ClonePath) != physicalDir(c.Common)
 
 	switch {
 	case relocated:
