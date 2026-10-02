@@ -420,6 +420,35 @@ _ul_shim_wiring_ok() {
   return 0
 }
 
+# Per-clone hook bundle state (spec 5.3/7.1/7.4, dual mode): print the `state=`
+# value of `pg-hooks status --porcelain`, or nothing when pg-hooks is not on
+# PATH or prints no state (an older machine before `pn workspace apply`). The
+# exit code of `status` carries the state too (14 stale, 15 unreachable, ...) and
+# is deliberately ignored: callers branch on the parsed value, never on prose
+# or on the code.
+_ul_hook_bundle_state() {
+  command -v pg-hooks >/dev/null 2>&1 || return 0
+  local out line
+  out=$(pg-hooks status --porcelain 2>/dev/null || true)
+  while IFS= read -r line; do
+    if [[ $line == state=* ]]; then
+      printf '%s\n' "${line#state=}"
+      return 0
+    fi
+  done <<<"$out"
+  return 0
+}
+
+# True in a linked git worktree (git dir differs from the common dir). The
+# bundle installer refuses a linked worktree without --private, so update-locks
+# never installs a bundle from one: it reports and leaves the shared bundle.
+_ul_in_linked_worktree() {
+  local gd cd_
+  gd=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 1
+  cd_=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  [[ $gd != "$cd_" ]]
+}
+
 _ul_ensure_pre_commit_hooks() {
   # Tier 1: does the flake declare install-pre-commit-hooks?
   # --no-link avoids polluting the project dir. Distinguish "flake does not
@@ -446,6 +475,52 @@ _ul_ensure_pre_commit_hooks() {
     return 0
   fi
   rm -f "$errfile"
+
+  # Bundle mode (per-clone hook bundle, dual mode D1): when `pg-hooks status
+  # --porcelain` reports a bundle state, it replaces the legacy tiers below.
+  #   present      -> nothing to do (the stamp covers flake.lock, flake.nix and
+  #                   the repo's stampPaths, so a lock bump surfaces as stale).
+  #   stale, broken, relocated
+  #                -> reinstall from the canonical clone; from a linked worktree
+  #                   only report (the installer refuses a worktree without
+  #                   --private, and the shared bundle keeps serving it).
+  #   missing      -> reinstall from the canonical clone; a linked worktree
+  #                   keeps the legacy audit (it may be a legacy repo whose
+  #                   worktree wants its own generated config).
+  #   unreachable  -> report; the fix is operator-only (core.hooksPath), and the
+  #                   commit-time shim experiment also reads as unreachable, so
+  #                   the legacy audit below still runs.
+  #   legacy, or no pg-hooks on PATH -> the legacy tiers below, unchanged.
+  local bundle_state
+  bundle_state=$(_ul_hook_bundle_state)
+  if [[ -n $bundle_state ]]; then
+    echo "==> hook bundle state: ${bundle_state}"
+  fi
+  case $bundle_state in
+  present)
+    return 0
+    ;;
+  stale | broken | relocated | missing)
+    if _ul_in_linked_worktree; then
+      if [[ $bundle_state != "missing" ]]; then
+        echo "==> hook bundle is ${bundle_state} in a linked worktree; not reinstalling from here (the shared bundle in the canonical clone serves it: run the installer there)"
+        return 0
+      fi
+      # missing in a linked worktree: fall through to the legacy audit.
+    else
+      echo "==> hook bundle ${bundle_state}, reinstalling..."
+      nix run .#install-pre-commit-hooks
+      mkdir -p "$UL_STATE_DIR/$_UL_PROJECT"
+      echo "$drv_path" >"$UL_STATE_DIR/$_UL_PROJECT/pre-commit-drv-path"
+      return 0
+    fi
+    ;;
+  unreachable)
+    if ! _ul_shim_mode; then
+      echo "==> warning: git does not run hooks from the common hooks dir (operator-only fix: see 'pg-hooks status')" >&2
+    fi
+    ;;
+  esac
 
   # Tier 2: is the hook binary still valid (not GC'd)?
   #

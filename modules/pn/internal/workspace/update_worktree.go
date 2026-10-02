@@ -33,6 +33,20 @@ func linkPreCommitConfig(canonicalDir, worktreeDir string) error {
 	return nil
 }
 
+// linkPreCommitConfigIfLegacy is linkPreCommitConfig gated on the hook bundle
+// state of the new worktree (dual mode, per-clone hook bundle spec 7.1): the
+// link is made only when ReadHookBundleState says `legacy`, or when the state
+// cannot be read at all (not a git work tree: the pre-bundle behaviour is kept,
+// and the link is a no-op when the canonical clone has no config symlink). Any
+// bundle state (present, stale, missing, broken, unreachable, relocated) links
+// nothing.
+func linkPreCommitConfigIfLegacy(canonicalDir, worktreeDir string) error {
+	if state, _, err := ReadHookBundleState(worktreeDir); err == nil && state != HookBundleLegacy {
+		return nil
+	}
+	return linkPreCommitConfig(canonicalDir, worktreeDir)
+}
+
 // primaryState classifies a primary checkout for smart integration (step 6).
 type primaryState int
 
@@ -288,21 +302,21 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		return oc
 	}
 
-	// Symlink the canonical clone's .pre-commit-config.yaml into the new
-	// worktree at creation time — the root-cause fix for the
-	// PREK_ALLOW_NO_CONFIG workaround propagateWorkspaceEdges used to need
-	// (design pg2-migib §7a, tc-1zbpk): the config is a gitignored dev-shell
-	// symlink into /nix/store present only in canonical clones, so a fresh
-	// `git worktree add` starts without one and prek would otherwise abort
-	// every commit in this worktree with "config file not found". Mirroring
-	// the canonical symlink's own target here means each worktree resolves
-	// its OWN copy (workforest.go's per-worktree-isolated resolution), so
-	// hooks run for real instead of being no-op'd. Best-effort: if the
+	// Dual mode (per-clone hook bundle spec 7.1): link the canonical clone's
+	// .pre-commit-config.yaml into the new worktree ONLY while the checkout is
+	// still `legacy` (no bundle, a usable legacy config). The config is a
+	// gitignored dev-shell symlink into /nix/store present only in canonical
+	// clones, so a fresh `git worktree add` of a legacy repo starts without one
+	// and prek would otherwise abort every commit in this worktree with "config
+	// file not found" (design pg2-migib §7a, tc-1zbpk: this is the root-cause
+	// fix for the PREK_ALLOW_NO_CONFIG workaround propagateWorkspaceEdges used
+	// to need). A repo with a hook bundle needs nothing linked: the worktree
+	// reaches the clone's shared bundle through the stubs in the common hooks
+	// dir, and nothing is ever written into a working tree. Best-effort: if the
 	// canonical clone itself has no such symlink (its devShell was never
 	// entered), there is nothing to propagate, and any resulting commit-hook
-	// failure surfaces for real below — which is the correct, honest
-	// behavior this fix restores.
-	if err := linkPreCommitConfig(primary, wt); err != nil {
+	// failure surfaces for real below.
+	if err := linkPreCommitConfigIfLegacy(primary, wt); err != nil {
 		fmt.Fprintf(out, "  ⚠ %s: could not link %s into the update worktree: %v\n", name, preCommitConfigName, err)
 	}
 

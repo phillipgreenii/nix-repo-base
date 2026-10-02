@@ -47,6 +47,25 @@ MOCK
   chmod +x "$MOCK_BIN/nix"
   export PATH="$MOCK_BIN:$PATH"
 
+  # Mock pg-hooks (dual mode): by default it reports `legacy`, so every legacy
+  # test below exercises the legacy audit regardless of whether the developer's
+  # machine has a real pg-hooks on PATH. Bundle-mode tests overwrite the state
+  # through UL_TEST_PG_HOOKS_STATE (empty: print nothing, as an old machine).
+  cat > "$MOCK_BIN/pg-hooks" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == status && $2 == --porcelain ]]; then
+  s="${UL_TEST_PG_HOOKS_STATE-legacy}"
+  [[ -n $s ]] && echo "state=$s"
+  echo "bundle="
+  echo "generation="
+  echo "stages="
+  echo "reinstall="
+fi
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/pg-hooks"
+  chmod +x "$MOCK_BIN/pg-hooks"
+
   # HERMETIC HOME (bead pg2-7hr6o, closing the half pg2-klyn6 below left open):
   # the bash-scripting skill's test-isolation rule 2 requires every suite to
   # override HOME, and this one never did. Only the NIX check supplied a clean one
@@ -564,6 +583,116 @@ MOCK
   run _ul_ensure_pre_commit_hooks
   [ "$status" -eq 0 ]
   [[ $output =~ "commit-time shim" ]]
+}
+
+# --- _ul_ensure_pre_commit_hooks: hook bundle mode (per-clone hook bundle, dual mode) ---
+#
+# `pg-hooks status --porcelain` decides: present skips everything; stale, broken
+# and relocated reinstall from the canonical clone (and only report from a linked
+# worktree); legacy and "no pg-hooks" keep the legacy tiers (covered above).
+
+_run_ensure_in_bundle_mode() {
+  UL_TEST_PG_HOOKS_STATE="$1"
+  export UL_TEST_PG_HOOKS_STATE
+  _seed_pre_commit_hook_check_env
+  source "$UL_LOCKS_LIB"
+  # shellcheck disable=SC2034  # read by the sourced update-locks-lib
+  _UL_SCRIPT_DIR="$PWD"
+  run _ul_ensure_pre_commit_hooks
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: present does not reinstall and skips the legacy audit" {
+  # No hook file at all: the legacy audit would say "hook not found, installing".
+  cd "$TEST_DIR" || return 1
+  _run_ensure_in_bundle_mode present
+  [ "$status" -eq 0 ]
+  [[ $output =~ "hook bundle state: present" ]]
+  [[ ! $output =~ "hook not found" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: stale reinstalls from the canonical clone" {
+  cd "$TEST_DIR" || return 1
+  _run_ensure_in_bundle_mode stale
+  [ "$status" -eq 0 ]
+  [[ $output =~ "hook bundle stale, reinstalling" ]]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: broken and relocated reinstall from the canonical clone" {
+  cd "$TEST_DIR" || return 1
+  _run_ensure_in_bundle_mode broken
+  [ "$status" -eq 0 ]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+  rm -f "$UL_TEST_REINSTALL_MARKER"
+  _run_ensure_in_bundle_mode relocated
+  [ "$status" -eq 0 ]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: missing reinstalls from the canonical clone" {
+  cd "$TEST_DIR" || return 1
+  _run_ensure_in_bundle_mode missing
+  [ "$status" -eq 0 ]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: stale in a linked worktree reports and does NOT install" {
+  local wt="$TEST_DIR/linked-wt"
+  git worktree add --quiet "$wt" -b feat
+  cd "$wt" || return 1
+  _run_ensure_in_bundle_mode stale
+  [ "$status" -eq 0 ]
+  [[ $output =~ "linked worktree" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: missing in a linked worktree keeps the legacy audit" {
+  local wt="$TEST_DIR/linked-wt"
+  git worktree add --quiet "$wt" -b feat
+  cd "$wt" || return 1
+  _run_ensure_in_bundle_mode missing
+  [ "$status" -eq 0 ]
+  # The legacy audit found no hook in the (empty) common hooks dir and installed.
+  [[ $output =~ "hook not found" ]]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: legacy state keeps the legacy audit" {
+  cd "$TEST_DIR" || return 1
+  _run_ensure_in_bundle_mode legacy
+  [ "$status" -eq 0 ]
+  [[ $output =~ "hook not found" ]]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: no state (old machine) keeps the legacy audit" {
+  cd "$TEST_DIR" || return 1
+  _run_ensure_in_bundle_mode ""
+  [ "$status" -eq 0 ]
+  [[ ! $output =~ "hook bundle state" ]]
+  [[ $output =~ "hook not found" ]]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: unreachable warns and runs the legacy audit" {
+  cd "$TEST_DIR" || return 1
+  _run_ensure_in_bundle_mode unreachable
+  [ "$status" -eq 0 ]
+  [[ $output =~ "does not run hooks" ]]
+  [[ $output =~ "hook not found" ]]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: unreachable under the commit-time shim does not warn" {
+  mkdir -p "$TEST_DIR/.githooks"
+  printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/.githooks/pre-commit"
+  chmod +x "$TEST_DIR/.githooks/pre-commit"
+  git -C "$TEST_DIR" config --local core.hooksPath .githooks
+  cd "$TEST_DIR" || return 1
+  _run_ensure_in_bundle_mode unreachable
+  [ "$status" -eq 0 ]
+  [[ ! $output =~ "does not run hooks" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
 }
 
 # --- ul_run_step: success path ---

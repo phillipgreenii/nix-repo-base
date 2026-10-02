@@ -186,11 +186,13 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 		return false, fmt.Errorf("git add %s: %w", lockRel, err)
 	}
 	msg := bumpCommitMessage(changed, before, after)
-	// No PREK_ALLOW_NO_CONFIG here (root-cause fix, design pg2-migib §7a): the
-	// worktree this runs in now has its OWN .pre-commit-config.yaml symlink,
-	// created at creation time by update_worktree.go's linkPreCommitConfig —
-	// mirroring workforest.go's per-worktree-isolated config resolution — so
-	// prek's hook finds a real config and runs for real instead of needing a
+	// No PREK_ALLOW_NO_CONFIG here (root-cause fix, design pg2-migib §7a): a
+	// legacy repo's worktree has its OWN .pre-commit-config.yaml symlink,
+	// created at creation time by update_worktree.go's
+	// linkPreCommitConfigIfLegacy (dual mode: a repo with a hook bundle gets no
+	// link and runs its commit hooks from the shared bundle) — mirroring
+	// workforest.go's per-worktree-isolated config resolution — so the hook
+	// finds a real config or bundle and runs for real instead of needing a
 	// bypass. Streams via Handle.AttachStream so a real commit failure (a
 	// failing hook) surfaces in the run log instead of being swallowed.
 	//

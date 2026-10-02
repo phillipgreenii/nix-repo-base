@@ -21,8 +21,8 @@ url = "github:owner/bar"
 `)
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("pre-commit", []string{"run", "--all-files"}, exec.Result{}, nil)
-	f.AddResponse("pre-commit", []string{"run", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -59,7 +59,7 @@ url = "github:owner/foo"
 `)
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("pre-commit", []string{"run", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -88,7 +88,7 @@ url = "github:owner/term"
 `)
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("pre-commit", []string{"run", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -114,8 +114,8 @@ url = "github:owner/bar"
 `)
 
 	f := exec.NewFakeRunner()
-	f.AddResponse("pre-commit", []string{"run", "--all-files"}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "pre-commit", Result: exec.Result{ExitCode: 1}})
-	f.AddResponse("pre-commit", []string{"run", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{ExitCode: 1}, &exec.CommandError{Name: "pg-hooks", Result: exec.Result{ExitCode: 1}})
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 
 	w, err := Open(root, f)
 	if err != nil {
@@ -126,5 +126,114 @@ url = "github:owner/bar"
 	}
 	if len(f.Calls()) != 2 {
 		t.Errorf("expected both repos attempted; got %d calls", len(f.Calls()))
+	}
+}
+
+// preCommitCheckRepo builds a workspace whose single repo "foo" is a real git
+// repo, and returns the workspace plus the fake runner.
+func preCommitCheckRepo(t *testing.T) (*Workspace, *exec.FakeRunner, string) {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.foo]\nurl = \"github:owner/foo\"\n")
+	foo := filepath.Join(root, "foo")
+	initRealRepo(t, foo)
+	f := exec.NewFakeRunner()
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	return w, f, foo
+}
+
+func TestPreCommitCheck_LegacyRepoRunsPrek(t *testing.T) {
+	w, f, foo := preCommitCheckRepo(t)
+	writeFile(t, filepath.Join(foo, preCommitConfigName), "repos: []\n")
+	f.AddResponse("prek", []string{"run", "--all-files"}, exec.Result{}, nil)
+
+	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PreCommitCheckOptions{}); err != nil {
+		t.Fatalf("PreCommitCheck: %v", err)
+	}
+	calls := f.Calls()
+	if len(calls) != 1 || calls[0].Name != "prek" || calls[0].Opts.Dir != foo {
+		t.Fatalf("legacy repo must run `prek run --all-files` in the clone; calls=%+v", calls)
+	}
+}
+
+func TestPreCommitCheck_BundleRepoRunsPgHooks(t *testing.T) {
+	w, f, foo := preCommitCheckRepo(t)
+	writeFakeBundle(t, foo, hbBundleOpts{})
+	// A leftover legacy config must not pull a bundle repo back to prek.
+	writeFile(t, filepath.Join(foo, preCommitConfigName), "repos: []\n")
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
+
+	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PreCommitCheckOptions{}); err != nil {
+		t.Fatalf("PreCommitCheck: %v", err)
+	}
+	calls := f.Calls()
+	if len(calls) != 1 || calls[0].Name != "pg-hooks" {
+		t.Fatalf("bundle repo must run pg-hooks; calls=%+v", calls)
+	}
+}
+
+func TestPreCommitCheck_NoBundleNoConfigRunsPgHooks(t *testing.T) {
+	// State missing: pg-hooks prints the spec 5.4 notice and exits 13, which
+	// PreCommitCheck reports as a failure rather than silently passing.
+	w, f, _ := preCommitCheckRepo(t)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{ExitCode: 13},
+		&exec.CommandError{Name: "pg-hooks", Result: exec.Result{ExitCode: 13}})
+
+	err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PreCommitCheckOptions{})
+	if err == nil || !strings.Contains(err.Error(), "pg-hooks in foo") {
+		t.Fatalf("a missing bundle must surface pg-hooks' exit as an error naming the repo; got %v", err)
+	}
+}
+
+func TestPreCommitCheck_NeverRunsPreCommit(t *testing.T) {
+	// Every shape (bundle, legacy, nothing, not a git tree) avoids `pre-commit`.
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.a]
+url = "github:owner/a"
+
+[repos.b]
+url = "github:owner/b"
+
+[repos.c]
+url = "github:owner/c"
+
+[repos.d]
+url = "github:owner/d"
+`)
+	initRealRepo(t, filepath.Join(root, "a"))
+	writeFakeBundle(t, filepath.Join(root, "a"), hbBundleOpts{})
+	initRealRepo(t, filepath.Join(root, "b"))
+	writeFile(t, filepath.Join(root, "b", preCommitConfigName), "repos: []\n")
+	initRealRepo(t, filepath.Join(root, "c"))
+	// d is not created at all.
+	f := exec.NewFakeRunner()
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("prek", []string{"run", "--all-files"}, exec.Result{}, nil)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PreCommitCheckOptions{}); err != nil {
+		t.Fatalf("PreCommitCheck: %v", err)
+	}
+	var prek, pgh int
+	for _, c := range f.Calls() {
+		switch c.Name {
+		case "prek":
+			prek++
+		case "pg-hooks":
+			pgh++
+		default:
+			t.Errorf("unexpected command %q", c.Name)
+		}
+	}
+	if prek != 1 || pgh != 3 {
+		t.Errorf("want 1 prek (legacy b) and 3 pg-hooks (a, c, d); got prek=%d pg-hooks=%d", prek, pgh)
 	}
 }
