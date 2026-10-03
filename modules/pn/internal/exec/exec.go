@@ -44,6 +44,14 @@ type RunOptions struct {
 	// Stderr, if set, receives the command's standard error live as it runs,
 	// in addition to being captured in Result.Stderr.
 	Stderr io.Writer
+	// WrapNix marks a long-running nix invocation (nix build/flake check/fmt/
+	// run, darwin-rebuild, nixos-rebuild) that the Runner MAY run through the
+	// pg-nix-log-wrapped telemetry wrapper (ADR 0028). It is set ONLY by the
+	// long-running call sites; short stdout-parsed probes (nix eval/flake
+	// metadata/path-info), `sudo nix-store --gc` and the like MUST leave it
+	// false, because the decorator never rewrites by command name. It changes
+	// nothing for a Runner that is not the production decorator stack.
+	WrapNix bool
 }
 
 // Result captures the outcome of a Run call.
@@ -70,11 +78,13 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 type realRunner struct{}
 
 // NewRealRunner returns a Runner backed by os/exec, wrapped in the pn.exec
-// tracing decorator (a no-op unless telemetry is enabled in the context). Every
-// production caller goes through here, so every subprocess pn spawns via the
-// Runner is spanned.
+// tracing decorator and, inside it, the nix wrapper decorator (both no-ops
+// unless telemetry is enabled in the context). Every production caller goes
+// through here, so every subprocess pn spawns via the Runner is spanned, and
+// the long-running nix calls (RunOptions.WrapNix) run through the wrapper as
+// children of their pn.exec span.
 func NewRealRunner() Runner {
-	return WithTracing(&realRunner{})
+	return WithTracing(WithNixWrapper(&realRunner{}))
 }
 
 func (r *realRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) (Result, error) {

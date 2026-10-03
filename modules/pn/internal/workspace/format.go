@@ -35,7 +35,7 @@ func (ws *Workspace) Format(ctx context.Context, out io.Writer, errOut io.Writer
 		first = false
 		fmt.Fprintf(out, "  --== format %s ==--  \n", name)
 		if err := inRepoSpan(ctx, name, func(ctx context.Context) error {
-			_, err := ws.runner.Run(ctx, "nix", []string{"fmt"}, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out})
+			_, err := ws.runner.Run(ctx, "nix", []string{"fmt"}, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out, WrapNix: true})
 			return err
 		}); err != nil {
 			return fmt.Errorf("nix fmt in %s: %w", name, err)

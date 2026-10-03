@@ -154,3 +154,23 @@ func TestScanArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestNixLogDir(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"xdg state", map[string]string{"XDG_STATE_HOME": "/s", "HOME": "/h"}, "/s/pn/nix-logs"},
+		{"home fallback", map[string]string{"HOME": "/h"}, "/h/.local/state/pn/nix-logs"},
+		{"neither", nil, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NixLogDir(env(tc.env)); got != tc.want {
+				t.Errorf("NixLogDir = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -30,6 +30,15 @@ flowchart TD
 only if `wrapper_path` resolves (after symlinks) into `/nix/store`; there is no environment
 override, so a user-writable toml cannot make `sudo` execute an arbitrary binary.
 
+When telemetry is on and `wrapper_path` is an executable file, the long-running nix calls
+(`build`, `apply`, `flake-check`, `format`, `nix`, the propagate step of `update`, and `tree`'s lock
+call) run as `pg-nix-log-wrapped --traceparent TP --otlp-endpoint URL --log-dir DIR -- <command>`
+(`sudo <wrapper> ... -- <command>` for the exact `sudo darwin-rebuild|nixos-rebuild|nix` form, without
+`--log-dir`). Probes, `sudo nix-store`, any other `sudo` form and a `build_command` such as `sh -c ...`
+run unwrapped, as does everything when the wrapper is missing or telemetry is off. The command's own
+arguments, including every `--override-input`, reach it unchanged, and `--show-nix-commands-only`
+prints the unwrapped command (ADR 0028).
+
 ### Escape hatches
 
 | Control                                      | Effect                                                                                                   |

@@ -93,7 +93,7 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 
 	fmt.Fprintf(out, "  --== %s: building flake ==--  \n", terminal)
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
-	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalRepoDir, Stdout: out, Stderr: out}); err != nil {
+	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalRepoDir, Stdout: out, Stderr: out, WrapNix: true}); err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
 	fmt.Fprintln(out, "Build successful. To apply, run: pn workspace apply")

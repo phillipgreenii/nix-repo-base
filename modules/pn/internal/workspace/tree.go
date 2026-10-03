@@ -70,7 +70,7 @@ func (ws *Workspace) treeAllInputs(ctx context.Context, w io.Writer, terminal st
 	if !fileExists(lockPath) {
 		fmt.Fprintf(w, "info: generating flake.lock for %s\n", terminal)
 		if _, err := ws.runner.Run(ctx, "nix", []string{"flake", "lock", "path:" + terminalDir},
-			exec.RunOptions{Stdout: w, Stderr: w}); err != nil {
+			exec.RunOptions{Stdout: w, Stderr: w, WrapNix: true}); err != nil {
 			return fmt.Errorf("generate flake.lock for %s: %w", terminal, err)
 		}
 	}

@@ -1,0 +1,9 @@
+# Bootstrap (telemetry-free: no endpoint is configured), then build with an
+# explicit endpoint so telemetry is ON for the build and the fake wrapper from
+# telemetry.toml is used. `workspace allow` is REQUIRED before build (TOFU trust
+# gate on the config-sourced build_command).
+workspace init
+workspace clone
+workspace lock
+workspace allow
+workspace build --otlp-endpoint http://127.0.0.1:9 --no-telemetry

@@ -132,9 +132,10 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	}
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
 	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{
-		Dir:    terminalRepoDir,
-		Stdout: out,
-		Stderr: out,
+		Dir:     terminalRepoDir,
+		Stdout:  out,
+		Stderr:  out,
+		WrapNix: true,
 	}); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}

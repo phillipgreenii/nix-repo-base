@@ -35,3 +35,19 @@ func ValidateSudoWrapper(path string, evalSymlinks func(string) (string, error))
 	}
 	return real, nil
 }
+
+// NixLogDir returns the directory pn asks a (non-root) wrapper to keep raw nix
+// logs in: ${XDG_STATE_HOME:-$HOME/.local/state}/pn/nix-logs, the same place
+// the wrapper defaults to. It returns "" when neither variable is set, in
+// which case pn omits --log-dir and the wrapper picks its own default.
+func NixLogDir(getenv func(string) string) string {
+	state := getenv("XDG_STATE_HOME")
+	if state == "" {
+		home := getenv("HOME")
+		if home == "" {
+			return ""
+		}
+		state = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(state, "pn", "nix-logs")
+}

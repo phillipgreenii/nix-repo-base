@@ -47,7 +47,7 @@ func (ws *Workspace) FlakeCheck(ctx context.Context, out io.Writer, errOut io.Wr
 		first = false
 		fmt.Fprintf(out, "  --== flake-check %s ==--  \n", name)
 		if err := inRepoSpan(ctx, name, func(ctx context.Context) error {
-			_, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out})
+			_, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: repoDir, Stdout: out, Stderr: out, WrapNix: true})
 			return err
 		}); err != nil {
 			failed = append(failed, name)

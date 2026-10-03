@@ -372,6 +372,93 @@ One table is authoritative; it appears in `modules/pn/README.md` and in `pn --he
 `-v`/`--verbose` is introduced as a global pn flag by this change; it replaces cobra's default `-v`
 shorthand for `--version` (use `pn --version`).
 
+### pn links to the wrapper: the Runner decorator (Phase 4a, `pg2-kqrrs.8`)
+
+pn routes its long-running nix calls through `pg-nix-log-wrapped` with a second Decorator on
+`exec.Runner`, `exec.WithNixWrapper`, stacked INSIDE the `pn.exec` tracing decorator
+(`exec.NewRealRunner` is `WithTracing(WithNixWrapper(real))`). Because it sits inside, the span context
+it reads is the `pn.exec` span, so the wrapper's `nix.invocation` becomes that span's child and one
+trace reads `pn.verb > pn.repo > pn.exec > nix.invocation > nix.build / nix.substitute`.
+
+**Selection is explicit, never by command name.** pn also runs `nix` as a short stdout-parsed probe
+(`nix eval`, `nix flake metadata`-style reads in `edges.go`, `inputs.go`, `doctor_checks_*`,
+`updatecache.go`) and `sudo nix-store --gc` / `sudo nix-env` in `store/`. A new
+`exec.RunOptions.WrapNix` flag is set ONLY at build, apply, flake check, format, the `nix` verb,
+propagate and tree's `nix flake lock`; the decorator rewrites nothing else. Tests assert the flag is
+false on the probes and the store calls (FakeRunner call recording).
+
+**Rewrite shape.** For a non-sudo call `name args...` the decorator runs
+
+```text
+<wrapper> --traceparent TP --otlp-endpoint URL --log-dir DIR -- <name> <args...>
+```
+
+and for the sudo form `sudo <cmd> args...` it runs
+
+```text
+sudo <wrapper-real-path> --traceparent TP --otlp-endpoint URL -- <cmd> <args...>
+```
+
+Details that are decisions rather than restatements of W-1:
+
+- Only the exact forms pn emits are rewritten: `name` in `{darwin-rebuild, nixos-rebuild, nix}`, or
+  `name == "sudo"` with `args[0]` in that set. Any sudo option (`-E`, `-u x`, `-n`, `--`), `sudo env`,
+  `sudo nix-store`, an absolute-path command, and any `build_command`/`apply_command` whose argv[0] is
+  something else (`sh -c ...`, a script) run unwrapped. These are table tests, negative cases included.
+- `--log-dir` is passed to a user wrapper only (`${XDG_STATE_HOME:-$HOME/.local/state}/pn/nix-logs`,
+  the wrapper's own default); a root wrapper ignores it and logs to `/var/log/pg-nix-log-wrapped`
+  (ADR 0030), so pn omits it under sudo. `--traceparent` is the `pn.exec` span of the call.
+- The decorator never touches the command's own arguments. `--override-input` pairs are appended by
+  `build.go`/`apply.go`/`nix.go` BEFORE the Runner, and the wrapper forwards everything after `--`
+  verbatim. A test runs real processes (a fake wrapper that applies the real contract and a fake
+  command recording its argv NUL-separated) and asserts the argv is byte-for-byte equal with and
+  without the wrapper, including `--traceparent`, `--log-dir`, `--otlp-endpoint`, a literal `--`, an
+  empty argument and arguments containing spaces.
+- Fail open. The call runs unwrapped, with the original name, args and options, when telemetry is not
+  enabled (no `RunState`, `--no-telemetry`, `PG_NIX_LOG_DISABLE=1`, no endpoint, exporter init failed),
+  when `wrapper_path` is empty, relative, or not an executable regular file, and, under sudo, when its
+  real path (`telemetrycfg.ValidateSudoWrapper`) is not under `/nix/store`. Under sudo the RESOLVED real
+  path is what is executed, so the path validated is the path run.
+- A failing wrapped command's `CommandError` is rewritten to name the command pn asked for
+  (`nix exited 1: ...`), not the wrapper argv; Result buffering and the live tee are the inner runner's.
+- `--show-nix-commands-only` returns before the Runner and prints the unwrapped command. The wrapper is
+  below `ensureExecTrusted()`, so the trust gate is unaffected.
+- Not done here: hooks and `update-locks.sh` do not get `TRACEPARENT` from this decorator (they are not
+  rewritten); that remains outside this phase.
+
+**Concurrency check (acceptance; TraceQL).** Tempo has no native concurrency aggregate, so the "no more
+than 3 overlapping `nix.build` spans per machine" check is a TraceQL search for the spans plus a
+sweep over their intervals. UNVERIFIED until the machine wiring (Phase 4b) is applied and a multi-derivation
+build has run. The search (time-bounded by `start`/`end`, wrapper spans carry `service.name`
+`pg-nix-log-wrapped`):
+
+```text
+{ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" } | select(span:startTime, span:duration)
+```
+
+and the maximum overlap over the returned intervals (a sweep: +1 at each start, -1 at each end, ends
+sorted before starts at the same instant), which MUST print 3 or less:
+
+```sh
+curl -sG "$TEMPO/api/search" \
+  --data-urlencode 'q={ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" } | select(span:startTime, span:duration)' \
+  --data-urlencode "start=$START_EPOCH_S" --data-urlencode "end=$END_EPOCH_S" \
+  --data-urlencode limit=5000 --data-urlencode spss=1000 |
+  jq '[.traces[].spanSets[].spans[]
+       | {s: (.startTimeUnixNano | tonumber), d: (.durationNanos | tonumber)}
+       | ({t: .s, v: 1}, {t: (.s + .d), v: -1})]
+      | sort_by(.t, .v)
+      | reduce .[] as $e ({c: 0, m: 0}; .c += $e.v | .m = ([.m, .c] | max))
+      | .m'
+```
+
+Group by machine by running it against that machine's Tempo or by adding the resource attribute that
+identifies the host once the collector sets one. The trace-shape acceptance for `pn workspace build` is:
+
+```text
+{ name = "pn.verb" } >> { name = "pn.repo" } >> { name = "pn.exec" } >> { name = "nix.invocation" } >> { name = "nix.build" || name = "nix.substitute" }
+```
+
 ## Consequences
 
 - Phases 2b and 3 may start; the golden files give the activity state machine real input.

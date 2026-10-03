@@ -1,0 +1,10 @@
+[workspace]
+name = "smoke-s40"
+terminal = "consumer"
+build_command = "darwin-rebuild build"
+
+[repos.consumer]
+url = "file:///PLACEHOLDER_consumer"
+
+[repos.producer]
+url = "file:///PLACEHOLDER_producer"

@@ -146,7 +146,7 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 
 	// Relock just the workspace-sibling inputs. --refresh is mandatory (C1).
 	args := append([]string{"flake", "update", "--refresh"}, aliases...)
-	if _, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: flakeDir, Stdout: out, Stderr: out}); err != nil {
+	if _, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: flakeDir, Stdout: out, Stderr: out, WrapNix: true}); err != nil {
 		return false, fmt.Errorf("nix flake update %v: %w", aliases, err)
 	}
 

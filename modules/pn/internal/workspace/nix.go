@@ -52,7 +52,7 @@ func (ws *Workspace) NixCommand(ctx context.Context, out io.Writer, args []strin
 	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{})
 	full := append([]string{}, args...)
 	full = append(full, overrides...)
-	_, err = ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root, Stdout: out, Stderr: out})
+	_, err = ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root, Stdout: out, Stderr: out, WrapNix: true})
 	return err
 }
 

@@ -480,6 +480,26 @@ func TestSmoke_S37_HookBundleMatrix(t *testing.T) {
 	runScenario(t, "s37-hook-bundle-matrix")
 }
 
+// TestSmoke_S38_NixWrapperArgvRewrite: with telemetry on and a wrapper configured,
+// pn workspace build runs the build_command through the wrapper with
+// --traceparent/--otlp-endpoint/--log-dir/-- and the command keeps its own argv
+// (pg2-kqrrs.8). A fake wrapper stands in for pg-nix-log-wrapped.
+func TestSmoke_S38_NixWrapperArgvRewrite(t *testing.T) {
+	runScenario(t, "s38-nix-wrapper-argv-rewrite")
+}
+
+// TestSmoke_S39_NixWrapperMissing: wrapper_path configured but missing -> the
+// build runs unwrapped (fail open).
+func TestSmoke_S39_NixWrapperMissing(t *testing.T) {
+	runScenario(t, "s39-nix-wrapper-missing")
+}
+
+// TestSmoke_S40_NixWrapperTelemetryOff: --no-telemetry -> the build runs
+// unwrapped even though a wrapper and an endpoint are configured.
+func TestSmoke_S40_NixWrapperTelemetryOff(t *testing.T) {
+	runScenario(t, "s40-nix-wrapper-telemetry-off")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -691,6 +711,12 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS36WorkspaceInfoApplied(t, lastResult)
 	case "s37-hook-bundle-matrix":
 		assertS37HookBundleMatrix(t, wsRoot, pnBin, env)
+	case "s38-nix-wrapper-argv-rewrite":
+		assertS38WrapperArgvRewrite(t, wsRoot, env)
+	case "s39-nix-wrapper-missing":
+		assertUnwrappedBuild(t, "S39", wsRoot)
+	case "s40-nix-wrapper-telemetry-off":
+		assertUnwrappedBuild(t, "S40", wsRoot)
 	}
 }
 
