@@ -181,7 +181,8 @@ the operator runbook) is [`docs/hooks.md`](docs/hooks.md); the design is
   NOT write `core.hooksPath`. A rebuild of the bundle is a nix build: run it through `bgrun` and
   check it with `bgcheck`.
 - **Dual mode (until every repo has cut over).** A repo is in bundle mode when it sets
-  `phillipgreenii.pre-commit.bundle.enable = true` (default `false` today), and in legacy mode
+  `phillipgreenii.pre-commit.bundle.enable = true` (the default since ADR
+  [0032](docs/adr/0032-per-clone-hook-bundle-replaces-generated-config-and-shim.md)), and in legacy mode
   otherwise. `pg-hooks run` works in both; `pg-hooks fix`, `list` and `explain` need a bundle.
 
 In legacy mode, `.pre-commit-config.yaml` is a git-hooks.nix-generated **symlink into `/nix/store`**

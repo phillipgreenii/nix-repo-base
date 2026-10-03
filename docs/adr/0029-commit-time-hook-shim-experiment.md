@@ -1,7 +1,7 @@
 # ADR-0029: Commit-time hook shim — a labelled experiment against HK-2
 
 **Date:** 2026-10-01
-**Status:** Proposed (EXPERIMENT; opt-in, default off; HK-2 UNCHANGED)
+**Status:** Superseded by [ADR-0032](0032-per-clone-hook-bundle-replaces-generated-config-and-shim.md) (experiment abandoned; HK-2 unchanged)
 **Deciders:** phillipgreenii
 **Bead:** `pg2-z19ad` (umbrella), `pg2-bvldq`, `pg2-ff0i`
 

@@ -43,8 +43,10 @@ let
   bundleOf = fixture: fixture.legacyPackages.${system}.pgHooksBundle;
   installerOf = fixture: fixture.packages.${system}.install-pre-commit-hooks;
 
-  plain = evalFixture { };
+  # `defaulted` sets nothing: it pins the DEFAULT of `bundle.enable` (true, ADR 0032).
+  defaulted = evalFixture { };
   enabled = evalFixture { precommit.bundle.enable = true; };
+  disabled = evalFixture { precommit.bundle.enable = false; };
 
   withHook =
     hook:
@@ -83,70 +85,85 @@ let
   };
 in
 {
-  "test bundle disabled renders no pg-hooks-bundle and no new files" = {
+  "test bundle.enable defaults to true and renders pg-hooks-bundle" = {
     expr = {
-      packages = builtins.attrNames plain.packages.${system};
-      hasBundlePackage = plain.packages.${system} ? pg-hooks-bundle;
-      checks = lib.filter (lib.hasPrefix "pg-hooks") (builtins.attrNames (plain.checks.${system} or { }));
-      # The legacy installer fragments are still the devShell hook.
-      legacyShellHook =
-        lib.hasInfix "git-hooks.nix: updating"
-          plain.devShells.${system}.default.shellHook;
+      packages = builtins.attrNames defaulted.packages.${system};
+      evaluates = evaluates defaulted.packages.${system}.pg-hooks-bundle;
+      installer = evaluates (installerOf defaulted);
+      # Same bundle as the explicit opt-in.
+      sameAsExplicit =
+        builtins.unsafeDiscardStringContext defaulted.packages.${system}.pg-hooks-bundle.drvPath
+        == builtins.unsafeDiscardStringContext enabled.packages.${system}.pg-hooks-bundle.drvPath;
     };
     expected = {
       packages = [
         "fix-lint"
         "install-pre-commit-hooks"
+        "pg-hooks-bundle"
       ];
-      hasBundlePackage = false;
-      checks = [ ];
-      legacyShellHook = true;
-    };
-  };
-
-  "test bundle enabled renders packages.pg-hooks-bundle and evaluates" = {
-    expr = {
-      packaged = enabled.packages.${system} ? pg-hooks-bundle;
-      evaluates = evaluates enabled.packages.${system}.pg-hooks-bundle;
-      installer = evaluates (installerOf enabled);
-    };
-    expected = {
-      packaged = true;
       evaluates = true;
       installer = true;
+      sameAsExplicit = true;
     };
   };
 
-  "test bundle and commitTimeShim both enabled fails evaluation" = {
+  "test bundle.enable = false installs nothing and exposes no pg-hooks-bundle" = {
+    expr =
+      let
+        noCtx = builtins.unsafeDiscardStringContext;
+        text = noCtx (installerOf disabled).text;
+      in
+      {
+        packages = builtins.attrNames disabled.packages.${system};
+        shellHook = disabled.devShells.${system}.default.shellHook;
+        installerEvaluates = evaluates (installerOf disabled);
+        # The installer prints a notice and exits 0; it never reaches pg-hooks-install.
+        noticeAndExit0 =
+          lib.hasInfix "no hooks installed" text
+          && lib.hasInfix "exit 0" text
+          && !(lib.hasInfix "pg-hooks-install" text);
+        noHooksPathWrite = !(lib.hasInfix "core.hooksPath" text);
+        # The derivation stays reachable for the real-tools checks.
+        legacyBundleStillEvaluates = evaluates (bundleOf disabled);
+      };
+    expected = {
+      packages = [
+        "fix-lint"
+        "install-pre-commit-hooks"
+      ];
+      shellHook = "";
+      installerEvaluates = true;
+      noticeAndExit0 = true;
+      noHooksPathWrite = true;
+      legacyBundleStillEvaluates = true;
+    };
+  };
+
+  "test the commitTimeShim option no longer exists" = {
     expr = {
-      shimAlone = evaluates (
+      control = evaluates (
+        installerOf (evalFixture {
+          precommit.stampPaths = [ ];
+        })
+      );
+      shim = evaluates (
         installerOf (evalFixture {
           precommit.commitTimeShim.enable = true;
         })
       );
-      both =
-        let
-          both = evalFixture {
-            precommit = {
-              bundle.enable = true;
-              commitTimeShim.enable = true;
-            };
-          };
-        in
-        {
-          installer = evaluates (installerOf both);
-          bundle = evaluates (bundleOf both);
-          preCommitCheck = evaluates both.checks.${system}.pre-commit;
-        };
     };
     expected = {
-      shimAlone = true;
-      both = {
-        installer = false;
-        bundle = false;
-        preCommitCheck = false;
-      };
+      control = true;
+      shim = false;
     };
+  };
+
+  "test only the gitignore check remains of the old pre-commit checks" = {
+    expr = lib.filter (lib.hasPrefix "pre-commit") (builtins.attrNames defaulted.checks.${system});
+    expected = [
+      "pre-commit"
+      "pre-commit-config-gitignored"
+    ];
   };
 
   "test a fixer attached to a prek stage fails evaluation" = {
@@ -504,25 +521,26 @@ in
     };
   };
 
-  "test devShell shellHook performs no install when bundle.enable" = {
+  "test devShell shellHook performs no install" = {
     expr = {
+      defaulted = defaulted.devShells.${system}.default.shellHook;
       enabled = enabled.devShells.${system}.default.shellHook;
-      disabledInstalls = lib.hasInfix "prek install" plain.devShells.${system}.default.shellHook;
+      disabled = disabled.devShells.${system}.default.shellHook;
     };
     expected = {
+      defaulted = "";
       enabled = "";
-      disabledInstalls = true;
+      disabled = "";
     };
   };
 
-  "test install-pre-commit-hooks execs pg-hooks-install with the bundle when bundle.enable" = {
+  "test install-pre-commit-hooks execs pg-hooks-install with the bundle by default" = {
     expr =
       let
         # hasInfix matches by regex, which refuses a string that refers to a store
         # path, so compare on the text with its string context dropped.
         noCtx = builtins.unsafeDiscardStringContext;
         text = noCtx (installerOf enabled).text;
-        plainText = noCtx (installerOf plain).text;
         bundlePath = noCtx "${bundleOf enabled}";
       in
       {
@@ -532,14 +550,11 @@ in
         # None of the legacy fragments or a hooksPath write.
         noHooksPathWrite = !(lib.hasInfix "core.hooksPath" text);
         noLegacyInstall = !(lib.hasInfix "git-hooks.nix: updating" text);
-        # Control: without bundle.enable the legacy installer is unchanged.
-        plainIsLegacy = !(lib.hasInfix "pg-hooks-install" plainText);
       };
     expected = {
       execsInstaller = true;
       noHooksPathWrite = true;
       noLegacyInstall = true;
-      plainIsLegacy = true;
     };
   };
 }

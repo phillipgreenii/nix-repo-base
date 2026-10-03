@@ -276,7 +276,7 @@ Exit codes at the other seams:
 
 ## Bundle layout
 
-The flake output `packages.<system>.pg-hooks-bundle` (present when `bundle.enable` is set; also
+The flake output `packages.<system>.pg-hooks-bundle` (present unless `bundle.enable = false`; also
 exposed as `legacyPackages.<system>.pgHooksBundle`) is a store path holding:
 
 ```text
@@ -338,7 +338,7 @@ status it prints the hooks-failed hint after prek's own output.
 
 ### Installer
 
-`install-pre-commit-hooks` keeps its name. When `bundle.enable` is set it execs
+`install-pre-commit-hooks` keeps its name. Unless `bundle.enable = false` it execs
 `pg-hooks-install --bundle <store path> "$@"`; the script text embeds the bundle's store path, so
 `nix run [--override-input ...] .#install-pre-commit-hooks` realises the bundle with the same
 overrides, and the installer only roots it. It never calls `nix build`, never writes
@@ -411,19 +411,18 @@ is stale and the stale line names the private reinstall command.
 
 Each repo configures hooks in its `flake.nix` through `phillipgreenii.pre-commit`:
 
-| Option                  | Meaning                                                                                        |
-| ----------------------- | ---------------------------------------------------------------------------------------------- |
-| `extraHooks`            | Extra prek hooks. Each hook's `stages` decides where it runs.                                  |
-| `excludes`              | Path excludes (prek regexes).                                                                  |
-| `fixers`                | Extra fixers for `pg-hooks fix`: `{ name, command, mode, includes, excludes, after, before }`. |
-| `stampPaths`            | Repo-relative paths hashed into the stamp in addition to `flake.lock` and `flake.nix`.         |
-| `bundle.enable`         | Render the bundle and make `install-pre-commit-hooks` install it. Default `false` today.       |
-| `commitTimeShim.enable` | The earlier shim experiment (ADR 0029). MUST NOT be true together with `bundle.enable`.        |
+| Option          | Meaning                                                                                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `extraHooks`    | Extra prek hooks. Each hook's `stages` decides where it runs.                                                                                                       |
+| `excludes`      | Path excludes (prek regexes).                                                                                                                                       |
+| `fixers`        | Extra fixers for `pg-hooks fix`: `{ name, command, mode, includes, excludes, after, before }`.                                                                      |
+| `stampPaths`    | Repo-relative paths hashed into the stamp in addition to `flake.lock` and `flake.nix`.                                                                              |
+| `bundle.enable` | Render the bundle and make `install-pre-commit-hooks` install it. Default `true` (ADR 0032); `false` installs no hooks (the installer prints a notice and exits 0). |
 
 `fixers`: an entry without `after` or `before` is appended after the default fixers; with an anchor
 it is inserted directly after or before the named fixer (an anchor MAY name another added fixer).
 `mode = "per-file"` runs the command once per file. Evaluation fails, when `bundle.enable` is set,
-for: `bundle.enable` together with `commitTimeShim.enable`; duplicate fixer names; an unknown or
+for: duplicate fixer names; an unknown or
 unresolvable anchor, or both `after` and `before`; a fixer carrying a stage; and any enabled prek hook
 whose `entry` invokes `pg-hooks fix` or `pre-commit-fix`. An unknown stage name is rejected by
 git-hooks.nix's own stage type.

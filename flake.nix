@@ -71,13 +71,13 @@
       # Per-clone hook bundle (pg2-pla9d, design spec
       # docs/superpowers/specs/2026-10-01-per-clone-hook-bundle-design.md,
       # section 7.2 step 2): repo-base is cut over from the commit-time shim
-      # experiment (pg2-z19ad, ADR 0029) to the bundle. The shim is off and
+      # experiment (pg2-z19ad, ADR 0029, removed by ADR 0032) to the bundle.
       # `.githooks/` is deleted; `nix run .#install-pre-commit-hooks` in the
       # canonical clone roots the bundle (the operator then points
-      # core.hooksPath at the absolute <repo>/.git/hooks).
+      # core.hooksPath at the absolute <repo>/.git/hooks). `bundle.enable` now
+      # defaults to true; the explicit line is kept as documentation.
       phillipgreenii.pre-commit = {
         bundle.enable = true;
-        commitTimeShim.enable = false;
         stampPaths = [
           "flake-modules/pre-commit.nix"
           "modules/pg-git-check-identity"
