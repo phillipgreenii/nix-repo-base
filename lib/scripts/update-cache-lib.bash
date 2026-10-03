@@ -6,10 +6,8 @@
 UL_STALE_SECONDS="${UL_STALE_SECONDS:-43200}"
 UL_FORCE="${NIX_UL_FORCE_UPDATE:-false}"
 UL_CI_MODE="${UL_CI_MODE:-false}"
-# State dir for the pre-commit-drv-path marker (consumed by sibling
-# update-locks-lib.bash). Named for update-locks; the legacy "zn-self-upgrade"
-# name was dropped (pg2-k8a6i) — an existing legacy marker is simply orphaned,
-# triggering one harmless pre-commit reinstall.
+# State dir for update-locks (consumed by sibling update-locks-lib.bash). Named for
+# update-locks; the legacy "zn-self-upgrade" name was dropped (pg2-k8a6i).
 # shellcheck disable=SC2034  # consumed by sibling update-locks-lib.bash
 UL_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/update-locks"
 

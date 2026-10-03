@@ -166,12 +166,12 @@ section only states the Python-specific conventions; read the spec for the cross
 
 ## Pre-commit hooks (per-clone hook bundle and `pg-hooks`)
 
-The full reference (stages, `pg-hooks` commands, messages, exit codes, bundle layout, dual mode and
-the operator runbook) is [`docs/hooks.md`](docs/hooks.md); the design is
+The full reference (stages, `pg-hooks` commands, messages, exit codes, bundle layout and the
+operator runbook) is [`docs/hooks.md`](docs/hooks.md); the design is
 `docs/superpowers/specs/2026-10-01-per-clone-hook-bundle-design.md`. Summary:
 
 - **Probe, do not guess.** `pg-hooks status --porcelain` reports `state=` (`present`, `stale`,
-  `legacy`, `missing`, `broken`, `unreachable` or `relocated`). Never probe with
+  `missing`, `broken`, `unreachable` or `relocated`). Never probe with
   `test -f .pre-commit-config.yaml`: a repo with a bundle has no such file in its working tree yet
   its hooks are live. Exit `127` means `pg-hooks` is not installed; ask the operator to run
   `pn workspace apply`.
@@ -180,19 +180,20 @@ the operator runbook) is [`docs/hooks.md`](docs/hooks.md); the design is
 - **Nothing is written into a working tree** and a git hook MUST NOT invoke nix (HK-2). Agents MUST
   NOT write `core.hooksPath`. A rebuild of the bundle is a nix build: run it through `bgrun` and
   check it with `bgcheck`.
-- **Dual mode (until every repo has cut over).** A repo is in bundle mode when it sets
-  `phillipgreenii.pre-commit.bundle.enable = true` (the default since ADR
-  [0032](docs/adr/0032-per-clone-hook-bundle-replaces-generated-config-and-shim.md)), and in legacy mode
-  otherwise. `pg-hooks run` works in both; `pg-hooks fix`, `list` and `explain` need a bundle.
+- **The bundle is the only hook mechanism** (ADR
+  [0032](docs/adr/0032-per-clone-hook-bundle-replaces-generated-config-and-shim.md)).
+  `phillipgreenii.pre-commit.bundle.enable` defaults to `true`; `false` is an opt-out that installs
+  no hooks. `pg-hooks` has no legacy mode: a clone that holds only an old
+  `.pre-commit-config.yaml` reports `missing`, and that file is never read, linked or regenerated.
 
-In legacy mode, `.pre-commit-config.yaml` is a git-hooks.nix-generated **symlink into `/nix/store`**
-and MUST NOT be committed — a committed store path is GC-eligible and rots into a dangling symlink
-(ADR [0016](docs/adr/0016-gitignore-generated-pre-commit-config.md)). Every repo consuming
-`flake-modules/pre-commit.nix` MUST gitignore it (exact line `.pre-commit-config.yaml`); the
-`checks.pre-commit-config-gitignored` flake check enforces this. Regenerate the working-tree
-symlink with `nix run .#install-pre-commit-hooks` or by entering the devShell. Do **not** re-add
-it to git and do **not** auto-write the `.gitignore` entry from the shellHook. A bundle repo's
-`install-pre-commit-hooks` writes no symlink: it roots a bundle under `<git-common-dir>/pg-hooks/`.
+The old `.pre-commit-config.yaml` (a git-hooks.nix-generated **symlink into `/nix/store`**, ADR
+[0016](docs/adr/0016-gitignore-generated-pre-commit-config.md)) is no longer produced, but many
+clones still hold one. It MUST NOT be committed, so every repo consuming
+`flake-modules/pre-commit.nix` MUST keep gitignoring it (exact line `.pre-commit-config.yaml`); the
+`checks.pre-commit-config-gitignored` flake check enforces this. Do **not** re-add it to git. The
+rule and the check are retired only after the repos are pushed and relocked and no clone holds the
+symlink. `install-pre-commit-hooks` writes no symlink: it roots a bundle under
+`<git-common-dir>/pg-hooks/`.
 
 `flake-modules/checks.nix` no longer auto-contributes a separate `checks.formatting` (removed:
 duplicated the nixfmt pass `checks.treefmt` already runs) — `checksHelpers.formatting` is still

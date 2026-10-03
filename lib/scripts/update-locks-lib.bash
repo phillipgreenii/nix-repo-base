@@ -31,19 +31,19 @@
 #   current config.
 #
 # ANCHOR: ul_setup-pre-commit-install
-#   Ensures the git-hooks.nix pre-commit hook binary is installed and current
-#   BEFORE the clean-tree gate — it evaluates the flake, so it must run after
-#   fsmonitor is disabled. Three tiers: (1) build .#install-pre-commit-hooks,
-#   (2) reinstall if the hook binary was GC'd, (3) reinstall if the derivation
-#   changed since the last run. The generated .pre-commit-config.yaml is a
-#   gitignored /nix/store symlink (ADR 0016); it may be regenerated in the
-#   working tree here but is never staged or committed, so it stays invisible
-#   to the gate.
+#   Ensures the per-clone hook bundle is installed and current BEFORE the
+#   clean-tree gate — it evaluates the flake, so it must run after fsmonitor is
+#   disabled. Builds .#install-pre-commit-hooks (skipping silently when the
+#   flake declares none), then branches on `pg-hooks status --porcelain`:
+#   reinstall a stale/broken/relocated/missing bundle from the canonical clone,
+#   only report from a linked worktree, and continue with a notice when
+#   pg-hooks is absent. The bundle lives under the git common dir, never in the
+#   working tree, so it stays invisible to the gate.
 #
 # ANCHOR: ul_setup-clean-tree-gate
 #   Asserts `git status --porcelain --untracked-files=normal` is empty: tracked
 #   modifications, staged changes, AND non-ignored UNTRACKED files all fail the
-#   gate (ignored files, e.g. the .pre-commit-config.yaml symlink, are excluded).
+#   gate (ignored files are excluded).
 #   Exits 1 with a git status --short dump on a dirty tree.
 #
 # ANCHOR: ul_setup-full-cleanup-trap
@@ -67,7 +67,7 @@
 #
 # ANCHOR: ul_run_step-success-commit
 #   On <cmd> exit 0 AND content changed: runs nix fmt, refreshes the
-#   pre-commit-hooks symlink if this step's own changes touched flake.lock
+#   hook bundle if this step's own changes touched flake.lock
 #   (see ANCHOR ul_run_step-pre-commit-refresh), stages all, writes stamp,
 #   commits ONE commit with <commit-msg>. On <cmd> exit 0 AND no content
 #   changed: writes stamp, commits stamp-only.
@@ -78,15 +78,15 @@
 #   update` -- _ul_commit_updated re-runs _ul_ensure_pre_commit_hooks before
 #   committing. ul_setup's own install (ANCHOR ul_setup-pre-commit-install)
 #   runs ONCE, before any step, against whatever lock was checked out at the
-#   START of the run; a step that bumps the lock mid-run leaves that symlink
-#   pointing at a pre-commit-hooks build made from the OLD lock. The commit
-#   this function makes fires the repo's git hooks against that symlink --
-#   if the pinned formatter version differs from what a fresh `nix fmt`
-#   (which resolves the JUST-bumped lock immediately) just applied, a
-#   --fail-on-change treefmt hook can read that disagreement as an
-#   "unexpected change" on a file the fresh nix fmt already formatted
+#   START of the run; a step that bumps the lock mid-run leaves the bundle
+#   built from the OLD lock (its stamp covers flake.lock, so `pg-hooks status`
+#   reports it stale). The commit this function makes fires the repo's git
+#   hooks against that bundle -- if the pinned formatter version differs from
+#   what a fresh `nix fmt` (which resolves the JUST-bumped lock immediately)
+#   just applied, a --fail-on-change treefmt hook can read that disagreement
+#   as an "unexpected change" on a file the fresh nix fmt already formatted
 #   correctly (bd pg2-vayo4). Refreshing here, before this commit, keeps the
-#   symlink a step's own commit fires hooks against synced with the lock that
+#   bundle a step's own commit fires hooks against synced with the lock that
 #   same step just bumped.
 #
 # ANCHOR: ul_run_step-deferred
@@ -392,37 +392,9 @@ _ul_restore_fsmonitor() {
   fi
 }
 
-# Commit-time shim mode (ADR 0029, pg2-m68an): the repo commits a .githooks/
-# directory and wires core.hooksPath to it. Detected from the committed dir, so a
-# repo with the option OFF (no .githooks/) keeps the legacy store-path audit.
-_ul_shim_mode() {
-  [[ -d .githooks ]]
-}
-
-# Shim-mode audit: the shims hold no /nix/store paths (they `nix run` the flake),
-# so the legacy GC scan can never fire. What CAN go stale is the WIRING: the local
-# core.hooksPath must be exactly `.githooks` and every committed shim executable.
-# Returns 0 when wiring is healthy, 1 (after printing why) when reinstall is needed.
-_ul_shim_wiring_ok() {
-  local hp shim
-  hp=$(git config --local --get core.hooksPath 2>/dev/null || true)
-  if [[ $hp != ".githooks" ]]; then
-    echo "==> commit-time shim not wired (core.hooksPath='${hp}'), installing..."
-    return 1
-  fi
-  for shim in .githooks/*; do
-    [[ -e $shim ]] || continue
-    if [[ ! -x $shim ]]; then
-      echo "==> commit-time shim $shim is not executable, reinstalling..."
-      return 1
-    fi
-  done
-  return 0
-}
-
-# Per-clone hook bundle state (spec 5.3/7.1/7.4, dual mode): print the `state=`
+# Per-clone hook bundle state (spec 5.3/7.1/7.4): print the `state=`
 # value of `pg-hooks status --porcelain`, or nothing when pg-hooks is not on
-# PATH or prints no state (an older machine before `pn workspace apply`). The
+# PATH or prints no state (a machine before `pn workspace apply`). The
 # exit code of `status` carries the state too (14 stale, 15 unreachable, ...) and
 # is deliberately ignored: callers branch on the parsed value, never on prose
 # or on the code.
@@ -450,25 +422,18 @@ _ul_in_linked_worktree() {
 }
 
 _ul_ensure_pre_commit_hooks() {
-  # Tier 1: does the flake declare install-pre-commit-hooks?
-  # --no-link avoids polluting the project dir. Distinguish "flake does not
-  # declare the attribute" (a legitimate silent skip) from a genuine build
-  # failure, which was previously swallowed by a blanket `|| return 0`
-  # (pg2-k8a6i): a real failure is now surfaced instead of hiding a broken
-  # hook install.
-  local drv_path errfile err
+  # Does the flake declare install-pre-commit-hooks? --no-link avoids polluting
+  # the project dir. Distinguish "flake does not declare the attribute" (a
+  # legitimate silent skip) from a genuine build failure, which was previously
+  # swallowed by a blanket `|| return 0` (pg2-k8a6i): a real failure is now
+  # surfaced instead of hiding a broken hook install.
+  local errfile err
   errfile=$(mktemp)
-  if ! drv_path=$(nix build .#install-pre-commit-hooks --no-link --print-out-paths 2>"$errfile"); then
+  if ! nix build .#install-pre-commit-hooks --no-link 2>"$errfile"; then
     err=$(<"$errfile")
     rm -f "$errfile"
     if [[ $err == *"does not provide attribute"* ]]; then
-      if _ul_shim_mode; then
-        # A committed .githooks/ means the repo opted into the commit-time shim
-        # (ADR 0029), whose wiring (core.hooksPath) is done ONLY by this
-        # installer. Silently skipping would leave staleness undetectable.
-        echo "==> warning: .githooks/ present (commit-time shim) but the flake declares no install-pre-commit-hooks; core.hooksPath cannot be wired" >&2
-      fi
-      return 0 # attribute not declared → nothing to install
+      return 0 # attribute not declared -> nothing to install
     fi
     echo "==> warning: 'nix build .#install-pre-commit-hooks' failed (not an attr-missing error); skipping hook install:" >&2
     printf '%s\n' "$err" >&2
@@ -476,130 +441,39 @@ _ul_ensure_pre_commit_hooks() {
   fi
   rm -f "$errfile"
 
-  # Bundle mode (per-clone hook bundle, dual mode D1): when `pg-hooks status
-  # --porcelain` reports a bundle state, it replaces the legacy tiers below.
-  #   present      -> nothing to do (the stamp covers flake.lock, flake.nix and
-  #                   the repo's stampPaths, so a lock bump surfaces as stale).
-  #   stale, broken, relocated
+  # The per-clone hook bundle is the only hook mechanism; `pg-hooks status
+  # --porcelain` decides. The bundle stamp covers flake.lock, flake.nix and the
+  # repo's stampPaths, so a lock bump surfaces as `stale` and no separate
+  # derivation-path marker is needed.
+  #   present      -> nothing to do.
+  #   stale, broken, relocated, missing
   #                -> reinstall from the canonical clone; from a linked worktree
   #                   only report (the installer refuses a worktree without
   #                   --private, and the shared bundle keeps serving it).
-  #   missing      -> reinstall from the canonical clone; a linked worktree
-  #                   keeps the legacy audit (it may be a legacy repo whose
-  #                   worktree wants its own generated config).
-  #   unreachable  -> report; the fix is operator-only (core.hooksPath), and the
-  #                   commit-time shim experiment also reads as unreachable, so
-  #                   the legacy audit below still runs.
-  #   legacy, or no pg-hooks on PATH -> the legacy tiers below, unchanged.
+  #   unreachable  -> report; the fix is operator-only (core.hooksPath).
+  #   no state (pg-hooks not on PATH) -> report and continue: a missing bundle
+  #                   or pg-hooks never blocks an update (R3).
   local bundle_state
   bundle_state=$(_ul_hook_bundle_state)
-  if [[ -n $bundle_state ]]; then
-    echo "==> hook bundle state: ${bundle_state}"
-  fi
-  case $bundle_state in
-  present)
+  if [[ -z $bundle_state ]]; then
+    echo "==> warning: pg-hooks not installed on this machine; hooks not checked (ask the operator to run 'pn workspace apply')" >&2
     return 0
-    ;;
+  fi
+  echo "==> hook bundle state: ${bundle_state}"
+  case $bundle_state in
   stale | broken | relocated | missing)
     if _ul_in_linked_worktree; then
-      if [[ $bundle_state != "missing" ]]; then
-        echo "==> hook bundle is ${bundle_state} in a linked worktree; not reinstalling from here (the shared bundle in the canonical clone serves it: run the installer there)"
-        return 0
-      fi
-      # missing in a linked worktree: fall through to the legacy audit.
-    else
-      echo "==> hook bundle ${bundle_state}, reinstalling..."
-      nix run .#install-pre-commit-hooks
-      mkdir -p "$UL_STATE_DIR/$_UL_PROJECT"
-      echo "$drv_path" >"$UL_STATE_DIR/$_UL_PROJECT/pre-commit-drv-path"
+      echo "==> hook bundle is ${bundle_state} in a linked worktree; not reinstalling from here (the shared bundle in the canonical clone serves it: run the installer there)"
       return 0
     fi
+    echo "==> hook bundle ${bundle_state}, reinstalling..."
+    nix run .#install-pre-commit-hooks
     ;;
   unreachable)
-    if ! _ul_shim_mode; then
-      echo "==> warning: git does not run hooks from the common hooks dir (operator-only fix: see 'pg-hooks status')" >&2
-    fi
+    echo "==> warning: git does not run hooks from the common hooks dir (operator-only fix: see 'pg-hooks status')" >&2
     ;;
   esac
-
-  # Tier 2: is the hook binary still valid (not GC'd)?
-  #
-  # `git rev-parse --git-path hooks` is the only correct resolution here, and its
-  # output is ALREADY the full hooks dir — it must NOT be joined onto the repo
-  # dir. It honours core.hooksPath when set (including an ABSOLUTE value, which
-  # every clone in this workspace holds and which the old
-  # "${_UL_SCRIPT_DIR}/${hooks_dir}" join doubled into a path that never existed),
-  # and with core.hooksPath unset it resolves to the COMMON hooks dir for a LINKED
-  # WORKTREE, which the old relative ".git/hooks" fallback could not (a worktree's
-  # .git is a FILE). Either miss made this tier unreachable: it always fell to the
-  # else branch, so every run reported "hook not found" and reinstalled, and the
-  # GC check below never ran. --path-format=absolute is load-bearing — without it
-  # the output can be relative to cwd (e.g. "../.git/hooks" from a subdir). A bare
-  # `git` is in-repo here: ul_setup cd's to script_dir before calling, which
-  # Tier 1's bare `.#install-pre-commit-hooks` flake ref already depends on.
-  # See bead pg2-rltuo.
-  local hooks_dir hook_file needs_install
-  hooks_dir=$(git rev-parse --path-format=absolute --git-path hooks)
-  hook_file="${hooks_dir}/pre-commit"
-  needs_install=false
-
-  if _ul_shim_mode; then
-    # Shim-aware branch (pg2-m68an): skip the store-path scan (nothing to scan).
-    _ul_shim_wiring_ok || needs_install=true
-  elif [[ -f $hook_file ]]; then
-    # The GC test is FORMAT-AGNOSTIC by design: scan the hook for every
-    # /nix/store path it NAMES, wherever it names it, and reinstall if any is
-    # gone. It must NOT key on a particular line shape. The previous version
-    # parsed the `^exec ` line on the assumption the store path was the exec
-    # TARGET; prek's current template puts the path on its own `PREK=` line and
-    # execs the VARIABLE, so the parse yielded the literal 7-character string
-    # `"$PREK"` — never executable — and this tier reported a GC'd binary on
-    # EVERY run once pg2-rltuo made it reachable. Retargeting the parse at the
-    # `PREK=` line would break again at prek's next template change (this parse
-    # had already been patched once for one, see pg2-k8a6i), so the extraction
-    # is deliberately positional-agnostic. Bead pg2-hk08h.
-    #
-    # This tier is NOT redundant with the others and must not be dropped:
-    # Tier 3 reinstalls only when the DERIVATION PATH changes, so a
-    # garbage-collected binary under an UNCHANGED derivation is exactly the case
-    # only Tier 2 catches. And although prek's hook falls back to a `prek` on
-    # PATH, that fallback may resolve a DIFFERENT version than the pinned one,
-    # so restoring the pinned binary has real value.
-    #
-    # -e, not -x: what a GC removes is the path's EXISTENCE, and the paths found
-    # are no longer guaranteed to be the executable (they may be a config, a
-    # directory, or a non-executable data path the hook references).
-    # The character class is the store-name alphabet, which deliberately
-    # excludes the `"` the paths are wrapped in, plus whitespace and the `:` of
-    # a PATH list, so no closing quote or separator is captured. `|| true`
-    # because grep exits 1 when the hook names none — a non-nix install has
-    # nothing to validate, and an empty scan must leave needs_install false.
-    local store_path
-    while IFS= read -r store_path; do
-      if [[ ! -e $store_path ]]; then
-        echo "==> pre-commit hook binary missing (GC'd), reinstalling..."
-        needs_install=true
-        break
-      fi
-    done < <(grep -oE '/nix/store/[a-zA-Z0-9+._?=-]+(/[a-zA-Z0-9+._?=-]+)*' "$hook_file" | sort -u || true)
-  else
-    echo "==> pre-commit hook not found, installing..."
-    needs_install=true
-  fi
-
-  # Tier 3: has the derivation changed since last install?
-  if [[ $needs_install != "true" ]]; then
-    local marker="$UL_STATE_DIR/$_UL_PROJECT/pre-commit-drv-path"
-    if [[ -f $marker ]] && [[ "$(cat "$marker")" == "$drv_path" ]]; then
-      return 0
-    fi
-    echo "==> pre-commit hooks config changed, reinstalling..."
-    needs_install=true
-  fi
-
-  nix run .#install-pre-commit-hooks
-  mkdir -p "$UL_STATE_DIR/$_UL_PROJECT"
-  echo "$drv_path" >"$UL_STATE_DIR/$_UL_PROJECT/pre-commit-drv-path"
+  return 0
 }
 
 # Re-exec the calling script inside its flake's devShells.default if possible.
@@ -692,9 +566,8 @@ ul_setup() {
 
   # Ensure the pre-commit hook binary is installed/current BEFORE the clean-tree
   # gate — it evaluates the flake, so it must run after fsmonitor is disabled
-  # above. The generated .pre-commit-config.yaml is a gitignored /nix/store
-  # symlink (ADR 0016): regenerating it here never touches the tracked tree, so
-  # it cannot trip the gate below and nothing is committed on its behalf.
+  # above. The bundle lives under the git common dir, so installing it never
+  # touches the working tree and cannot trip the gate below.
   _ul_ensure_pre_commit_hooks
 
   # Gate on `git status --porcelain --untracked-files=normal` (NOT git diff):
@@ -705,8 +578,7 @@ ul_setup() {
   # guarantees the tree holds only step-created files thereafter. The explicit
   # --untracked-files=normal defeats a user's `status.showUntrackedFiles=no`
   # git config, which would otherwise silently reintroduce this bug. (Ignored
-  # files — e.g. the gitignored .pre-commit-config.yaml symlink, ADR 0016 — are
-  # excluded by both porcelain and `git clean -fd`, so regenerating it is safe.)
+  # files are excluded by both porcelain and `git clean -fd`.)
   # Rejected alt (git add -u / tracked-only commit): steps legitimately create
   # new files that must commit (e.g. a first gomod2nix.toml). See bead pg2-31h9y.
   if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
@@ -929,9 +801,9 @@ _ul_commit_updated() {
     fi
   fi
   # See ANCHOR ul_run_step-pre-commit-refresh: if THIS step's own uncommitted
-  # changes touched flake.lock, the pre-commit-hooks symlink ul_setup built at
-  # the start of the run is now stale relative to it. Refresh before the
-  # commit below fires git hooks against that symlink (bd pg2-vayo4).
+  # changes touched flake.lock, the hook bundle ul_setup checked at the start
+  # of the run is now stale relative to it. Refresh before the commit below
+  # fires git hooks against that bundle (bd pg2-vayo4).
   if ! git diff --quiet -- flake.lock 2>/dev/null || ! git diff --cached --quiet -- flake.lock 2>/dev/null; then
     _ul_ensure_pre_commit_hooks
   fi

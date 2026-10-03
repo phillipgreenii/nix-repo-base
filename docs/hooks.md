@@ -2,14 +2,14 @@
 
 This page is the canonical reference for how git hooks work in the repos that consume
 `flakeModules.pre-commit`, and for the `pg-hooks` command. It documents behavior that exists in
-`modules/pg-hooks/` and `flake-modules/pre-commit.nix`; where a part of the rollout has not landed
-yet, the section says so. The design and its rulings live in
-`docs/superpowers/specs/2026-10-01-per-clone-hook-bundle-design.md`.
+`modules/pg-hooks/` and `flake-modules/pre-commit.nix`. The design and its rulings live in
+`docs/superpowers/specs/2026-10-01-per-clone-hook-bundle-design.md`; the decision to make the bundle
+the only mechanism is [ADR 0032](adr/0032-per-clone-hook-bundle-replaces-generated-config-and-shim.md).
 
 Contents: [Overview](#overview), [Stages](#stages), [The `pg-hooks` command](#the-pg-hooks-command),
 [Messages](#messages), [Exit codes](#exit-codes), [Bundle layout](#bundle-layout),
-[Staleness](#staleness), [Dual mode](#dual-mode-bundle-and-legacy), [Configuration](#configuration),
-[Operator runbook](#operator-runbook), [Rollout status](#rollout-status).
+[Staleness](#staleness), [Old config symlinks](#old-config-symlinks), [Configuration](#configuration),
+[Operator runbook](#operator-runbook), [Open follow-ups](#open-follow-ups).
 
 ## Overview
 
@@ -107,7 +107,7 @@ diagnose:           pg-hooks status
 `key:` with padding). Callers MUST parse `--porcelain` and MUST NOT parse prose:
 
 ```text
-state=<present|stale|missing|broken|unreachable|relocated|legacy>
+state=<present|stale|missing|broken|unreachable|relocated>
 bundle=<path of the selected bundle, or empty>
 generation=<gen-N, or empty>
 stages=<comma list, or empty>
@@ -121,16 +121,14 @@ code.
 | State         | Exit | Meaning                                                                                 |
 | ------------- | ---- | --------------------------------------------------------------------------------------- |
 | `present`     | 0    | A valid bundle whose stamp matches.                                                     |
-| `legacy`      | 0    | No bundle, but a usable legacy `.pre-commit-config.yaml` exists (see dual mode).        |
 | `broken`      | 12   | The pointer is invalid, or `bin/prek` or `bin/pg-hooks-run` is not executable.          |
-| `missing`     | 13   | No bundle and no usable legacy config.                                                  |
+| `missing`     | 13   | No bundle. A leftover `.pre-commit-config.yaml` does not count as one.                  |
 | `stale`       | 14   | The bundle's stamp, or a recorded override, differs from now.                           |
 | `unreachable` | 15   | git does not run hooks from `<common-dir>/hooks` (a `core.hooksPath` bypasses it).      |
 | `relocated`   | 16   | The recorded `clone_path` differs from this clone's common dir (moved or copied clone). |
 
 State precedence is `relocated`, then `unreachable`, then `broken`, then `stale`, then `present`.
-With no bundle: `unreachable` if hooks are unreachable, else `legacy` if a usable legacy config
-exists, else `missing`.
+With no bundle: `unreachable` if hooks are unreachable, else `missing`.
 
 ```mermaid
 flowchart TD
@@ -143,9 +141,7 @@ flowchart TD
   D -->|"valid bundle"| E{"stamp or override differs?"}
   E -->|"yes"| ST["stale, exit 14"]
   E -->|"no"| P["present, exit 0"]
-  D -->|"no bundle"| F{"usable legacy config?"}
-  F -->|"yes"| L["legacy, exit 0"]
-  F -->|"no"| M["missing, exit 13"]
+  D -->|"no bundle"| M["missing, exit 13"]
 ```
 
 A `core.hooksPath` that resolves to `<common-dir>/hooks` is fine. A global or system value is fine
@@ -154,8 +150,7 @@ dispatcher chains to `<common-dir>/hooks`).
 
 ### `list` and `explain`
 
-Both read `stages.json` from the bundle, so they need a bundle. With no bundle they exit 13; in a
-legacy repo they exit 13 with a message saying stage metadata exists only in a hook bundle. A broken
+Both read `stages.json` from the bundle, so they need a bundle. With no bundle they exit 13. A broken
 bundle exits 12. `explain` of an unknown stage exits 2.
 
 ### `run`
@@ -167,8 +162,8 @@ bundle exits 12. `explain` of an unknown stage exits 2.
   `--all-files`, prek runs over the staged files.
 - `--all-files` passes through. Giving both file paths and `--all-files` exits 2.
 - `--` forwards everything after it to prek unchanged. Any other `-option` before `--` exits 2.
-- A bundle is used when one resolves. Otherwise the legacy config is used (see dual mode). With
-  neither, `run` prints the no-bundle notice and exits 13.
+- `run` needs a bundle. With none it prints the no-bundle notice and exits 13; a leftover
+  `.pre-commit-config.yaml` is never read.
 - A failing hook prints the hooks-failed hint after prek's output and exits 10.
 - After `PG_HOOKS_PROGRESS_AFTER_S` seconds (default 3, `0` disables) one progress line is printed
   to stderr.
@@ -222,8 +217,7 @@ checkout and restages only the files a fixer changed. It calls the fixer tools d
 - `fix` appends one JSON line per fixer per run (`tool`, `files`, `seconds`, `exit`) to
   `${XDG_STATE_HOME:-$HOME/.local/state}/pg-hooks/timings.jsonl`. An unwritable state directory does
   not fail the run.
-- `fix` needs a bundle. It has no legacy fallback: with no bundle it exits 13, and with an invalid
-  `fixers.json` it exits 12.
+- `fix` needs a bundle: with no bundle it exits 13, and with an invalid `fixers.json` it exits 12.
 
 A fixer MUST NOT be run from a git hook and MUST NOT be attached to a prek stage.
 
@@ -255,7 +249,7 @@ installer's own refusals are in [Installer](#installer).
 
 | Code | Meaning                                                                               |
 | ---- | ------------------------------------------------------------------------------------- |
-| `0`  | success or nothing to do (a `legacy` repo counts as success)                          |
+| `0`  | success or nothing to do                                                              |
 | `1`  | generic failure, no branchable meaning                                                |
 | `2`  | usage error, unknown stage, refused operation, or not in a git repository             |
 | `10` | a hook or fixer failed                                                                |
@@ -383,24 +377,20 @@ still run when the bundle is stale.
 a stamp input: it runs `<canonical>/.git/pg-hooks/reinstall` in the background through `bgrun`. A
 failure is reported in the land outcome and never fails the land.
 
-## Dual mode: bundle and legacy
+## Old config symlinks
 
-Until every repo has cut over, callers work for both kinds of repo, and no repo's fresh worktree is
-worse off than before.
+The per-clone bundle is the only hook mechanism. A clone that still holds the old
+`.pre-commit-config.yaml` symlink (ADR [0016](adr/0016-gitignore-generated-pre-commit-config.md)) but
+no bundle reports `state=missing` and exits 13 from `run`, `fix`, `list` and `explain`; the file is
+never read. Install the bundle to fix it.
 
-- A repo with a valid bundle behaves as described above.
-- A repo with no bundle but a usable legacy `.pre-commit-config.yaml` (the work tree's, else the
-  canonical clone's, read in place and never linked) reports `state=legacy` and exit 0. `pg-hooks run
-<stage>` and `pg-hooks run pre-land` run the `prek` found on PATH with that config; if prek is not
-  on PATH they exit 13.
-- In a legacy repo `list` and `explain` exit 13, and `fix` exits 13, because fixers and stage
-  metadata exist only in a bundle. A legacy repo has no fixers: run the formatter by hand.
-- `drain isolate`, `wtnew` and pn's worktree updates keep their old link step only when
-  `pg-hooks status` reports `legacy`. With a bundle they skip it, and they MUST NOT link, copy or
-  regenerate a hook config to make hooks run.
+- Tooling MUST NOT link, copy or regenerate a hook config to make hooks run, and MUST NOT read a
+  leftover `.pre-commit-config.yaml`.
 - The probe for "does this repo have hooks" is `pg-hooks status --porcelain`, never
   `test -f .pre-commit-config.yaml`: a bundle repo has no such file in its working tree yet its hooks
   are live.
+- The `.gitignore` line for `.pre-commit-config.yaml` and the `pre-commit-config-gitignored` check
+  stay until no clone holds the old symlink (see [Open follow-ups](#open-follow-ups)).
 
 Workforest sets use the shared bundle by default. pn's set setup builds a private bundle with the
 set's pins (`--private` plus the `--override` pins) after the worktree exists, so a set that changes
@@ -455,28 +445,16 @@ These steps are for the operator. Agents MUST NOT run them.
 3. If `status` reports `unreachable`, remove the local `core.hooksPath` that bypasses the hooks
    directory, or point it at the absolute `<common-dir>/hooks`:
    `git -C <canonical> config --local --unset core.hooksPath` (the message names the exact command).
-4. repo-base cutover: a relative `core.hooksPath=.githooks` (the shim experiment) MUST be reset to the
-   absolute hooks directory after the cutover commit lands and the installer has replaced the stale
-   `.git/hooks/pre-commit`:
-   `git -C <canonical> config --local core.hooksPath <canonical>/.git/hooks`. Older repo-base
-   worktrees SHOULD be rebased onto main first, because between the cutover commit and this step the
-   relative path points at a directory main no longer has.
-5. `pn workspace push` publishes a producer repo before its consumers relock onto it.
+4. `pn workspace push` publishes a producer repo before its consumers relock onto it.
 
-## Rollout status
+## Open follow-ups
 
-Dated 2026-10-02. This section is the only part of the page that goes stale; the rest describes the
+Dated 2026-10-03. This section is the only part of the page that goes stale; the rest describes the
 code.
 
-- Landed in the tree: the library, runner, stubs, installer, `pg-hooks` (all five commands),
-  `pre-commit-fix`, the `fixers`, `stampPaths` and `bundle.enable` options, the bundle output, the pn
-  reader, install gate, private set bundles, doctor checks and dual-mode callers, the global
-  dispatcher, FF-1b via `pg-hooks run pre-land`, FF-4a, and the agent rules.
-- repo-base is cut over in the tree (`bundle.enable = true`, `commitTimeShim.enable = false`,
-  `.githooks/` deleted). Its canonical clone still needs `nix run .#install-pre-commit-hooks` and the
-  operator's `core.hooksPath` reset (spec 7.2 steps 3-4); until then `pg-hooks status` reports
-  `unreachable` there. `bundle.enable` defaults to `false` elsewhere, so every other repo reports
-  `legacy`.
-- Not available yet: consumer waves, the cleanup that deletes the legacy shim code, link code and
-  dual-mode branches, the ADR superseding 0029 and 0016, the drift guard, and the `post-land` entry
-  point (deferred, `pg2-na2nr`).
+- Retiring the ADR 0016 `.gitignore` line and `checks.pre-commit-config-gitignored` MUST wait until
+  the repos are pushed and relocked and no clone holds the old symlink. Consumer flakes MUST NOT drop
+  `bundle.enable = true` or their `.gitignore` lines before that relock.
+- The pn Go cleanup (the githooks-shim doctor check and the remaining link code) is tracked as
+  `pg2-o1fle`.
+- Not available yet: the drift guard, and the `post-land` entry point (deferred, `pg2-na2nr`).

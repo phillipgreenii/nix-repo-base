@@ -15,7 +15,7 @@ mkBashScript {
   # git and jq are required by the command itself (rev-parse, config, the
   # bundle's json files); grep applies the repo excludes in `fix` (grep -E). runtimeDeps are appended with --suffix, so a caller
   # environment that already has them keeps its own. prek is NOT here: it comes
-  # from the bundle (or, for a legacy repo, from the ambient PATH).
+  # from the bundle.
   runtimeDeps = [
     pkgs.git
     pkgs.coreutils

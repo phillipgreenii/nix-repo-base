@@ -207,11 +207,11 @@ _field() {
   [ "$(_field state)" = relocated ]
 }
 
-@test "status --porcelain: legacy exits 0 with a usable config in the worktree" {
+@test "status --porcelain: an old .pre-commit-config.yaml does not make a bundle (missing, exit 13)" {
   printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
   _status
-  [ "$status" -eq 0 ]
-  [ "$(_field state)" = legacy ]
+  [ "$status" -eq 13 ]
+  [ "$(_field state)" = missing ]
   [ "$(_field bundle)" = "" ]
 }
 
@@ -236,13 +236,13 @@ _field() {
   [ "$(_field state)" = relocated ]
 }
 
-@test "state precedence with no bundle: unreachable, else legacy, else missing" {
+@test "state precedence with no bundle: unreachable, else missing" {
   _status
   [ "$(_field state)" = missing ]
 
   printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
   _status
-  [ "$(_field state)" = legacy ]
+  [ "$(_field state)" = missing ]
 
   command git config core.hooksPath .githooks
   _status
@@ -460,52 +460,27 @@ $(pgh_msg_hooks_failed pre-commit fixture 2>&1)" ]
   [ "$stderr" = "pg-hooks: run: unknown stage: nonsense" ]
 }
 
-# --- legacy fallback (dual mode, D1) -----------------------------------------
+# --- an old config symlink is not a bundle -----------------------------------
 
-_fake_legacy_prek() {
-  mkdir -p "$GFH_ROOT/legacy-bin"
-  pgh_t_write_fake_prek "$GFH_ROOT/legacy-bin/prek"
-  export PATH="$GFH_ROOT/legacy-bin:$PATH"
-}
-
-@test "legacy fallback runs prek with the worktree config read in place" {
-  _fake_legacy_prek
-  printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
-  run --separate-stderr "$PGH_T_SUT" run pre-commit
-  [ "$status" -eq 0 ]
-  [ "$(_logged_args)" = "$(printf '%s\n' -q run -c "$(cd "$GFH_REPO" && pwd -P)/.pre-commit-config.yaml" --hook-stage pre-commit)" ]
-}
-
-@test "legacy fallback reads the canonical config in place and creates no file in the worktree" {
-  _fake_legacy_prek
+@test "run with only an old .pre-commit-config.yaml exits 13 and creates no file in a worktree" {
   printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
   command git worktree add -q "$GFH_WORK/wt" -b wt-branch
   cd "$GFH_WORK/wt"
-  [ ! -e .pre-commit-config.yaml ]
   local before
   before="$(find . -path ./.git -prune -o -print | sort)"
 
   run --separate-stderr "$PGH_T_SUT" run pre-commit
-  [ "$status" -eq 0 ]
-  [ "$(_logged_args | sed -n 4p)" = "$(cd "$GFH_REPO" && pwd -P)/.pre-commit-config.yaml" ]
-  [ "$(grep '^pwd=' "$PGH_T_LOG" | sed 's/^pwd=//')" = "$(cd "$GFH_WORK/wt" && pwd -P)" ]
-  [ ! -e .pre-commit-config.yaml ]
-  [ ! -L .pre-commit-config.yaml ]
+  [ "$status" -eq 13 ]
+  [[ $stderr == "pg-hooks: no hook bundle for "* ]]
   [ "$(find . -path ./.git -prune -o -print | sort)" = "$before" ]
 
-  _status
-  [ "$status" -eq 0 ]
-  [ "$(_field state)" = legacy ]
-}
-
-@test "legacy fallback without prek on PATH exits 13" {
-  printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
-  PATH="$(pgh_t_limited_path)" run --separate-stderr "$PGH_T_SUT" run pre-commit
+  run --separate-stderr "$PGH_T_SUT" list
   [ "$status" -eq 13 ]
-  [[ $stderr == *"found but prek is not on PATH" ]]
+  run --separate-stderr "$PGH_T_SUT" explain pre-commit
+  [ "$status" -eq 13 ]
 }
 
-@test "a bundle wins over a legacy config" {
+@test "a bundle is used regardless of an old .pre-commit-config.yaml" {
   _present
   printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
   run --separate-stderr "$PGH_T_SUT" run pre-commit
@@ -576,16 +551,11 @@ _fake_legacy_prek() {
   [ "$status" -eq 2 ]
 }
 
-@test "run pre-land with no bundle exits 13; with a legacy config it runs that config" {
+@test "run pre-land with no bundle exits 13, even with an old .pre-commit-config.yaml" {
+  printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
   run --separate-stderr "$PGH_T_SUT" run pre-land
   [ "$status" -eq 13 ]
   [[ $stderr == "pg-hooks: no hook bundle for repo; pre-land hooks not run. Fix: "* ]]
-
-  _fake_legacy_prek
-  printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
-  run --separate-stderr "$PGH_T_SUT" run pre-land
-  [ "$status" -eq 0 ]
-  grep -qx 'arg=--from-ref' "$PGH_T_LOG"
 }
 
 # --- stdout/stderr discipline and odd paths ----------------------------------

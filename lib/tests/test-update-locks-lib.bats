@@ -27,10 +27,10 @@ _fix_mock_shebang() {
 
 setup() {
   TEST_DIR=$(mktemp -d)
-  # XDG_STATE_HOME must live OUTSIDE the repo: _ul_ensure_pre_commit_hooks writes
-  # a pre-commit-drv-path marker under it during ul_setup. If it were nested in
-  # TEST_DIR (the git repo), `git add -A` in a step's commit would sweep that
-  # marker into the commit, polluting the per-step stamp commits the tests assert.
+  # XDG_STATE_HOME must live OUTSIDE the repo: ul_init writes the per-step stamps
+  # under it. If it were nested in TEST_DIR (the git repo), `git add -A` in a
+  # step's commit would sweep them into the commit, polluting the per-step stamp
+  # commits the tests assert.
   STATE_DIR=$(mktemp -d)
   export XDG_STATE_HOME="$STATE_DIR"
   export NIX_UL_FORCE_UPDATE="true"
@@ -47,14 +47,14 @@ MOCK
   chmod +x "$MOCK_BIN/nix"
   export PATH="$MOCK_BIN:$PATH"
 
-  # Mock pg-hooks (dual mode): by default it reports `legacy`, so every legacy
-  # test below exercises the legacy audit regardless of whether the developer's
-  # machine has a real pg-hooks on PATH. Bundle-mode tests overwrite the state
-  # through UL_TEST_PG_HOOKS_STATE (empty: print nothing, as an old machine).
+  # Mock pg-hooks: by default it reports `present`, so a test that is not about
+  # the hook bundle never installs one regardless of whether the developer's
+  # machine has a real pg-hooks on PATH. Bundle tests overwrite the state through
+  # UL_TEST_PG_HOOKS_STATE (empty: print nothing, as a machine without pg-hooks).
   cat > "$MOCK_BIN/pg-hooks" <<'MOCK'
 #!/usr/bin/env bash
 if [[ $1 == status && $2 == --porcelain ]]; then
-  s="${UL_TEST_PG_HOOKS_STATE-legacy}"
+  s="${UL_TEST_PG_HOOKS_STATE-present}"
   [[ -n $s ]] && echo "state=$s"
   echo "bundle="
   echo "generation="
@@ -178,23 +178,19 @@ teardown() {
   [[ "$output" =~ "not clean" ]]
 }
 
-@test "ul_setup regenerates the gitignored .pre-commit-config.yaml without committing it and passes the gate" {
-  # Post ADR 0016 the generated config is gitignored, never tracked. Simulate the
-  # git-hooks.nix shellHook regenerating it on dev-shell entry: because it is
-  # ignored, that must NOT dirty the tracked tree, must NOT be committed, and
+@test "ul_setup installs a stale hook bundle without dirtying the tree and passes the gate" {
+  # The bundle lives under the git common dir, never in the working tree, so
+  # (re)installing it must NOT dirty the tracked tree, must NOT be committed, and
   # ul_setup must pass the clean-tree gate.
-  echo ".pre-commit-config.yaml" > .gitignore
-  git add .gitignore
-  git commit -m "gitignore generated pre-commit config"
+  export UL_TEST_PG_HOOKS_STATE=stale
 
-  # nix mock: tier-1 `build … --print-out-paths` prints a drv path; `run
-  # .#install-pre-commit-hooks` (re)generates the ignored config; all else
+  # nix mock: `build .#install-pre-commit-hooks` succeeds; `run
+  # .#install-pre-commit-hooks` records the install inside .git; all else
   # (eval/fmt) is a silent no-op.
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *build*install-pre-commit-hooks*) echo "/nix/store/deadbeef-install-pre-commit-hooks" ;;
-  *run*install-pre-commit-hooks*) echo "generated-config" > .pre-commit-config.yaml ;;
+  *run*install-pre-commit-hooks*) echo installed > "$(git rev-parse --git-common-dir)/bundle-installed" ;;
 esac
 exit 0
 MOCK
@@ -207,33 +203,19 @@ MOCK
   source "$UL_LOCKS_LIB"
   ul_setup "test-project" "$TEST_DIR" # must NOT exit 1
 
-  # The config was (re)generated but stays untracked + ignored.
-  [ "$(cat .pre-commit-config.yaml)" = "generated-config" ]
+  [ "$(cat "$(git rev-parse --git-common-dir)/bundle-installed")" = installed ]
   git diff --quiet          # tracked working tree clean
   git diff --cached --quiet # nothing staged
   # No pre-commit commit was made — HEAD is unchanged.
   [ "$(git rev-parse HEAD)" = "$before_hash" ]
 }
 
-@test "ul_setup still exits 1 when a non-managed file is dirty alongside the pre-commit config" {
-  # Regenerating the gitignored .pre-commit-config.yaml must not mask a genuine
-  # uncommitted edit to a tracked file: the gate must still fire, and the edit
-  # must not be destroyed on the gate-fail path.
-  echo ".pre-commit-config.yaml" > .gitignore
-  git add .gitignore
-  git commit -m "gitignore generated pre-commit config"
+@test "ul_setup still exits 1 when a file is dirty alongside a bundle install" {
+  # Installing the bundle must not mask a genuine uncommitted edit to a tracked
+  # file: the gate must still fire, and the edit must not be destroyed on the
+  # gate-fail path.
+  export UL_TEST_PG_HOOKS_STATE=stale
   echo "user edit" > file.txt # genuine uncommitted work
-
-  cat > "$MOCK_BIN/nix" <<'MOCK'
-#!/usr/bin/env bash
-case "$*" in
-  *build*install-pre-commit-hooks*) echo "/nix/store/deadbeef-install-pre-commit-hooks" ;;
-  *run*install-pre-commit-hooks*) echo "generated-config" > .pre-commit-config.yaml ;;
-esac
-exit 0
-MOCK
-  _fix_mock_shebang "$MOCK_BIN/nix"
-  chmod +x "$MOCK_BIN/nix"
 
   run bash -c "source '$UL_LOCKS_LIB'; ul_setup test-project '$TEST_DIR'"
   [ "$status" -eq 1 ]
@@ -254,342 +236,29 @@ MOCK
   [ "$(cat "$TEST_DIR/untracked.txt")" = "precious user data" ]
 }
 
-# --- _ul_ensure_pre_commit_hooks: hooks-dir resolution (bead pg2-rltuo) ---
+# --- _ul_ensure_pre_commit_hooks: hook bundle ---
 #
-# Tier 2 ("is the hook binary still valid — not GC'd?") must first LOCATE the
-# installed hook. Two REAL configurations defeated it, both because the resolved
-# core.hooksPath was JOINED onto the repo dir:
-#
-#   (a) an ABSOLUTE core.hooksPath — what every clone in this workspace holds —
-#       produced "<repo>//<repo>/.git/hooks/pre-commit", which never exists;
-#   (b) with core.hooksPath UNSET the ".git/hooks" fallback is RELATIVE, so it
-#       cannot name a LINKED WORKTREE's hooks dir: a worktree's .git is a FILE
-#       and the hooks live in the COMMON dir under the main repo.
-#
-# Either miss left needs_install=true on EVERY run, so the GC check below the
-# lookup was unreachable. Both tests therefore assert the hook is FOUND — no
-# "hook not found" message and no reinstall at all — not merely that the path
-# string looks plausible.
+# `pg-hooks status --porcelain` decides: present does nothing; stale, broken,
+# relocated and missing reinstall from the canonical clone (and only report from
+# a linked worktree); unreachable and "no pg-hooks" report and continue. There is
+# no legacy audit: a clone holding only an old .pre-commit-config.yaml reports
+# `missing` and is treated like any other missing bundle.
 
-# Seed the scaffolding every Tier-2 test shares: a nix mock whose
-# `run .#install-pre-commit-hooks` is OBSERVABLE via a marker file, and a
-# current Tier-3 drv-path marker so any reinstall observed can only have come
-# from Tier 2. The caller owns the hook file itself.
+# Seed the scaffolding every test here shares: a nix mock whose
+# `run .#install-pre-commit-hooks` is OBSERVABLE via a marker file.
 _seed_pre_commit_hook_check_env() {
-  local drv="/nix/store/deadbeef-install-pre-commit-hooks"
-
   UL_TEST_REINSTALL_MARKER="$STATE_DIR/reinstall-ran"
   export UL_TEST_REINSTALL_MARKER
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *build*install-pre-commit-hooks*) echo "/nix/store/deadbeef-install-pre-commit-hooks" ;;
   *run*install-pre-commit-hooks*) : > "$UL_TEST_REINSTALL_MARKER" ;;
 esac
 exit 0
 MOCK
   _fix_mock_shebang "$MOCK_BIN/nix"
   chmod +x "$MOCK_BIN/nix"
-
-  # Tier 3 agrees the derivation is unchanged, so any reinstall observed came
-  # from Tier 2. Mirrors what ul_init/ul_setup would set.
-  # shellcheck disable=SC2034  # both are read by the sourced update-locks-lib
-  UL_STATE_DIR="$STATE_DIR/update-locks"
-  # shellcheck disable=SC2034  # ditto
-  _UL_PROJECT="test-project"
-  mkdir -p "$UL_STATE_DIR/$_UL_PROJECT"
-  echo "$drv" > "$UL_STATE_DIR/$_UL_PROJECT/pre-commit-drv-path"
 }
-
-# A real, NON-store executable a hook can exec. It lives OUTSIDE any working
-# tree so `git clean -fd` in a test step cannot remove it.
-_seed_hook_runner_mock() {
-  cat > "$MOCK_BIN/hook-runner" <<'RUNNER'
-#!/usr/bin/env bash
-exit 0
-RUNNER
-  _fix_mock_shebang "$MOCK_BIN/hook-runner"
-  chmod +x "$MOCK_BIN/hook-runner"
-}
-
-# Print a /nix/store path that DEFINITELY exists, derived rather than
-# hardcoded. Tier 2's GC check reads only EXISTENCE, so which entry it is does
-# not matter — it just has to be a live one, and it cannot be fabricated under
-# $TEST_DIR because the check keys on the literal /nix/store prefix.
-_existing_store_path() {
-  local p
-  # Cheapest: the store entry owning this run's bash. True inside the nix check
-  # (its whole PATH is store paths); not true of a profile-symlink bash locally.
-  for p in "${BASH:-}" "$(command -v bash || true)"; do
-    if [[ $p == /nix/store/?* && -e $p ]]; then
-      printf '%s\n' "$p"
-      return 0
-    fi
-  done
-  # Local fast loop: any live store entry will do.
-  for p in /nix/store/*; do
-    if [[ -e $p ]]; then
-      printf '%s\n' "$p"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Seed a findable, non-GC'd pre-commit hook in $1 plus the shared scaffolding.
-_seed_findable_pre_commit_hook() {
-  local hooks_dir="$1"
-
-  # The hook's exec target must be a real executable or the GC check fires.
-  _seed_hook_runner_mock
-
-  # Not chmod +x: the code only stats and greps it, and leaving it unexecutable
-  # keeps git from ever invoking it during the test's own commits.
-  mkdir -p "$hooks_dir"
-  printf 'exec %s hook-impl --hook-type=pre-commit\n' "$MOCK_BIN/hook-runner" \
-    > "$hooks_dir/pre-commit"
-
-  _seed_pre_commit_hook_check_env
-}
-
-@test "_ul_ensure_pre_commit_hooks finds the hook when core.hooksPath is ABSOLUTE" {
-  git config core.hooksPath "$TEST_DIR/.git/hooks"
-  _seed_findable_pre_commit_hook "$TEST_DIR/.git/hooks"
-
-  source "$UL_LOCKS_LIB"
-  # ul_setup sets this before calling; the old implementation joined the resolved
-  # hooksPath onto it, so it must be populated for this to test the real defect.
-  # shellcheck disable=SC2034  # read by the sourced update-locks-lib
-  _UL_SCRIPT_DIR="$TEST_DIR"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ ! $output =~ "hook not found" ]]
-  [[ ! $output =~ "hook binary missing" ]]
-  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks finds the COMMON hooks dir from a linked worktree with core.hooksPath unset" {
-  # Premise: git's normal state, no core.hooksPath anywhere in scope.
-  [ -z "$(git config --get core.hooksPath || true)" ]
-
-  # The hook lives in the main repo's COMMON hooks dir, never in the worktree.
-  _seed_findable_pre_commit_hook "$TEST_DIR/.git/hooks"
-
-  local wt="$TEST_DIR/linked-wt"
-  git worktree add --quiet "$wt" -b feat
-  [ -f "$wt/.git" ] # a FILE, not a directory — the reason a relative path fails
-
-  source "$UL_LOCKS_LIB"
-  # shellcheck disable=SC2034  # read by the sourced update-locks-lib
-  _UL_SCRIPT_DIR="$wt"
-  cd "$wt" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ ! $output =~ "hook not found" ]]
-  [[ ! $output =~ "hook binary missing" ]]
-  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-# --- _ul_ensure_pre_commit_hooks: Tier-2 GC check (bead pg2-hk08h) ---
-#
-# Tier 2 asks "is the hook's pinned binary still in the store, or was it GC'd?".
-# It used to answer that by parsing the hook's `^exec ` line, which assumed the
-# store path was the exec TARGET. prek's current template puts the path on its
-# own `PREK=` line and execs the VARIABLE, so the parse yielded the literal
-# 7-character string `"$PREK"` — never executable — and Tier 2 reported a GC'd
-# binary on EVERY run. The check is now a format-agnostic scan for every
-# /nix/store path the hook NAMES, wherever it names it, so these tests fix the
-# BEHAVIOUR (fires iff a named store path is gone) and not a template shape.
-
-@test "_ul_ensure_pre_commit_hooks Tier 2 does NOT fire when a store path the hook names EXISTS" {
-  local store_path=""
-  store_path=$(_existing_store_path) || skip "no live /nix/store entry to name"
-  [ -e "$store_path" ]
-
-  local hooks_dir="$TEST_DIR/.git/hooks"
-  mkdir -p "$hooks_dir"
-  # The path is deliberately NOT the exec target: the scan must find it anyway.
-  printf 'PINNED="%s"\nexec "$PINNED" hook-impl\n' "$store_path" \
-    > "$hooks_dir/pre-commit"
-  _seed_pre_commit_hook_check_env
-
-  source "$UL_LOCKS_LIB"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ ! $output =~ "hook not found" ]]
-  [[ ! $output =~ "hook binary missing" ]]
-  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks Tier 2 FIRES when a store path the hook names is GONE" {
-  local gone="/nix/store/00000000000000000000000000000000-gc-d-1.0/bin/gone"
-  [ ! -e "$gone" ]
-
-  # The exec target is a live NON-store executable, so the old exec-line parse
-  # saw a healthy hook. Only a scan of what the hook NAMES sees the dead path —
-  # this is what stops the fix from neutering the check into always-passing.
-  _seed_hook_runner_mock
-  local hooks_dir="$TEST_DIR/.git/hooks"
-  mkdir -p "$hooks_dir"
-  printf 'PINNED="%s"\nexec %s hook-impl\n' "$gone" "$MOCK_BIN/hook-runner" \
-    > "$hooks_dir/pre-commit"
-  _seed_pre_commit_hook_check_env
-
-  source "$UL_LOCKS_LIB"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  # `== *…*`, not `=~`: the message's parens are regex metacharacters, and a
-  # quoted `=~` RHS that only LOOKS like a regex trips SC2076. This asserts the
-  # whole message literally, so the wording itself is locked in.
-  [[ $output == *"hook binary missing (GC'd), reinstalling"* ]]
-  [ -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks Tier 2 does NOT fire when the hook names NO store path" {
-  local hooks_dir="$TEST_DIR/.git/hooks"
-  mkdir -p "$hooks_dir"
-  # A non-nix install, and equally prek's own PATH fallback shape: there is no
-  # pinned store path to validate, so Tier 2 has nothing to say. Note the exec
-  # target is a bare command NAME, which the old `-x` test rejected outright.
-  printf '#!/bin/sh\nexec pre-commit hook-impl --hook-type=pre-commit\n' \
-    > "$hooks_dir/pre-commit"
-  _seed_pre_commit_hook_check_env
-
-  source "$UL_LOCKS_LIB"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ ! $output =~ "hook not found" ]]
-  [[ ! $output =~ "hook binary missing" ]]
-  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks Tier 2 does NOT fire on prek's CURRENT hook template" {
-  local store_path=""
-  store_path=$(_existing_store_path) || skip "no live /nix/store entry to name"
-
-  local hooks_dir="$TEST_DIR/.git/hooks"
-  mkdir -p "$hooks_dir"
-  # Verbatim shape emitted by prek 0.3.11 (--script-version 4), with only the
-  # pinned path swapped for a live one: the store path sits on its own `PREK=`
-  # line and `exec` runs the VARIABLE. This exact hook is what made the old
-  # parse yield `"$PREK"` and reinstall on every run.
-  cat > "$hooks_dir/pre-commit" <<HOOK
-#!/bin/sh
-# File generated by prek: https://github.com/j178/prek
-# ID: 182c10f181da4464a3eec51b83331688
-
-HERE="\$(cd "\$(dirname "\$0")" && pwd)"
-PREK="$store_path"
-
-# Check if the full path to prek is executable, otherwise fallback to PATH
-if [ ! -x "\$PREK" ]; then
-    PREK="prek"
-fi
-
-exec "\$PREK" hook-impl --hook-dir "\$HERE" --script-version 4 --hook-type=pre-commit --config=".pre-commit-config.yaml" -- "\$@"
-HOOK
-  _seed_pre_commit_hook_check_env
-
-  source "$UL_LOCKS_LIB"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ ! $output =~ "hook not found" ]]
-  [[ ! $output =~ "hook binary missing" ]]
-  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-# --- _ul_ensure_pre_commit_hooks: commit-time shim awareness (pg2-m68an, ADR 0029) ---
-#
-# A repo with the shim opted in commits .githooks/ and has core.hooksPath=.githooks.
-# The shims name no /nix/store path, so the legacy GC scan has nothing to say; what
-# can go stale is the WIRING. A repo WITHOUT .githooks/ keeps the legacy audit
-# (covered by the Tier 2 tests above, unchanged).
-
-@test "_ul_ensure_pre_commit_hooks shim mode: wired + executable shim does NOT reinstall" {
-  mkdir -p "$TEST_DIR/.githooks"
-  printf '#!/bin/sh\nexec nix run --quiet .#git-hook -- pre-commit "$@"\n' > "$TEST_DIR/.githooks/pre-commit"
-  chmod +x "$TEST_DIR/.githooks/pre-commit"
-  git -C "$TEST_DIR" config --local core.hooksPath .githooks
-  _seed_pre_commit_hook_check_env
-
-  source "$UL_LOCKS_LIB"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ ! $output =~ "hook not found" ]]
-  [[ ! $output =~ "not wired" ]]
-  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks shim mode: legacy absolute core.hooksPath triggers reinstall" {
-  mkdir -p "$TEST_DIR/.githooks" "$TEST_DIR/.git/hooks"
-  printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/.githooks/pre-commit"
-  chmod +x "$TEST_DIR/.githooks/pre-commit"
-  # The legacy hook is live and names no store path: the OLD logic saw nothing wrong.
-  printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/.git/hooks/pre-commit"
-  git -C "$TEST_DIR" config --local core.hooksPath "$TEST_DIR/.git/hooks"
-  _seed_pre_commit_hook_check_env
-
-  source "$UL_LOCKS_LIB"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ $output =~ "not wired" ]]
-  [ -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks shim mode: non-executable shim triggers reinstall" {
-  mkdir -p "$TEST_DIR/.githooks"
-  printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/.githooks/pre-commit"
-  chmod -x "$TEST_DIR/.githooks/pre-commit"
-  git -C "$TEST_DIR" config --local core.hooksPath .githooks
-  _seed_pre_commit_hook_check_env
-
-  source "$UL_LOCKS_LIB"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ $output =~ "not executable" ]]
-  [ -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks shim mode: warns when the flake lacks install-pre-commit-hooks" {
-  mkdir -p "$TEST_DIR/.githooks"
-  cat > "$MOCK_BIN/nix" <<'MOCK'
-#!/usr/bin/env bash
-echo "error: flake does not provide attribute 'packages.x.install-pre-commit-hooks'" >&2
-exit 1
-MOCK
-  _fix_mock_shebang "$MOCK_BIN/nix"
-  chmod +x "$MOCK_BIN/nix"
-
-  source "$UL_LOCKS_LIB"
-  cd "$TEST_DIR" || return 1
-
-  run _ul_ensure_pre_commit_hooks
-  [ "$status" -eq 0 ]
-  [[ $output =~ "commit-time shim" ]]
-}
-
-# --- _ul_ensure_pre_commit_hooks: hook bundle mode (per-clone hook bundle, dual mode) ---
-#
-# `pg-hooks status --porcelain` decides: present skips everything; stale, broken
-# and relocated reinstall from the canonical clone (and only report from a linked
-# worktree); legacy and "no pg-hooks" keep the legacy tiers (covered above).
 
 _run_ensure_in_bundle_mode() {
   UL_TEST_PG_HOOKS_STATE="$1"
@@ -601,13 +270,11 @@ _run_ensure_in_bundle_mode() {
   run _ul_ensure_pre_commit_hooks
 }
 
-@test "_ul_ensure_pre_commit_hooks bundle mode: present does not reinstall and skips the legacy audit" {
-  # No hook file at all: the legacy audit would say "hook not found, installing".
+@test "_ul_ensure_pre_commit_hooks bundle mode: present does not reinstall" {
   cd "$TEST_DIR" || return 1
   _run_ensure_in_bundle_mode present
   [ "$status" -eq 0 ]
   [[ $output =~ "hook bundle state: present" ]]
-  [[ ! $output =~ "hook not found" ]]
   [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
 }
 
@@ -634,10 +301,11 @@ _run_ensure_in_bundle_mode() {
   cd "$TEST_DIR" || return 1
   _run_ensure_in_bundle_mode missing
   [ "$status" -eq 0 ]
+  [[ $output =~ "hook bundle missing, reinstalling" ]]
   [ -e "$UL_TEST_REINSTALL_MARKER" ]
 }
 
-@test "_ul_ensure_pre_commit_hooks bundle mode: stale in a linked worktree reports and does NOT install" {
+@test "_ul_ensure_pre_commit_hooks bundle mode: stale or missing in a linked worktree reports and does NOT install" {
   local wt="$TEST_DIR/linked-wt"
   git worktree add --quiet "$wt" -b feat
   cd "$wt" || return 1
@@ -645,54 +313,62 @@ _run_ensure_in_bundle_mode() {
   [ "$status" -eq 0 ]
   [[ $output =~ "linked worktree" ]]
   [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks bundle mode: missing in a linked worktree keeps the legacy audit" {
-  local wt="$TEST_DIR/linked-wt"
-  git worktree add --quiet "$wt" -b feat
-  cd "$wt" || return 1
   _run_ensure_in_bundle_mode missing
   [ "$status" -eq 0 ]
-  # The legacy audit found no hook in the (empty) common hooks dir and installed.
-  [[ $output =~ "hook not found" ]]
-  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+  [[ $output =~ "linked worktree" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
 }
 
-@test "_ul_ensure_pre_commit_hooks bundle mode: legacy state keeps the legacy audit" {
-  cd "$TEST_DIR" || return 1
-  _run_ensure_in_bundle_mode legacy
-  [ "$status" -eq 0 ]
-  [[ $output =~ "hook not found" ]]
-  [ -e "$UL_TEST_REINSTALL_MARKER" ]
-}
-
-@test "_ul_ensure_pre_commit_hooks bundle mode: no state (old machine) keeps the legacy audit" {
+@test "_ul_ensure_pre_commit_hooks bundle mode: no state (no pg-hooks) warns and continues without installing" {
   cd "$TEST_DIR" || return 1
   _run_ensure_in_bundle_mode ""
   [ "$status" -eq 0 ]
   [[ ! $output =~ "hook bundle state" ]]
-  [[ $output =~ "hook not found" ]]
-  [ -e "$UL_TEST_REINSTALL_MARKER" ]
+  [[ $output =~ "pg-hooks not installed" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
 }
 
-@test "_ul_ensure_pre_commit_hooks bundle mode: unreachable warns and runs the legacy audit" {
+@test "_ul_ensure_pre_commit_hooks bundle mode: unreachable warns and does not install" {
   cd "$TEST_DIR" || return 1
   _run_ensure_in_bundle_mode unreachable
   [ "$status" -eq 0 ]
   [[ $output =~ "does not run hooks" ]]
-  [[ $output =~ "hook not found" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
 }
 
-@test "_ul_ensure_pre_commit_hooks bundle mode: unreachable under the commit-time shim does not warn" {
-  mkdir -p "$TEST_DIR/.githooks"
-  printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/.githooks/pre-commit"
-  chmod +x "$TEST_DIR/.githooks/pre-commit"
-  git -C "$TEST_DIR" config --local core.hooksPath .githooks
+@test "_ul_ensure_pre_commit_hooks skips silently when the flake lacks install-pre-commit-hooks" {
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+echo "error: flake does not provide attribute 'packages.x.install-pre-commit-hooks'" >&2
+exit 1
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  source "$UL_LOCKS_LIB"
   cd "$TEST_DIR" || return 1
-  _run_ensure_in_bundle_mode unreachable
+
+  run _ul_ensure_pre_commit_hooks
   [ "$status" -eq 0 ]
-  [[ ! $output =~ "does not run hooks" ]]
-  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+  [ -z "$output" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks surfaces a genuine install-pre-commit-hooks build failure" {
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+echo "error: builder for foo failed" >&2
+exit 1
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [[ $output == *"failed (not an attr-missing error)"* ]]
+  [[ $output == *"builder for foo failed"* ]]
 }
 
 # --- ul_run_step: success path ---
@@ -1057,27 +733,22 @@ _run_ensure_in_bundle_mode() {
 # commit, whenever the step's own (still-uncommitted) changes touched
 # flake.lock -- and must NOT do so for a step that left flake.lock untouched.
 #
-# The mock nix's Tier-1 `build .#install-pre-commit-hooks` below derives the
-# "drv path" it prints from a checksum of the CURRENT flake.lock content, so
-# a real lock-content change naturally yields a different observed drv --
-# mirroring how a real `nix build` output would move if the lock it
-# evaluates against changed. Tier 3 (the drv-path marker compare inside
-# _ul_ensure_pre_commit_hooks) then decides whether to reinstall, exactly as
-# it would against a real store path.
+# The mock pg-hooks below plays the bundle stamp: it reports `present` while the
+# CURRENT flake.lock matches the content the last install saw, and `stale`
+# otherwise -- mirroring how the real bundle stamp covers flake.lock. The mock
+# nix `run .#install-pre-commit-hooks` records the lock it installed against.
 _seed_lock_sensitive_pre_commit_mock() {
   UL_TEST_INSTALL_COUNTER="$STATE_DIR/install-count"
-  export UL_TEST_INSTALL_COUNTER
+  UL_TEST_INSTALLED_LOCK="$STATE_DIR/installed-lock-cksum"
+  export UL_TEST_INSTALL_COUNTER UL_TEST_INSTALLED_LOCK
 
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *build*install-pre-commit-hooks*)
-    hash=$(cksum flake.lock 2>/dev/null | awk '{print $1}')
-    echo "/nix/store/deadbeef-${hash:-nolock}-install-pre-commit-hooks"
-    ;;
   *run*install-pre-commit-hooks*)
     n=$(( $(cat "$UL_TEST_INSTALL_COUNTER" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$UL_TEST_INSTALL_COUNTER"
+    cksum flake.lock > "$UL_TEST_INSTALLED_LOCK"
     ;;
 esac
 exit 0
@@ -1085,15 +756,19 @@ MOCK
   _fix_mock_shebang "$MOCK_BIN/nix"
   chmod +x "$MOCK_BIN/nix"
 
-  # A findable, non-GC'd hook (no /nix/store path named in it) so Tiers 1/2
-  # never force a reinstall on their own -- only Tier 3's drv-path mismatch,
-  # driven by the lock-sensitive mock above, should.
-  _seed_hook_runner_mock
-  local hooks_dir
-  hooks_dir="$(git rev-parse --path-format=absolute --git-path hooks)"
-  mkdir -p "$hooks_dir"
-  printf 'exec %s hook-impl --hook-type=pre-commit\n' "$MOCK_BIN/hook-runner" \
-    > "$hooks_dir/pre-commit"
+  cat > "$MOCK_BIN/pg-hooks" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == status && $2 == --porcelain ]]; then
+  if [[ -f $UL_TEST_INSTALLED_LOCK && "$(cksum flake.lock)" == "$(cat "$UL_TEST_INSTALLED_LOCK")" ]]; then
+    echo "state=present"
+  else
+    echo "state=stale"
+  fi
+fi
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/pg-hooks"
+  chmod +x "$MOCK_BIN/pg-hooks"
 
   printf '%s\n' '{"nodes":{"nixpkgs":{"locked":{"rev":"aaaa"}},"root":{}}}' > flake.lock
   git add flake.lock
@@ -1113,7 +788,7 @@ MOCK
   ul_run_step "nix-flake-update" "update: lock" bump_lock
 
   [ "$_UL_STEPS_FAILED" -eq 0 ]
-  # The step changed flake.lock, so the mock's observed drv path moved too --
+  # The step changed flake.lock, so the mock bundle now reports stale --
   # _ul_commit_updated must have re-run _ul_ensure_pre_commit_hooks before
   # committing, ahead of any git-hook run the commit triggers.
   [ "$(cat "$UL_TEST_INSTALL_COUNTER")" -eq 2 ]

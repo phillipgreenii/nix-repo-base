@@ -55,7 +55,7 @@ and exits `10`. Per-fixer timings are appended to `~/.local/state/pg-hooks/timin
 
 | Code | Meaning                                                                                       |
 | ---- | --------------------------------------------------------------------------------------------- |
-| `0`  | Success or nothing to do. `status` also returns 0 for `legacy` (no bundle, usable config).    |
+| `0`  | Success or nothing to do.                                                                     |
 | `1`  | Generic failure; never has a branchable meaning.                                              |
 | `2`  | Usage error, unknown stage, refused operation (`pre-land` on a ref not checked out), no repo. |
 | `10` | A hook or fixer failed.                                                                       |
@@ -67,6 +67,6 @@ and exits `10`. Per-fixer timings are appended to `~/.local/state/pg-hooks/timin
 | `16` | `status` only: clone relocated (`clone_path` differs).                                        |
 
 `status --porcelain` prints `state=`, `bundle=`, `generation=`, `stages=` and `reinstall=` lines.
-`state` is one of `present`, `stale`, `missing`, `broken`, `unreachable`, `relocated`, `legacy`.
+`state` is one of `present`, `stale`, `missing`, `broken`, `unreachable`, `relocated`.
 Messages go to stderr and start with `pg-hooks:`; stdout carries only `status`, `list` and
 `explain` output.

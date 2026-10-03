@@ -36,7 +36,7 @@ Options:
   -v, --version  Show version information
 
 Exit codes:
-  0   success or nothing to do (a legacy repo counts as success)
+  0   success or nothing to do
   2   usage error, unknown stage, refused operation, or not in a git repo
   10  a hook or fixer failed
   11  file(s) skipped (staged and unstaged changes)
@@ -136,24 +136,6 @@ resolve_bundle() {
     RB_BUNDLE=""
   fi
   return 0
-}
-
-# legacy_config: print the usable legacy .pre-commit-config.yaml (the work
-# tree's, else the canonical clone's), read in place and never linked. Returns
-# 1 when there is none.
-legacy_config() {
-  local c canonical
-  if [[ -n $PGH_TOP && -f $PGH_TOP/.pre-commit-config.yaml && -r $PGH_TOP/.pre-commit-config.yaml ]]; then
-    printf '%s\n' "$PGH_TOP/.pre-commit-config.yaml"
-    return 0
-  fi
-  canonical=$(pgh_canonical) || return 1
-  c=$canonical/.pre-commit-config.yaml
-  if [[ -f $c && -r $c ]]; then
-    printf '%s\n' "$c"
-    return 0
-  fi
-  return 1
 }
 
 # hooks_unreachable: status 0 (and UR_VALUE/UR_ORIGIN set) when git does NOT run
@@ -278,7 +260,7 @@ cmd_status() {
   fi
 
   # Precedence: relocated > unreachable > broken > stale > present; with no
-  # bundle: unreachable, else legacy (usable legacy config), else missing.
+  # bundle: unreachable, else missing.
   if ((relocated)); then
     state=relocated
     code=$PGH_RELOCATED
@@ -296,9 +278,6 @@ cmd_status() {
       state=present
       code=$PGH_OK
     fi
-  elif legacy_config >/dev/null; then
-    state=legacy
-    code=$PGH_OK
   else
     state=missing
     code=$PGH_NO_BUNDLE
@@ -312,7 +291,7 @@ cmd_status() {
   fi
   # A linked worktree without a private bundle reinstalls through its private
   # command; everything else through the selected dir's `reinstall` file.
-  if [[ $state == missing || $state == legacy ]] && pgh_is_linked; then
+  if [[ $state == missing ]] && pgh_is_linked; then
     reinstall=$(pgh_reinstall "$(pgh_private_dir)")
   else
     reinstall=$(pgh_reinstall "$RB_DIR")
@@ -347,8 +326,7 @@ cmd_status() {
 # --- shared by list, explain and run ----------------------------------------
 
 # require_bundle <what>: resolve the bundle; return 0 when usable. A broken
-# bundle exits 12; no bundle returns 13 (the caller decides on the legacy
-# fallback).
+# bundle exits 12; no bundle returns 13.
 require_bundle() {
   local repo
   resolve_bundle
@@ -381,9 +359,6 @@ cmd_list() {
   fi
   need_repo
   if ! require_bundle; then
-    if legacy_config >/dev/null; then
-      die "list: this repository uses a legacy .pre-commit-config.yaml; stage metadata exists only in a hook bundle" "$PGH_NO_BUNDLE"
-    fi
     no_bundle_exit list
   fi
   if [[ -f $RB_BUNDLE/stages.json ]]; then
@@ -428,9 +403,6 @@ cmd_explain() {
   is_known_stage "$stage" || die "explain: unknown stage: $stage"
   need_repo
   if ! require_bundle; then
-    if legacy_config >/dev/null; then
-      die "explain: this repository uses a legacy .pre-commit-config.yaml; stage metadata exists only in a hook bundle" "$PGH_NO_BUNDLE"
-    fi
     no_bundle_exit explain
   fi
   local source_stage=$stage n
@@ -532,14 +504,6 @@ cmd_run() {
     cfg=$RB_BUNDLE/prek-config.json
     prek=$RB_BUNDLE/bin/prek
     repo=$(bundle_repo "$RB_BUNDLE")
-  elif cfg=$(legacy_config); then
-    # Legacy repo (dual mode, D1): the usable legacy config is read in place and
-    # never linked; prek comes from PATH.
-    prek=$(command -v prek 2>/dev/null) || prek=""
-    if [[ -z $prek ]]; then
-      die "legacy hook config $cfg found but prek is not on PATH" "$PGH_NO_BUNDLE"
-    fi
-    repo=$(pgh_repo_name) || repo=unknown
   else
     no_bundle_exit "$stage"
   fi
