@@ -7,10 +7,12 @@
 #   pg-hooks       the user-facing CLI (status, list, explain, run, fix)
 #   pre-commit-fix the second name for `pg-hooks fix` (tiny wrapper)
 #   pg-hooks-install  the installer behind install-pre-commit-hooks (internal)
+#   pg-hooks-drift-guard  the drift guard behind the hook-drift-guard check (internal)
 #   libDir         a directory holding pg-hooks-lib.bash, for the bundle's lib/
 #   stubTemplate   stub.sh.in (@STAGE@ placeholder), rendered by the installer
 #   checks.test-pg-hooks-lib, checks.test-pg-hooks-run, checks.test-pg-hooks,
-#   checks.test-pg-hooks-install, checks.test-pre-commit-fix
+#   checks.test-pg-hooks-install, checks.test-pre-commit-fix,
+#   checks.test-pg-hooks-drift-guard
 {
   pkgs,
   bashBuilders,
@@ -56,11 +58,17 @@ let
     stubTemplate = ./stub.sh.in;
   };
 
+  pg-hooks-drift-guard = pkgs.callPackage ./pg-hooks-drift-guard {
+    inherit (bashBuilders) mkBashScript;
+    inherit pkgs testSupport;
+  };
+
   allScripts = [
     pg-hooks-run
     pg-hooks
     pre-commit-fix
     pg-hooks-install
+    pg-hooks-drift-guard
   ];
 
   libDir = pkgs.runCommand "pg-hooks-lib-dir" { } ''
@@ -75,6 +83,7 @@ in
     pg-hooks
     pre-commit-fix
     pg-hooks-install
+    pg-hooks-drift-guard
     libDir
     ;
 
@@ -90,5 +99,6 @@ in
     test-pg-hooks = pg-hooks.check;
     test-pre-commit-fix = pre-commit-fix.check;
     test-pg-hooks-install = pg-hooks-install.check;
+    test-pg-hooks-drift-guard = pg-hooks-drift-guard.check;
   };
 }

@@ -401,13 +401,15 @@ is stale and the stale line names the private reinstall command.
 
 Each repo configures hooks in its `flake.nix` through `phillipgreenii.pre-commit`:
 
-| Option          | Meaning                                                                                                                                                             |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `extraHooks`    | Extra prek hooks. Each hook's `stages` decides where it runs.                                                                                                       |
-| `excludes`      | Path excludes (prek regexes).                                                                                                                                       |
-| `fixers`        | Extra fixers for `pg-hooks fix`: `{ name, command, mode, includes, excludes, after, before }`.                                                                      |
-| `stampPaths`    | Repo-relative paths hashed into the stamp in addition to `flake.lock` and `flake.nix`.                                                                              |
-| `bundle.enable` | Render the bundle and make `install-pre-commit-hooks` install it. Default `true` (ADR 0032); `false` installs no hooks (the installer prints a notice and exits 0). |
+| Option                 | Meaning                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `extraHooks`           | Extra prek hooks. Each hook's `stages` decides where it runs.                                                                                                       |
+| `excludes`             | Path excludes (prek regexes).                                                                                                                                       |
+| `fixers`               | Extra fixers for `pg-hooks fix`: `{ name, command, mode, includes, excludes, after, before }`.                                                                      |
+| `stampPaths`           | Repo-relative paths hashed into the stamp in addition to `flake.lock` and `flake.nix`.                                                                              |
+| `bundle.enable`        | Render the bundle and make `install-pre-commit-hooks` install it. Default `true` (ADR 0032); `false` installs no hooks (the installer prints a notice and exits 0). |
+| `driftGuard.enable`    | Contribute the `hook-drift-guard` flake check (see [Drift guard](#drift-guard)). Default `false`.                                                                   |
+| `driftGuard.allowlist` | Explicit exceptions to the drift guard: `{ path, categories, reason }`, all three mandatory.                                                                        |
 
 `fixers`: an entry without `after` or `before` is appended after the default fixers; with an anchor
 it is inserted directly after or before the named fixer (an anchor MAY name another added fixer).
@@ -434,6 +436,39 @@ check `pre-commit-hook-live` reports, for repos whose `pn-workspace.toml` entry 
 `install-pre-commit-hooks`: a missing pointer, a broken or dangling bundle, a relocated clone,
 unreachable hooks, and missing or foreign stubs.
 
+## Drift guard
+
+Two checks keep the removed hook machinery from coming back. The source-tree half is the
+`hook-drift-guard` flake check; the runtime half is the `hook-drift` rows of `pn doctor`. They are in
+addition to the bundle-state check `pre-commit-hook-live`.
+
+`hook-drift-guard` (enabled per repo with `phillipgreenii.pre-commit.driftGuard.enable`, default
+`false`, so a relock never reddens a consumer) runs `pg-hooks-drift-guard` over the repo's source and
+fails on any of these outside `driftGuard.allowlist`:
+
+| Category              | Finds                                                                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| `githooks-dir`        | a `.githooks` directory                                                                                  |
+| `githooks-ref`        | text that names `.githooks`                                                                              |
+| `relative-hooks-path` | text that sets `core.hooksPath` to a relative value (`.githooks`, `./x`, `../x`, `dir/x`)                |
+| `config-link`         | link code or text for the old generated config (`ln -s`, `Symlink`, `readlink`, "link") on a config line |
+| `removed-machinery`   | an identifier of the deleted shim, link and higher-scope `core.hooksPath` code (spec 7.5)                |
+
+The allowlist is data, never a loosened pattern: each entry is a path glob, the categories it allows
+(or `*`) and a reason, so an exception to `config-link` in one file never hides a `.githooks` in it.
+An entry that matches nothing is noted on stderr and is not a failure. A consumer adopts the guard by
+setting `driftGuard.enable = true` and listing its own intentional hits; repo-base's list is
+`nix/hook-drift-allowlist.nix`.
+
+`pn doctor` check `hook-drift` audits every workspace repo that is a git work tree (declared or not)
+and its linked worktrees:
+
+| Row                                 | Severity | Condition                                                                                           |
+| ----------------------------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `.githooks` exists                  | error    | the removed shim's hook directory is in a checkout                                                  |
+| relative `core.hooksPath`           | error    | any scope, including a value a later absolute one shadows                                           |
+| hand-made `.pre-commit-config.yaml` | warning  | a regular file, or a symlink that does not point into `/nix/store` (the old generated link is kept) |
+
 ## Operator runbook
 
 These steps are for the operator. Agents MUST NOT run them.
@@ -457,4 +492,4 @@ code.
   `bundle.enable = true` or their `.gitignore` lines before that relock.
 - The pn Go cleanup (the githooks-shim doctor check and the remaining link code) is tracked as
   `pg2-o1fle`.
-- Not available yet: the drift guard, and the `post-land` entry point (deferred, `pg2-na2nr`).
+- Not available yet: the `post-land` entry point (deferred, `pg2-na2nr`). Consumer repos other than repo-base have not yet enabled `driftGuard`.

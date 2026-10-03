@@ -280,6 +280,22 @@ func changedHookOverrides(ovs []HookOverride) []string {
 	return out
 }
 
+// absoluteConfigOrigin names a `git config --show-origin` origin ("file:<path>")
+// by its absolute path. git reports a repository config file relative
+// (".git/config"), so a local or worktree scope is rebuilt from the git context.
+func absoluteConfigOrigin(scope, origin string, c hookGitContext) string {
+	origin = strings.TrimPrefix(origin, "file:")
+	if !filepath.IsAbs(origin) {
+		switch scope {
+		case "local":
+			origin = filepath.Join(c.Common, "config")
+		case "worktree":
+			origin = filepath.Join(c.GitDir, "config.worktree")
+		}
+	}
+	return origin
+}
+
 // hooksUnreachable reports whether git would NOT run hooks from
 // <common-dir>/hooks because a core.hooksPath points elsewhere. A value that
 // resolves to the common hooks dir is fine; a global or system one is fine too
@@ -294,17 +310,8 @@ func hooksUnreachable(dir string, c hookGitContext) (bool, string, string) {
 	if len(parts) != 3 || parts[2] == "" {
 		return false, "", ""
 	}
-	scope, origin, value := parts[0], strings.TrimPrefix(parts[1], "file:"), parts[2]
-	// git reports a repository config file relative (".git/config"); name it by
-	// its absolute path.
-	if !filepath.IsAbs(origin) {
-		switch scope {
-		case "local":
-			origin = filepath.Join(c.Common, "config")
-		case "worktree":
-			origin = filepath.Join(c.GitDir, "config.worktree")
-		}
-	}
+	scope, value := parts[0], parts[2]
+	origin := absoluteConfigOrigin(scope, parts[1], c)
 	var resolved string
 	switch {
 	case filepath.IsAbs(value):

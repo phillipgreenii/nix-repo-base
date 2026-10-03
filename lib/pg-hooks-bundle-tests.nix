@@ -166,6 +166,54 @@ in
     ];
   };
 
+  "test the drift guard check exists only when driftGuard.enable is set" = {
+    expr = {
+      default = defaulted.checks.${system} ? hook-drift-guard;
+      enabled =
+        (evalFixture {
+          precommit.driftGuard.enable = true;
+        }).checks.${system}
+          ? hook-drift-guard;
+    };
+    expected = {
+      default = false;
+      enabled = true;
+    };
+  };
+
+  "test a drift guard allowlist entry without a reason fails evaluation" =
+    let
+      withEntry =
+        entry:
+        (evalFixture {
+          precommit.driftGuard = {
+            enable = true;
+            allowlist = [ entry ];
+          };
+        }).checks.${system}.hook-drift-guard;
+      good = {
+        path = "docs/*";
+        categories = [ "config-link" ];
+        reason = "frozen docs";
+      };
+    in
+    {
+      expr = {
+        control = evaluates (withEntry good);
+        emptyReason = evaluates (withEntry (good // { reason = ""; }));
+        tabInReason = evaluates (withEntry (good // { reason = "a\tb"; }));
+        noCategories = evaluates (withEntry (good // { categories = [ ]; }));
+        unknownCategory = evaluates (withEntry (good // { categories = [ "everything" ]; }));
+      };
+      expected = {
+        control = true;
+        emptyReason = false;
+        tabInReason = false;
+        noCategories = false;
+        unknownCategory = false;
+      };
+    };
+
   "test a fixer attached to a prek stage fails evaluation" = {
     expr = {
       control = evaluates (bundleOf (withFixers [ mine ]));

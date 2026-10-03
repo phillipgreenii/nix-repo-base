@@ -72,7 +72,7 @@
       # docs/superpowers/specs/2026-10-01-per-clone-hook-bundle-design.md,
       # section 7.2 step 2): repo-base is cut over from the commit-time shim
       # experiment (pg2-z19ad, ADR 0029, removed by ADR 0032) to the bundle.
-      # `.githooks/` is deleted; `nix run .#install-pre-commit-hooks` in the
+      # The shim's committed hook directory is deleted; `nix run .#install-pre-commit-hooks` in the
       # canonical clone roots the bundle (the operator then points
       # core.hooksPath at the absolute <repo>/.git/hooks). `bundle.enable` now
       # defaults to true; the explicit line is kept as documentation.
@@ -82,6 +82,12 @@
           "flake-modules/pre-commit.nix"
           "modules/pg-git-check-identity"
         ];
+        # Drift guard (plan Task 22): fails on a hook-machinery regression outside
+        # the explicit, reasoned allowlist.
+        driftGuard = {
+          enable = true;
+          allowlist = import ./nix/hook-drift-allowlist.nix;
+        };
       };
 
       # prek rewiring (design spec

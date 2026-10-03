@@ -54,6 +54,35 @@ let
       };
     };
   };
+
+  # One drift-guard allowlist entry (pg-hooks-drift-guard): every field is
+  # mandatory, so an exception always says where, what and why.
+  driftCategories = [
+    "githooks-dir"
+    "githooks-ref"
+    "relative-hooks-path"
+    "config-link"
+    "removed-machinery"
+  ];
+  driftAllowType = lib.types.submodule {
+    options = {
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          Glob matched against the repo-relative path (`case` pattern: `*` also
+          crosses `/`, so `docs/frozen/*` covers a whole tree).
+        '';
+      };
+      categories = lib.mkOption {
+        type = lib.types.nonEmptyListOf (lib.types.enum ([ "*" ] ++ driftCategories));
+        description = "Categories the entry allows in the matching files; `*` allows all.";
+      };
+      reason = lib.mkOption {
+        type = lib.types.strMatching "[^\t\n]+";
+        description = "Why the hit is intentional (one line, no tab).";
+      };
+    };
+  };
 in
 {
   imports = [ (import ./treefmt.nix producerInputs) ];
@@ -150,6 +179,42 @@ in
         `pg-hooks-bundle` package is not exposed, the devShell installs nothing, and
         `install-pre-commit-hooks` prints a notice and exits 0. The derivation stays
         available as `legacyPackages.<system>.pgHooksBundle` either way.
+      '';
+    };
+  };
+
+  options.phillipgreenii.pre-commit.driftGuard = {
+    enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Contribute the `hook-drift-guard` flake check (plan Task 22, design spec
+        section 8 "drift guard"): it fails when the repo's source contains a
+        `.githooks` directory, text naming `.githooks`, a relative `core.hooksPath`,
+        link code or text for the old generated `.pre-commit-config.yaml`, or an
+        identifier of the deleted shim and link code, anywhere outside
+        `driftGuard.allowlist`. Opt-in (default `false`) so relocking onto this
+        module never turns a consumer's checks red; a consumer enables it once its
+        allowlist is written.
+      '';
+    };
+    allowlist = lib.mkOption {
+      type = lib.types.listOf driftAllowType;
+      default = [ ];
+      example = lib.literalExpression ''
+        [
+          {
+            path = "docs/adr/0016-*";
+            categories = [ "config-link" ];
+            reason = "ADR text records the old symlink";
+          }
+        ]
+      '';
+      description = ''
+        Explicit exceptions to the drift guard, each a path glob, the categories it
+        allows (`githooks-dir`, `githooks-ref`, `relative-hooks-path`, `config-link`,
+        `removed-machinery`, or `*`) and a reason. The guard's patterns are never
+        loosened; an exception is always data here. Definitions concatenate.
       '';
     };
   };
@@ -295,7 +360,7 @@ in
           #
           # HK-2 STANDS (ADR 0032): the commit-time shim experiment that tested a
           # nix-invoking git hook (ADR 0029, bead pg2-z19ad) was abandoned, and its
-          # `commitTimeShim` option removed. No `extraHooks` entry may invoke nix.
+          # shim option removed. No `extraHooks` entry may invoke nix.
         }
         // resolvedExtraHooks;
       };
@@ -325,6 +390,26 @@ in
           throw "phillipgreenii.pre-commit: .gitignore MUST contain a line '.pre-commit-config.yaml'. The git-hooks.nix config is a generated /nix/store symlink and must not be committed (ADR 0016 in phillipg-nix-repo-base)."
         else
           pkgs.runCommand "pre-commit-config-gitignored" { } "touch $out";
+
+      # ----- Hook drift guard (plan Task 22, bead pg2-pla9d.25) -----
+      # Opt-in: see `driftGuard.enable`. The allowlist is rendered to the guard's
+      # tab-separated format and kept OUT of the scanned tree (it is passed by path),
+      # so the reasons it records never trip the patterns themselves.
+      driftCfg = topLevelCfg.driftGuard;
+      driftAllowlistTsv = lib.concatMapStrings (
+        e: "${e.path}\t${lib.concatStringsSep "," e.categories}\t${e.reason}\n"
+      ) driftCfg.allowlist;
+      hookDriftGuardCheck =
+        pkgs.runCommand "hook-drift-guard"
+          {
+            nativeBuildInputs = [ pgHooksScripts.pg-hooks-drift-guard.script ];
+            inherit driftAllowlistTsv;
+            passAsFile = [ "driftAllowlistTsv" ];
+          }
+          ''
+            pg-hooks-drift-guard --root ${topLevelCfg.src} --allowlist "$driftAllowlistTsvPath"
+            touch $out
+          '';
 
       # ----- Per-clone hook bundle (spec 4.2, 5.1, 5.2; bead pg2-pla9d.7) -----
 
@@ -529,6 +614,9 @@ in
       checks = {
         pre-commit = guard preCommit;
         pre-commit-config-gitignored = preCommitConfigGitignoredCheck;
+      }
+      // lib.optionalAttrs driftCfg.enable {
+        hook-drift-guard = hookDriftGuardCheck;
       };
       packages = {
         install-pre-commit-hooks = guard (
