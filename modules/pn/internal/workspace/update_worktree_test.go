@@ -103,6 +103,44 @@ func TestUpdateViaWorktree_HappyPath_CleanMain(t *testing.T) {
 	}
 }
 
+// TestUpdateViaWorktree_LinksNoHookConfigIntoWorktree pins ADR 0032: the update
+// worktree reaches the clone's shared hook bundle through the stubs in the
+// common hooks dir, so nothing is written into the working tree, even when the
+// canonical clone still holds an old .pre-commit-config.yaml symlink.
+func TestUpdateViaWorktree_LinksNoHookConfigIntoWorktree(t *testing.T) {
+	updateRunStampFn = func() string { return "TEST" }
+	branch := "pn-update/TEST"
+	root, foo, wt, f := wtUpdateFixture(t)
+	mustMkdir(t, foo)
+	target := filepath.Join(t.TempDir(), "old-generated-config.yaml")
+	writeFile(t, target, "repos: []\n")
+	if err := os.Symlink(target, filepath.Join(foo, ".pre-commit-config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	scriptThroughRebase(f, foo, wt, branch)
+	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "merge", "--ff-only", branch}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "worktree", "remove", wt}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", foo, "branch", "-d", branch}, exec.Result{}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{ULLibDir: "/nix/store/x/lib/scripts"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, ".pre-commit-config.yaml")); err == nil {
+		t.Error("the update worktree must not get a .pre-commit-config.yaml symlink")
+	}
+	if strings.Contains(out.String(), ".pre-commit-config.yaml") {
+		t.Errorf("update output must not mention linking a hook config; got %q", out.String())
+	}
+}
+
 // TestUpdateViaWorktree_StopsFsmonitorBeforeWorktreeRemove asserts the update
 // worktree's per-worktree fsmonitor daemon is stopped immediately before the
 // worktree is removed (bead pg2-fnjfs).
@@ -971,84 +1009,5 @@ func TestUpdateViaWorktree_RefusesInsideSet(t *testing.T) {
 	}
 	if err := w2.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true, ULLibDir: "/x"}); err != nil {
 		t.Fatalf("--in-place inside set should work: %v", err)
-	}
-}
-
-// linkTestRepos returns a canonical clone (a real git repo whose
-// .pre-commit-config.yaml is a symlink, like the nix-generated one) and a
-// linked worktree of it, both real.
-func linkTestRepos(t *testing.T) (canonical, wt, target string) {
-	t.Helper()
-	root := t.TempDir()
-	canonical = filepath.Join(root, "canon")
-	initRealRepo(t, canonical)
-	writeFile(t, filepath.Join(canonical, "flake.lock"), "{}\n")
-	writeFile(t, filepath.Join(canonical, "flake.nix"), "{}\n")
-	runGitT(t, canonical, "add", "flake.lock", "flake.nix")
-	runGitT(t, canonical, "commit", "-q", "-m", "init")
-	target = filepath.Join(root, "generated-config.yaml")
-	writeFile(t, target, "repos: []\n")
-	if err := os.Symlink(target, filepath.Join(canonical, preCommitConfigName)); err != nil {
-		t.Fatal(err)
-	}
-	wt = filepath.Join(root, "wt")
-	runGitT(t, canonical, "worktree", "add", "-q", "-b", "pn-update/T", wt, "main")
-	return canonical, wt, target
-}
-
-func TestLinkPreCommitConfigIfLegacy_LegacyLinks(t *testing.T) {
-	canonical, wt, target := linkTestRepos(t)
-	if err := linkPreCommitConfigIfLegacy(canonical, wt); err != nil {
-		t.Fatalf("linkPreCommitConfigIfLegacy: %v", err)
-	}
-	got, err := os.Readlink(filepath.Join(wt, preCommitConfigName))
-	if err != nil || got != target {
-		t.Fatalf("legacy worktree must get the canonical symlink target; got %q err=%v", got, err)
-	}
-}
-
-func TestLinkPreCommitConfigIfLegacy_BundleDoesNotLink(t *testing.T) {
-	canonical, wt, _ := linkTestRepos(t)
-	writeFakeBundle(t, canonical, hbBundleOpts{})
-	if state, _, err := ReadHookBundleState(wt); err != nil || state != HookBundlePresent {
-		t.Fatalf("precondition: worktree must read the shared bundle as present; state=%q err=%v", state, err)
-	}
-	if err := linkPreCommitConfigIfLegacy(canonical, wt); err != nil {
-		t.Fatalf("linkPreCommitConfigIfLegacy: %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(wt, preCommitConfigName)); err == nil {
-		t.Error("a worktree of a bundle repo must not get a config symlink")
-	}
-}
-
-func TestLinkPreCommitConfigIfLegacy_StaleBundleDoesNotLink(t *testing.T) {
-	canonical, wt, _ := linkTestRepos(t)
-	writeFakeBundle(t, canonical, hbBundleOpts{Stamp: "not-the-current-stamp"})
-	if state, _, err := ReadHookBundleState(wt); err != nil || state != HookBundleStale {
-		t.Fatalf("precondition: want stale, got %q err=%v", state, err)
-	}
-	if err := linkPreCommitConfigIfLegacy(canonical, wt); err != nil {
-		t.Fatalf("linkPreCommitConfigIfLegacy: %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(wt, preCommitConfigName)); err == nil {
-		t.Error("a worktree whose bundle is stale is still a bundle repo: no link")
-	}
-}
-
-func TestLinkPreCommitConfigIfLegacy_UnreadableStateKeepsOldBehavior(t *testing.T) {
-	// Not a git work tree: the state cannot be read, so the pre-bundle link
-	// (a no-op without a canonical symlink, a link with one) is kept.
-	canonical := t.TempDir()
-	worktree := t.TempDir()
-	target := filepath.Join(t.TempDir(), "cfg.yaml")
-	writeFile(t, target, "x\n")
-	if err := os.Symlink(target, filepath.Join(canonical, preCommitConfigName)); err != nil {
-		t.Fatal(err)
-	}
-	if err := linkPreCommitConfigIfLegacy(canonical, worktree); err != nil {
-		t.Fatalf("linkPreCommitConfigIfLegacy: %v", err)
-	}
-	if got, err := os.Readlink(filepath.Join(worktree, preCommitConfigName)); err != nil || got != target {
-		t.Fatalf("unreadable state must keep the legacy link; got %q err=%v", got, err)
 	}
 }

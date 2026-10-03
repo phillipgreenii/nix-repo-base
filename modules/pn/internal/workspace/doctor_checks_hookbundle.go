@@ -36,20 +36,13 @@ func (ws *Workspace) installHookDeclared(repo string) bool {
 	return false
 }
 
-// bundleHookFindings audits one DECLARED repo's hook bundle. ok is false when
-// the repo is not in bundle mode, so the caller falls back to the legacy
-// pre-commit-hook-live audit. Bundle mode means the checkout holds a bundle
-// pointer (even an invalid one), or it has neither a pointer nor a legacy .pre-commit-config.yaml
-// (declared but never installed). A repo with no pointer and a legacy config
-// (even a dangling one) is unconverted; so is the shim experiment's repo, whose
-// core.hooksPath=.githooks reads as unreachable but is covered by
-// git-hooks-shim-wired.
+// bundleHookFindings audits one DECLARED repo's hook bundle. ok is false only
+// when repoDir is not a git work tree (nothing to audit). A checkout with no
+// bundle pointer (declared but never installed, or holding only an old
+// .pre-commit-config.yaml symlink) is reported as having no hook bundle.
 func (ws *Workspace) bundleHookFindings(repo, repoDir string) ([]Finding, bool) {
 	state, info, err := ReadHookBundleState(repoDir)
 	if err != nil {
-		return nil, false
-	}
-	if info.Gen == "" && info.BrokenReason == "" && preCommitConfigDeclared(repoDir) {
 		return nil, false
 	}
 	c, err := readHookGitContext(repoDir)

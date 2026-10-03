@@ -166,8 +166,8 @@ func TestCheckPreCommitHookLive_Bundle_InvalidPointerIsError(t *testing.T) {
 	ws, dir := hbDoctorWorkspace(t, true)
 	pg := hbGoodInstall(t, dir)
 	writeFile(t, filepath.Join(pg, "current"), "not-a-gen\n")
-	// Even with a legacy config the invalid pointer puts the repo in bundle mode.
-	writeFile(t, filepath.Join(dir, preCommitConfigName), "repos: []\n")
+	// An old config alongside the invalid pointer changes nothing.
+	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
 	hbWantError(t, hbRunLive(ws), "broken", "install-pre-commit-hooks")
 }
 
@@ -211,41 +211,6 @@ func TestCheckPreCommitHookLive_Bundle_UndeclaredRepoHasNoFinding(t *testing.T) 
 	}
 }
 
-func TestCheckPreCommitHookLive_Bundle_LegacyRepoKeepsLegacyChecks(t *testing.T) {
-	// Declared, but unconverted: a legacy config and no pointer. The legacy
-	// audit applies (a Skipped finding for the missing hook), not the bundle one.
-	ws, dir := hbDoctorWorkspace(t, true)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), "repos: []\n")
-	fs := hbRunLive(ws)
-	if !hasSkippedFinding(t, fs, "pre-commit-hook-live", "repo") {
-		t.Fatalf("a legacy repo must keep the legacy Skipped finding; got %+v", fs)
-	}
-	if strings.Contains(fs[0].Message, "pg-hooks:") {
-		t.Errorf("legacy finding must not use the bundle wording: %q", fs[0].Message)
-	}
-
-	// With its hook live the legacy repo is clean, as before.
-	hbWriteStub(t, dir, "pre-commit", "#!/bin/sh\nexec prek hook-impl\n", 0o755)
-	if fs := hbRunLive(ws); len(fs) != 0 {
-		t.Fatalf("a legacy repo with a live hook must be clean; got %+v", fs)
-	}
-}
-
-func TestCheckPreCommitHookLive_Bundle_ShimRepoKeepsLegacyChecks(t *testing.T) {
-	// The shim experiment (repo-base today): relative core.hooksPath=.githooks
-	// reads as unreachable but there is no pointer and a legacy config, so the
-	// bundle audit must not fire (git-hooks-shim-wired covers it).
-	ws, dir := hbDoctorWorkspace(t, true)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), "repos: []\n")
-	mustMkdir(t, filepath.Join(dir, shimHooksDirName))
-	runGitT(t, dir, "config", "--local", "core.hooksPath", shimHooksDirName)
-	for _, f := range hbRunLive(ws) {
-		if strings.Contains(f.Message, "pg-hooks:") {
-			t.Errorf("shim repo must not get bundle findings: %+v", f)
-		}
-	}
-}
-
 func TestCheckRuffPin_ReadsBundlePrekConfig(t *testing.T) {
 	ws, dir := hbDoctorWorkspace(t, true)
 	pg := hbGoodInstall(t, dir)
@@ -264,12 +229,4 @@ func TestCheckRuffPin_ReadsBundlePrekConfig(t *testing.T) {
 	if fs := ws.checkRuffPin(context.Background(), &doctorEnv{ws: ws, mode: "primary"}); len(fs) != 0 {
 		t.Fatalf("a pin matching the bundle's ruff must be clean; got %+v", fs)
 	}
-}
-
-func TestCheckRuffPin_LegacyConfigWhenNoBundle(t *testing.T) {
-	ws, dir := hbDoctorWorkspace(t, true)
-	writeRuffPackage(t, dir, "core", "ruff==0.15.13")
-	writeFile(t, filepath.Join(dir, preCommitConfigName), ruffHookConfig("0.15.14"))
-	fs := ws.checkRuffPin(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
-	findingByID(t, fs, "ruff-pin-drift")
 }

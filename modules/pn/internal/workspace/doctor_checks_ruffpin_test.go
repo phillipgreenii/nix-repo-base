@@ -72,6 +72,14 @@ func ruffPinWorkspace(t *testing.T) (*Workspace, string) {
 	return ws, dir
 }
 
+// writeRuffHookConfig installs a fake hook bundle in dir whose prek-config.json
+// is content: the config the ruff hooks run (ADR 0032).
+func writeRuffHookConfig(t *testing.T, dir, content string) {
+	t.Helper()
+	pg := writeFakeBundle(t, dir, hbBundleOpts{})
+	writeFile(t, filepath.Join(pg, "gen-1", "bundle", "prek-config.json"), content)
+}
+
 func writeRuffPackage(t *testing.T, repoDir, pkg, requirement string) {
 	t.Helper()
 	pkgDir := filepath.Join(repoDir, "packages", pkg)
@@ -85,7 +93,7 @@ func writeRuffPackage(t *testing.T, repoDir, pkg, requirement string) {
 // (bd pg2-671gg): both packages exact-pinned to the nixpkgs ruff the hooks run.
 func TestCheckRuffPin_MatchingExactPinIsClean(t *testing.T) {
 	ws, dir := ruffPinWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), ruffHookConfig("0.15.14"))
+	writeRuffHookConfig(t, dir, ruffHookConfig("0.15.14"))
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff==0.15.14")
 	writeRuffPackage(t, dir, "work-activity-tracker", "ruff==0.15.14")
 
@@ -98,7 +106,7 @@ func TestCheckRuffPin_MatchingExactPinIsClean(t *testing.T) {
 // next nixpkgs ruff bump moves the hook and leaves the pin behind.
 func TestCheckRuffPin_StalePinIsError(t *testing.T) {
 	ws, dir := ruffPinWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), ruffHookConfig("0.16.4"))
+	writeRuffHookConfig(t, dir, ruffHookConfig("0.16.4"))
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff==0.15.14")
 
 	fs := ws.checkRuffPin(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
@@ -125,7 +133,7 @@ func TestCheckRuffPin_FloatingSpecIsWarning(t *testing.T) {
 	for _, requirement := range []string{"ruff>=0.8.0", "ruff", "ruff~=0.15.0", "ruff==0.15.*"} {
 		t.Run(requirement, func(t *testing.T) {
 			ws, dir := ruffPinWorkspace(t)
-			writeFile(t, filepath.Join(dir, preCommitConfigName), ruffHookConfig("0.15.14"))
+			writeRuffHookConfig(t, dir, ruffHookConfig("0.15.14"))
 			writeRuffPackage(t, dir, "pd-schedule-manager", requirement)
 
 			fs := ws.checkRuffPin(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
@@ -140,11 +148,14 @@ func TestCheckRuffPin_FloatingSpecIsWarning(t *testing.T) {
 }
 
 // TestCheckRuffPin_AbsentConfigSkips is the degradation requirement: the
-// generated config is gitignored (ADR 0016) and therefore missing in every fresh
-// clone and worktree. That must SKIP, never fail.
+// bundle's prek-config.json exists only once the hooks are installed, so it is
+// missing in every fresh clone and worktree. That must SKIP, never fail. An old
+// .pre-commit-config.yaml left in the clone is NOT read (R4): the nixpkgs side
+// is still unknown.
 func TestCheckRuffPin_AbsentConfigSkips(t *testing.T) {
 	ws, dir := ruffPinWorkspace(t)
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff==0.15.14")
+	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), ruffHookConfig("0.16.4"))
 
 	fs := ws.checkRuffPin(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
 	if len(fs) != 1 {
@@ -174,7 +185,7 @@ func TestCheckRuffPin_AbsentConfigSkips(t *testing.T) {
 // dependency is outside the invariant, config present or not.
 func TestCheckRuffPin_NoRuffDependencyIsSilent(t *testing.T) {
 	ws, dir := ruffPinWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), ruffHookConfig("0.15.14"))
+	writeRuffHookConfig(t, dir, ruffHookConfig("0.15.14"))
 	pkgDir := filepath.Join(dir, "packages", "plain")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -192,7 +203,7 @@ func TestCheckRuffPin_NoRuffDependencyIsSilent(t *testing.T) {
 // hook).
 func TestCheckRuffPin_NoRuffHookIsSilent(t *testing.T) {
 	ws, dir := ruffPinWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName),
+	writeRuffHookConfig(t, dir,
 		`{"repos":[{"hooks":[{"entry":"/nix/store/aaaa-treefmt-1.2.3/bin/treefmt","id":"treefmt"}]}]}`)
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff>=0.8.0")
 
@@ -205,7 +216,7 @@ func TestCheckRuffPin_NoRuffHookIsSilent(t *testing.T) {
 // config leaves no single pin target, so warn rather than pick one.
 func TestCheckRuffPin_AmbiguousHookVersionsWarn(t *testing.T) {
 	ws, dir := ruffPinWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName),
+	writeRuffHookConfig(t, dir,
 		ruffHookConfig("0.15.14")+ruffHookConfig("0.16.4"))
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff==0.15.14")
 
@@ -225,7 +236,7 @@ func TestCheckRuffPin_AmbiguousHookVersionsWarn(t *testing.T) {
 // proves the real pin was still read.
 func TestCheckRuffPin_IgnoresPrunedTreesAndComments(t *testing.T) {
 	ws, dir := ruffPinWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), ruffHookConfig("0.15.14"))
+	writeRuffHookConfig(t, dir, ruffHookConfig("0.15.14"))
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff==0.15.14")
 
 	for _, pruned := range []string{".venv", "node_modules", ".git"} {

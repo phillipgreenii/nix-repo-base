@@ -16,8 +16,8 @@ import (
 
 // checkRuffPin guards the single-ruff-version invariant for uv Python packages
 // (bd pg2-671gg): a package's `ruff` dependency MUST be exact-pinned to the SAME
-// version as the nixpkgs ruff that the repo's generated
-// `.pre-commit-config.yaml` `ruff` / `ruff-format` hooks execute.
+// version as the nixpkgs ruff that the repo's hook bundle `ruff` /
+// `ruff-format` hooks (prek-config.json) execute.
 //
 // Two independently-pinned toolchains formatted the same files: the app's uv
 // ruff (resolved from a `>=` spec, so it floated to the newest release on every
@@ -35,10 +35,10 @@ import (
 //     the nixpkgs ruff the hooks run.
 //   - ruff-pin-floating (WARN) — not exact-pinned (`>=`, `~=`, unbounded, or a
 //     multi-clause range), so a relock can float it again.
-//   - ruff-pin (SKIP)          — the generated config is absent, so the nixpkgs
+//   - ruff-pin (SKIP)          — the hook bundle config is absent, so the nixpkgs
 //     side is unknown and nothing is asserted.
 //
-// The check is READ-ONLY: it reads pyproject.toml files and the generated
+// The check is READ-ONLY: it reads pyproject.toml files and the bundle
 // config, and runs no commands. It is deliberately NOT auto-fixable — the remedy
 // is a pin edit PLUS a `uv lock` relock PLUS (across a formatter boundary) a
 // reformat of the affected sources, which is a reviewable change, not a
@@ -56,7 +56,7 @@ func (ws *Workspace) checkRuffPin(_ context.Context, _ *doctorEnv) []Finding {
 }
 
 // ruffPinFindings audits one repo. It returns nothing when the repo declares no
-// ruff dependency (the invariant does not apply) or when its generated config
+// ruff dependency (the invariant does not apply) or when its bundle config
 // runs no nixpkgs ruff hook (there is no second toolchain to unify).
 func (ws *Workspace) ruffPinFindings(repo, repoDir string) []Finding {
 	pins := findRuffRequirements(repoDir)
@@ -67,20 +67,20 @@ func (ws *Workspace) ruffPinFindings(repo, repoDir string) []Finding {
 	versions, status := nixpkgsRuffVersions(repoDir)
 	switch status {
 	case ruffConfigAbsent:
-		// The generated config is a git-hooks.nix symlink into /nix/store; it is
-		// gitignored (ADR 0016) and therefore missing in every fresh clone and
-		// worktree until the hooks are installed. Absent config means the nixpkgs
-		// side is UNKNOWN, so skip loudly rather than fail falsely.
+		// The bundle's prek-config.json exists only once the hooks are installed
+		// (ADR 0032), so it is missing in a fresh clone until then. An absent
+		// config means the nixpkgs side is UNKNOWN, so skip loudly rather than
+		// fail falsely.
 		return []Finding{{
 			CheckID: "ruff-pin", Repo: repo, Severity: SevError, Skipped: true,
 			// renderHuman prints Manual only for "[manual]"-tagged findings, so a
 			// skipped finding's hint would be invisible outside --json; the remedy
 			// is repeated in the message for that reason.
 			Message: fmt.Sprintf(
-				"repo %q declares a ruff dependency but %s is absent (generated, gitignored); nixpkgs ruff version unknown, pin not verified — run `nix run .#install-pre-commit-hooks` and re-run doctor",
-				repo, preCommitConfigName,
+				"repo %q declares a ruff dependency but %s is absent (no hook bundle installed); nixpkgs ruff version unknown, pin not verified — run `nix run .#install-pre-commit-hooks` and re-run doctor",
+				repo, hookPrekConfigLabel,
 			),
-			Manual: fmt.Sprintf("generate it, then re-run doctor:  (cd %s && nix run .#install-pre-commit-hooks)", repoDir),
+			Manual: fmt.Sprintf("install the bundle, then re-run doctor:  (cd %s && nix run .#install-pre-commit-hooks)", repoDir),
 		}}
 	case ruffConfigNoRuffHook:
 		return nil // config present, no nixpkgs ruff hook — only one toolchain
@@ -91,7 +91,7 @@ func (ws *Workspace) ruffPinFindings(repo, repoDir string) []Finding {
 			CheckID: "ruff-pin", Repo: repo, Severity: SevWarning,
 			Message: fmt.Sprintf(
 				"repo %q: %s runs %d different nixpkgs ruff versions (%s); cannot assert a single pin",
-				repo, preCommitConfigName, len(versions), strings.Join(versions, ", "),
+				repo, hookPrekConfigLabel, len(versions), strings.Join(versions, ", "),
 			),
 		}}
 	}
@@ -104,8 +104,8 @@ func (ws *Workspace) ruffPinFindings(repo, repoDir string) []Finding {
 			out = append(out, Finding{
 				CheckID: "ruff-pin-floating", Repo: repo, Severity: SevWarning,
 				Message: fmt.Sprintf(
-					"%s declares ruff as %q; it MUST be exact-pinned (\"ruff==%s\") to the nixpkgs ruff the %s hooks run, or a relock can float it across a formatter-behaviour boundary",
-					p.file, p.requirement, want, preCommitConfigName,
+					"%s declares ruff as %q; it MUST be exact-pinned (\"ruff==%s\") to the nixpkgs ruff that %s runs, or a relock can float it across a formatter-behaviour boundary",
+					p.file, p.requirement, want, hookPrekConfigLabel,
 				),
 				Manual: ruffPinManual(repoDir, p.file, want),
 			})
@@ -113,8 +113,8 @@ func (ws *Workspace) ruffPinFindings(repo, repoDir string) []Finding {
 			out = append(out, Finding{
 				CheckID: "ruff-pin-drift", Repo: repo, Severity: SevError,
 				Message: fmt.Sprintf(
-					"%s pins ruff==%s but the %s hooks run nixpkgs ruff %s; the app and its pre-commit checks would format differently",
-					p.file, p.version, preCommitConfigName, want,
+					"%s pins ruff==%s but %s runs nixpkgs ruff %s; the app and its pre-commit checks would format differently",
+					p.file, p.version, hookPrekConfigLabel, want,
 				),
 				Manual: ruffPinManual(repoDir, p.file, want),
 			})
@@ -130,10 +130,9 @@ func ruffPinManual(repoDir, relFile, want string) string {
 	return fmt.Sprintf("set \"ruff==%s\" in %s, then relock:  (cd %s && uv lock)", want, relFile, pkgDir)
 }
 
-// preCommitConfigName is the generated git-hooks.nix config at a repo root.
-// pre-commit resolves it from the git root, not from the flake directory, so it
-// is always looked up there.
-const preCommitConfigName = ".pre-commit-config.yaml"
+// hookPrekConfigLabel names the config the ruff hooks run in messages: the
+// live hook bundle's prek config (ADR 0032).
+const hookPrekConfigLabel = "the hook bundle's prek-config.json"
 
 type ruffConfigStatus int
 
@@ -151,9 +150,9 @@ const (
 var nixStoreRuffRe = regexp.MustCompile(`/nix/store/[0-9a-z]+-ruff-([0-9][^/"'\s]*)/bin/ruff`)
 
 // hookConfigPath is the prek config the repo's hooks run: the live hook
-// bundle's prek-config.json when the checkout has one (per-clone hook bundle,
-// design 7.4), else the legacy generated .pre-commit-config.yaml. Both carry
-// the hook `entry` store paths, so the ruff version is read the same way.
+// bundle's prek-config.json (per-clone hook bundle, design 7.4), or "" when the
+// checkout has no usable bundle. It carries the hook `entry` store paths, so the
+// ruff version is read from it.
 func hookConfigPath(repoDir string) string {
 	if _, info, err := ReadHookBundleState(repoDir); err == nil && info.Bundle != "" {
 		p := filepath.Join(info.Bundle, "prek-config.json")
@@ -161,15 +160,18 @@ func hookConfigPath(repoDir string) string {
 			return p
 		}
 	}
-	return filepath.Join(repoDir, preCommitConfigName)
+	return ""
 }
 
 // nixpkgsRuffVersions returns the sorted distinct nixpkgs ruff versions the
-// repo's generated pre-commit config executes. The file is a symlink into
-// /nix/store, so an unreadable path (never generated, or a dangling symlink
-// after a GC) is reported as absent rather than as a mismatch.
+// repo's hook bundle executes. A checkout with no usable bundle, or an
+// unreadable config, is reported as absent rather than as a mismatch.
 func nixpkgsRuffVersions(repoDir string) ([]string, ruffConfigStatus) {
-	data, err := os.ReadFile(hookConfigPath(repoDir))
+	path := hookConfigPath(repoDir)
+	if path == "" {
+		return nil, ruffConfigAbsent
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, ruffConfigAbsent
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -92,54 +91,15 @@ func validateAllHooks(cfg *WorkspaceConfig) error {
 }
 
 // installPreCommitHooksAttr is the {nix_run} attr name for the flake output
-// that (re)writes a repo's .pre-commit-config.yaml as a /nix/store symlink
-// and registers the git hook (ADR-0016). It is the sole {nix_run} hook
-// declared on every workspace repo (pn-workspace.toml's
-// post-clone/-rebase/-update/-upgrade entries), and realizing it is the
-// dominant recurring cost the idempotency gate below targets — each
-// invocation is a `nix run --override-input …`, and --override-input
-// defeats nix's flake-eval cache, forcing a full re-evaluation of the whole
-// flake graph even when the install itself has nothing to do. See the
-// amendment to ADR-0019 (bead pg2-19rcj).
+// that (re)builds a repo's per-clone hook bundle and installs the git hook
+// stubs (ADR 0032). It is the sole {nix_run} hook declared on every workspace
+// repo (pn-workspace.toml's post-clone/-rebase/-update/-upgrade entries), and
+// realizing it is the dominant recurring cost the idempotency gate below
+// targets — each invocation is a `nix run --override-input …`, and
+// --override-input defeats nix's flake-eval cache, forcing a full re-evaluation
+// of the whole flake graph even when the install itself has nothing to do. See
+// the amendment to ADR-0019 (bead pg2-19rcj).
 const installPreCommitHooksAttr = "install-pre-commit-hooks"
-
-// preCommitConfigLive reports whether dir/.pre-commit-config.yaml already
-// resolves to a live (still-present) /nix/store path — the ordinary state
-// once install-pre-commit-hooks has run once and nothing has invalidated it
-// since (the repo's checkout/flake inputs haven't changed). A missing entry,
-// a non-symlink, a symlink pointing outside /nix/store, or a dangling
-// symlink (the store path has since been GC'd) all return false, so the
-// (re)install still runs in every case except the one where it would be a
-// pure no-op anyway — most notably a freshly-materialized worktree, where
-// the file is simply absent.
-func preCommitConfigLive(dir string) bool {
-	return symlinkLiveInNixStore(filepath.Join(dir, ".pre-commit-config.yaml"))
-}
-
-// symlinkLiveInNixStore is the detection primitive preCommitConfigLive
-// applies to the generated .pre-commit-config.yaml, generalized to an
-// arbitrary path so the doctor pre-commit-hook-live check (bd tc-wdwnl) can
-// reuse it against .git/hooks/pre-commit rather than reimplementing it. Live
-// only for a symlink resolving into a currently-present /nix/store entry; a
-// missing link, a non-symlink, a symlink outside /nix/store, or a dangling
-// /nix/store symlink (the store path was garbage-collected — the failure
-// mode bd tc-0wzp documents) all return false.
-func symlinkLiveInNixStore(link string) bool {
-	target, err := os.Readlink(link)
-	if err != nil {
-		return false // absent, or not a symlink at all
-	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(link), target)
-	}
-	if !strings.HasPrefix(target, "/nix/store/") {
-		return false
-	}
-	if _, err := os.Stat(target); err != nil {
-		return false // dangling: the store path was garbage-collected
-	}
-	return true
-}
 
 // installHookUpToDate is the "already installed" gate for
 // {nix_run install-pre-commit-hooks} (bead pg2-19rcj, rekeyed by pg2-pla9d.10,
@@ -153,20 +113,14 @@ func symlinkLiveInNixStore(link string) bool {
 //     the shared bundle being present does not give a set its private bundle.
 //   - stale, broken and relocated run the installer, and so does a bundle whose
 //     GC root dangles.
-//   - With NO bundle pointer at all (state legacy, missing, or unreachable by a
-//     shim's core.hooksPath), and for a directory that is not a git work tree,
-//     the dual-mode gate that predates bundles applies: the generated config
-//     resolves live AND the commit-time shim wiring is in place (trivially true
-//     for a repo with no .githooks/). Operator note: a clone that still holds a
-//     live legacy config keeps being skipped until its bundle is installed once
-//     by hand (runbook 7.3 step 3) after the repo enables bundle.enable.
+//   - With NO bundle pointer at all (state missing, or unreachable by a
+//     core.hooksPath), and for a directory that is not a git work tree, the
+//     installer runs: there is nothing to skip. A clone that still holds only
+//     an old .pre-commit-config.yaml symlink reads as missing (R4).
 func installHookUpToDate(dir string) bool {
 	state, info, err := ReadHookBundleState(dir)
-	if err != nil {
-		return preCommitConfigLive(dir) && shimHooksPathWired(dir)
-	}
-	if info.Gen == "" {
-		return preCommitConfigLive(dir) && shimHooksPathWired(dir)
+	if err != nil || info.Gen == "" {
+		return false
 	}
 	return state == HookBundlePresent && (!info.Linked || info.Private)
 }
@@ -222,8 +176,7 @@ func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string
 // overrides. Pre-hooks abort on first failure; post-hooks warn and continue.
 // A per-repo {nix_run install-pre-commit-hooks} entry is additionally skipped
 // (for every event, every caller — workforest add/add-repo included) when
-// that repo's hook bundle is present and current (legacy repos: when the
-// generated config already resolves live); see installHookUpToDate. In a linked
+// that repo's hook bundle is present and current; see installHookUpToDate. In a linked
 // worktree the installer is invoked with `--private` and the set's pins.
 func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out, errOut io.Writer) error {
 	ev := eventName(phase, cmd)
@@ -309,19 +262,17 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 				continue
 			}
 			for _, raw := range h.Run {
-				// Idempotency gate (bead pg2-19rcj): install-pre-commit-hooks
-				// only (re)writes .pre-commit-config.yaml and registers the git
-				// hook, so when that symlink already resolves live there is
-				// nothing for it to do. Skip BEFORE expanding vars/effectiveLock
-				// so the dominant cost — nix re-evaluating the whole flake graph
-				// because --override-input defeats its eval cache — is never
-				// paid on a re-materialization/persistent worktree whose hooks
-				// are already current. A fresh worktree (config absent) or a
-				// genuinely-changed hook set (config missing/dangling) falls
-				// through and installs normally, exactly as before this gate.
-				// Per-clone hook bundle (pg2-pla9d, spec 4.4): the gate is keyed on
-				// the bundle state, see installHookUpToDate. A legacy repo (no
-				// bundle) keeps the old config-symlink + shim-wiring gate.
+				// Idempotency gate (bead pg2-19rcj, rekeyed by pg2-pla9d.10):
+				// install-pre-commit-hooks only (re)builds the per-clone hook
+				// bundle and installs the git hook stubs, so when the bundle is
+				// present and current there is nothing for it to do. Skip BEFORE
+				// expanding vars/effectiveLock so the dominant cost — nix
+				// re-evaluating the whole flake graph because --override-input
+				// defeats its eval cache — is never paid on a re-materialization/
+				// persistent worktree whose hooks are already current. A fresh
+				// worktree (no private bundle) or a genuinely-changed hook set
+				// (stale/broken/relocated) falls through and installs normally.
+				// See installHookUpToDate.
 				m := nixRunTokenRe.FindStringSubmatch(raw)
 				isInstall := m != nil && m[1] == installPreCommitHooksAttr
 				if isInstall && installHookUpToDate(dir) {

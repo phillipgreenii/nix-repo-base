@@ -108,9 +108,10 @@ func TestTracedRunner_NoTelemetryInContextStillRuns(t *testing.T) {
 // would be an unspanned subprocess.
 var subprocessAllowlist = map[string]string{
 	"internal/exec/exec.go": "the real runner itself",
-	// Read-only `git config` / `rev-parse` probes in doctor, not routed through
-	// a Runner. A known telemetry gap (epic pg2-kqrrs, like gitclient's git).
-	"internal/workspace/doctor_checks_githooksshim.go": "known gap: doctor git probes",
+	// Read-only `git rev-parse` / `config` probes that resolve the per-clone
+	// hook bundle state (doctor, install gate), not routed through a Runner. A
+	// known telemetry gap (epic pg2-kqrrs, like gitclient's git).
+	"internal/workspace/hookbundle.go": "known gap: hook bundle state git probes",
 }
 
 var osExecCall = regexp.MustCompile(`\b\w*exec\.Command(Context)?\(`)

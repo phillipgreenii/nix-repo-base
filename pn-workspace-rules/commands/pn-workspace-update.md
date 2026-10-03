@@ -190,9 +190,9 @@ if any stage halts.
 - **In-set update-phase hooks.** `pn workspace update --in-place` (which
   `pnwf update-relock` runs inside the set) fires each repo's `post-update` hooks
   (e.g. install-pre-commit-hooks). These warn-but-do-not-abort and write nothing
-  into a working tree: a repo with a hook bundle gets a private bundle under the
-  worktree's git dir (`--private`), and a legacy repo gets only the gitignored
-  symlink, so they are a safe no-op for landing. See `docs/hooks.md`.
+  into a working tree: each repo gets a private hook bundle under the worktree's
+  git dir (`--private`), so they are a safe no-op for landing. See
+  `docs/hooks.md`.
 - **Known limitation.** An ADR-0020 "silently transient" relock step can leave a
   repo green while an update was skipped; this run reports `done` regardless
   (inherited from `pn workspace update`).

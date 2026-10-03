@@ -26,7 +26,8 @@ const (
 	// HookBundleStale: a usable bundle, but the stamp inputs or a recorded
 	// override (HEAD or dirty state) changed since it was built.
 	HookBundleStale HookBundleState = "stale"
-	// HookBundleMissing: no bundle and no usable legacy config.
+	// HookBundleMissing: no bundle (a clone holding only an old
+	// .pre-commit-config.yaml symlink also reads missing).
 	HookBundleMissing HookBundleState = "missing"
 	// HookBundleBroken: a bundle exists but the pointer is invalid or bin/prek
 	// or bin/pg-hooks-run is not executable.
@@ -36,9 +37,6 @@ const (
 	HookBundleUnreachable HookBundleState = "unreachable"
 	// HookBundleRelocated: the clone moved since the bundle was rooted.
 	HookBundleRelocated HookBundleState = "relocated"
-	// HookBundleLegacy: no bundle, but a usable .pre-commit-config.yaml (dual
-	// mode, decision D1).
-	HookBundleLegacy HookBundleState = "legacy"
 )
 
 // hookPointerRe is the only legal content of a pointer (`current`) file.
@@ -282,27 +280,6 @@ func changedHookOverrides(ovs []HookOverride) []string {
 	return out
 }
 
-// legacyHookConfig reports whether a usable legacy .pre-commit-config.yaml
-// exists: the work tree's, else the canonical clone's.
-func legacyHookConfig(c hookGitContext) bool {
-	usable := func(p string) bool {
-		fi, err := os.Stat(p)
-		if err != nil || fi.IsDir() {
-			return false
-		}
-		f, err := os.Open(p)
-		if err != nil {
-			return false
-		}
-		_ = f.Close()
-		return true
-	}
-	if c.Top != "" && usable(filepath.Join(c.Top, preCommitConfigName)) {
-		return true
-	}
-	return usable(filepath.Join(c.canonical(), preCommitConfigName))
-}
-
 // hooksUnreachable reports whether git would NOT run hooks from
 // <common-dir>/hooks because a core.hooksPath points elsewhere. A value that
 // resolves to the common hooks dir is fine; a global or system one is fine too
@@ -357,8 +334,9 @@ func hooksUnreachable(dir string, c hookGitContext) (bool, string, string) {
 // `<gen>/bundle/meta.json`), with no dependency on `pg-hooks` on PATH. The
 // private bundle (a linked worktree's own) wins over the shared one, like the
 // stub. Precedence: relocated > unreachable > broken > stale > present; with no
-// usable bundle: unreachable, else legacy, else missing. An error means repoDir
-// is not a git work tree (the state is empty).
+// usable bundle: unreachable, else missing (an old .pre-commit-config.yaml
+// symlink is not a bundle). An error means repoDir is not a git work tree (the
+// state is empty).
 func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error) {
 	var info HookBundleInfo
 	c, err := readHookGitContext(repoDir)
@@ -418,8 +396,6 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 			return HookBundleStale, info, nil
 		}
 		return HookBundlePresent, info, nil
-	case legacyHookConfig(c):
-		return HookBundleLegacy, info, nil
 	}
 	return HookBundleMissing, info, nil
 }

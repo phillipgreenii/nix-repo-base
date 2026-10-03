@@ -3,127 +3,72 @@ package workspace
 
 import (
 	"context"
-	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-// preCommitHookWorkspace builds a one-repo workspace whose repo is a real git
-// repo (so isGitRepo passes, and .git/hooks exists to hold a hook file).
-func preCommitHookWorkspace(t *testing.T) (*Workspace, string) {
-	t.Helper()
+// The bundle-mode audit (stubs, pointer, unreachable hooks) is covered in
+// doctor_checks_hookbundle_test.go. These tests pin what checkPreCommitHookLive
+// itself decides: which repos get audited, and that an old
+// .pre-commit-config.yaml is not a bundle (R4: no legacy state).
+
+// TestCheckPreCommitHookLive_OldConfigOnlyIsNoBundleError: a DECLARED repo whose
+// clone holds only an old .pre-commit-config.yaml (no pointer, no stubs) is
+// reported as having no hook bundle, as a hard error, not as a Skipped legacy
+// finding.
+func TestCheckPreCommitHookLive_OldConfigOnlyIsNoBundleError(t *testing.T) {
+	ws, dir := hbDoctorWorkspace(t, true)
+	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
+	hbWantError(t, hbRunLive(ws), "no hook bundle", "(cd "+dir+" && nix run .#install-pre-commit-hooks)")
+}
+
+// TestCheckPreCommitHookLive_UndeclaredRepoIsNotAudited: a repo whose
+// pn-workspace.toml entry does not run install-pre-commit-hooks has not opted in
+// to having its hooks installed, so nothing is asserted about it, whatever it
+// holds on disk.
+func TestCheckPreCommitHookLive_UndeclaredRepoIsNotAudited(t *testing.T) {
+	ws, dir := hbDoctorWorkspace(t, false)
+	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
+	if fs := hbRunLive(ws); len(fs) != 0 {
+		t.Fatalf("an undeclared repo must produce no finding; got %+v", fs)
+	}
+}
+
+// TestCheckPreCommitHookLive_SkipsDirectoryThatIsNotAGitRepo: a configured repo
+// that is not a git work tree is checkRepos' business, not this check's.
+func TestCheckPreCommitHookLive_SkipsDirectoryThatIsNotAGitRepo(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "apps")
-	initRealRepo(t, dir)
+	mustMkdir(t, filepath.Join(root, "repo"))
 	ws := &Workspace{
 		root: root, runner: exec.NewFakeRunner(),
-		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
-			"apps": {URL: "git@github.com:o/apps.git", Branch: "main"},
-		}},
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{"repo": {
+			URL: "git@github.com:o/repo.git", Branch: "main",
+			Hooks: []EventHook{{When: []string{"post-clone"}, Run: []string{"{nix_run install-pre-commit-hooks}"}}},
+		}}},
 	}
-	return ws, dir
-}
-
-func hookPathFor(repoDir string) string {
-	return filepath.Join(repoDir, ".git", "hooks", "pre-commit")
-}
-
-// TestCheckPreCommitHookLive_LiveHookIsClean covers the ordinary steady state
-// this check must NOT flag: .pre-commit-config.yaml declared, and
-// .git/hooks/pre-commit present and executable — the shape prek actually
-// generates (a plain script, not a symlink).
-func TestCheckPreCommitHookLive_LiveHookIsClean(t *testing.T) {
-	ws, dir := preCommitHookWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), "generated config")
-	if err := os.WriteFile(hookPathFor(dir), []byte("#!/bin/sh\nexec prek hook-impl\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	fs := ws.checkPreCommitHookLive(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
-	if len(fs) != 0 {
-		t.Fatalf("a present, executable hook must produce no finding; got %+v", fs)
+	if fs := ws.checkPreCommitHookLive(context.Background(), &doctorEnv{ws: ws, mode: "primary"}); len(fs) != 0 {
+		t.Fatalf("a directory that is not a git work tree must produce no finding; got %+v", fs)
 	}
 }
 
-// TestCheckPreCommitHookLive_MissingHookIsSkippedFinding is the exact
-// regression bd tc-0wzp/tc-771m record: 5 of 8 workspace repos silently lost
-// their .git/hooks/pre-commit and commits stopped firing it, with nothing to
-// notice. Per GAP 3's severity convention (bd tc-atsmj), the finding is
-// Skipped: true — fully visible, never a hard failure.
-func TestCheckPreCommitHookLive_MissingHookIsSkippedFinding(t *testing.T) {
-	ws, dir := preCommitHookWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), "generated config")
-	// .git/hooks/pre-commit deliberately not created.
-
-	fs := ws.checkPreCommitHookLive(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
-	if !hasSkippedFinding(t, fs, "pre-commit-hook-live", "apps") {
-		t.Fatalf("expected a Skipped pre-commit-hook-live finding for a missing hook; got %+v", fs)
+// TestCheckPreCommitHookLive_FindingsAreNeverSkipped: every bundle finding is a
+// hard error that fails the exit code.
+func TestCheckPreCommitHookLive_FindingsAreNeverSkipped(t *testing.T) {
+	ws, _ := hbDoctorWorkspace(t, true)
+	fs := hbRunLive(ws)
+	if len(fs) == 0 {
+		t.Fatal("a declared repo with no bundle must produce a finding")
 	}
-	f := findingByID(t, fs, "pre-commit-hook-live")
-	if !contains([]byte(f.Message), "missing") {
-		t.Errorf("message should say the hook is missing: %q", f.Message)
+	for _, f := range fs {
+		if f.Skipped || !strings.HasPrefix(f.Message, "pg-hooks: ") {
+			t.Errorf("want a non-skipped pg-hooks finding; got %+v", f)
+		}
 	}
-	if !contains([]byte(f.Manual), "install-pre-commit-hooks") {
-		t.Errorf("manual hint must name the regeneration command; got %q", f.Manual)
-	}
-}
-
-// TestCheckPreCommitHookLive_DanglingSymlinkIsSkippedFinding covers the
-// dangling-symlink failure mode named explicitly in bd tc-wdwnl / tc-0wzp: the
-// hook resolves into a /nix/store path that has since been garbage-collected.
-// Detection reuses symlinkLiveInNixStore (nix_hooks.go), the same primitive
-// preCommitConfigLive applies to the generated config.
-func TestCheckPreCommitHookLive_DanglingSymlinkIsSkippedFinding(t *testing.T) {
-	ws, dir := preCommitHookWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), "generated config")
-	dangling := "/nix/store/deadbeefdeadbeefdeadbeefdeadbeef-does-not-exist/pre-commit"
-	if err := os.Symlink(dangling, hookPathFor(dir)); err != nil {
-		t.Fatal(err)
-	}
-
-	fs := ws.checkPreCommitHookLive(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
-	if !hasSkippedFinding(t, fs, "pre-commit-hook-live", "apps") {
-		t.Fatalf("expected a Skipped pre-commit-hook-live finding for a dangling symlink hook; got %+v", fs)
-	}
-	f := findingByID(t, fs, "pre-commit-hook-live")
-	if !contains([]byte(f.Message), "dangling") {
-		t.Errorf("message should call out the dangling symlink: %q", f.Message)
-	}
-}
-
-// TestCheckPreCommitHookLive_NotExecutableIsSkippedFinding covers the third
-// documented failure mode (bd tc-wdwnl): present, not a dangling reference,
-// but missing its executable bit — git silently declines to run a
-// non-executable hook.
-func TestCheckPreCommitHookLive_NotExecutableIsSkippedFinding(t *testing.T) {
-	ws, dir := preCommitHookWorkspace(t)
-	writeFile(t, filepath.Join(dir, preCommitConfigName), "generated config")
-	writeFile(t, hookPathFor(dir), "#!/bin/sh\nexec prek hook-impl\n") // writeFile uses 0o644, not executable
-
-	fs := ws.checkPreCommitHookLive(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
-	if !hasSkippedFinding(t, fs, "pre-commit-hook-live", "apps") {
-		t.Fatalf("expected a Skipped pre-commit-hook-live finding for a non-executable hook; got %+v", fs)
-	}
-	f := findingByID(t, fs, "pre-commit-hook-live")
-	if !contains([]byte(f.Message), "not executable") {
-		t.Errorf("message should call out the missing executable bit: %q", f.Message)
-	}
-}
-
-// TestCheckPreCommitHookLive_NoConfigDeclaredDoesNotApply is the negative
-// space: a repo that never declared .pre-commit-config.yaml has opted out of
-// pre-commit entirely, so the check must produce nothing regardless of
-// .git/hooks/pre-commit's state (even absent, which would otherwise look
-// exactly like the missing-hook regression).
-func TestCheckPreCommitHookLive_NoConfigDeclaredDoesNotApply(t *testing.T) {
-	ws, _ := preCommitHookWorkspace(t)
-	// preCommitConfigName deliberately never written.
-
-	fs := ws.checkPreCommitHookLive(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
-	if len(fs) != 0 {
-		t.Fatalf("a repo declaring no %s must produce no finding; got %+v", preCommitConfigName, fs)
+	if !(&DoctorReport{Findings: fs}).HasErrors() {
+		t.Error("a no-bundle finding must make the report erroneous")
 	}
 }
 

@@ -112,17 +112,17 @@ func TestInstallGate_OverrideChangeReinstalls(t *testing.T) {
 	}
 }
 
-// A usable legacy config still gates through the pre-bundle rule: skip only
-// when the generated config resolves live in THIS checkout.
-func TestInstallGate_LegacyRepoKeepsTheConfigGate(t *testing.T) {
-	t.Run("config absent in the checkout runs", func(t *testing.T) {
+// R4: there is no legacy gate. An old .pre-commit-config.yaml, even one that is
+// a live /nix/store symlink, is not a bundle, so the installer still runs.
+func TestInstallGate_OldConfigDoesNotSkipTheInstaller(t *testing.T) {
+	t.Run("plain old config file runs", func(t *testing.T) {
 		w, dir := gateWS(t)
-		writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n") // legacy, but not a live store symlink
+		writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
 		if sc := fireInstall(t, w); len(sc) != 1 {
-			t.Fatalf("legacy without a live config symlink: want 1 sh call, got %d", len(sc))
+			t.Fatalf("an old config file is not a bundle: want 1 sh call, got %d", len(sc))
 		}
 	})
-	t.Run("live config symlink skips", func(t *testing.T) {
+	t.Run("live config symlink runs", func(t *testing.T) {
 		target := existingNixStoreFile(t)
 		if target == "" {
 			t.Skip("no /nix/store files available in this environment")
@@ -131,15 +131,14 @@ func TestInstallGate_LegacyRepoKeepsTheConfigGate(t *testing.T) {
 		if err := os.Symlink(target, filepath.Join(dir, ".pre-commit-config.yaml")); err != nil {
 			t.Fatal(err)
 		}
-		if sc := fireInstall(t, w); len(sc) != 0 {
-			t.Fatalf("legacy with a live config symlink must skip; got %d sh calls", len(sc))
+		if sc := fireInstall(t, w); len(sc) != 1 {
+			t.Fatalf("a live old config symlink is not a bundle: want 1 sh call, got %d", len(sc))
 		}
 	})
 }
 
-// existingNixStoreFile returns a regular file under /nix/store (a legacy
-// config symlink resolves to a file, which the legacy-config probe requires),
-// or "" when there is none.
+// existingNixStoreFile returns a regular file under /nix/store (an old
+// generated-config symlink resolved to a file), or "" when there is none.
 func existingNixStoreFile(t *testing.T) string {
 	t.Helper()
 	matches, _ := filepath.Glob("/nix/store/*/*")

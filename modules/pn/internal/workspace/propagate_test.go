@@ -341,14 +341,10 @@ func TestPropagate_NixFailureErrorsCleanly(t *testing.T) {
 // through x/gitclient's Committer with NO hook-bypass mechanism at all — the
 // package deliberately ships none (interfaces.go's Committer doc comment).
 // When a repo's pre-commit hook demands a config that genuinely is not
-// present, the commit must fail LOUDLY, not silently no-op the hook. The
-// actual fix for the missing-config case in production is upstream of this
-// function entirely: update_worktree.go's linkPreCommitConfig symlinks the
-// canonical clone's config into the ephemeral worktree BEFORE
-// propagateWorkspaceEdges ever runs (see TestLinkPreCommitConfig), so this
-// function never actually needs to tolerate a missing config in practice.
-// This test pins that propagateWorkspaceEdges itself no longer papers over
-// it if that upstream step is somehow skipped.
+// present, the commit must fail LOUDLY, not silently no-op the hook. In
+// production the worktree reaches the clone's per-clone hook bundle (ADR 0032),
+// so this function never needs to tolerate a missing config. This test pins
+// that propagateWorkspaceEdges itself does not paper over one.
 //
 // Also doubles as the propagate-level half of bead tc-dubbr's fix (the
 // canonical clone's own hook symlink pinning a since-garbage-collected
@@ -395,47 +391,6 @@ func TestPropagate_CommitFailsUnderMissingConfigPreCommitHook(t *testing.T) {
 	// left staged-but-uncommitted — so the canonical clone stays in Tier R
 	// steady state and a retry needs no manual cleanup.
 	assertCleanTree(t, dir)
-}
-
-// TestLinkPreCommitConfig covers update_worktree.go's root-cause fix for the
-// PREK_ALLOW_NO_CONFIG workaround (design pg2-migib §7a): a fresh worktree
-// gets its OWN symlink to the same /nix/store target the canonical clone's
-// .pre-commit-config.yaml already points at, so prek resolves a real config
-// there instead of aborting or needing a bypass.
-func TestLinkPreCommitConfig(t *testing.T) {
-	canonical := t.TempDir()
-	worktree := t.TempDir()
-
-	t.Run("propagates an existing symlink", func(t *testing.T) {
-		target := filepath.Join(t.TempDir(), "generated-config.yaml")
-		if err := osWrite(target, "hooks: []\n"); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(target, filepath.Join(canonical, preCommitConfigName)); err != nil {
-			t.Fatal(err)
-		}
-		if err := linkPreCommitConfig(canonical, worktree); err != nil {
-			t.Fatalf("linkPreCommitConfig: %v", err)
-		}
-		got, err := os.Readlink(filepath.Join(worktree, preCommitConfigName))
-		if err != nil {
-			t.Fatalf("Readlink: %v", err)
-		}
-		if got != target {
-			t.Errorf("worktree symlink target = %q, want %q", got, target)
-		}
-	})
-
-	t.Run("no-op when canonical has no symlink", func(t *testing.T) {
-		bareCanonical := t.TempDir()
-		bareWorktree := t.TempDir()
-		if err := linkPreCommitConfig(bareCanonical, bareWorktree); err != nil {
-			t.Fatalf("linkPreCommitConfig should be a no-op, not an error; got %v", err)
-		}
-		if _, err := os.Lstat(filepath.Join(bareWorktree, preCommitConfigName)); err == nil {
-			t.Error("expected no symlink to be created in the worktree")
-		}
-	})
 }
 
 func TestWorkspaceAliasesFromLock(t *testing.T) {

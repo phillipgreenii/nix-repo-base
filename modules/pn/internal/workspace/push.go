@@ -231,8 +231,7 @@ func (ws *Workspace) relockSiblingsBeforePush(ctx context.Context, out io.Writer
 // dependency's remote simply sees no change (C1).
 //
 // Everything runs in the CANONICAL clone — no `git worktree add` is on this
-// path, so the clone's hook source is present (the per-clone hook bundle, or in
-// a repo not yet cut over the generated `.pre-commit-config.yaml` symlink) and
+// path, so the clone's hook source (the per-clone hook bundle) is present and
 // the prek pre-push hook finds its config (ADR 0023 item 4; docs/hooks.md).
 //
 // Push is a terminal-optional command: if no terminal is configured it emits

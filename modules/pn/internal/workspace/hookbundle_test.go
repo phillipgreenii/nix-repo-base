@@ -130,22 +130,23 @@ func TestReadHookBundleState_PresentReadsDirectly(t *testing.T) {
 	}
 }
 
-func TestReadHookBundleState_MissingAndLegacy(t *testing.T) {
+func TestReadHookBundleState_MissingWithNoBundle(t *testing.T) {
 	dir := hbRepo(t)
 	wantState(t, dir, HookBundleMissing)
-
-	// A usable legacy config makes it legacy; the file is read in place.
-	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
-	wantState(t, dir, HookBundleLegacy)
 }
 
-func TestReadHookBundleState_LegacyFromCanonicalClone(t *testing.T) {
+// R4: there is no legacy state. A clone that holds only an old
+// .pre-commit-config.yaml reads missing, however usable the file is.
+func TestReadHookBundleState_OldConfigIsNotABundle(t *testing.T) {
 	dir := hbRepo(t)
 	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
+	wantState(t, dir, HookBundleMissing)
+
 	wt := filepath.Join(filepath.Dir(dir), "wt")
 	runGitT(t, dir, "worktree", "add", "-q", "-b", "feat", wt)
-	// The worktree has no config of its own: the canonical clone's counts.
-	wantState(t, wt, HookBundleLegacy)
+	// The canonical clone's config does not count for the worktree either, and
+	// reading the state must never link a config into it.
+	wantState(t, wt, HookBundleMissing)
 	if _, err := os.Lstat(filepath.Join(wt, ".pre-commit-config.yaml")); err == nil {
 		t.Fatal("reading the state must never link a config into the worktree")
 	}

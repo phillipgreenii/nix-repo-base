@@ -145,25 +145,27 @@ func preCommitCheckRepo(t *testing.T) (*Workspace, *exec.FakeRunner, string) {
 	return w, f, foo
 }
 
-func TestPreCommitCheck_LegacyRepoRunsPrek(t *testing.T) {
+func TestPreCommitCheck_OldConfigRepoRunsPgHooksNotPrek(t *testing.T) {
+	// R4: a clone holding only an old .pre-commit-config.yaml has no bundle. It
+	// goes to pg-hooks (which reports the missing bundle), never to prek.
 	w, f, foo := preCommitCheckRepo(t)
-	writeFile(t, filepath.Join(foo, preCommitConfigName), "repos: []\n")
-	f.AddResponse("prek", []string{"run", "--all-files"}, exec.Result{}, nil)
+	writeFile(t, filepath.Join(foo, ".pre-commit-config.yaml"), "repos: []\n")
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 
 	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PreCommitCheckOptions{}); err != nil {
 		t.Fatalf("PreCommitCheck: %v", err)
 	}
 	calls := f.Calls()
-	if len(calls) != 1 || calls[0].Name != "prek" || calls[0].Opts.Dir != foo {
-		t.Fatalf("legacy repo must run `prek run --all-files` in the clone; calls=%+v", calls)
+	if len(calls) != 1 || calls[0].Name != "pg-hooks" || calls[0].Opts.Dir != foo {
+		t.Fatalf("an old-config repo must run `pg-hooks run pre-commit --all-files` in the clone; calls=%+v", calls)
 	}
 }
 
 func TestPreCommitCheck_BundleRepoRunsPgHooks(t *testing.T) {
 	w, f, foo := preCommitCheckRepo(t)
 	writeFakeBundle(t, foo, hbBundleOpts{})
-	// A leftover legacy config must not pull a bundle repo back to prek.
-	writeFile(t, filepath.Join(foo, preCommitConfigName), "repos: []\n")
+	// A leftover old config must not pull a bundle repo back to prek.
+	writeFile(t, filepath.Join(foo, ".pre-commit-config.yaml"), "repos: []\n")
 	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 
 	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PreCommitCheckOptions{}); err != nil {
@@ -189,7 +191,8 @@ func TestPreCommitCheck_NoBundleNoConfigRunsPgHooks(t *testing.T) {
 }
 
 func TestPreCommitCheck_NeverRunsPreCommit(t *testing.T) {
-	// Every shape (bundle, legacy, nothing, not a git tree) avoids `pre-commit`.
+	// Every shape (bundle, old config only, nothing, not a git tree) avoids
+	// `pre-commit` and `prek`.
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.a]
@@ -207,14 +210,14 @@ url = "github:owner/d"
 	initRealRepo(t, filepath.Join(root, "a"))
 	writeFakeBundle(t, filepath.Join(root, "a"), hbBundleOpts{})
 	initRealRepo(t, filepath.Join(root, "b"))
-	writeFile(t, filepath.Join(root, "b", preCommitConfigName), "repos: []\n")
+	writeFile(t, filepath.Join(root, "b", ".pre-commit-config.yaml"), "repos: []\n")
 	initRealRepo(t, filepath.Join(root, "c"))
 	// d is not created at all.
 	f := exec.NewFakeRunner()
 	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
-	f.AddResponse("prek", []string{"run", "--all-files"}, exec.Result{}, nil)
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -222,18 +225,16 @@ url = "github:owner/d"
 	if err := w.PreCommitCheck(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PreCommitCheckOptions{}); err != nil {
 		t.Fatalf("PreCommitCheck: %v", err)
 	}
-	var prek, pgh int
+	var pgh int
 	for _, c := range f.Calls() {
 		switch c.Name {
-		case "prek":
-			prek++
 		case "pg-hooks":
 			pgh++
 		default:
 			t.Errorf("unexpected command %q", c.Name)
 		}
 	}
-	if prek != 1 || pgh != 3 {
-		t.Errorf("want 1 prek (legacy b) and 3 pg-hooks (a, c, d); got prek=%d pg-hooks=%d", prek, pgh)
+	if pgh != 4 {
+		t.Errorf("want 4 pg-hooks calls (a, b, c, d); got %d", pgh)
 	}
 }

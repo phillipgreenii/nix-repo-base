@@ -272,7 +272,6 @@ func (ws *Workspace) registerChecks() []check {
 		{id: "hooks", run: ws.checkHookExpressions},
 		{id: "hooks-trusted", run: ws.checkHooksTrusted},
 		{id: "pre-commit-hook-live", run: ws.checkPreCommitHookLive},
-		{id: "git-hooks-shim-wired", run: ws.checkGitHooksShimWired},
 		{id: "ruff-pin", run: ws.checkRuffPin},
 		{id: "nix-cache-trusted", run: ws.checkNixCacheTrusted},
 		{id: "extra-remotes-synced", run: ws.checkExtraRemotesSynced},
