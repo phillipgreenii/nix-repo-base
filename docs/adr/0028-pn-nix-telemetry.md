@@ -428,22 +428,28 @@ Details that are decisions rather than restatements of W-1:
 
 **Concurrency check (acceptance; TraceQL).** Tempo has no native concurrency aggregate, so the "no more
 than 3 overlapping `nix.build` spans per machine" check is a TraceQL search for the spans plus a
-sweep over their intervals. UNVERIFIED until the machine wiring (Phase 4b) is applied and a multi-derivation
-build has run. The search (time-bounded by `start`/`end`, wrapper spans carry `service.name`
-`pg-nix-log-wrapped`):
+sweep over their intervals. VERIFIED 2026-10-03 against Tempo 2.10.5 (local, `http://127.0.0.1:3200`):
+the recipe below returned 31 `nix.build` spans in 4 traces over a 6-day window and the sweep printed 3.
+The search (time-bounded by `start`/`end`, which Tempo limits to a 7-day window; wrapper spans carry
+`service.name` `pg-nix-log-wrapped`; the search results already carry `startTimeUnixNano` and
+`durationNanos` per span, so no `select()` is needed):
 
 ```text
-{ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" } | select(span:startTime, span:duration)
+{ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" }
 ```
 
-and the maximum overlap over the returned intervals (a sweep: +1 at each start, -1 at each end, ends
+Tempo 2.10.5 rejects `| select(span:startTime, span:duration)` as a TraceQL parse error, and rejects
+`spss` above 100 ("spans per span set exceeds 100"). The `spss` value MUST be 100 or less; a trace
+holding more than 100 matching spans is truncated to 100, so the sweep then under-counts overlap.
+
+The check is the maximum overlap over the returned intervals (a sweep: +1 at each start, -1 at each end, ends
 sorted before starts at the same instant), which MUST print 3 or less:
 
 ```sh
 curl -sG "$TEMPO/api/search" \
-  --data-urlencode 'q={ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" } | select(span:startTime, span:duration)' \
+  --data-urlencode 'q={ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" }' \
   --data-urlencode "start=$START_EPOCH_S" --data-urlencode "end=$END_EPOCH_S" \
-  --data-urlencode limit=5000 --data-urlencode spss=1000 |
+  --data-urlencode limit=5000 --data-urlencode spss=100 |
   jq '[.traces[].spanSets[].spans[]
        | {s: (.startTimeUnixNano | tonumber), d: (.durationNanos | tonumber)}
        | ({t: .s, v: 1}, {t: (.s + .d), v: -1})]
