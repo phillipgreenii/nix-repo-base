@@ -52,6 +52,14 @@ type RunOptions struct {
 	// false, because the decorator never rewrites by command name. It changes
 	// nothing for a Runner that is not the production decorator stack.
 	WrapNix bool
+	// PropagateTrace marks a call whose child (a user hook or update-locks.sh)
+	// may run nix itself: when telemetry is on the Runner exports TRACEPARENT,
+	// taken from the pn.exec span of this call, in the child's environment so
+	// that nested nix shows under the pn.verb trace (ADR 0028). argv is never
+	// rewritten, and with telemetry off the environment is left exactly as
+	// before. Like WrapNix it is set only by explicit call sites and changes
+	// nothing for a Runner that is not the production decorator stack.
+	PropagateTrace bool
 }
 
 // Result captures the outcome of a Run call.
@@ -78,13 +86,15 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 type realRunner struct{}
 
 // NewRealRunner returns a Runner backed by os/exec, wrapped in the pn.exec
-// tracing decorator and, inside it, the nix wrapper decorator (both no-ops
-// unless telemetry is enabled in the context). Every production caller goes
-// through here, so every subprocess pn spawns via the Runner is spanned, and
-// the long-running nix calls (RunOptions.WrapNix) run through the wrapper as
-// children of their pn.exec span.
+// tracing decorator and, inside it, the TRACEPARENT environment decorator and
+// the nix wrapper decorator (all no-ops unless telemetry is enabled in the
+// context). Every production caller goes through here, so every subprocess pn
+// spawns via the Runner is spanned, the long-running nix calls
+// (RunOptions.WrapNix) run through the wrapper as children of their pn.exec
+// span, and hooks and update-locks.sh (RunOptions.PropagateTrace) get that
+// span as TRACEPARENT.
 func NewRealRunner() Runner {
-	return WithTracing(WithNixWrapper(&realRunner{}))
+	return WithTracing(WithTraceEnv(WithNixWrapper(&realRunner{})))
 }
 
 func (r *realRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) (Result, error) {

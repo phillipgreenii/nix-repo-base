@@ -294,7 +294,7 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 					if resolved, err = rewriteFirstToken(cmdStr, dir); err == nil {
 						// Subprocess stdout→out, stderr→errOut (separate writers);
 						// no manual res.Stderr re-print (that double-printed).
-						_, err = ws.runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: dir, Stdout: out, Stderr: errOut})
+						_, err = ws.runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: dir, Stdout: out, Stderr: errOut, PropagateTrace: true})
 					}
 				}
 				if err != nil {

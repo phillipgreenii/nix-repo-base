@@ -73,7 +73,7 @@ func RunHooks(ctx context.Context, runner exec.Runner, entries []string, workspa
 		if err != nil {
 			return fmt.Errorf("hook %q: resolve: %w", raw, err)
 		}
-		res, err := runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: workspaceRoot})
+		res, err := runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: workspaceRoot, PropagateTrace: true})
 		if err == nil {
 			if phase == HookPhasePost {
 				_, _ = fmt.Fprintf(os.Stderr, "ran post-hook: %s\n", raw)

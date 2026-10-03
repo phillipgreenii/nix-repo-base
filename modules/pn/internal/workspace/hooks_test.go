@@ -80,6 +80,11 @@ func TestRunHooks_OrderedExecution(t *testing.T) {
 	if !strings.Contains(strings.Join(calls[1].Args, " "), "second") {
 		t.Errorf("second call should be 'second', got %v", calls[1].Args)
 	}
+	for i, c := range calls {
+		if !c.Opts.PropagateTrace {
+			t.Errorf("hook call %d must set PropagateTrace (pg2-u2pnh)", i)
+		}
+	}
 }
 
 func TestRunHooks_PreFailureAborts(t *testing.T) {

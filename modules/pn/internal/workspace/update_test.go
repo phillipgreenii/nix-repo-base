@@ -146,6 +146,9 @@ url = "github:owner/foo"
 		if c.Opts.Env["PN_WORKSPACE_ROOT"] != root {
 			t.Errorf("PN_WORKSPACE_ROOT not injected; env=%v", c.Opts.Env)
 		}
+		if !c.Opts.PropagateTrace {
+			t.Error("update-locks.sh must set PropagateTrace (pg2-u2pnh)")
+		}
 	}
 	if !found {
 		t.Fatal("update-locks.sh was not called")

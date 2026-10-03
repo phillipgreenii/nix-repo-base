@@ -101,6 +101,18 @@ func TestUpdateViaWorktree_HappyPath_CleanMain(t *testing.T) {
 	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/x/lib/scripts"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
+	var ul int
+	for _, c := range f.Calls() {
+		if c.Name == "./update-locks.sh" {
+			ul++
+			if !c.Opts.PropagateTrace {
+				t.Error("worktree update-locks.sh must set PropagateTrace (pg2-u2pnh)")
+			}
+		}
+	}
+	if ul != 1 {
+		t.Errorf("update-locks.sh calls = %d, want 1", ul)
+	}
 }
 
 // TestUpdateViaWorktree_LinksNoHookConfigIntoWorktree pins ADR 0032: the update

@@ -376,7 +376,7 @@ shorthand for `--version` (use `pn --version`).
 
 pn routes its long-running nix calls through `pg-nix-log-wrapped` with a second Decorator on
 `exec.Runner`, `exec.WithNixWrapper`, stacked INSIDE the `pn.exec` tracing decorator
-(`exec.NewRealRunner` is `WithTracing(WithNixWrapper(real))`). Because it sits inside, the span context
+(`exec.NewRealRunner` is `WithTracing(WithTraceEnv(WithNixWrapper(real)))`; `WithTraceEnv` is described under "Hooks and `update-locks.sh`" below). Because it sits inside, the span context
 it reads is the `pn.exec` span, so the wrapper's `nix.invocation` becomes that span's child and one
 trace reads `pn.verb > pn.repo > pn.exec > nix.invocation > nix.build / nix.substitute`.
 
@@ -423,8 +423,42 @@ Details that are decisions rather than restatements of W-1:
   (`nix exited 1: ...`), not the wrapper argv; Result buffering and the live tee are the inner runner's.
 - `--show-nix-commands-only` returns before the Runner and prints the unwrapped command. The wrapper is
   below `ensureExecTrusted()`, so the trust gate is unaffected.
-- Not done here: hooks and `update-locks.sh` do not get `TRACEPARENT` from this decorator (they are not
-  rewritten); that remains outside this phase.
+- Hooks and `update-locks.sh` are not rewritten by this decorator; they get `TRACEPARENT` from the
+  separate decorator below (`pg2-u2pnh`).
+
+#### Hooks and `update-locks.sh`: `TRACEPARENT` in the child environment (`pg2-u2pnh`)
+
+The gap recorded by Phase 4a (hooks and `update-locks.sh` got no `TRACEPARENT`, so the nix they run
+could not be linked to the `pn.verb` trace) is CLOSED. A third `exec.Runner` Decorator,
+`exec.WithTraceEnv`, sits between `WithTracing` and `WithNixWrapper`, so the span context it reads is
+the call's own `pn.exec` span. For a call marked `exec.RunOptions.PropagateTrace` it adds
+`TRACEPARENT=00-<trace-id>-<span-id>-<flags>` (the same value format the wrapper decorator passes as
+`--traceparent`) to `RunOptions.Env`. The child therefore runs nix with that parent, and a nix
+wrapper or any other W3C-aware tool it invokes nests under the `pn.exec` span of the hook.
+
+- **Selection is explicit, never by command name.** `PropagateTrace` is set at exactly the hook and
+  `update-locks.sh` call sites: `RunHooks` (workspace-level hooks), `RunEventHooks` (per-repo
+  `[[repos.X.hooks]]` hooks, `nix_hooks.go`) and both `./update-locks.sh` calls (in-place and
+  worktree update). Every other call, `pg-hooks run pre-commit` in `pre-commit-check` included,
+  leaves it false and its environment untouched. The pre-commit check is deliberately NOT in scope:
+  it is pn's own check verb, not a user hook.
+- **argv is never rewritten.** The decorator only edits the environment. The caller's `Env` map is
+  copied, not mutated, and keys other than `TRACEPARENT` are preserved.
+- **Fail open, byte-identical when off.** With telemetry off (no `Telemetry` in the context,
+  `--no-telemetry`, `PG_NIX_LOG_DISABLE=1`, exporter init failed), no valid span in the context, or
+  `PropagateTrace` false, the options are passed on untouched: `Env` stays nil (the child inherits
+  pn's environment exactly as before) and output is unchanged. A `TRACEPARENT` already in pn's own
+  environment is inherited as before when telemetry is off; with it on, the `pn.exec` span value
+  replaces it, because that span is the parent the trace should show.
+- **Tests.** `internal/exec/traceenv_test.go` covers telemetry on (value taken from the span, other
+  options and argv preserved, caller map not mutated), telemetry off (disabled and absent telemetry
+  options deep-equal), no opt-in, no valid span, and a real child process through
+  `NewRealRunner` that prints its `TRACEPARENT` (matches the `pn.exec` span and the `pn.verb` trace on;
+  the inherited value off). The workspace tests assert the flag at every call site.
+- **Post-apply check (Tempo).** Run a hook or `pn workspace update` whose hook or `update-locks.sh`
+  runs a nix command wrapped by `pg-nix-log-wrapped` (which honours `TRACEPARENT`), and confirm the
+  trace has `pn.verb > pn.repo > pn.exec > nix.invocation` for it, i.e. the trace of the `pn.verb`
+  contains the hook's `nix.invocation` spans.
 
 **Concurrency check (acceptance; TraceQL).** Tempo has no native concurrency aggregate, so the "no more
 than 3 overlapping `nix.build` spans per machine" check is a TraceQL search for the spans plus a

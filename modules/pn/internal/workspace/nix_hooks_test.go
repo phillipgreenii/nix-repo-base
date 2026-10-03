@@ -117,6 +117,9 @@ func TestRunEventHooks_RepoScopedFiresForProcessedRepoOnly(t *testing.T) {
 	if sh[0].Opts.Dir != filepath.Join(root, "a") {
 		t.Errorf("cwd = %q, want repo a", sh[0].Opts.Dir)
 	}
+	if !sh[0].Opts.PropagateTrace {
+		t.Error("per-repo hook must set PropagateTrace (pg2-u2pnh)")
+	}
 }
 
 // openHookWS writes a minimal workspace with the given toml body + a flake.nix in

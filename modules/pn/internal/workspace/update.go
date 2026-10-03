@@ -259,7 +259,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 				relocked = did
 				fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 			case fileExists(filepath.Join(repoDir, "update-locks.sh")):
-				res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out})
+				res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out, PropagateTrace: true})
 				// res.Stdout is populated on both success and CommandError, so the
 				// transient count crosses the boundary even for a hard-failed repo
 				// (ul_finalize prints UL_RESULT before its non-zero exit).

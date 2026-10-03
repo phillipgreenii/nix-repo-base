@@ -39,6 +39,10 @@ run unwrapped, as does everything when the wrapper is missing or telemetry is of
 arguments, including every `--override-input`, reach it unchanged, and `--show-nix-commands-only`
 prints the unwrapped command (ADR 0028).
 
+With telemetry on, hooks and `update-locks.sh` additionally get `TRACEPARENT` (the `pn.exec` span of
+their own call) in their environment, so nix they run nests under the `pn.verb` trace; their argv is
+never rewritten and with telemetry off their environment is untouched (ADR 0028).
+
 ### Escape hatches
 
 | Control                                      | Effect                                                                                                   |

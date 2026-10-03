@@ -307,7 +307,7 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 	case fileExists(filepath.Join(wt, "update-locks.sh")):
 		res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
-			Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out,
+			Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out, PropagateTrace: true,
 		})
 		// res.Stdout is captured on success and on a hard CommandError alike, so the
 		// transient count crosses the boundary even when the repo later fails; a
