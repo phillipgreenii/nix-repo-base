@@ -35,7 +35,7 @@ and **stop-on-blocked transaction** semantics on top of it.
 **Why two passes (MUST — bd `pg2-fxj57`).** `ff-merge-to-main`'s FF-4 tears down
 a landed member's worktree + branch **immediately**, inside the same
 invocation that merged it — before any later set member's own land-time gate
-(FF-1b's `prek` diff-check) has run. A workforest
+(FF-1b's `pg-hooks run pre-land` diff-check) has run. A workforest
 set can have a cross-repo **filesystem** dependency between members — e.g. a
 gitignored dev symlink from one member into a sibling's set-worktree, created
 by a `pn-workspace.toml` post-clone/post-rebase hook — that the earlier
