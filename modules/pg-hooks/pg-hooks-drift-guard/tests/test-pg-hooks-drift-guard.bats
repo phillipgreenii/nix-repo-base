@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # bats file_tags=type:unit
+# shellcheck disable=SC2016,SC2030,SC2031  # planted violations are literal text; ALLOW is per-test state
 
 bats_require_minimum_version 1.5.0
 

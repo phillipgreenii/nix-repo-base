@@ -54,6 +54,7 @@ die() {
 }
 
 # Anything that is not an explicit result (0, 2, 10) is "unexpected" (1).
+# shellcheck disable=SC2329  # invoked through the EXIT trap below
 on_exit() {
   local rc=$?
   if ((rc != 0 && rc != 2 && rc != 10)); then
@@ -134,7 +135,7 @@ allowed() {
       # shellcheck disable=SC2254  # the allowlist glob is meant to be a pattern
       case "$path" in
       ${ALLOW_PATTERNS[$i]})
-        ALLOW_USED[$i]=1
+        ALLOW_USED[i]=1
         return 0
         ;;
       esac
