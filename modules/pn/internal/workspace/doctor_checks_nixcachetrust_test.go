@@ -177,3 +177,124 @@ func TestCheckNixCacheTrusted_PartialDeclarationOnlyChecksWhatsDeclared(t *testi
 		t.Fatalf("a matching partial declaration must produce no finding; got %+v", fs)
 	}
 }
+
+// scriptNixConfigShow scripts the FakeRunner's response for the `nix config
+// show --json` call checkNixCacheTrusted issues to read the effective nix
+// config (bd pg2-3jvey). Tests that do not call it get FakeRunner's
+// "no scripted response" error, i.e. the effective config is unknown and the
+// check falls back to trust-file-only behaviour.
+func scriptNixConfigShow(f *exec.FakeRunner, stdout string) {
+	f.AddResponse("nix", []string{"config", "show", "--json"}, exec.Result{Stdout: []byte(stdout)}, nil)
+}
+
+const declaredEvalJSON = `{"s":["https://cache.numtide.com","https://cache.flox.dev"],"k":["niks3.numtide.com-1:AAA","flox-cache-public-1:BBB"]}`
+
+// TestCheckNixCacheTrusted_AcceptFlakeConfigTrueSuppresses is the pg2-3jvey
+// false positive: with accept-flake-config=true nix applies the flake's
+// nixConfig without consulting trusted-settings.json, so a stale/mismatched
+// (or absent) trust file must not produce a finding.
+func TestCheckNixCacheTrusted_AcceptFlakeConfigTrueSuppresses(t *testing.T) {
+	ws, dir, f := nixCacheTrustWorkspace(t, declaringFlakeNix)
+	scriptNixConfigEval(f, dir, declaredEvalJSON)
+	// Trust file points at an unrelated combination (the live-machine shape).
+	writeNixTrustedSettings(t, `{"extra-substituters":{"https://some.other.cache":true},"extra-trusted-public-keys":{"other:KEY":true}}`)
+	scriptNixConfigShow(f, `{"accept-flake-config":{"value":true},"substituters":{"value":[]},"trusted-public-keys":{"value":[]}}`)
+
+	fs := ws.checkNixCacheTrusted(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
+	if len(fs) != 0 {
+		t.Fatalf("accept-flake-config=true must suppress the finding; got %+v", fs)
+	}
+}
+
+// TestCheckNixCacheTrusted_AcceptFlakeConfigTrueMissingTrustFile covers the
+// fresh-machine shape under accept-flake-config=true: no trust file, still no
+// finding.
+func TestCheckNixCacheTrusted_AcceptFlakeConfigTrueMissingTrustFile(t *testing.T) {
+	ws, dir, f := nixCacheTrustWorkspace(t, declaringFlakeNix)
+	scriptNixConfigEval(f, dir, declaredEvalJSON)
+	scriptNixConfigShow(f, `{"accept-flake-config":{"value":true}}`)
+
+	if fs := ws.checkNixCacheTrusted(context.Background(), &doctorEnv{ws: ws, mode: "primary"}); len(fs) != 0 {
+		t.Fatalf("accept-flake-config=true must suppress even with no trust file; got %+v", fs)
+	}
+}
+
+// TestCheckNixCacheTrusted_GlobalConfigAlreadyCoversDeclared covers
+// accept-flake-config=false where the declared caches/keys are already in the
+// global substituters / trusted-public-keys (trailing slash differences are
+// ignored), so the flake's declaration is a no-op.
+func TestCheckNixCacheTrusted_GlobalConfigAlreadyCoversDeclared(t *testing.T) {
+	ws, dir, f := nixCacheTrustWorkspace(t, declaringFlakeNix)
+	scriptNixConfigEval(f, dir, declaredEvalJSON)
+	scriptNixConfigShow(f, `{"accept-flake-config":{"value":false},
+		"substituters":{"value":["https://cache.nixos.org/","https://cache.numtide.com/","https://cache.flox.dev"]},
+		"trusted-public-keys":{"value":["cache.nixos.org-1:X","niks3.numtide.com-1:AAA","flox-cache-public-1:BBB"]}}`)
+
+	if fs := ws.checkNixCacheTrusted(context.Background(), &doctorEnv{ws: ws, mode: "primary"}); len(fs) != 0 {
+		t.Fatalf("declared caches already in the effective config must produce no finding; got %+v", fs)
+	}
+}
+
+// TestCheckNixCacheTrusted_PartialGlobalCoverageStillFlagsUncovered is the
+// still-true-positive case: accept-flake-config=false and the effective
+// config covers the substituters but NOT the keys, so only
+// extra-trusted-public-keys is flagged.
+func TestCheckNixCacheTrusted_PartialGlobalCoverageStillFlagsUncovered(t *testing.T) {
+	ws, dir, f := nixCacheTrustWorkspace(t, declaringFlakeNix)
+	scriptNixConfigEval(f, dir, declaredEvalJSON)
+	writeNixTrustedSettings(t, `{}`)
+	scriptNixConfigShow(f, `{"accept-flake-config":{"value":false},
+		"substituters":{"value":["https://cache.numtide.com","https://cache.flox.dev"]},
+		"trusted-public-keys":{"value":["niks3.numtide.com-1:AAA"]}}`)
+
+	fs := ws.checkNixCacheTrusted(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
+	if !hasSkippedFinding(t, fs, "nix-cache-trusted", "apps") {
+		t.Fatalf("expected a Skipped finding for the uncovered key; got %+v", fs)
+	}
+	msg := findingByID(t, fs, "nix-cache-trusted").Message
+	if !contains([]byte(msg), "extra-trusted-public-keys") {
+		t.Errorf("message should name extra-trusted-public-keys: %q", msg)
+	}
+	if contains([]byte(msg), "nixConfig.extra-substituters") {
+		t.Errorf("covered extra-substituters must not be named: %q", msg)
+	}
+}
+
+// TestCheckNixCacheTrusted_AcceptFalseNotCoveredStillFlags is the core
+// true-positive: accept-flake-config=false, caches absent from the effective
+// config, and no matching trust record.
+func TestCheckNixCacheTrusted_AcceptFalseNotCoveredStillFlags(t *testing.T) {
+	ws, dir, f := nixCacheTrustWorkspace(t, declaringFlakeNix)
+	scriptNixConfigEval(f, dir, declaredEvalJSON)
+	writeNixTrustedSettings(t, `{"extra-substituters":{"https://some.other.cache":true}}`)
+	scriptNixConfigShow(f, `{"accept-flake-config":{"value":false},"substituters":{"value":["https://cache.nixos.org/"]},"trusted-public-keys":{"value":["cache.nixos.org-1:X"]}}`)
+
+	fs := ws.checkNixCacheTrusted(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
+	if !hasSkippedFinding(t, fs, "nix-cache-trusted", "apps") {
+		t.Fatalf("uncovered, unaccepted caches must still be flagged; got %+v", fs)
+	}
+}
+
+// TestCheckNixCacheTrusted_EffectiveConfigUnreadableFallsBack: when `nix
+// config show` fails or returns junk, the check must behave exactly as the
+// trust-file-only check (an error is never read as "trusted").
+func TestCheckNixCacheTrusted_EffectiveConfigUnreadableFallsBack(t *testing.T) {
+	ws, dir, f := nixCacheTrustWorkspace(t, declaringFlakeNix)
+	scriptNixConfigEval(f, dir, declaredEvalJSON)
+	writeNixTrustedSettings(t, `{}`)
+	scriptNixConfigShow(f, `not json`)
+
+	if fs := ws.checkNixCacheTrusted(context.Background(), &doctorEnv{ws: ws, mode: "primary"}); !hasSkippedFinding(t, fs, "nix-cache-trusted", "apps") {
+		t.Fatalf("unparseable effective config must fall back to flagging; got %+v", fs)
+	}
+}
+
+// TestReadNixEffectiveConfig_RunnerError covers the nil (unknown) result when
+// the runner itself errors (also the existing tests' implicit path, since an
+// unscripted FakeRunner call errors).
+func TestReadNixEffectiveConfig_RunnerError(t *testing.T) {
+	f := exec.NewFakeRunner()
+	if got := readNixEffectiveConfig(context.Background(), f); got != nil {
+		t.Fatalf("runner error must yield nil; got %+v", got)
+	}
+}

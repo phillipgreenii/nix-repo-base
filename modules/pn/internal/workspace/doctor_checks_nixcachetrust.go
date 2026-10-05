@@ -30,6 +30,20 @@ import (
 // Applicability: a repo that declares NEITHER list in nixConfig has nothing
 // for this check to assert about — no finding (case 4 below).
 //
+// Effective-config trust paths (bd pg2-3jvey): trusted-settings.json is only
+// ONE of the ways nix ends up using a flake's declared caches, and it is
+// consulted ONLY when accept-flake-config is false. Verified against nix 2.34
+// (`nix eval --option accept-flake-config false` warns "ignoring untrusted
+// flake configuration setting"; the default accept-flake-config=true applies
+// the settings silently with no trust-file lookup at all, even with an empty
+// XDG_DATA_HOME). So before consulting the trust file this check reads the
+// EFFECTIVE nix config (`nix config show --json`) and treats a declared
+// setting as satisfied when (1) accept-flake-config is true, or (2) every
+// declared substituter is already in the effective `substituters` / every
+// declared key is already in `trusted-public-keys`, making the flake's
+// declaration a no-op. If the effective config cannot be read the check falls
+// back to the trust-file-only behaviour (an error is never read as "trusted").
+//
 // Severity mirrors hooks-trusted/pre-commit-hook-live's precedent for this
 // exact shape of problem (a condition that degrades silently rather than
 // failing loudly, where the detection itself must not become a new
@@ -40,6 +54,14 @@ import (
 // exclude Skipped findings unconditionally).
 func (ws *Workspace) checkNixCacheTrusted(ctx context.Context, _ *doctorEnv) []Finding {
 	trusted, trustFileExists := loadNixTrustedSettings(nixTrustedSettingsPathFn())
+
+	// Read the effective nix config lazily: only when some repo actually
+	// declares a nixConfig does it matter, and one `nix config show` serves
+	// every repo in the run.
+	var (
+		eff       *nixEffectiveConfig
+		effLoaded bool
+	)
 
 	var out []Finding
 	for _, name := range orderedRepoNames(ws.config.Repos) {
@@ -59,7 +81,11 @@ func (ws *Workspace) checkNixCacheTrusted(ctx context.Context, _ *doctorEnv) []F
 		if !declared {
 			continue // no nixConfig.extra-substituters/extra-trusted-public-keys declared
 		}
-		if f := nixCacheTrustFinding(name, cfg, trusted, trustFileExists); f != nil {
+		if !effLoaded {
+			eff = readNixEffectiveConfig(ctx, ws.runner)
+			effLoaded = true
+		}
+		if f := nixCacheTrustFinding(name, cfg, trusted, trustFileExists, eff); f != nil {
 			out = append(out, *f)
 		}
 	}
@@ -172,17 +198,97 @@ func readNixConfig(ctx context.Context, runner exec.Runner, absFlakePath string)
 	return spec, spec.declared()
 }
 
-// nixCacheTrustFinding compares repo's declared nixConfig against trusted,
+// nixEffectiveConfig is the subset of the machine's effective nix config
+// (`nix config show --json`) that decides whether a flake's declared
+// nixConfig caches are in effect without a trusted-settings.json record.
+type nixEffectiveConfig struct {
+	AcceptFlakeConfig bool
+	Substituters      []string
+	TrustedKeys       []string
+}
+
+// readNixEffectiveConfig runs `nix config show --json` and returns the
+// effective accept-flake-config / substituters / trusted-public-keys. It
+// returns nil when the config cannot be read or parsed, which callers MUST
+// treat as "unknown" (no suppression) rather than "trusted".
+func readNixEffectiveConfig(ctx context.Context, runner exec.Runner) *nixEffectiveConfig {
+	res, err := runner.Run(ctx, "nix", []string{"config", "show", "--json"}, exec.RunOptions{})
+	if err != nil {
+		return nil
+	}
+	var raw struct {
+		Accept *struct {
+			Value bool `json:"value"`
+		} `json:"accept-flake-config"`
+		Substituters *struct {
+			Value []string `json:"value"`
+		} `json:"substituters"`
+		TrustedKeys *struct {
+			Value []string `json:"value"`
+		} `json:"trusted-public-keys"`
+	}
+	if err := json.Unmarshal(res.Stdout, &raw); err != nil {
+		return nil
+	}
+	eff := &nixEffectiveConfig{}
+	if raw.Accept != nil {
+		eff.AcceptFlakeConfig = raw.Accept.Value
+	}
+	if raw.Substituters != nil {
+		eff.Substituters = raw.Substituters.Value
+	}
+	if raw.TrustedKeys != nil {
+		eff.TrustedKeys = raw.TrustedKeys.Value
+	}
+	return eff
+}
+
+// coversSubstituters reports whether every declared substituter URL is already
+// in the effective `substituters` list (trailing slashes ignored, as nix
+// treats https://cache.nixos.org and https://cache.nixos.org/ alike), making
+// the flake's extra-substituters declaration a no-op.
+func (e *nixEffectiveConfig) coversSubstituters(declared []string) bool {
+	return coversAll(e.Substituters, declared, func(s string) string { return strings.TrimRight(s, "/") })
+}
+
+// coversTrustedKeys reports whether every declared public key is already in
+// the effective `trusted-public-keys` list.
+func (e *nixEffectiveConfig) coversTrustedKeys(declared []string) bool {
+	return coversAll(e.TrustedKeys, declared, func(s string) string { return s })
+}
+
+func coversAll(have, want []string, norm func(string) string) bool {
+	set := make(map[string]bool, len(have))
+	for _, h := range have {
+		set[norm(h)] = true
+	}
+	for _, w := range want {
+		if !set[norm(w)] {
+			return false
+		}
+	}
+	return true
+}
+
+// nixCacheTrustFinding compares repo's declared nixConfig against the
+// effective nix config (eff, nil when unknown) and then trusted,
 // space-joining each declared list into the same concatenated-string-key
 // format nix itself uses (see the package doc comment above), and returns a
 // Skipped finding naming which declared setting(s) are not (yet) trusted, or
-// nil when everything declared is trusted.
-func nixCacheTrustFinding(repo string, cfg nixConfigSpec, trusted nixTrustedSettings, trustFileExists bool) *Finding {
+// nil when everything declared is in effect or trusted.
+func nixCacheTrustFinding(repo string, cfg nixConfigSpec, trusted nixTrustedSettings, trustFileExists bool, eff *nixEffectiveConfig) *Finding {
+	// accept-flake-config=true: nix applies the flake's nixConfig without
+	// prompting and never consults trusted-settings.json.
+	if eff != nil && eff.AcceptFlakeConfig {
+		return nil
+	}
 	var mismatches []string
-	if len(cfg.Substituters) > 0 && !trusted.Substituters[strings.Join(cfg.Substituters, " ")] {
+	if len(cfg.Substituters) > 0 && !trusted.Substituters[strings.Join(cfg.Substituters, " ")] &&
+		(eff == nil || !eff.coversSubstituters(cfg.Substituters)) {
 		mismatches = append(mismatches, "extra-substituters")
 	}
-	if len(cfg.TrustedKeys) > 0 && !trusted.TrustedKeys[strings.Join(cfg.TrustedKeys, " ")] {
+	if len(cfg.TrustedKeys) > 0 && !trusted.TrustedKeys[strings.Join(cfg.TrustedKeys, " ")] &&
+		(eff == nil || !eff.coversTrustedKeys(cfg.TrustedKeys)) {
 		mismatches = append(mismatches, "extra-trusted-public-keys")
 	}
 	if len(mismatches) == 0 {
