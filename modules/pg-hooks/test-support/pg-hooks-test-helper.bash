@@ -70,6 +70,13 @@ printf 'pwd=%s\n' "\$(pwd)" >>"\$log"
 printf 'home=%s\n' "\${HOME-<unset>}" >>"\$log"
 printf 'git_dir=%s\n' "\${GIT_DIR-<unset>}" >>"\$log"
 printf 'git_index_file=%s\n' "\${GIT_INDEX_FILE-<unset>}" >>"\$log"
+n=\${GIT_CONFIG_COUNT:-0}
+i=0
+while [ "\$i" -lt "\$n" ]; do
+  eval "k=\\\${GIT_CONFIG_KEY_\$i-} v=\\\${GIT_CONFIG_VALUE_\$i-}"
+  printf 'git_config=%s=%s\n' "\$k" "\$v" >>"\$log"
+  i=\$((i + 1))
+done
 if [ -e "\$ctl/stdin" ]; then
   while IFS= read -r l || [ -n "\$l" ]; do printf 'stdin=%s\n' "\$l" >>"\$log"; done
 fi

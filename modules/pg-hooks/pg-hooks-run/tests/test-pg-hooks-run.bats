@@ -137,6 +137,29 @@ $(pgh_msg_hooks_failed pre-commit fixture 2>&1)" ]
   grep -q '^argc=11$' "$PGH_T_LOG"
 }
 
+@test "runner runs prek with git fsmonitor disabled through git's env config" {
+  pgh_t_make_bundle
+  run _run_stage pre-commit
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^git_config=' "$PGH_T_LOG")" -eq 1 ]
+  grep -qxF 'git_config=core.fsmonitor=false' "$PGH_T_LOG"
+}
+
+@test "runner appends its fsmonitor entry after the caller's own GIT_CONFIG_* entries" {
+  pgh_t_make_bundle
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=zed run _run_stage pre-commit
+  [ "$status" -eq 0 ]
+  [ "$(grep '^git_config=' "$PGH_T_LOG")" = "git_config=user.name=zed
+git_config=core.fsmonitor=false" ]
+}
+
+@test "runner ignores a non-numeric GIT_CONFIG_COUNT rather than failing" {
+  pgh_t_make_bundle
+  GIT_CONFIG_COUNT=bogus run _run_stage pre-commit
+  [ "$status" -eq 0 ]
+  [ "$(grep '^git_config=' "$PGH_T_LOG")" = "git_config=core.fsmonitor=false" ]
+}
+
 @test "runner honours GIT_INDEX_FILE and GIT_DIR from git" {
   pgh_t_track_flake_lock
   local alt="$BATS_TEST_TMPDIR/alt-index" alt_stamp

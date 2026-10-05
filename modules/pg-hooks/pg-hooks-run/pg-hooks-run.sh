@@ -109,6 +109,21 @@ if [[ $progress_after =~ ^[0-9]+$ ]] && ((progress_after > 0)); then
   trap pgh_progress_stop EXIT
 fi
 
+# Run prek, and every hook it spawns, with git's fsmonitor off. prek hardcodes
+# `-c core.useBuiltinFSMonitor=false` (crates/prek/src/git.rs) to avoid the
+# daemon, but git has long since replaced that key with core.fsmonitor, so on a
+# modern git the flag is ignored: with core.fsmonitor=true in the repo config
+# prek's own `git write-tree` / `git diff` block forever in
+# fsmonitor_ipc__send_query whenever the fsmonitor daemon (or the OS file-event
+# service behind it) stops answering, holding index.lock and the prek lock.
+# GIT_CONFIG_COUNT is git's env-based -c: append our entry after any the caller
+# already set. An env entry outranks the config files, so this wins over a
+# repo's core.fsmonitor=true.
+gc_n=${GIT_CONFIG_COUNT:-0}
+[[ $gc_n =~ ^[0-9]+$ ]] || gc_n=0
+export "GIT_CONFIG_KEY_$gc_n=core.fsmonitor" "GIT_CONFIG_VALUE_$gc_n=false"
+export GIT_CONFIG_COUNT=$((gc_n + 1))
+
 rc=0
 "$bundle/bin/prek" "${prek_args[@]}" || rc=$?
 pgh_progress_stop
