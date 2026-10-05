@@ -248,6 +248,7 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 			return v
 		}
 		v := ws.nixHookVarsForLock(key, lk)
+		v.NixExe = wrapNixExe(ctx, v.NixExe)
 		varsCache[key] = v
 		return v
 	}
@@ -307,6 +308,25 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 		}
 	}
 	return nil
+}
+
+// wrapNixExe returns the nix executable a {nix_run} expansion invokes. With
+// telemetry on and a usable pg-nix-log-wrapped it is the wrapper's argv prefix
+// followed by nix, so the hook's nix run emits a nix.invocation span under the
+// hook's pn.exec span (the wrapper reads TRACEPARENT from the environment that
+// WithTraceEnv gives the hook, ADR 0028). With telemetry off, or the wrapper
+// absent or unusable, it returns nixExe unchanged, so the expansion is
+// byte-identical to before.
+func wrapNixExe(ctx context.Context, nixExe string) string {
+	argv := exec.NixWrapperArgv(ctx)
+	if len(argv) == 0 {
+		return nixExe
+	}
+	quoted := make([]string, 0, len(argv)+1)
+	for _, a := range argv {
+		quoted = append(quoted, shSingleQuote(a))
+	}
+	return strings.Join(append(quoted, nixExe), " ")
 }
 
 // nixHookVarsForLock builds the per-repo {nix_run} expansion values from an

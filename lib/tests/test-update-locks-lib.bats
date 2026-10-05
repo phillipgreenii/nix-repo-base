@@ -34,6 +34,9 @@ setup() {
   STATE_DIR=$(mktemp -d)
   export XDG_STATE_HOME="$STATE_DIR"
   export NIX_UL_FORCE_UPDATE="true"
+  # pn's telemetry hand-off to the script (pg2-2i29w). A developer's own session
+  # may carry these; the suite must start with no wrapper in play.
+  unset TRACEPARENT PN_NIX_LOG_WRAPPER PN_NIX_LOG_OTLP_ENDPOINT PG_NIX_LOG_DISABLE OTEL_SDK_DISABLED
 
   # Mock nix so that `nix fmt` is a no-op in tests
   # (real nix fmt requires treefmt/flake context not available in test sandbox)
@@ -1495,4 +1498,268 @@ MOCK
   chmod +x "$MOCK_BIN/nix"
   run bash -c 'source "'"$UL_LOCKS_LIB"'"; ul_setup "p" "'"$TEST_DIR"'"'
   [ "$status" -eq 77 ]
+}
+
+# --- nix telemetry: nix runs under pg-nix-log-wrapped (pg2-2i29w) ---
+#
+# A mock wrapper stands in for pg-nix-log-wrapped: it logs its own argv to
+# $WRAP_LOG (outside the git tree, so `git add -A` in a step never sweeps it
+# up), drops everything up to and including `--`, and execs the rest, which is
+# the real wrapper's contract.
+
+_install_mock_wrapper() { # <path>
+  WRAP_LOG="$HOME_DIR/wrapper.log"
+  cat > "$1" <<'MOCK'
+#!/usr/bin/env bash
+echo "wrapper: $*" >> "$WRAP_LOG"
+while [[ $# -gt 0 && $1 != -- ]]; do shift; done
+shift
+exec "$@"
+MOCK
+  _fix_mock_shebang "$1"
+  chmod +x "$1"
+  export WRAP_LOG
+}
+
+_recording_nix_mock() {
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+echo "nix: $*" >> "$WRAP_LOG"
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+}
+
+@test "_ul_nix_wrap_prefix is empty without TRACEPARENT even when a wrapper exists" {
+  _install_mock_wrapper "$MOCK_BIN/pg-nix-log-wrapped"
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/pg-nix-log-wrapped"
+  source "$UL_LOCKS_LIB"
+  _ul_nix_wrap_prefix
+  [ "${#_UL_NIX_PREFIX[@]}" -eq 0 ]
+}
+
+@test "_ul_nix_wrap_prefix uses PN_NIX_LOG_WRAPPER and the endpoint pn resolved" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
+  export PN_NIX_LOG_OTLP_ENDPOINT=http://127.0.0.1:4318
+  source "$UL_LOCKS_LIB"
+  _ul_nix_wrap_prefix
+  [ "${_UL_NIX_PREFIX[*]}" = "$MOCK_BIN/my-wrapper --otlp-endpoint http://127.0.0.1:4318 --" ]
+}
+
+@test "_ul_nix_wrap_prefix omits --otlp-endpoint when pn gave none" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
+  source "$UL_LOCKS_LIB"
+  _ul_nix_wrap_prefix
+  [ "${_UL_NIX_PREFIX[*]}" = "$MOCK_BIN/my-wrapper --" ]
+}
+
+@test "_ul_nix_wrap_prefix falls back to pg-nix-log-wrapped on PATH" {
+  _install_mock_wrapper "$MOCK_BIN/pg-nix-log-wrapped"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/does-not-exist"
+  source "$UL_LOCKS_LIB"
+  _ul_nix_wrap_prefix
+  [ "${_UL_NIX_PREFIX[*]}" = "$MOCK_BIN/pg-nix-log-wrapped --" ]
+}
+
+@test "_ul_nix_wrap_prefix is empty when no wrapper is found" {
+  # no real pg-nix-log-wrapped (this machine has one) may be found on PATH
+  export PATH="$MOCK_BIN:/usr/bin:/bin"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/does-not-exist"
+  source "$UL_LOCKS_LIB"
+  _ul_nix_wrap_prefix
+  [ "${#_UL_NIX_PREFIX[@]}" -eq 0 ]
+}
+
+@test "_ul_nix_wrap_prefix is empty when the wrapper path is not executable" {
+  echo "not a program" > "$MOCK_BIN/not-exec"
+  # no real pg-nix-log-wrapped (this machine has one) may be found on PATH
+  export PATH="$MOCK_BIN:/usr/bin:/bin"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/not-exec"
+  source "$UL_LOCKS_LIB"
+  _ul_nix_wrap_prefix
+  [ "${#_UL_NIX_PREFIX[@]}" -eq 0 ]
+}
+
+@test "_ul_nix_wrap_prefix is empty when telemetry is forced off" {
+  _install_mock_wrapper "$MOCK_BIN/pg-nix-log-wrapped"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/pg-nix-log-wrapped"
+  source "$UL_LOCKS_LIB"
+  PG_NIX_LOG_DISABLE=1 _ul_nix_wrap_prefix
+  [ "${#_UL_NIX_PREFIX[@]}" -eq 0 ]
+  OTEL_SDK_DISABLED=true _ul_nix_wrap_prefix
+  [ "${#_UL_NIX_PREFIX[@]}" -eq 0 ]
+}
+
+@test "ul_run_step runs a nix step under the wrapper when telemetry is on" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  _recording_nix_mock
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
+  export PN_NIX_LOG_OTLP_ENDPOINT=http://127.0.0.1:4318
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  : > "$WRAP_LOG" # ignore ul_setup's own nix calls
+
+  ul_run_step "nix-flake-update" "update-locks: flake" nix flake update --flag "two words"
+
+  [ "$_UL_STEPS_SUCCEEDED" -eq 1 ]
+  grep -qxF "wrapper: --otlp-endpoint http://127.0.0.1:4318 -- nix flake update --flag two words" "$WRAP_LOG"
+  grep -qxF "nix: flake update --flag two words" "$WRAP_LOG"
+}
+
+@test "ul_run_step leaves a nix step bare when telemetry is off" {
+  _install_mock_wrapper "$MOCK_BIN/pg-nix-log-wrapped"
+  _recording_nix_mock
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/pg-nix-log-wrapped" # present, but no TRACEPARENT
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  : > "$WRAP_LOG"
+
+  ul_run_step "nix-flake-update" "update-locks: flake" nix flake update
+
+  [ "$_UL_STEPS_SUCCEEDED" -eq 1 ]
+  [ "$(grep -c '^wrapper:' "$WRAP_LOG" || true)" -eq 0 ]
+  [ "$(grep -c '^nix: flake update$' "$WRAP_LOG")" -eq 1 ]
+}
+
+@test "ul_run_step never wraps a step that is not a nix command" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  _recording_nix_mock
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  : > "$WRAP_LOG"
+  other_step() { echo "other: $*" >> "$WRAP_LOG"; }
+
+  ul_run_step "other-step" "update-locks: other" other_step nix
+
+  [ "$_UL_STEPS_SUCCEEDED" -eq 1 ]
+  grep -qxF "other: nix" "$WRAP_LOG"
+  [ "$(grep -c '^wrapper:' "$WRAP_LOG" || true)" -eq 0 ]
+}
+
+@test "ul_nix runs bare nix with the same argv when no wrapper applies" {
+  _install_mock_wrapper "$MOCK_BIN/pg-nix-log-wrapped"
+  _recording_nix_mock
+  source "$UL_LOCKS_LIB"
+  run ul_nix build .#x --no-link
+  [ "$status" -eq 0 ]
+  [ "$(cat "$WRAP_LOG")" = "nix: build .#x --no-link" ]
+}
+
+@test "ul_nix propagates the wrapped command's exit status" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+echo "boom" >&2
+exit 7
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
+  source "$UL_LOCKS_LIB"
+  run ul_nix build .#x
+  [ "$status" -eq 7 ]
+  [[ $output == *boom* ]]
+}
+
+@test "_ul_ensure_pre_commit_hooks builds and installs the hook bundle under the wrapper" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  _recording_nix_mock
+  export UL_TEST_PG_HOOKS_STATE=stale
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  grep -qxF "wrapper: -- nix build .#install-pre-commit-hooks --no-link" "$WRAP_LOG"
+  grep -qxF "wrapper: -- nix run .#install-pre-commit-hooks" "$WRAP_LOG"
+}
+
+@test "_ul_ensure_pre_commit_hooks still reads the attr-missing error through the wrapper" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+echo "error: flake does not provide attribute 'packages.x.install-pre-commit-hooks'" >&2
+exit 1
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
+  source "$UL_LOCKS_LIB"
+  cd "$TEST_DIR" || return 1
+
+  run _ul_ensure_pre_commit_hooks
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "ul_reexec_in_dev_shell enters the dev shell under the wrapper and keeps the sentinel contract" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "develop" ]]; then
+  echo "nix: $*" >> "$WRAP_LOG"
+  rm -f "$UL_DEVSHELL_SENTINEL"
+  echo "ENTERED"
+  exit 0
+fi
+exit 99
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+
+  cat > "$TEST_DIR/wrap-test.sh" <<SCRIPT
+#!/usr/bin/env bash
+source "$UL_LOCKS_LIB"
+ul_reexec_in_dev_shell "\$@"
+echo FALLTHROUGH
+SCRIPT
+  _fix_mock_shebang "$TEST_DIR/wrap-test.sh"
+  chmod +x "$TEST_DIR/wrap-test.sh"
+
+  run env -u IN_NIX_SHELL TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01 \
+    PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper" "$TEST_DIR/wrap-test.sh" arg1
+  [ "$status" -eq 0 ]
+  [[ $output == *ENTERED* ]]
+  [[ $output != *WARNING* ]]
+  [[ $output != *FALLTHROUGH* ]]
+  grep -q '^wrapper: -- nix develop ' "$WRAP_LOG"
+}
+
+@test "ul_reexec_in_dev_shell falls back to host tools when the wrapped dev shell cannot start" {
+  _install_mock_wrapper "$MOCK_BIN/my-wrapper"
+  cat > "$MOCK_BIN/nix" <<'MOCK'
+#!/usr/bin/env bash
+echo "nix: broken flake" >&2
+exit 1
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/nix"
+  chmod +x "$MOCK_BIN/nix"
+  export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
+  export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
+
+  run bash -c "
+    unset IN_NIX_SHELL
+    source '$UL_LOCKS_LIB'
+    ul_reexec_in_dev_shell
+    echo POST_CALL
+  "
+  [ "$status" -eq 0 ]
+  [[ $output == *WARNING* ]]
+  [[ $output == *POST_CALL* ]]
 }

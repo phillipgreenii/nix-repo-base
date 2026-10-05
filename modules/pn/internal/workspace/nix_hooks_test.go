@@ -13,6 +13,9 @@ import (
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry/telemetrytest"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetrycfg"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
@@ -480,5 +483,102 @@ func TestRunEventHooks_OtherNixRunAttrsUnaffectedByGate(t *testing.T) {
 	}
 	if n := len(shCalls(f)); n != 1 {
 		t.Errorf("a non-install-pre-commit-hooks {nix_run} hook must still fire; want 1 sh call, got %d", n)
+	}
+}
+
+// wrapperHookWS opens the one-repo workspace the wrapper tests use: repo "a"
+// with a post-rebase {nix_run install-pre-commit-hooks} hook.
+func wrapperHookWS(t *testing.T) (*Workspace, *exec.FakeRunner, string) {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"{nix_run install-pre-commit-hooks}\"]\n")
+	mustMkdir(t, filepath.Join(root, "a"))
+	writeFile(t, filepath.Join(root, "a", "flake.nix"), "{}")
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	if err := WriteLock(filepath.Join(root, LockFileName), lk); err != nil {
+		t.Fatal(err)
+	}
+	f := exec.NewFakeRunner()
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustWS(t, root)
+	return w, f, root
+}
+
+// shCommandOf runs the post-rebase hooks under ctx and returns the single
+// `sh -c` command string the hook produced.
+func shCommandOf(t *testing.T, ctx context.Context, w *Workspace, f *exec.FakeRunner) string {
+	t.Helper()
+	if err := w.RunEventHooks(ctx, HookPhasePost, "rebase", []string{"a"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var cmds []string
+	for _, c := range f.Calls() {
+		if c.Name == "sh" {
+			cmds = append(cmds, c.Args[1])
+		}
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("want 1 sh call, got %d", len(cmds))
+	}
+	return cmds[0]
+}
+
+// With telemetry on and a usable wrapper, the {nix_run} expansion runs nix
+// under pg-nix-log-wrapped (TRACEPARENT comes from the hook's environment).
+func TestRunEventHooks_NixRunUsesWrapperWhenTelemetryOn(t *testing.T) {
+	wrapper := filepath.Join(t.TempDir(), "pg-nix-log-wrapped")
+	writeFile(t, wrapper, "#!/bin/sh\n")
+	if err := os.Chmod(wrapper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, f, root := wrapperHookWS(t)
+	tel, _ := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	ctx = telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(telemetrycfg.Resolution{
+		Enabled: true, Endpoint: "http://127.0.0.1:4318", Source: telemetrycfg.SourceFlag, WrapperPath: wrapper,
+	}))
+
+	got := shCommandOf(t, ctx, w, f)
+	prefix := "'" + wrapper + "' '--otlp-endpoint' 'http://127.0.0.1:4318' '--log-dir' '" +
+		filepath.Join(os.Getenv("XDG_STATE_HOME"), "pn", "nix-logs") + "' '--' nix run "
+	if !strings.HasPrefix(got, prefix) {
+		t.Errorf("command = %q\nwant prefix %q", got, prefix)
+	}
+	if !strings.HasSuffix(got, "'"+filepath.Join(root, "a")+"#install-pre-commit-hooks'") {
+		t.Errorf("flakeref lost: %q", got)
+	}
+}
+
+// Telemetry off, or the wrapper absent or not executable: the expansion is the
+// byte-identical bare `nix run ...`.
+func TestRunEventHooks_NixRunBareWhenWrapperUnavailable(t *testing.T) {
+	notExec := filepath.Join(t.TempDir(), "w")
+	writeFile(t, notExec, "x")
+	tel, _ := telemetrytest.New()
+	on := func(wrapperPath string) context.Context {
+		ctx := telemetry.WithTelemetry(context.Background(), tel)
+		return telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(telemetrycfg.Resolution{
+			Enabled: true, Endpoint: "http://127.0.0.1:4318", WrapperPath: wrapperPath,
+		}))
+	}
+	cases := map[string]context.Context{
+		"no telemetry":          context.Background(),
+		"telemetry disabled":    telemetry.WithTelemetry(context.Background(), telemetry.Disabled()),
+		"no wrapper path":       on(""),
+		"wrapper missing":       on(filepath.Join(t.TempDir(), "absent")),
+		"wrapper not exec":      on(notExec),
+		"wrapper path relative": on("pg-nix-log-wrapped"),
+	}
+	for name, ctx := range cases {
+		t.Run(name, func(t *testing.T) {
+			w, f, root := wrapperHookWS(t)
+			want := "nix run '" + filepath.Join(root, "a") + "#install-pre-commit-hooks'"
+			if got := shCommandOf(t, ctx, w, f); got != want {
+				t.Errorf("command = %q, want the unwrapped %q", got, want)
+			}
+		})
 	}
 }

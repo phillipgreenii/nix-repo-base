@@ -3,6 +3,8 @@ package exec
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry/telemetrytest"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetrycfg"
 )
 
 var traceparentRe = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
@@ -150,5 +153,93 @@ func TestNewRealRunner_PropagateTrace_ChildEnvironment(t *testing.T) {
 	}
 	if out.String() != "inherited" {
 		t.Errorf("telemetry off: child TRACEPARENT = %q, want the inherited value", out.String())
+	}
+}
+
+// wrapperCtx returns a telemetry-on context whose RunState names wrapper.
+func wrapperCtx(t *testing.T, wrapper string) context.Context {
+	t.Helper()
+	ctx, _ := onCtx(t)
+	return telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(telemetrycfg.Resolution{
+		Enabled: true, Endpoint: testEndpoint, Source: telemetrycfg.SourceFlag, WrapperPath: wrapper,
+	}))
+}
+
+// With a usable wrapper the child also learns where it is and which endpoint
+// to hand it, so update-locks.sh can run its nix calls under it.
+func TestTraceEnvRunner_UsableWrapper_ExportsWrapperAndEndpoint(t *testing.T) {
+	ctx := wrapperCtx(t, storeWrapper)
+	inner := &recRunner{}
+	r := &traceEnvRunner{inner: inner, usable: func(string) bool { return true }}
+	if _, err := r.Run(ctx, "./update-locks.sh", nil, RunOptions{PropagateTrace: true, Env: map[string]string{"A": "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	env := inner.calls[0].Opts.Env
+	if env[EnvNixWrapper] != storeWrapper || env[EnvNixWrapperEndpoint] != testEndpoint || env["A"] != "1" {
+		t.Errorf("env = %v", env)
+	}
+	if !traceparentRe.MatchString(env["TRACEPARENT"]) {
+		t.Errorf("TRACEPARENT missing: %v", env)
+	}
+}
+
+// An unusable wrapper (absent, not executable, relative, not configured) is
+// not advertised: the env carries TRACEPARENT only, as before.
+func TestTraceEnvRunner_UnusableWrapper_ExportsOnlyTraceparent(t *testing.T) {
+	for name, tc := range map[string]struct {
+		wrapper string
+		usable  bool
+	}{
+		"not executable": {storeWrapper, false},
+		"relative":       {"pg-nix-log-wrapped", true},
+		"unconfigured":   {"", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := wrapperCtx(t, tc.wrapper)
+			inner := &recRunner{}
+			r := &traceEnvRunner{inner: inner, usable: func(string) bool { return tc.usable }}
+			if _, err := r.Run(ctx, "sh", nil, RunOptions{PropagateTrace: true}); err != nil {
+				t.Fatal(err)
+			}
+			env := inner.calls[0].Opts.Env
+			if len(env) != 1 || !traceparentRe.MatchString(env["TRACEPARENT"]) {
+				t.Errorf("env = %v, want exactly TRACEPARENT", env)
+			}
+		})
+	}
+}
+
+// Telemetry off: the wrapper is never advertised, opts are untouched.
+func TestTraceEnvRunner_TelemetryOff_WrapperNotAdvertised(t *testing.T) {
+	ctx := telemetrycfg.WithRunState(context.Background(), telemetrycfg.NewRunState(telemetrycfg.Resolution{
+		Enabled: true, Endpoint: testEndpoint, WrapperPath: storeWrapper,
+	}))
+	inner := &recRunner{}
+	r := &traceEnvRunner{inner: inner, usable: func(string) bool { return true }}
+	opts := RunOptions{PropagateTrace: true}
+	if _, err := r.Run(ctx, "sh", nil, opts); err != nil {
+		t.Fatal(err)
+	}
+	if got := inner.calls[0].Opts; !reflect.DeepEqual(got, opts) {
+		t.Errorf("opts changed with telemetry off: %+v", got)
+	}
+}
+
+func TestNixWrapperArgv(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/state")
+	// storeWrapper does not exist on disk, so the production probe rejects it.
+	if got := NixWrapperArgv(wrapperCtx(t, storeWrapper)); got != nil {
+		t.Errorf("nonexistent wrapper: got %v, want nil", got)
+	}
+	real := filepath.Join(t.TempDir(), "w")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{real, "--otlp-endpoint", testEndpoint, "--log-dir", "/state/pn/nix-logs", "--"}
+	if got := NixWrapperArgv(wrapperCtx(t, real)); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if got := NixWrapperArgv(context.Background()); got != nil {
+		t.Errorf("no telemetry: got %v, want nil", got)
 	}
 }

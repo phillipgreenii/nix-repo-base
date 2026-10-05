@@ -421,6 +421,55 @@ _ul_in_linked_worktree() {
   [[ $gd != "$cd_" ]]
 }
 
+# --- nix telemetry: run nix under pg-nix-log-wrapped (pg2-2i29w, ADR 0028/0030) ---
+#
+# `pn` exports TRACEPARENT (the update-locks.sh pn.exec span) to this script and,
+# when telemetry is on and the wrapper is usable, PN_NIX_LOG_WRAPPER (its
+# absolute path; the wrapper is deliberately not on PATH) and
+# PN_NIX_LOG_OTLP_ENDPOINT. Routing this script's own nix calls through
+# pg-nix-log-wrapped makes their nix.invocation spans nest under that span in the
+# pn.verb trace; a bare nix emits none.
+#
+# _ul_nix_wrap_prefix fills _UL_NIX_PREFIX with the argv that goes IN FRONT of
+# `nix`, or leaves it EMPTY, and an empty prefix is the contract that nothing
+# changes: the caller then runs exactly the bare `nix ...` it ran before, with
+# the same argv, stdio and exit status (fail open, byte-identical). It is empty
+# unless ALL of these hold:
+#   - TRACEPARENT is non-empty (a standalone run has no trace to join);
+#   - telemetry is not forced off (PG_NIX_LOG_DISABLE=1|true, OTEL_SDK_DISABLED=true);
+#   - a wrapper is found: PN_NIX_LOG_WRAPPER if it names an executable file, else
+#     pg-nix-log-wrapped on PATH.
+# The wrapper itself fails open too (no endpoint, unwritable log dir, ...): it
+# then execs nix unmodified with empty stderr.
+_UL_NIX_PREFIX=()
+_ul_nix_wrap_prefix() {
+  _UL_NIX_PREFIX=()
+  [[ -n ${TRACEPARENT:-} ]] || return 0
+  case ${PG_NIX_LOG_DISABLE:-} in 1 | true | TRUE | True) return 0 ;; esac
+  case ${OTEL_SDK_DISABLED:-} in true | TRUE | True) return 0 ;; esac
+  local wrapper="${PN_NIX_LOG_WRAPPER:-}"
+  if [[ -z $wrapper || ! -f $wrapper || ! -x $wrapper ]]; then
+    wrapper="$(command -v pg-nix-log-wrapped 2>/dev/null)" || return 0
+    [[ -f $wrapper && -x $wrapper ]] || return 0
+  fi
+  _UL_NIX_PREFIX=("$wrapper")
+  if [[ -n ${PN_NIX_LOG_OTLP_ENDPOINT:-} ]]; then
+    _UL_NIX_PREFIX+=(--otlp-endpoint "$PN_NIX_LOG_OTLP_ENDPOINT")
+  fi
+  _UL_NIX_PREFIX+=(--)
+}
+
+# ul_nix ARGS...: run `nix ARGS...`, under the wrapper when _ul_nix_wrap_prefix
+# finds one. Same argv, stdio and exit status either way.
+ul_nix() {
+  _ul_nix_wrap_prefix
+  if [[ ${#_UL_NIX_PREFIX[@]} -gt 0 ]]; then
+    "${_UL_NIX_PREFIX[@]}" nix "$@"
+  else
+    nix "$@"
+  fi
+}
+
 _ul_ensure_pre_commit_hooks() {
   # Does the flake declare install-pre-commit-hooks? --no-link avoids polluting
   # the project dir. Distinguish "flake does not declare the attribute" (a
@@ -429,7 +478,7 @@ _ul_ensure_pre_commit_hooks() {
   # surfaced instead of hiding a broken hook install.
   local errfile err
   errfile=$(mktemp)
-  if ! nix build .#install-pre-commit-hooks --no-link 2>"$errfile"; then
+  if ! ul_nix build .#install-pre-commit-hooks --no-link 2>"$errfile"; then
     err=$(<"$errfile")
     rm -f "$errfile"
     if [[ $err == *"does not provide attribute"* ]]; then
@@ -467,7 +516,7 @@ _ul_ensure_pre_commit_hooks() {
       return 0
     fi
     echo "==> hook bundle ${bundle_state}, reinstalling..."
-    nix run .#install-pre-commit-hooks
+    ul_nix run .#install-pre-commit-hooks
     ;;
   unreachable)
     echo "==> warning: git does not run hooks from the common hooks dir (operator-only fix: see 'pg-hooks status')" >&2
@@ -522,7 +571,7 @@ ul_reexec_in_dev_shell() {
   local rc=0
   # shellcheck disable=SC2016  # $UL_DEVSHELL_SENTINEL and $@ are expanded by the inner shell, intentionally
   UL_DEVSHELL_SENTINEL="$sentinel" \
-    nix develop "$flake_dir" --command bash -c 'rm -f "$UL_DEVSHELL_SENTINEL"; exec bash "$@"' ul-reexec "$script" "$@" || rc=$?
+    ul_nix develop "$flake_dir" --command bash -c 'rm -f "$UL_DEVSHELL_SENTINEL"; exec bash "$@"' ul-reexec "$script" "$@" || rc=$?
 
   if [[ -e $sentinel ]]; then
     rm -f "$sentinel"
@@ -630,6 +679,16 @@ ul_run_step() {
 
   echo "==> ${step_name}..."
   _UL_STEPS_RAN=$((_UL_STEPS_RAN + 1))
+
+  # A step whose command is `nix ...` runs under pg-nix-log-wrapped when one is
+  # available (see _ul_nix_wrap_prefix); the prefix is empty otherwise, which
+  # leaves "$@" exactly as the caller wrote it.
+  if [[ $1 == nix ]]; then
+    _ul_nix_wrap_prefix
+    if [[ ${#_UL_NIX_PREFIX[@]} -gt 0 ]]; then
+      set -- "${_UL_NIX_PREFIX[@]}" "$@"
+    fi
+  fi
 
   local rc=0
   local _ul_restore_e
@@ -791,7 +850,7 @@ _ul_commit_updated() {
   local step_name="$1" commit_msg="$2"
   if ! git diff --quiet || ! git diff --cached --quiet; then
     _ul_record_upgrade "$step_name"
-    if ! nix fmt; then
+    if ! ul_nix fmt; then
       echo "  ✗ Step '${step_name}' nix fmt failed"
       git reset --hard HEAD 2>/dev/null || true
       git clean -fd 2>/dev/null || true

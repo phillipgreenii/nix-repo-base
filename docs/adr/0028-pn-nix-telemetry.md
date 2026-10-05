@@ -439,7 +439,8 @@ Details that are decisions rather than restatements of W-1:
 - `--show-nix-commands-only` returns before the Runner and prints the unwrapped command. The wrapper is
   below `ensureExecTrusted()`, so the trust gate is unaffected.
 - Hooks and `update-locks.sh` are not rewritten by this decorator; they get `TRACEPARENT` from the
-  separate decorator below (`pg2-u2pnh`).
+  separate decorator below (`pg2-u2pnh`), and their nix goes through the wrapper by the means
+  described under "the nix they run goes through the wrapper" (`pg2-2i29w`).
 
 #### Hooks and `update-locks.sh`: `TRACEPARENT` in the child environment (`pg2-u2pnh`)
 
@@ -474,6 +475,39 @@ wrapper or any other W3C-aware tool it invokes nests under the `pn.exec` span of
   runs a nix command wrapped by `pg-nix-log-wrapped` (which honours `TRACEPARENT`), and confirm the
   trace has `pn.verb > pn.repo > pn.exec > nix.invocation` for it, i.e. the trace of the `pn.verb`
   contains the hook's `nix.invocation` spans.
+
+#### Hooks and `update-locks.sh`: the nix they run goes through the wrapper (`pg2-2i29w`)
+
+Exporting `TRACEPARENT` alone was not enough: the nix those children run was a bare `nix`, so the
+wrapper never saw it and the trace of a `pn workspace update` held no `nix.invocation` under the
+hook or `update-locks.sh` `pn.exec` span (observed post-apply, `pg2-e4tci`). Both children now route
+their nix calls through `pg-nix-log-wrapped`, each with the mechanism that fits it. The wrapper reads
+`TRACEPARENT` from the environment, so neither adds `--traceparent`.
+
+- **`{nix_run <attr>}` hooks (Go).** `RunEventHooks` expands the token's `nix` executable to the
+  wrapper's argv prefix followed by `nix` (`exec.NixWrapperArgv`: `<wrapper> --otlp-endpoint URL
+[--log-dir DIR] --`, each token single-quoted for `sh -c`). The usability gate is the one the
+  `WrapNix` decorator uses for a non-root call (telemetry on, an endpoint, an absolute
+  `wrapper_path` that is an executable regular file); under any failure the prefix is nil and the
+  expansion is the byte-identical bare `nix run ...`. Hooks that are not `{nix_run}` stay untouched.
+- **`update-locks.sh` (bash).** The wrapper is not on `PATH` (it is deliberately not in
+  `home.packages`), so `exec.WithTraceEnv` adds two variables next to `TRACEPARENT`, only when the
+  wrapper is usable: `PN_NIX_LOG_WRAPPER` (absolute path) and `PN_NIX_LOG_OTLP_ENDPOINT`.
+  `lib/scripts/update-locks-lib.bash` reads them in `_ul_nix_wrap_prefix` and prefixes `nix` for:
+  a `ul_run_step` step whose command is `nix ...`, `nix develop` in `ul_reexec_in_dev_shell`,
+  `nix build`/`nix run` of `install-pre-commit-hooks`, and `nix fmt` in the step commit (all via
+  `ul_nix`). The prefix is non-empty only when `TRACEPARENT` is set, telemetry is not forced off
+  (`PG_NIX_LOG_DISABLE`, `OTEL_SDK_DISABLED`) and a wrapper is found (`PN_NIX_LOG_WRAPPER`, else
+  `pg-nix-log-wrapped` on `PATH`). An empty prefix leaves argv, stdio and exit status exactly as
+  before, so a standalone run and a telemetry-off run are unchanged. The wrapper itself fails open.
+- **Known cost.** The wrapped `nix develop` is the long-lived re-exec of the whole script, so its
+  `nix.invocation` span covers the entire update run, and the `NIX_CONFIG` json-log-path the wrapper
+  sets is inherited by everything the dev shell runs. Nested wrapped calls set their own log path,
+  so they are not double counted; an unwrapped nix inside the shell is attributed to the outer span.
+- **Post-apply check (Tempo).** After `pn workspace update` with telemetry on, the verb's trace MUST
+  contain `nix.invocation` spans whose parent chain is `pn.verb > pn.repo > pn.exec(./update-locks.sh)`
+  and, for a repo with a `{nix_run}` hook, `... > pn.exec(sh) > nix.invocation`; and
+  `~/.local/state/pn/nix-logs` MUST gain a file in the run window.
 
 **Concurrency check (acceptance; TraceQL).** Tempo has no native concurrency aggregate, so the "no more
 than 3 overlapping `nix.build` spans per machine" check is a TraceQL search for the spans plus a
