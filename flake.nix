@@ -887,8 +887,13 @@
             # no strict-JSON status line, and a half-relocked set whose own
             # cleanliness pre-flight then REFUSED the re-run. Both runner
             # definitions therefore carry the "One Turn, Foreground Only" rule
-            # (R1-R4), the `600000` ms foreground ceiling, and an incomplete-*
-            # halt reason. Nothing else validates these markdown definitions
+            # (R1-R4) and the `600000` ms foreground ceiling. Since bead
+            # pg2-fy8wq the relock is no longer a runner stage at all: it runs
+            # in the MAIN session as a background job, so `pnwf-update-runner`'s
+            # R4 is the prohibition on running it, and the incomplete-update
+            # halt reason lives in the /pn-workspace-update command, while
+            # `pnwf-runner` (sync) keeps its incomplete-sync halt reason.
+            # Nothing else validates these markdown definitions
             # (treefmt only formats them), so assert the load-bearing text is
             # present AND that no path re-permits backgrounding: every
             # `run_in_background` mention MUST sit on a prohibition line.
@@ -929,8 +934,23 @@
                 }
               done
 
-              grep -qF -- 'incomplete-update' "$update_runner" || {
-                echo "pnwf-update-runner.md: missing the incomplete-update halt reason" >&2
+              # The update runner must keep refusing the relock (bd pg2-fy8wq)...
+              grep -qF -- 'You MUST NOT run the relock' "$update_runner" || {
+                echo "pnwf-update-runner.md: missing the R4 prohibition on running the relock" >&2
+                exit 1
+              }
+              # ...and the command, which now owns that step in the main session,
+              # must carry the halt reason and run the relock as a background job.
+              grep -qF -- 'incomplete-update' "$update_cmd" || {
+                echo "pn-workspace-update.md: missing the incomplete-update halt reason" >&2
+                exit 1
+              }
+              grep -qF -- 'pnwf update-relock --set' "$update_cmd" || {
+                echo "pn-workspace-update.md: missing the main-session relock step" >&2
+                exit 1
+              }
+              grep -qF -- 'run_in_background: true' "$update_cmd" || {
+                echo "pn-workspace-update.md: the relock step no longer runs as a background job" >&2
                 exit 1
               }
               grep -qF -- 'incomplete-sync' "$sync_runner" || {

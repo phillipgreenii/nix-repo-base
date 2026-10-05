@@ -60,6 +60,24 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   60 minutes for a SINGLE repo (`.github/workflows/ci.yml`,
   `timeout-minutes: 60`), so it CAN outlast the ceiling. **R3**, not a larger
   number, is what covers that case.
+
+  **Why Stage 2 stays in this runner while the update runner's relock does not
+  (judged, bd `pg2-fy8wq`).** `/pn-workspace-update`'s `pnwf update-relock` was
+  moved out of its runner into the main session's background because it runs
+  `nix flake update` plus each repo's `update-locks.sh` across every member —
+  unbounded, evaluation-heavy work. `pnwf sync-fetch` does none of that: per
+  member it is a `git fetch origin`, a `git rebase`, and at most a canonical
+  `git push` (`pnwf_fetch_and_rebase` / `pnwf_push_canonical_primary_if_ahead` in
+  `modules/pnwf/lib/pnwf-lib.bash` invoke no `nix` and no `pn`; the git hooks they
+  trigger are barred from invoking nix, HK-2), so it is bounded by network and
+  git, not by evaluation. A Stage 2 that outlasts `600000` ms is therefore an
+  anomaly (a hung fetch, an auth prompt) that the `incomplete-sync` halt and its
+  residue probe are the right response to, not a healthy job to be awaited. If
+  `sync-fetch` is ever OBSERVED to outlast the ceiling while healthy, apply the
+  same split used in `/pn-workspace-update`. The exposure this runner DOES
+  share with the update runner is Stage 3's `pn workspace build`, which already
+  reports "did not prove the set green" rather than a false failure.
+
 - **R3** If a step does not finish inside its timeout, you MUST still end your
   response with the contracted strict-JSON status line of
   [§8](#8-return-protocol) — a `halt` naming the stage it died in, and for Stage

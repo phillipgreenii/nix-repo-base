@@ -31,99 +31,166 @@ authorization. (If a repo's `integrate-branch` strategy turns out to be
 
 ## The pipeline
 
-The read/build-heavy prefix (fork → update-relock → validate) runs in an isolated
-subagent; the main session then lands, cleans up, and publishes. Stop and report
-if any stage halts.
+The two short, read/build-heavy stages that bracket the relock (fork, validate) run
+in isolated runner subagents. The relock itself — the one stage that can outlast a
+subagent's foreground ceiling — runs in THIS session as a background job, because
+only this session survives to receive its completion notification. Land, cleanup,
+and publish also stay here. Stop and report if any stage halts.
 
-1. **Dispatch the runner.** Dispatch the subagent
+```mermaid
+flowchart TD
+    F["Step 1 FORK - runner, STAGE fork"] --> R["Step 2a RELOCK - this session, background job"]
+    R -->|"exit 0"| V["Step 2b VALIDATE - runner, STAGE validate"]
+    R -->|"non-zero or no exit status"| H["HALT and report with the dirty array"]
+    V -->|"done"| L["Step 3 land-workforest"]
+    V -->|"validate-failed"| H
+    V -->|"build exceeded the runner ceiling"| M["Step 2b fallback - validate in this session, background build"]
+    M -->|"clear"| L
+    M -->|"failed"| H
+    L --> C["Step 4 cleanup-workforest"]
+    C --> P["Step 5 POST - pn workspace push"]
+```
+
+1. **Fork — dispatch the runner with `STAGE = fork`.** Dispatch the subagent
    `pn-workspace-rules:pnwf-update-runner` via the Task tool with NO model
-   override (its frontmatter pins Sonnet), passing the absolute `CANONICAL_ROOT`,
-   `BRANCH = pn-workspace-update`, and any caveats the user gave this session. The
-   runner does fork → update-relock → validate in isolation and returns a single
-   strict-JSON status line.
+   override (its frontmatter pins Sonnet), passing `STAGE = fork`, the absolute
+   `CANONICAL_ROOT`, `BRANCH = pn-workspace-update`, and any caveats the user gave
+   this session. It forks the set and returns a single strict-JSON status line.
+   It does NOT relock.
 
    **The brief MUST NOT offer the runner `run_in_background` (MUST).** The
    standing long-command guidance — "set an explicit timeout **or** run with
    `run_in_background` and watch it with Monitor" — is written for THIS session,
    which survives to receive the completion notification. A subagent does not, so
-   a backgrounded relock is torn down mid-write: no JSON status line, prose in its
-   place, and a half-relocked set whose own pre-flight then refuses the re-run
-   (bd `pg2-es5nn`). Forward the **timeout half only**; the runner's own R2 pins
-   `600000` ms for its long steps. If the brief restates the long-command rule,
-   it MUST state that the background option is withheld for a subagent.
+   a backgrounded stage is torn down mid-write: no JSON status line, prose in its
+   place (bd `pg2-es5nn`). Forward the **timeout half only**; the runner's own R2
+   pins `600000` ms for its one long step (the validate build). If the brief
+   restates the long-command rule, it MUST state that the background option is
+   withheld for a subagent. The brief MUST NOT ask the runner to relock either
+   (its R4 forbids it): the relock is step 2a, and is yours.
 
-2. **Handle the runner's JSON status.**
+   Handle the runner's JSON status:
    - **`gate` / `fork` / `resume-vs-discard`** → decide WITH the user per
      `fork-workforest` step 3 (resume the existing set, or discard + re-fork),
      then continue the SAME runner (send it the decision) — its context is
-     preserved.
-   - Unlike `/pn-workspace-sync`, there is **NO** `sync-fetch` stage and therefore
-     none of its gates — not `rebase-conflict`, not `rebase-refused`, and not
-     `worktree-dirty`: `/pn-workspace-update` relocks rather than fetch+rebase, so
-     the runner never rebases anything and never emits any of them. The only gate
-     is `fork` / `resume-vs-discard` above. A dirty member is still refused in
-     this flow, but by `pnwf update-relock`'s OWN pre-flight, which surfaces as an
-     `update-failed` halt rather than a gate.
-   - **`halt`** → surface the reason and STOP; do NOT work around it. Reasons
-     include `update-failed`, `incomplete-update`, `validate-failed`, or a
-     canonical anomaly (R-3/R-8).
-   - **`halt` / `update` (either `update-failed` or `incomplete-update`)** → the
-     halt carries a `dirty` array (read it as `.dirty // []`) naming each dirty
-     member and its file paths. Surface those paths verbatim in your
-     stop-and-report, and name the recovery the user can then authorize:
-     disposition the named residue (a relock leaves regenerated lock churn, but
-     that is only knowable after inspection), then re-run
-     `pnwf update-relock --set` in the set. You MUST NOT re-dispatch the runner
-     first: the residue is un-inspected work and dispositioning it is the user's
-     decision. Do NOT justify that with "the pre-flight would refuse it anyway" —
-     `dirty` carries the runner's R4 REPORTING definition of dirty (untracked
-     counts) while the pre-flight applies `pn`'s narrower GATE one (tracked
-     only), so a member whose only residue is UNTRACKED files is named in
-     `dirty` and would be relocked without complaint (bd `pg2-xc9b7`). TRACKED
-     residue is what the pre-flight refuses. A missing/prose response where the JSON line
-     belongs is itself this class of failure: treat it as an
-     `incomplete-update` halt and run the residue probe yourself rather than
-     assuming the relock finished.
-   - **The recovery above applies only when the halt NAMES dirty residue.**
+     preserved. It re-confirms the set and returns `forked`.
+   - **`halt`** → surface the reason and STOP; do NOT work around it. At this
+     stage that is a `pnwf fork-preflight` reason line (a canonical anomaly,
+     R-3/R-8) or `missing-stage` (a defect in YOUR brief: you omitted `STAGE`).
+   - **`forked`** → the set exists and nothing is relocked yet; go to step 2.
+   - If `model_env` is not `unset`/`sonnet`, WARN the user before continuing
+     (silent-Opus guard: an env override may have forced a non-Sonnet model).
+   - A missing/prose response where the JSON line belongs is a failure of that
+     stage, not a success: re-derive state yourself (`cd <SETDIR> && pnwf resolve
+--set`) before deciding anything. `<SETDIR>` is
+     `<CANONICAL_ROOT>/.workforests/pn-workspace-update`.
+
+2. **Relock, then validate.**
+
+   **2a. Relock — in THIS session, as a background job (MUST).** Run, with the
+   Bash tool's `run_in_background: true`:
+
+   ```bash
+   cd <SETDIR> && pnwf update-relock --set
+   ```
+
+   You MUST NOT run it in the foreground and MUST NOT delegate it to the runner.
+   `update-relock` relocks EVERY member of the set (a `nix flake update` plus each
+   repo's `update-locks.sh`), and this fleet's own scheduled updater budgets 60
+   minutes for a SINGLE repo; the Bash tool's 600000 ms foreground maximum cannot
+   hold that, which is the failure a runner-owned relock produced (bd
+   `pg2-fy8wq`: a healthy relock halted `incomplete-update` at the ten-minute
+   mark). Your running time is not the runner's: this session survives to receive
+   the completion notification, so a long relock simply completes.
+
+   Wait for the completion notification — it carries the payload's TRUE exit
+   status; never infer success from a quiet log or a launcher exit code. If you
+   need an active wait, use Monitor with an until-loop, never a `sleep`-then-check
+   pair.
+
+   Handle the outcome. Everything that follows is YOURS now: the runner no longer
+   emits `update-failed` / `incomplete-update`, and no longer produces the `dirty`
+   array.
+   - **Exit 0** → go to 2b.
+   - **Non-zero exit (`update-failed`) or the job ended with NO exit status
+     (killed, stopped, torn down — `incomplete-update`)** → STOP and report. First
+     make the residue READABLE: run the deterministic probe yourself,
+
+     ```bash
+     cd <SETDIR> && pnwf residue --set
+     ```
+
+     It prints a JSON array of `{repo, paths, mid_rebase}`, one entry per dirty
+     member (`mid_rebase` is always `false` here; a clean set prints `[]`). That
+     array IS the `dirty` array of this halt. Surface those paths verbatim in your
+     stop-and-report, with the verbatim tail of the relock's output, and name the
+     recovery the user can then authorize: disposition the named residue (a relock
+     leaves regenerated lock churn, but that is only knowable after inspection),
+     then re-run `pnwf update-relock --set` in the set. You MUST NOT go on to
+     validate first: the residue is un-inspected work and dispositioning it is the
+     user's decision. Do NOT justify that with "the pre-flight would refuse it
+     anyway" — `pnwf residue` reports the REPORTING definition of dirty
+     (untracked counts) while `update-relock`'s pre-flight applies `pn`'s
+     narrower GATE one (tracked only), so a member whose only residue is
+     UNTRACKED files is named in the array and would be relocked without
+     complaint (bd `pg2-xc9b7`). TRACKED residue is what the pre-flight refuses.
+
+   - **The probe's own FAILURE is not a finding of "clean".** If
+     `pnwf residue --set` itself exits non-zero, `pnwf` could not classify some
+     member: quote its stderr verbatim, name the residue as UNREAD rather than
+     absent, and MUST NOT report `[]` (bd `pg2-deonn`).
+   - **No exit status: check for a survivor first.** A job can lose its exit
+     status while its process tree is still working. Run
+     `lsof -a -d cwd +D <SETDIR>` (recursive; empty output means nothing is
+     anchored there). If it shows a live process, wait for it to exit — Monitor
+     with an until-loop — and only then run the residue probe above. Either way
+     the status is still unknown, so the recovery is the same one: disposition,
+     then re-run the relock. That re-run is safe over a set whose relock did
+     finish: it only rewrites locks (it never merges), and its pre-flight still
+     guards against a member with an upstream, tracked changes, or unreadable
+     state.
+   - **A genuinely dead relock** (process gone, residue present) therefore still
+     halts, with the `dirty` array, exactly as before; only the HEALTHY-but-slow
+     relock changed outcome (it now completes).
+   - **The recovery above applies only when the failure NAMES dirty residue.**
      `update-relock`'s pre-flight also refuses a member whose git state it
      **could not read** — its message says `could NOT be determined`, and it
      refuses precisely because that guard prevents a remote write and so fails
-     CLOSED (bd `pg2-deonn`). For that halt there may be no residue to
-     disposition and `dirty` may legitimately be `[]`: report the named path and
+     CLOSED (bd `pg2-deonn`). For that failure there may be no residue to
+     disposition and the array may legitimately be `[]`: report the named path and
      the verbatim refusal, and have the user INSPECT that path (e.g. it exists
      but is not a git worktree). You MUST NOT call such a member dirty, MUST NOT
-     read `dirty: []` on an update halt as "nothing to look at", and MUST NOT
-     re-run the relock before the path is dispositioned — it will refuse
-     identically.
-   - **`incomplete-update`: the halt may mean "still running," not "died."**
-     Stage 2's `600000` ms timeout is the Bash tool's own documented maximum
-     explicit timeout, not an estimate — a real relock can legitimately
-     outlast it (this fleet's own scheduled updater budgets 60 minutes for a
-     SINGLE repo; `update-relock` relocks every member of the set). A
-     foreground Bash call that outruns its timeout is auto-backgrounded by
-     the harness rather than killed, so the relock may still be proceeding
-     cleanly when the runner halts (bd `pg2-7u02k`). The runner's `detail`
-     for this halt names whether its own `lsof -a -d cwd +D <SETDIR>`
-     liveness probe found anything still anchored under the set; if it did
-     (or that detail is absent because you're handling a halt from before
-     this probe existed), verify and wait BEFORE dispositioning any residue.
-     Re-run the probe yourself to double check —
-     `lsof -a -d cwd +D <SETDIR>` (recursive; empty output means nothing is
-     anchored there). If it shows a live process, wait for it to exit —
-     Monitor with an until-loop, never a `sleep`-then-check pair. Once it
-     exits, re-derive state (`cd <SETDIR> && pnwf residue --set` reports
-     clean) and resume Stage 3 directly in THIS session —
-     `cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace build`,
-     then `pn workspace doctor` — rather than re-dispatching the runner: its
-     own second-attempt resume has been observed to report a completed
-     status with no accompanying hand-back content (inconclusive, not
-     confirmed as a distinct bug, but not to be relied on here). Only fall
-     back to the residue-disposition recovery above if the probe finds
-     nothing live (the job genuinely died) or the resumed validate itself
-     then fails.
+     read `[]` on a relock failure as "nothing to look at", and MUST NOT re-run
+     the relock before the path is dispositioned — it will refuse identically.
+     The pre-flight has three distinct refusals (a member with an upstream, a
+     member with tracked changes, a member that `could NOT be determined`) and
+     only its own line separates them, so quote that line verbatim rather than
+     paraphrasing it.
+
+   **2b. Validate — dispatch a FRESH runner with `STAGE = validate`.** The runner
+   from step 1 has finished; a new dispatch re-derives everything from disk, which
+   is what it is built to do. Same rules as step 1: Sonnet by frontmatter, no
+   model override, `CANONICAL_ROOT` and `BRANCH`, the caveats, and the brief MUST
+   NOT offer it `run_in_background` (restate that the option is withheld if the
+   brief restates the long-command rule). Handle the status:
    - **`done`** → proceed to the main-session landing stages below.
-   - If `model_env` is not `unset`/`sonnet`, WARN the user before continuing
-     (silent-Opus guard: an env override may have forced a non-Sonnet model).
+   - **`halt` / `validate`** (`validate-failed`) → surface the reason and STOP; do
+     NOT work around it. **Exception — the build outran the runner's ceiling.** If
+     `detail` says the `pn workspace build` exceeded the foreground ceiling ("did
+     not prove the set green"), that is validate UNPROVEN, not a broken build:
+     invoke the `validate-workforest` skill in THIS session instead, and run its
+     `pn workspace build` step as a background job (`run_in_background: true`),
+     awaiting the completion notification as in 2a. Treat its verdict as the
+     validate verdict. Any other `validate-failed` — a failing build, or a
+     `BLOCKING` doctor line — is a hard stop.
+   - If `model_env` is not `unset`/`sonnet`, WARN the user before continuing.
+   - Unlike `/pn-workspace-sync`, there is **NO** `sync-fetch` stage and therefore
+     none of its gates — not `rebase-conflict`, not `rebase-refused`, and not
+     `worktree-dirty`: `/pn-workspace-update` relocks rather than fetch+rebase, so
+     no runner ever rebases anything or emits any of them. The only gate is
+     `fork` / `resume-vs-discard` in step 1. A dirty member is still refused in
+     this flow, but by `pnwf update-relock`'s OWN pre-flight (step 2a).
+
 3. **`land-workforest`** — invoke the Skill in the main session (cwd persists
    here, so `integrate-branch` works as authored). It lands each repo in topo
    order, stop-on-blocked; handle its outcomes per that skill (`landed` / nothing
@@ -155,15 +222,18 @@ if any stage halts.
 
 ## Notes
 
-- **Prefix vs. main session.** The `pnwf-update-runner` subagent offloads only the
-  read/build-heavy prefix (fork → update-relock → validate). Land, cleanup, and
-  publish stay in the main session because they are shell-state-sensitive
-  (`integrate-branch` needs a persistent cwd + shell vars) and irreversible — a
-  subagent's Bash calls do not persist cwd/env between calls, and a subagent
-  cannot await its own background job across the end of its turn (only this
-  session receives that notification), which is why the runner runs every stage in
-  the foreground.
-- The spine (fork → update-relock → validate → land → cleanup) performs no remote
+- **Runner vs. main session (bd `pg2-fy8wq`).** The `pnwf-update-runner` subagent
+  offloads only the two SHORT stages that bracket the relock — fork and validate,
+  each a separate `STAGE` dispatch. The relock (`pnwf update-relock --set`) runs in
+  THIS session as a background job, and so do land, cleanup, and publish. The split
+  follows who can await what: a subagent cannot await its own background job across
+  the end of its turn (only this session receives that notification), so every
+  runner stage is foreground under the Bash tool's 600000 ms maximum, and a stage
+  that can legitimately outrun that maximum — the whole-set relock — cannot live in
+  the runner. Land, cleanup, and publish additionally stay here because they are
+  shell-state-sensitive (`integrate-branch` needs a persistent cwd + shell vars) and
+  irreversible; a subagent's Bash calls do not persist cwd/env between calls.
+- The spine (fork → relock → validate → land → cleanup) performs no remote
   writes on the `ff-merge-to-main` path; the POST step is the deliberate,
   invocation-authorized push. `pnwf update-relock` itself refuses if any member
   branch has an upstream, so the in-set relock cannot write to a remote. Your
