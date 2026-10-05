@@ -109,7 +109,7 @@ wrapper MUST honor:
    (5.3 s after start, after the slow sibling), not when each drv failed. Span status for a build
    MUST therefore be set when the message arrives (or at W-9 close), not at the `stop`.
 
-### Item 3. Signals — VERIFIED (non-root); pn-under-sudo cancel UNVERIFIED
+### Item 3. Signals — VERIFIED (non-root); pn-under-sudo cancel VERIFIED (operator, 2026-10-05)
 
 Wrapper stub (Python, mirroring W-6: child in the wrapper's process group, forward SIGTERM and
 SIGHUP, log and never forward SIGINT). Fake nix counted signals it received; each run delivered
@@ -147,7 +147,7 @@ SAME derivation was rebuilt immediately after the cancel; it printed no `waiting
 and took the full 21.2 s build, so the cancelled build's lock was released. The JSONL of the killed
 run ends with `msg` level 0 `interrupted by the user` and an unclosed `type:105` activity (fixture
 `killed-mid-build.jsonl`). `darwin-rebuild` was not killed in this spike; it execs nix with the
-inherited environment (item 4), so the same signal path applies, but see UNVERIFIED below.
+inherited environment (item 4), so the same signal path applies; the root case is below.
 
 pn-driven cancel under sudo (the EPERM case): the OS-level fact is VERIFIED without root:
 
@@ -165,11 +165,13 @@ root kills it. Design consequence: pn MUST either run the whole cancel path as r
 tiny `sudo` killer) or treat cancel of a root wrapper as best-effort and say so; it MUST NOT claim a
 clean cancel it cannot confirm.
 
-UNVERIFIED (needs the operator, root is required; NEVER run by this agent): that pn's actual cancel
-reaches, or fails to reach, a root wrapper, and the lock effect when it fails. Command, in terminal A:
+VERIFIED by the operator on 2026-10-05 (root is required; NEVER run by an agent): a non-root cancel of
+a root wrapper fails with EPERM, and the root nix is not left holding a lock after an interactive
+Ctrl-C. Command, in terminal A (a fixed `KQ2SALT` makes the second run hit the same derivation
+lock; the `longfix` derivation sleeps 20 s, so terminal B must run inside that window):
 
 ```sh
-sudo /Users/phillipg/phillipg_mbp/phillipg-nix-repo-base/.worktrees/pg2-kqrrs.2/docs/adr/0028-fixtures/harness/stubwrap.py /private/tmp/root.log nix build --impure -f /Users/phillipg/phillipg_mbp/phillipg-nix-repo-base/.worktrees/pg2-kqrrs.2/docs/adr/0028-fixtures/harness/b.nix longfix --no-link
+sudo env KQ2SALT=424242 /Users/phillipg/phillipg_mbp/phillipg-nix-repo-base/docs/adr/0028-fixtures/harness/stubwrap.py /private/tmp/root.log nix build --impure -f /Users/phillipg/phillipg_mbp/phillipg-nix-repo-base/docs/adr/0028-fixtures/harness/b.nix longfix --no-link
 ```
 
 and in terminal B, as the normal user:
@@ -178,9 +180,22 @@ and in terminal B, as the normal user:
 kill -TERM "$(pgrep -f 'stubwrap.py /private/tmp/root.log' | tail -1)"; echo rc=$?
 ```
 
-Expected from the EPERM fact: `Operation not permitted`, A keeps running; then Ctrl-C in A (sudo
-relays SIGINT) or `sudo kill -TERM <pid>` and re-run A to observe `waiting for lock`. Record the output
-in a follow-up.
+Observed output, terminal B:
+
+```text
+kill: kill 19952 failed: operation not permitted
+rc=1
+```
+
+Observed, terminal A: the build kept running after the failed `kill`. Ctrl-C in A (sudo relays
+SIGINT) ended it with `error: interrupted by the user` after 18 s. Re-running the identical command
+immediately started at `[0/1 built]` with NO `waiting for lock` line, so the interrupted root build
+left no stale lock. Caveat: the operator's paste of the second run is truncated after the
+`[0/1 built]` line, so a later `waiting for lock` line is not ruled out by the transcript alone.
+
+Scope of what this shows: the test exercises the OS-level signal path from a non-root shell against
+the stub wrapper, which is exactly the path a non-root pn cancel takes. It does not exercise pn's own
+cancel code against a root wrapper (that code lands in a later phase).
 
 ### Item 4. `darwin-rebuild build --flake` through the wrapper stub — VERIFIED
 
@@ -288,8 +303,8 @@ procedure regenerates them.
    failures, late errors, close open activities on kill), item 3 (Go child with SIGINT not ignored),
    and item 7 (parse the output path from the 111 text; queueing is unobservable).
 3. Sub-250 ms rule as in item 1.
-4. A cancel of a root wrapper by non-root pn is best-effort (EPERM verified; effect on locks when it
-   fails is UNVERIFIED pending the operator command in item 3).
+4. A cancel of a root wrapper by non-root pn is best-effort (EPERM verified, and an interactive
+   Ctrl-C of the root build left no stale lock; both in item 3, operator, 2026-10-05).
 
 ### Configuration precedence (Phase 2d)
 
@@ -502,7 +517,9 @@ identifies the host once the collector sets one. The trace-shape acceptance for 
 ## Consequences
 
 - Phases 2b and 3 may start; the golden files give the activity state machine real input.
-- Open (UNVERIFIED, operator, root): the pn-driven cancel under sudo and its lock effect (item 3).
+- Verified (operator, root, 2026-10-05): a non-root cancel of a root wrapper gets EPERM and the root
+  build keeps running; an interactive Ctrl-C leaves no stale lock (item 3). Not exercised: pn's own
+  cancel code against a root wrapper.
 - Not measured: a real `sudo darwin-rebuild switch` through the wrapper; `darwin-rebuild` cancel by
   signal (build-only run only).
 - Alternatives rejected earlier (socket, timestamps from nix) stay as in the plan (F4, F10).
