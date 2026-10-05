@@ -160,6 +160,21 @@ git_config=core.fsmonitor=false" ]
   [ "$(grep '^git_config=' "$PGH_T_LOG")" = "git_config=core.fsmonitor=false" ]
 }
 
+@test "runner reads a zero-padded GIT_CONFIG_COUNT as base 10" {
+  # git parses the count as decimal; bash arithmetic would read "08" as invalid
+  # octal and abort the runner before prek starts.
+  pgh_t_make_bundle
+  local i
+  export GIT_CONFIG_COUNT=08
+  for i in 0 1 2 3 4 5 6 7; do
+    export "GIT_CONFIG_KEY_$i=test.key$i" "GIT_CONFIG_VALUE_$i=v$i"
+  done
+  run _run_stage pre-commit
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^git_config=' "$PGH_T_LOG")" -eq 9 ]
+  [ "$(grep '^git_config=' "$PGH_T_LOG" | tail -n 1)" = "git_config=core.fsmonitor=false" ]
+}
+
 @test "runner honours GIT_INDEX_FILE and GIT_DIR from git" {
   pgh_t_track_flake_lock
   local alt="$BATS_TEST_TMPDIR/alt-index" alt_stamp

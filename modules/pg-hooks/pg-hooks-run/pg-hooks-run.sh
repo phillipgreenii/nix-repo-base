@@ -121,6 +121,7 @@ fi
 # repo's core.fsmonitor=true.
 gc_n=${GIT_CONFIG_COUNT:-0}
 [[ $gc_n =~ ^[0-9]+$ ]] || gc_n=0
+gc_n=$((10#$gc_n)) # base 10: bash would read a zero-padded "08" as invalid octal
 export "GIT_CONFIG_KEY_$gc_n=core.fsmonitor" "GIT_CONFIG_VALUE_$gc_n=false"
 export GIT_CONFIG_COUNT=$((gc_n + 1))
 
