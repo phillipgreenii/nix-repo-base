@@ -139,10 +139,11 @@ The full algorithm, edge cases, and test plan are in
   reaches a given repo's step-6 push second has that push rejected
   (non-fast-forward — remote `main` already advanced) and that repo fails. Run
   updates serially.
-- `update-locks.sh` toggles `core.fsmonitor`, which lives in the shared
-  `.git/config`; during a repo's run the primary's fsmonitor is briefly disabled
-  and restored on exit — perf-only, self-healing, but a shared-state interaction
-  worth noting.
+- `update-locks.sh` disables fsmonitor for its own run through git's environment
+  config (`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`), not by writing the shared
+  `.git/config`, so the primary's setting is never touched and there is nothing to
+  restore. (Earlier versions wrote `core.fsmonitor=false` and restored it on exit,
+  which could leave a repo-local pin behind if the run was killed.)
 
 ### Neutral
 

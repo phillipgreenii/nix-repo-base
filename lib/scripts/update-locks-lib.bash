@@ -19,16 +19,15 @@
 # ul_setup <project-name> <script-dir>
 # -----------------------------------------------------------------
 # ANCHOR: ul_setup-fsmonitor-disable
-#   Disables core.fsmonitor for the duration of the run, but ONLY when it is
-#   actually active for the repo — the effective value must be boolean-true
-#   (yes/on/1 included); a hook-path fsmonitor spawns no native daemon and is
-#   left untouched. A non-destructive trap (_ul_restore_fsmonitor) restores it on
-#   EXIT/INT/TERM if the clean-tree gate hasn't yet armed the full cleanup trap:
-#   a repo-LOCAL value is put back verbatim, whereas a value INHERITED from
-#   global/system config is restored by removing the local override, never by
-#   pinning it into the repo. A stale .git/fsmonitor--daemon.ipc socket is
-#   removed unconditionally, since it breaks flake evaluation regardless of the
-#   current config.
+#   Disables core.fsmonitor for the duration of the run through git's
+#   environment config (GIT_CONFIG_COUNT/KEY_n/VALUE_n, appended after any
+#   entries the caller already set). Env entries outrank every config file, and
+#   every child git (nix, pg-hooks, the steps) inherits them, so NO git config
+#   file is written: there is nothing to restore on exit and no way for a killed
+#   run to leave a repo-local pin behind. The running daemon is stopped only when
+#   fsmonitor was actually active (boolean-true, yes/on/1 included). A stale
+#   .git/fsmonitor--daemon.ipc socket is removed unconditionally, since it breaks
+#   flake evaluation regardless of the current config.
 #
 # ANCHOR: ul_setup-pre-commit-install
 #   Ensures the per-clone hook bundle is installed and current BEFORE the
@@ -47,9 +46,8 @@
 #   Exits 1 with a git status --short dump on a dirty tree.
 #
 # ANCHOR: ul_setup-full-cleanup-trap
-#   AFTER the gate passes, swaps the non-destructive trap for the full
-#   cleanup trap (_ul_cleanup) which rolls back per-step failures and
-#   restores fsmonitor on EXIT/INT/TERM.
+#   AFTER the gate passes, arms the full cleanup trap (_ul_cleanup) which rolls
+#   back per-step failures on EXIT/INT/TERM. No trap is armed before the gate.
 #
 # -----------------------------------------------------------------
 # ul_run_step <step-name> <commit-msg> <cmd...>
@@ -320,9 +318,6 @@ _ul_cleanup() {
     fi
   fi
 
-  # Restore fsmonitor (scoping rules documented on _ul_restore_fsmonitor).
-  _ul_restore_fsmonitor
-
   # Exit with 128+signum so parent sees signal-like exit status
   if [[ $signal != "EXIT" ]]; then
     trap - "$signal" EXIT
@@ -330,66 +325,49 @@ _ul_cleanup() {
   fi
 }
 
-# Disable core.fsmonitor for the duration of the run, recording enough state for
-# the restore below to be EXACT. Split out from ul_setup so both halves of the
-# dance stay symmetric and can be unit-tested without running ul_setup's full
-# path (which refreshes the index, and so cannot be exercised with fsmonitor
-# live — the native daemon is wedged on some setups, bead pg2-mgcv5).
+# Turn git's fsmonitor off for the rest of this process and everything it spawns,
+# WITHOUT writing any git config. GIT_CONFIG_COUNT/KEY_n/VALUE_n is git's env form
+# of `-c`: it outranks the repo-local, global, system and includeIf config files,
+# and every child git (nix, pg-hooks, the steps) inherits it. So there is nothing
+# to restore on exit, and a SIGKILLed run cannot leave a repo-local pin behind
+# (the drift class of beads pg2-znsmo / pg2-pi5u1, which the old
+# `git config core.fsmonitor false` + restore dance risked).
 #
-# Two different values matter here and must not be conflated:
+# The entry is APPENDED after any GIT_CONFIG_* the caller already exported (a
+# non-numeric COUNT counts as 0), same shape as modules/pg-hooks/pg-hooks-run.
+# An unconditional override is deliberate: a hook-path fsmonitor runs no native
+# daemon, so forcing it off for one update run is harmless, and gating on the
+# effective value would only re-introduce a config read for no benefit.
 #
-#   * the EFFECTIVE (merged) value decides WHETHER the dance is needed — it is
-#     what governs whether git spawns the native daemon at all;
-#   * the repo-LOCAL value decides HOW to undo it.
+# The env var stops git CLIENTS from using a daemon; it does not stop one that is
+# already running, nor remove a stale socket. So when fsmonitor was actually
+# active (boolean-true; --type=bool also normalises yes/on/1) the running daemon
+# is stopped, and the socket is removed UNCONDITIONALLY: a socket left by an
+# earlier crashed run makes `nix flake` import fail with "unsupported type" even
+# when fsmonitor is already off.
 #
-# Conflating them is a real defect: writing a blanket `git config core.fsmonitor
-# true` on restore pins a value that may have come from the user's GLOBAL config
-# into this repo permanently, turning one global setting into per-repo drift on
-# every run (bead pg2-znsmo; the split state recorded in pg2-pi5u1 is the
-# symptom).
-#
-# --type=bool is what makes "enabled" correct. It normalises git's other boolean
-# spellings (yes/on/1), and it FAILS on a hook-path fsmonitor
-# (core.fsmonitor=/path/to/hook) — which is the right outcome, because a
-# hook-based monitor runs no native daemon and creates no .ipc socket, so it
-# needs no dance and must not be rewritten.
+# Scope: the override covers this process and its descendants only. A git run by
+# an unrelated process in the same repo during the run (an editor, a sibling
+# pn/agent session) still sees the repo's own setting and may respawn the daemon
+# and its socket; the socket removal below happens once, at setup.
 _ul_disable_fsmonitor() {
-  _fsmonitor_was_active=false
-  _fsmonitor_had_local=false
-  _fsmonitor_local_value=""
-
+  local was_active=false n
+  # Probe BEFORE exporting the override below: afterwards the effective value is
+  # always false and the running daemon would never be stopped.
   if [[ "$(git config --type=bool --get core.fsmonitor 2>/dev/null)" == "true" ]]; then
-    _fsmonitor_was_active=true
-    if _fsmonitor_local_value="$(git config --local --get core.fsmonitor 2>/dev/null)"; then
-      _fsmonitor_had_local=true
-    else
-      _fsmonitor_local_value=""
-    fi
-    git config core.fsmonitor false
+    was_active=true
+  fi
+
+  n=${GIT_CONFIG_COUNT:-0}
+  [[ $n =~ ^[0-9]+$ ]] || n=0
+  n=$((10#$n)) # base 10: bash would read a zero-padded "08" as invalid octal
+  export "GIT_CONFIG_KEY_$n=core.fsmonitor" "GIT_CONFIG_VALUE_$n=false"
+  export GIT_CONFIG_COUNT=$((n + 1))
+
+  if [[ $was_active == "true" ]]; then
     git fsmonitor--daemon stop 2>/dev/null || true
   fi
-
-  # Unconditional: a socket left behind by an earlier crashed run makes `nix
-  # flake` import fail with "unsupported type" even when fsmonitor is already
-  # off, so removal must not be gated on the dance above.
   rm -f .git/fsmonitor--daemon.ipc
-}
-
-# Restore the fsmonitor config _ul_disable_fsmonitor changed. Used as a
-# NON-destructive EXIT/INT/TERM trap during ul_setup's pre-gate phase, where the
-# working tree may still hold the user's uncommitted work — so _ul_cleanup's
-# reset --hard / clean -fd must NOT run there.
-_ul_restore_fsmonitor() {
-  [[ ${_fsmonitor_was_active:-false} == "true" ]] || return 0
-
-  if [[ ${_fsmonitor_had_local:-false} == "true" ]]; then
-    # The repo owned the setting — put its own value back verbatim.
-    git config core.fsmonitor "$_fsmonitor_local_value" 2>/dev/null || true
-  else
-    # The value was inherited from an outer scope (global/system). Drop only the
-    # local override we added and let that outer scope govern again.
-    git config --unset-all core.fsmonitor 2>/dev/null || true
-  fi
 }
 
 # Per-clone hook bundle state (spec 5.3/7.1/7.4): print the `state=`
@@ -596,18 +574,16 @@ ul_setup() {
   # Disable fsmonitor before any flake evaluation — a live .ipc socket makes
   # `nix flake` import fail with "unsupported type". The pre-commit hook install
   # below evaluates the flake, so this is hoisted above the clean-tree gate.
-  # Until the gate passes (full cleanup trap armed), use a NON-destructive trap
-  # that only restores fsmonitor: the tree may still hold the user's uncommitted
-  # work here, so _ul_cleanup's reset --hard / clean -fd must not run on an
-  # early exit.
+  # The disable is env-only (see _ul_disable_fsmonitor), so no trap is armed
+  # before the gate: _ul_cleanup's reset --hard / clean -fd must NOT run on an
+  # early exit while the tree may still hold the user's uncommitted work.
   _ul_disable_fsmonitor
-  trap '_ul_restore_fsmonitor' EXIT INT TERM
 
   # A wedged/unreachable nix daemon fails every repo identically, so treat it as
   # an environmental abort (UL_RC_ABORT) — pn then stops the whole run instead of
   # marching into the same wall. ul_check_nix_daemon already printed actionable
-  # guidance (update-cache-lib.bash). This runs under the non-destructive pre-gate
-  # trap, so exiting here restores fsmonitor without touching the working tree.
+  # guidance (update-cache-lib.bash). No cleanup trap is armed yet, so exiting
+  # here leaves the working tree untouched.
   ul_check_nix_daemon || {
     echo "Aborting update: nix daemon is unhealthy." >&2
     exit "$UL_RC_ABORT"
@@ -638,7 +614,7 @@ ul_setup() {
   fi
 
   # Tree is clean of user changes — now safe to arm the full cleanup trap, which
-  # rolls back per-step failures (and still restores fsmonitor on exit).
+  # rolls back per-step failures.
   trap '_ul_cleanup EXIT' EXIT
   trap '_ul_cleanup INT' INT
   trap '_ul_cleanup TERM' TERM
