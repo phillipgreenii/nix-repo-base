@@ -1041,7 +1041,7 @@
                 gate=${docs}/pn-workspace-rules/skills/pn-workspace-rules/SKILL.md
                 for needle in \
                   'A full `nix flake check` is NOT a per-change or land-time gate' \
-                  'skips `prek` with one notice line'; do
+                  'FF-1b skips the hooks, relaying its one notice line'; do
                   grep -qF -- "$needle" "$gate" || {
                     echo "$gate: missing required text: $needle" >&2
                     exit 1
