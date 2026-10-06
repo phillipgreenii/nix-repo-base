@@ -140,6 +140,17 @@ _field() {
   [[ $(_field reinstall) == *"nix run .#install-pre-commit-hooks"* ]]
 }
 
+@test "status --porcelain: missing with a subdirectory-only flake names that directory" {
+  local canon
+  canon=$(dirname "$(_common_dir)")
+  rm -f "$canon/flake.nix"
+  mkdir -p "$canon/nix"
+  : >"$canon/nix/flake.nix"
+  _status
+  [ "$status" -eq 13 ]
+  [ "$(_field reinstall)" = "(cd $canon/nix && nix run .#install-pre-commit-hooks)" ]
+}
+
 @test "status --porcelain: a pointer to a deleted generation is missing, not broken" {
   pgh_t_make_bundle
   rm -rf "$PGH_T_COMMON/pg-hooks/gen-1/bundle"

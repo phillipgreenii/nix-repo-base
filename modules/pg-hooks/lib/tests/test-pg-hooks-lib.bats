@@ -353,6 +353,34 @@ _stale_fixture() {
   [ "$output" = "(cd /elsewhere && nix run .#install-pre-commit-hooks)" ]
 }
 
+@test "flake_dir: root flake wins; a single subdirectory flake is used; ambiguous or none falls back to the root" {
+  local c="$BATS_TEST_TMPDIR/canon"
+  mkdir -p "$c/nix" "$c/other"
+  run pgh_flake_dir "$c"
+  [ "$output" = "$c" ]
+  : >"$c/nix/flake.nix"
+  run pgh_flake_dir "$c"
+  [ "$output" = "$c/nix" ]
+  : >"$c/other/flake.nix"
+  run pgh_flake_dir "$c"
+  [ "$output" = "$c" ]
+  : >"$c/flake.nix"
+  run pgh_flake_dir "$c"
+  [ "$output" = "$c" ]
+}
+
+@test "reinstall fallback and no-bundle fix cd into a single subdirectory flake" {
+  local canon
+  canon=$(pgh_canonical)
+  mkdir -p "$canon/nix"
+  : >"$canon/nix/flake.nix"
+  rm -f "$canon/flake.nix"
+  run pgh_reinstall "$PGH_T_COMMON/pg-hooks"
+  [ "$output" = "(cd $canon/nix && nix run .#install-pre-commit-hooks)" ]
+  run --separate-stderr pgh_msg_no_bundle r pre-commit "$canon" 0
+  [ "$stderr" = "pg-hooks: no hook bundle for r; pre-commit hooks not run. Fix: (cd $canon/nix && nix run .#install-pre-commit-hooks)" ]
+}
+
 @test "exit-code constants match spec 5.3" {
   [ "$PGH_OK" -eq 0 ]
   [ "$PGH_USAGE" -eq 2 ]

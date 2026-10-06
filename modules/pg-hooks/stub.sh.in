@@ -43,7 +43,22 @@ if [ -z "$bundle" ]; then
   # test asserts they match.
   canonical=${common%/*}
   repo=${canonical##*/}
-  fix="(cd $canonical && nix run .#install-pre-commit-hooks)"
+  # Flake dir: the root, or the one immediate subdirectory holding flake.nix
+  # (same rule as pgh_flake_dir in pg-hooks-lib.bash).
+  flakedir=$canonical
+  if [ ! -f "$canonical/flake.nix" ]; then
+    n=0
+    found=
+    for f in "$canonical"/*/flake.nix; do
+      [ -f "$f" ] || continue
+      found=${f%/flake.nix}
+      n=$((n + 1))
+    done
+    if [ "$n" -eq 1 ]; then
+      flakedir=$found
+    fi
+  fi
+  fix="(cd $flakedir && nix run .#install-pre-commit-hooks)"
   if [ "$gitdir" != "$common" ]; then
     if [ -f "$priv/reinstall" ]; then
       line=

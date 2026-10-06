@@ -119,6 +119,23 @@ TOP=$PGH_TOP
 CANONICAL=${COMMON%/*}
 HOOKS_DIR=$COMMON/hooks
 
+# The flake directory: where the installer ran, relative to the work tree root
+# ("" at the root, "nix" for a repo whose flake is nix/flake.nix). The reinstall
+# command must cd into the same place under the target checkout.
+REL=""
+HERE=$(pwd -P)
+if [[ $HERE == "$TOP"/* ]]; then
+  REL=${HERE#"$TOP"/}
+fi
+# flake_in <checkout>: <checkout> joined with the flake subdirectory.
+flake_in() {
+  if [[ -n $REL ]]; then
+    printf '%s/%s\n' "$1" "$REL"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 LINKED=0
 if [[ $GITDIR != "$COMMON" ]]; then
   LINKED=1
@@ -151,18 +168,18 @@ build_reinstall() {
   done
   if [[ $MODE == private ]]; then
     printf '(cd %s && nix run%s .#install-pre-commit-hooks -- --private%s)\n' \
-      "$(quote "$TOP")" "$pins" "$opts"
+      "$(quote "$(flake_in "$TOP")")" "$pins" "$opts"
   elif [[ -n $opts ]]; then
     printf '(cd %s && nix run%s .#install-pre-commit-hooks --%s)\n' \
-      "$(quote "$CANONICAL")" "$pins" "$opts"
+      "$(quote "$(flake_in "$CANONICAL")")" "$pins" "$opts"
   else
-    printf '(cd %s && nix run .#install-pre-commit-hooks)\n' "$(quote "$CANONICAL")"
+    printf '(cd %s && nix run .#install-pre-commit-hooks)\n' "$(quote "$(flake_in "$CANONICAL")")"
   fi
 }
 
 if ((LINKED)) && [[ $MODE != private ]]; then
   printf 'pg-hooks: install refused in a linked worktree; the shared bundle belongs to %s. Run there: (cd %s && nix run .#install-pre-commit-hooks), or add --private for a worktree-only bundle.\n' \
-    "$CANONICAL" "$(quote "$CANONICAL")" >&2
+    "$CANONICAL" "$(quote "$(flake_in "$CANONICAL")")" >&2
   exit 2
 fi
 

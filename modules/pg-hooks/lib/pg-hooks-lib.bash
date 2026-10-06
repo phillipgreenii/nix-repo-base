@@ -236,6 +236,26 @@ pgh_stamp() {
 
 # --- messages (spec 5.4, 4.3, 4.5) -----------------------------------------
 
+# pgh_flake_dir <canonical>: where `nix run .#install-pre-commit-hooks` must run:
+# the canonical root when it has a flake.nix, else the one immediate
+# subdirectory that has one (a repo whose flake is nix/flake.nix), else the root.
+# The stub (stub.sh.in) carries a hand-written copy of this rule.
+pgh_flake_dir() {
+  local canonical=$1 f found="" n=0
+  if [[ ! -f $canonical/flake.nix ]]; then
+    for f in "$canonical"/*/flake.nix; do
+      [[ -f $f ]] || continue
+      found=${f%/flake.nix}
+      n=$((n + 1))
+    done
+    if ((n == 1)); then
+      printf '%s\n' "$found"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$canonical"
+}
+
 # pgh_reinstall <dir>: the `reinstall` file line, else the canonical command.
 pgh_reinstall() {
   local dir=$1 line="" k
@@ -244,6 +264,7 @@ pgh_reinstall() {
   fi
   if [[ -z $line ]]; then
     k=$(pgh_canonical) || k="<canonical>"
+    k=$(pgh_flake_dir "$k")
     line="(cd $k && nix run .#install-pre-commit-hooks)"
   fi
   printf '%s\n' "$line"
@@ -274,7 +295,7 @@ pgh_msg_no_bundle() {
     if [[ $linked == 1 ]]; then
       fix=$(pgh_reinstall "$(pgh_private_dir)")
     else
-      fix="(cd $canonical && nix run .#install-pre-commit-hooks)"
+      fix="(cd $(pgh_flake_dir "$canonical") && nix run .#install-pre-commit-hooks)"
     fi
   fi
   if [[ $linked == 1 ]]; then

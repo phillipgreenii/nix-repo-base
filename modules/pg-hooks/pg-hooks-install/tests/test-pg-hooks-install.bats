@@ -277,6 +277,34 @@ EOF
   [ -d "$SHARED/gen-0" ]
 }
 
+@test "install run from a subdirectory flake records a reinstall command that cds there" {
+  _mk_bundle
+  mkdir -p "$GFH_REPO/nix"
+  : >"$GFH_REPO/nix/flake.nix"
+  run --separate-stderr bash -c "cd '$GFH_REPO/nix' && '$PGH_T_SUT' --bundle '$B'"
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  [ "$(cat "$SHARED/reinstall")" = "(cd $CANON/nix && nix run .#install-pre-commit-hooks)" ]
+}
+
+@test "subdirectory-flake install refused in a linked worktree names the canonical flake directory" {
+  _mk_bundle
+  _add_worktree a
+  mkdir -p "$WT/nix"
+  run --separate-stderr bash -c "cd '$WT/nix' && '$PGH_T_SUT' --bundle '$B'"
+  [ "$status" -eq 2 ]
+  [[ $stderr == *"Run there: (cd $CANON/nix && nix run .#install-pre-commit-hooks), or add --private"* ]]
+}
+
+@test "subdirectory-flake --private install in a worktree cds into the worktree flake directory" {
+  _mk_bundle
+  _add_worktree a
+  mkdir -p "$WT/nix"
+  run --separate-stderr bash -c "cd '$WT/nix' && '$PGH_T_SUT' --bundle '$B' --private"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$WTGIT/pg-hooks/reinstall")" = "(cd $WT/nix && nix run .#install-pre-commit-hooks -- --private)" ]
+}
+
 # --- linked worktrees and --private -------------------------------------------
 
 @test "linked worktree without --private is refused with the canonical path in the message (exit 2)" {
