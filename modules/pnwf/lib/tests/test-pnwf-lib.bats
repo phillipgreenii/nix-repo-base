@@ -894,10 +894,10 @@ HOOK
 #
 # BOTH configurations are pinned below, and BOTH set `rebase.autoStash`
 # EXPLICITLY in the test's own repo-local config. That is load-bearing twice
-# over: setup_file exports GIT_CONFIG_GLOBAL=/dev/null (beads pg2-klyn6 /
-# pg2-7hr6o), so the ambient value cannot reach these tests at all; and a
-# test that DID depend on the developer's setting would be an instance of the
-# very defect this pair exists to close.
+# over: gfh_setup gives every test a fresh empty HOME and neutralises the system
+# config (beads pg2-klyn6 / pg2-7hr6o), so the ambient value cannot reach these
+# tests at all; and a test that DID depend on the developer's setting would be
+# an instance of the very defect this pair exists to close.
 
 _setup_dirty_member_against_advanced_origin() {
   # A real member whose worktree holds an uncommitted change to a TRACKED
