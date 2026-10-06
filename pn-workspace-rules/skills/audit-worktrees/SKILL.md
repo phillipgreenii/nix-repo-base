@@ -51,7 +51,7 @@ action it takes is executed by a skill or tool that already implements that acti
 ## Safety contract (MUST)
 
 - MUST run the liveness check (Step 2a) before any research or action on a candidate that has a
-  worktree. MUST NOT act on, or write a bead about, a candidate a live process is anchored in.
+  worktree. MUST NOT act on, or write a bead about, a candidate a blocking process (per Step 2a's allow-list) is anchored in.
 - MUST check a correlated bead's **existing** labels before classifying it (Step 2c/3b). A bead
   already carrying `worktree-review` is, per `beads-lifecycle` W-3/W-4, **not to be re-labeled,
   re-promoted, or re-classified** — it stays exactly as a prior pass left it until a person
@@ -91,8 +91,8 @@ Every candidate is one of: **set**, **standalone worktree**, or **dangling branc
 
 ```mermaid
 flowchart TD
-    E["Enumerate: sets, standalone worktrees, dangling branches"] --> A{"Has a worktree?\nAnything anchored inside?\n(lsof, recursive)"}
-    A -->|yes: anchored| SKIP["Skip entirely, report"]
+    E["Enumerate: sets, standalone worktrees, dangling branches"] --> A{"Has a worktree?\nBlocking process anchored inside?\n(lsof, recursive, allow-list)"}
+    A -->|yes: blocking process anchored| SKIP["Skip entirely, report"]
     A -->|no, or no worktree to check| SET{"Set-shaped?"}
     SET -->|yes| SLP{"pnwf land-plan\nnon-empty?"}
     SLP -->|empty: fully landed| SCU["dispatch: cleanup-workforest"]
@@ -114,11 +114,22 @@ flowchart TD
 **2a. Liveness check (MUST run first, before any research, for anything with a worktree).**
 `pa-monitor`'s `path:` selector is an **exact string match** on a session's cwd
 (`sv.Cwd == t.Path` in the daemon), so it does **not** catch a session cwd'd into a subdirectory
-of the worktree — do not rely on it as the primary signal. Instead run the same recursive check
-`wtdone` itself uses: `lsof -a -d cwd +D <worktree-path>` (empty output = nothing anchored,
-non-zero exit is expected/normal and not itself a failure). This catches any live process —
-Claude session, shell, editor — anchored anywhere under the tree, which is the correct, broader
-reading of "actively working" here. Treat `pa-monitor status`/`info path:<worktree-path>` as a
+of the worktree — do not rely on it as the primary signal. Instead run the same recursive probe
+`wtdone` itself uses: `lsof -a -d cwd +D <worktree-path> -F pcn` (`-F` yields one `p<pid>` /
+`c<command>` / `n<path>` record per process, so a name with spaces stays one name and no header
+row appears; empty output = nothing anchored; a non-zero exit is expected/normal and not itself a
+failure), and apply the SAME allow-list `wtdone` uses: only an anchored process whose command
+name is on the list means "actively working". Normalize the name first (strip one leading `.`,
+strip one trailing `-wrapped`, compare case-insensitively — `lsof` reports a nix-wrapped
+program as `.claude-wrapped`); an entry ending in `*` is a prefix match. Default list:
+`claude git bash zsh sh python* vim nvim emacs go nix`; `WTDONE_BLOCKING_COMMANDS`
+(space-separated, same syntax; unset or empty = the default) replaces it, exactly as for
+`wtdone`. A language server (`node`), a `caffeinate` timer or any other unlisted process
+anchored under the tree does NOT count and MUST NOT make you skip the candidate (the operator
+accepted that fail-open trade-off for `wtdone`, bead `pg2-qs7lp`; the same reasoning applies
+here, and the removal that follows still goes through `wtdone`'s own guard). This catches a
+Claude session, shell, git or editor anchored anywhere under the tree, which is the correct,
+broader-than-cwd-exact reading of "actively working" here. Treat `pa-monitor status`/`info path:<worktree-path>` as a
 **secondary, informational** signal only (useful for naming _which_ session it is in the report),
 never as the sole gate. A dangling branch has no worktree to check — skip straight to
 classification for it.
@@ -230,7 +241,7 @@ Audit-worktrees — <N> candidates (<sets>, <standalone worktrees>, <dangling br
 | stale-try (personal)             | worktree  | reclaimed (abandoned, unmerged branch left dangling) | pg2-old3 closed |
 | mystery-wt (ziprecruiter)        | worktree  | flagged for review          | pg2-new2 (human)     |
 
-Skipped (active/anchored): 1 (feat-y, process anchored in ziprecruiter worktree)
+Skipped (active/anchored): 1 (feat-y, blocking process anchored in ziprecruiter worktree)
 Already pending review: 1 (pg2-oldrev, left untouched)
 Degraded detection: pa-monitor unreachable for <repo> — relied on lsof only (no functional loss)
 ```
@@ -257,7 +268,7 @@ would make it unreachable outright, not just less discoverable.
 | standalone worktrees per repo                    | `git worktree list --porcelain`                                                               |
 | dangling branches per repo                       | `git for-each-ref --format='%(refname:short)' refs/heads/`, diffed against the above          |
 | merged check                                     | `git merge-base --is-ancestor <branch> <primary>`                                             |
-| liveness check (primary)                         | `lsof -a -d cwd +D <worktree-path>` (recursive; empty = nothing anchored)                     |
+| liveness check (primary)                         | `lsof -a -d cwd +D <worktree-path> -F pcn`, then keep only allow-listed names (Step 2a)       |
 | liveness check (informational only)              | `pa-monitor status` / `info path:<worktree-path>` — exact-match cwd, not subdirectory-aware   |
 | set fast path                                    | `pnwf land-plan <branch>` (empty → already fully landed)                                      |
 | remove a worktree and/or branch (uniform)        | `wtdone <branch> [--cc <canonical>]` — handles no-worktree case natively, never force-deletes |

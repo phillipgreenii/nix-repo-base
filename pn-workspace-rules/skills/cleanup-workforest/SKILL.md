@@ -53,10 +53,17 @@ For each landed member (neither force flag given), `pnwf cleanup` delegates
 the actual worktree-remove + branch-delete to the guarded `wtdone` script
 (`phillipgreenii-nix-agent-support`, bead `pg2-hpurf`) rather than hand-rolling
 it. That adds a NEW refusal this skill must recognize: a member can now be
-KEPT because a live process is still anchored inside its worktree — e.g. a
-shell left standing in it — not only for the pre-existing dirty/unmerged
-reasons. Treat it the same as any other kept-member report: do not force past
-it; leave the worktree/branch and report which process is anchored.
+KEPT because a blocking process is still anchored inside its worktree — e.g. a
+shell, `claude` session, `git`, or editor left standing in it — not only for
+the pre-existing dirty/unmerged reasons. Only processes on `wtdone`'s
+allow-list of blocking kinds (`claude git bash zsh sh python* vim nvim emacs go
+nix`; overridable via `WTDONE_BLOCKING_COMMANDS`) block; a language server or a
+`caffeinate` timer anchored there is ignored (reported on stderr as "ignoring
+anchored process"). `pnwf` has no liveness check of its own — the guard, its
+list and its override belong to `wtdone`. Treat a refusal the same as any other
+kept-member report: do not force past it; leave the worktree/branch and report
+which process is anchored. (The force flags run no liveness check at all, so
+they MUST NOT be used to get past an anchored-process refusal.)
 
 ## The landed-test (MUST understand)
 

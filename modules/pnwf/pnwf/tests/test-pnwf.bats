@@ -1058,6 +1058,40 @@ SHIM
   [ "$remove_line" -eq $((stop_line + 1)) ]
 }
 
+@test "cleanup: a wtdone refusal (blocking process anchored) keeps the member with wtdone's own reason and removes nothing" {
+  # pnwf has NO liveness check of its own: which anchored processes block
+  # removal is decided entirely inside `wtdone` (an allow-list of blocking
+  # process kinds; see its --help and WTDONE_BLOCKING_COMMANDS). pnwf's only
+  # obligation is to relay a refusal faithfully: keep the member, quote
+  # wtdone's output, remove neither worktree nor branch, and not abort the
+  # best-effort run. wtdone is replaced here by a stand-in that refuses the
+  # way the real one does; no real process is anchored or touched.
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+
+  cat >"$MOCK_BIN/wtdone" <<'MOCK'
+#!/usr/bin/env bash
+echo "wtdone: refusing to remove '/x' -- live process(es) are anchored inside it:" >&2
+echo "  bash (pid 4242)" >&2
+exit 1
+MOCK
+  chmod +x "$MOCK_BIN/wtdone"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"* ]]
+  [[ "$output" == *"wtdone refused (rc=1)"* ]]
+  [[ "$output" == *"anchored"* ]]
+  [[ "$output" == *"bash (pid 4242)"* ]]
+  # Nothing was removed: worktree and branch survive.
+  [ -e "$SET_DIR/repoA" ]
+  command git -C "$CANONICAL_DIR/repoA" rev-parse --verify -q "refs/heads/$BRANCH"
+}
+
 @test "cleanup --force-dirty-worktree-removal removes a landed but dirty worktree" {
   _stage_init_member repoA
   _stage_write_lock repoA

@@ -33,8 +33,8 @@ Subcommands (read-only, implemented):
   cleanup <branch> [--force-dirty-worktree-removal] [--force-unlanded-branch-removal]
                      Best-effort teardown of <branch>'s set from the
                      canonical clone: removes worktree + branch (via
-                     `wtdone`, guarded against a live process still anchored
-                     inside the worktree) for every landed member, keeps
+                     `wtdone`, guarded against a blocking process still
+                     anchored inside the worktree) for every landed member, keeps
                      (and reports) the rest. Removes the set directory
                      itself only when nothing was kept.
   status <branch>    Print a per-repo table for <branch>'s set: member,
@@ -775,8 +775,11 @@ _pnwf_cleanup_remove_member() {
   # The common/default path (neither force flag set): delegate the actual
   # worktree-remove + branch--d + prune MECHANICS to `wtdone` (bead
   # pg2-hpurf) rather than hand-rolling them here. `wtdone` folds in a
-  # liveness guard this function never had (refuse if a live process is
-  # anchored inside the worktree) and, via a plain (never forced) `git
+  # liveness guard this function never had (refuse if a process on
+  # wtdone's allow-list of blocking kinds -- claude, git, shells, python,
+  # editors, go, nix; WTDONE_BLOCKING_COMMANDS overrides -- is anchored inside
+  # the worktree; a language server or `caffeinate` timer does not block; bead
+  # pg2-qs7lp) and, via a plain (never forced) `git
   # worktree remove`, inherits git's own refusal of a dirty/untracked
   # worktree.
   #
@@ -827,7 +830,9 @@ _pnwf_cleanup_remove_member() {
   # Force paths only, from here down: --force-dirty-worktree-removal and/or
   # --force-unlanded-branch-removal deliberately bypass safety checks
   # `wtdone` will never perform on their behalf (removing a DIRTY worktree,
-  # or `-D`-deleting an UNMERGED branch) -- kept hand-rolled.
+  # or `-D`-deleting an UNMERGED branch) -- kept hand-rolled. These paths run
+  # NO process-liveness check at all (wtdone's guard is not in play): the
+  # operator opting into a force flag owns that risk (bead pg2-puafi ruling).
   if pnwf_worktree_present "$setdir" "$member"; then
     local dirty_rc=0
     pnwf_working_tree_dirty "$member_setpath" || dirty_rc=$?
@@ -899,8 +904,13 @@ pn-workspace.lock.json — subset-aware):
   - landed (ancestor)  remove worktree + branch via `wtdone` (never `git
                        branch -d` AS the landed-test itself — it never runs
                        before `git merge-base --is-ancestor` has confirmed
-                       landed). `wtdone` refuses if a live process is still
-                       anchored inside the worktree.
+                       landed). `wtdone` refuses only if a process on its
+                       blocking allow-list (claude, git, shells, python,
+                       editors, go, nix) is still anchored inside the
+                       worktree; other anchored processes (a language
+                       server, `caffeinate`) are ignored. pnwf has no
+                       liveness check of its own: the guard, its list and
+                       its override (WTDONE_BLOCKING_COMMANDS) are wtdone's.
   - not landed         kept by default (incl. pull-request repos); report
                        names the two force flags.
 Processes EVERY member and never aborts on one un-removable repo — the
