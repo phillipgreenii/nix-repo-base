@@ -38,6 +38,15 @@ setup() {
   # may carry these; the suite must start with no wrapper in play.
   unset TRACEPARENT PN_NIX_LOG_WRAPPER PN_NIX_LOG_OTLP_ENDPOINT PG_NIX_LOG_DISABLE OTEL_SDK_DISABLED
 
+  # pg-hooks-run exports an env-form `-c core.fsmonitor=false`
+  # (GIT_CONFIG_COUNT/KEY_n/VALUE_n) into every hook child, which outranks the
+  # per-test `git config core.fsmonitor true` the _ul_disable_fsmonitor tests
+  # rely on and made them fail under a commit-time hook run. Start with none.
+  unset GIT_CONFIG_COUNT
+  for _gc_var in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_[0-9]+$' || true); do
+    unset "$_gc_var"
+  done
+
   # Mock nix so that `nix fmt` is a no-op in tests
   # (real nix fmt requires treefmt/flake context not available in test sandbox)
   # Mock lives OUTSIDE TEST_DIR to survive `git clean -fd` inside test steps

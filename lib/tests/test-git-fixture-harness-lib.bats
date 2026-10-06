@@ -376,3 +376,267 @@ _gfh_plant_decoy_and_target() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"survived"* ]]
 }
+
+# --- gfh_init_bare (pg2-1msck) ----------------------------------------------
+
+@test "gfh_init_bare: creates a bare repo on branch main inside the fixture root" {
+  source "$GFH_LIB"
+  gfh_setup "bare-basic"
+  gfh_init_bare "$GFH_WORK/remote.git"
+
+  run command git -C "$GFH_WORK/remote.git" rev-parse --is-bare-repository
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+  run command git -C "$GFH_WORK/remote.git" symbolic-ref --short HEAD
+  [ "$output" = "main" ]
+  [ "$(command git -C "$GFH_WORK/remote.git" config core.hooksPath)" = "/dev/null" ]
+}
+
+@test "gfh_init_bare: a push from GFH_REPO lands, and a planted receive hook never runs" {
+  source "$GFH_LIB"
+  gfh_setup "bare-push"
+  gfh_init_bare "$GFH_WORK/remote.git"
+  local sentinel="$GFH_ROOT/hook-ran"
+  mkdir -p "$GFH_WORK/remote.git/hooks"
+  cat >"$GFH_WORK/remote.git/hooks/pre-receive" <<HOOK
+#!/bin/sh
+touch "$sentinel"
+exit 1
+HOOK
+  chmod +x "$GFH_WORK/remote.git/hooks/pre-receive"
+
+  command git -C "$GFH_REPO" remote add origin "$GFH_WORK/remote.git"
+  run command git -C "$GFH_REPO" push -q origin main
+  [ "$status" -eq 0 ]
+  [ ! -e "$sentinel" ]
+  [ "$(command git -C "$GFH_WORK/remote.git" rev-parse main)" = "$(command git -C "$GFH_REPO" rev-parse main)" ]
+}
+
+# --- gfh_clone (pg2-1msck) --------------------------------------------------
+
+@test "gfh_clone: clones a fixture repo with hooks disabled and the suite identity" {
+  source "$GFH_LIB"
+  gfh_setup "clone-basic"
+  gfh_clone "$GFH_REPO" "$GFH_WORK/clone" "clone-basic"
+
+  [ "$(cat "$GFH_WORK/clone/file.txt")" = "initial" ]
+  [ "$(command git -C "$GFH_WORK/clone" rev-parse HEAD)" = "$(command git -C "$GFH_REPO" rev-parse HEAD)" ]
+  [ "$(command git -C "$GFH_WORK/clone" config core.hooksPath)" = "/dev/null" ]
+  [ "$(command git -C "$GFH_WORK/clone" config user.email)" = "clone-basic@bashfixture.invalid" ]
+  [ "$(command git -C "$GFH_WORK/clone" config remote.origin.url)" = "$GFH_REPO" ]
+}
+
+@test "gfh_clone: round-trips through a bare remote (push from one clone, fetch in another)" {
+  source "$GFH_LIB"
+  gfh_setup "clone-roundtrip"
+  gfh_init_bare "$GFH_WORK/remote.git"
+  gfh_clone "$GFH_WORK/remote.git" "$GFH_WORK/one" "clone-roundtrip"
+  gfh_clone "$GFH_WORK/remote.git" "$GFH_WORK/two" "clone-roundtrip"
+
+  echo hi >"$GFH_WORK/one/new.txt"
+  command git -C "$GFH_WORK/one" add new.txt
+  command git -C "$GFH_WORK/one" commit -q -m "from one"
+  command git -C "$GFH_WORK/one" push -q origin main
+  command git -C "$GFH_WORK/two" pull -q origin main
+
+  [ "$(cat "$GFH_WORK/two/new.txt")" = "hi" ]
+}
+
+@test "gfh_clone: an empty bare remote clones cleanly (unborn main)" {
+  source "$GFH_LIB"
+  gfh_setup "clone-empty"
+  gfh_init_bare "$GFH_WORK/remote.git"
+
+  run gfh_clone "$GFH_WORK/remote.git" "$GFH_WORK/clone" "clone-empty"
+  [ "$status" -eq 0 ]
+  run command git -C "$GFH_WORK/clone" symbolic-ref --short HEAD
+  [ "$output" = "main" ]
+}
+
+@test "gfh_clone: a post-checkout hook in the source's template never runs during the clone" {
+  source "$GFH_LIB"
+  gfh_setup "clone-no-hook"
+  local sentinel="$GFH_ROOT/hook-ran" tmpl="$GFH_ROOT/template"
+  mkdir -p "$tmpl/hooks"
+  cat >"$tmpl/hooks/post-checkout" <<HOOK
+#!/bin/sh
+touch "$sentinel"
+HOOK
+  chmod +x "$tmpl/hooks/post-checkout"
+  # Control: the same template DOES fire for a plain clone, so the assertion
+  # below is not vacuous.
+  command git clone -q --template="$tmpl" "$GFH_REPO" "$GFH_WORK/control"
+  [ -e "$sentinel" ]
+  rm -f "$sentinel"
+
+  GIT_TEMPLATE_DIR="$tmpl" gfh_clone "$GFH_REPO" "$GFH_WORK/clone" "clone-no-hook"
+  [ ! -e "$sentinel" ]
+}
+
+# --- --no-identity mode (pg2-1msck) -----------------------------------------
+
+@test "gfh_init_repo --no-identity: no local identity, and git cannot resolve one" {
+  source "$GFH_LIB"
+  gfh_setup "noid-repo"
+  gfh_init_repo "$GFH_WORK/noid" "noid-repo" --no-identity
+
+  run command git -C "$GFH_WORK/noid" config --local user.email
+  [ "$status" -ne 0 ]
+  run command git -C "$GFH_WORK/noid" config --local user.name
+  [ "$status" -ne 0 ]
+  [ "$(command git -C "$GFH_WORK/noid" config core.hooksPath)" = "/dev/null" ]
+  run command git -C "$GFH_WORK/noid" var GIT_AUTHOR_IDENT
+  [ "$status" -ne 0 ]
+  echo x >"$GFH_WORK/noid/f"
+  command git -C "$GFH_WORK/noid" add f
+  run command git -C "$GFH_WORK/noid" commit -q -m "should fail"
+  [ "$status" -ne 0 ]
+}
+
+@test "gfh_init_repo --no-identity: discriminating - the default form DOES resolve an identity" {
+  source "$GFH_LIB"
+  gfh_setup "noid-control"
+  gfh_init_repo "$GFH_WORK/withid" "noid-control"
+
+  run command git -C "$GFH_WORK/withid" var GIT_AUTHOR_IDENT
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"noid-control@bashfixture.invalid"* ]]
+}
+
+@test "gfh_clone --no-identity: the clone has no resolvable identity" {
+  source "$GFH_LIB"
+  gfh_setup "noid-clone"
+  gfh_clone "$GFH_REPO" "$GFH_WORK/clone" "noid-clone" --no-identity
+
+  run command git -C "$GFH_WORK/clone" config --local user.email
+  [ "$status" -ne 0 ]
+  run command git -C "$GFH_WORK/clone" var GIT_AUTHOR_IDENT
+  [ "$status" -ne 0 ]
+}
+
+@test "gfh_init_repo: an unknown option is rejected" {
+  source "$GFH_LIB"
+  gfh_setup "bad-option"
+  run gfh_init_repo "$GFH_WORK/x" "bad-option" --bogus
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unknown option"* ]]
+}
+
+# --- hostile environment: new primitives never touch a leaked repo ----------
+#
+# Same shape as the pg2-510ya test: a decoy repo is pointed at via GIT_DIR (and
+# GIT_WORK_TREE), the new primitive runs with NO prior gfh_setup, and the
+# decoy's .git/config must be byte-identical afterwards while the real target
+# got created. Decoy setup and every read go through _gfh_clean_git so this
+# test cannot itself be redirected by an ambient hook environment (pg2-6drqh).
+
+_gfh_make_decoy() {
+  DECOY="$(mktemp -d)"
+  _gfh_clean_git init -q -b main "$DECOY"
+  _gfh_clean_git -C "$DECOY" config user.email "real@example.com"
+  DECOY_CONFIG_BEFORE="$(cat "$DECOY/.git/config")"
+}
+
+@test "hostile env: gfh_init_bare under a leaked GIT_DIR/GIT_WORK_TREE leaves the decoy untouched" {
+  _gfh_make_decoy
+  local target
+  target="$(mktemp -d)"
+
+  run env GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" bash -c "
+    source '$GFH_LIB'
+    gfh_init_bare '$target/remote.git'
+  "
+  [ "$status" -eq 0 ]
+
+  [ "$(cat "$DECOY/.git/config")" = "$DECOY_CONFIG_BEFORE" ]
+  [ "$(_gfh_clean_git -C "$target/remote.git" rev-parse --is-bare-repository)" = "true" ]
+  [ "$(_gfh_clean_git -C "$target/remote.git" config core.hooksPath)" = "/dev/null" ]
+  rm -rf "$DECOY" "$target"
+}
+
+@test "hostile env: gfh_clone under a leaked GIT_DIR/GIT_WORK_TREE leaves the decoy untouched" {
+  _gfh_make_decoy
+  # The clone's source comes from the harness itself: a hand-rolled commit
+  # here would run under the real HOME's identity/hooks.
+  source "$GFH_LIB"
+  gfh_setup "hostile-clone-src"
+
+  run env GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" bash -c "
+    source '$GFH_LIB'
+    gfh_clone '$GFH_REPO' '$GFH_WORK/clone' 'hostile-clone'
+  "
+  [ "$status" -eq 0 ]
+
+  [ "$(cat "$DECOY/.git/config")" = "$DECOY_CONFIG_BEFORE" ]
+  [ -f "$GFH_WORK/clone/file.txt" ]
+  [ "$(_gfh_clean_git -C "$GFH_WORK/clone" config user.email)" = "hostile-clone@bashfixture.invalid" ]
+  rm -rf "$DECOY"
+}
+
+@test "hostile env: gfh_init_repo --no-identity under a leaked GIT_DIR/GIT_WORK_TREE leaves the decoy untouched" {
+  _gfh_make_decoy
+  local target
+  target="$(mktemp -d)"
+
+  run env GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" bash -c "
+    source '$GFH_LIB'
+    gfh_init_repo '$target/noid' 'hostile-noid' --no-identity
+  "
+  [ "$status" -eq 0 ]
+
+  [ "$(cat "$DECOY/.git/config")" = "$DECOY_CONFIG_BEFORE" ]
+  [ -d "$target/noid/.git" ]
+  [ "$(_gfh_clean_git -C "$target/noid" config user.useConfigOnly)" = "true" ]
+  rm -rf "$DECOY" "$target"
+}
+
+# --- gfh_save_env / gfh_restore_env (pg2-1msck) ------------------------------
+
+@test "gfh_save_env/gfh_restore_env: an exported var survives gfh_setup, and is exported to children" {
+  run bash -c "
+    source '$GFH_LIB'
+    export SCRIPTS_DIR='/nix/store/xyz-scripts'
+    export OTHER_VAR='with space'
+    gfh_save_env SCRIPTS_DIR OTHER_VAR
+    gfh_setup 'save-env'
+    echo \"after_setup=\${SCRIPTS_DIR:-gone}\"
+    gfh_restore_env
+    echo \"restored=\${SCRIPTS_DIR:-gone}\"
+    echo \"other=\${OTHER_VAR:-gone}\"
+    echo \"child=\$(bash -c 'echo \${SCRIPTS_DIR:-gone}')\"
+    gfh_teardown
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"after_setup=gone"* ]]
+  [[ "$output" == *"restored=/nix/store/xyz-scripts"* ]]
+  [[ "$output" == *"other=with space"* ]]
+  [[ "$output" == *"child=/nix/store/xyz-scripts"* ]]
+}
+
+@test "gfh_save_env/gfh_restore_env: a var that was unset stays unset, and un-saved vars stay wiped" {
+  run bash -c "
+    source '$GFH_LIB'
+    unset NEVER_SET_VAR
+    export NOT_SAVED=leak
+    gfh_save_env NEVER_SET_VAR
+    gfh_setup 'save-env-unset'
+    gfh_restore_env
+    echo \"never=\${NEVER_SET_VAR-unset}\"
+    echo \"not_saved=\${NOT_SAVED:-gone}\"
+    gfh_teardown
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"never=unset"* ]]
+  [[ "$output" == *"not_saved=gone"* ]]
+}
+
+@test "gfh_restore_env: is a safe no-op when gfh_save_env was never called (set -u)" {
+  run bash -c "
+    set -u
+    source '$GFH_LIB'
+    gfh_restore_env
+    echo survived
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"survived"* ]]
+}

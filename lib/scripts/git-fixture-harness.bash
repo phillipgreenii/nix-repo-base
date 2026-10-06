@@ -68,12 +68,13 @@
 #   gfh_teardown
 #     rm -rf "$GFH_ROOT". Call from the test's own teardown().
 #
-#   gfh_init_repo <path> <suite-name>
+#   gfh_init_repo <path> <suite-name> [--no-identity]
 #     Lower-level primitive: git-init a repo at <path> with hooks disabled
 #     and the per-suite fixture identity, WITHOUT touching HOME, the wider
 #     exported environment, or GIT_CEILING_DIRECTORIES. For a caller that
-#     needs a SECOND repository inside one gfh_setup call (e.g. a bare remote
-#     for push/fetch tests) — gfh_setup itself calls this for GFH_REPO.
+#     needs a SECOND repository inside one gfh_setup call — gfh_setup itself
+#     calls this for GFH_REPO. (A bare remote is gfh_init_bare, a clone is
+#     gfh_clone; do not hand-roll either.)
 #     ONE deliberate exception to "does not touch env" (pg2-510ya): it DOES
 #     unset the GIT_DIR-family vars (GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR/
 #     GIT_INDEX_FILE/GIT_PREFIX/GIT_OBJECT_DIRECTORY) before its own git
@@ -86,7 +87,49 @@
 #     confirmed the exact corruption pg2-510ya reported. A caller that uses
 #     this primitive standalone (its whole documented purpose) gets no other
 #     scrub, so this one has to live here rather than depending on the caller
-#     having called gfh_setup/gfh_reset_env first.
+#     having called gfh_setup/gfh_reset_env first. gfh_init_bare and
+#     gfh_clone below carry the same guard for the same reason.
+#     --no-identity (pg2-1msck): "no identity resolvable" mode, for a test of
+#     code that must handle a repo where git cannot determine an author. The
+#     repo gets NO local user.email/user.name and user.useConfigOnly=true, so
+#     git refuses to guess one from the hostname/GECOS either — a commit or
+#     `git var GIT_AUTHOR_IDENT` in it fails deterministically. It can only
+#     stay unresolved if nothing else supplies an identity: run gfh_setup
+#     first (fresh HOME, XDG_CONFIG_HOME and GIT_AUTHOR_*/GIT_COMMITTER_*
+#     scrubbed, system config neutralised) and do not export an identity
+#     afterwards. <suite-name> is still required positionally but unused.
+#
+#   gfh_init_bare <path>
+#     (pg2-1msck) Create a BARE repository at <path> — a push/fetch remote —
+#     with branch main and hooks disabled (so no receive-side hook, planted or
+#     templated, ever runs on a push into it). Same GIT_DIR-family guard as
+#     gfh_init_repo. No identity: a bare repo has no commits of its own.
+#     Keep <path> under GFH_WORK (the ceiling boundary), e.g.
+#     "$GFH_WORK/remote.git".
+#
+#   gfh_clone <src> <dest> <suite-name> [--no-identity]
+#     (pg2-1msck) Clone the repo (or bare remote) at <src> into <dest> with
+#     hooks disabled — including DURING the clone, so a post-checkout hook
+#     cannot fire — and the per-suite identity set locally, exactly as
+#     gfh_init_repo would (--no-identity as above). Same GIT_DIR-family
+#     guard. Cloning an empty bare remote is fine (the clone is unborn on
+#     main). Keep <dest> under GFH_WORK.
+#
+#   gfh_save_env <VAR>... / gfh_restore_env
+#     (pg2-1msck) Preserve exported variables across gfh_setup. gfh_reset_env
+#     wipes every exported variable not on its allowlist, including ones a
+#     suite legitimately needs: SCRIPTS_DIR, TEST_SUPPORT, and the nix-injected
+#     tool paths a sandboxed bats check exports. The pattern, in setup():
+#         gfh_save_env SCRIPTS_DIR MY_NIX_INJECTED_PATH   # BEFORE gfh_setup
+#         gfh_setup "my-suite"
+#         gfh_restore_env                                 # AFTER gfh_setup
+#     gfh_restore_env re-exports each saved variable that was set when saved
+#     and leaves unset any that was not. The saved copies live in unexported
+#     GFH_SAVED_* variables, which gfh_reset_env never touches. (Doing it by
+#     hand — copy to an unexported name, gfh_setup, copy back — is equivalent;
+#     modules/pg-hooks/test-support/pg-hooks-test-helper.bash does that with
+#     PGH_T_SAVED_*.) Restore ONLY what the suite needs: re-exporting a
+#     GIT_*-family variable re-opens the leak the harness exists to close.
 #
 #   gfh_identity_email <suite-name> / gfh_identity_name <suite-name>
 #     Pure functions printing the email/name half of the fixture identity.
@@ -161,28 +204,101 @@ gfh_identity_name() {
   printf '%s fixture\n' "$suite"
 }
 
+# Unset the GIT_DIR family (pg2-510ya). See the gfh_init_repo CONTRACT entry.
+_gfh_unset_git_dir_family() {
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
+}
+
+# Apply the per-suite identity (D3) to the repo at $1, or — with
+# --no-identity — configure it so no identity can resolve (pg2-1msck).
+_gfh_apply_identity() {
+  local repo="$1" suite="$2" mode="${3:-}"
+  case "$mode" in
+  "")
+    command git -C "$repo" config user.email "$(gfh_identity_email "$suite")"
+    command git -C "$repo" config user.name "$(gfh_identity_name "$suite")"
+    ;;
+  --no-identity)
+    command git -C "$repo" config user.useConfigOnly true
+    ;;
+  *)
+    echo "git-fixture-harness: unknown option '$mode' (expected --no-identity)" >&2
+    return 2
+    ;;
+  esac
+}
+
 # Initialise a real git repository at $1 with hooks disabled (D2) and this
 # library's per-suite identity (D3) as its LOCAL user.email/user.name. Does
 # NOT touch HOME, the exported environment, or GIT_CEILING_DIRECTORIES —
 # gfh_setup below calls this for GFH_REPO; a caller wanting an EXTRA repo
-# under one gfh_setup call (a bare remote, a second clone) calls this
-# directly for it.
+# under one gfh_setup call calls this directly for it (a bare remote is
+# gfh_init_bare, a clone is gfh_clone). $3 = --no-identity: see the CONTRACT.
 gfh_init_repo() {
-  local repo="$1" suite="$2"
+  local repo="$1" suite="$2" mode="${3:-}"
   mkdir -p "$repo"
   # By-construction guard (pg2-510ya): see the CONTRACT block above this
   # function for why this is here unconditionally, not only relied on via
   # gfh_setup's earlier gfh_reset_env call. Idempotent with that path (these
   # are already unset there); load-bearing for a standalone caller, which is
   # this primitive's own documented, intended use.
-  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
+  _gfh_unset_git_dir_family
   command git -C "$repo" init -q -b main
   # Hooks disabled (D2): core.hooksPath pointed at a non-directory means git
   # can never resolve a hook file under it, so no hook — planted, inherited,
   # or supplied by an init template — ever runs for this repo.
   command git -C "$repo" config core.hooksPath /dev/null
-  command git -C "$repo" config user.email "$(gfh_identity_email "$suite")"
-  command git -C "$repo" config user.name "$(gfh_identity_name "$suite")"
+  _gfh_apply_identity "$repo" "$suite" "$mode"
+}
+
+# Create a bare repository at $1 (a push/fetch remote), branch main, hooks
+# disabled (pg2-1msck). No identity: a bare repo has no commits of its own.
+gfh_init_bare() {
+  local repo="$1"
+  mkdir -p "$repo"
+  _gfh_unset_git_dir_family
+  command git init -q --bare -b main "$repo"
+  command git -C "$repo" config core.hooksPath /dev/null
+}
+
+# Clone $1 into $2 with hooks disabled — including during the clone itself —
+# and the per-suite identity (or --no-identity) set locally (pg2-1msck).
+gfh_clone() {
+  local src="$1" dest="$2" suite="$3" mode="${4:-}"
+  _gfh_unset_git_dir_family
+  command git clone -q -c core.hooksPath=/dev/null "$src" "$dest" 2>/dev/null || return
+  command git -C "$dest" config core.hooksPath /dev/null
+  _gfh_apply_identity "$dest" "$suite" "$mode"
+}
+
+# Save the named exported variables so they survive gfh_setup's allowlist
+# reset (pg2-1msck). Call BEFORE gfh_setup. A variable that is unset is
+# recorded as unset.
+gfh_save_env() {
+  local name
+  GFH_SAVED_NAMES=("$@")
+  for name in "$@"; do
+    if [[ -n ${!name+x} ]]; then
+      printf -v "GFH_SAVED_VAL_$name" '%s' "${!name}"
+      printf -v "GFH_SAVED_SET_$name" '%s' 1
+    else
+      printf -v "GFH_SAVED_SET_$name" '%s' 0
+    fi
+  done
+}
+
+# Re-export what gfh_save_env saved (pg2-1msck). Call AFTER gfh_setup.
+gfh_restore_env() {
+  local name set_var val_var
+  for name in ${GFH_SAVED_NAMES[@]+"${GFH_SAVED_NAMES[@]}"}; do
+    set_var="GFH_SAVED_SET_$name"
+    val_var="GFH_SAVED_VAL_$name"
+    if [[ ${!set_var:-0} == 1 ]]; then
+      export "$name=${!val_var}"
+    else
+      unset "$name"
+    fi
+  done
 }
 
 # Full harness setup for ONE bats test. See the CONTRACT block above this
