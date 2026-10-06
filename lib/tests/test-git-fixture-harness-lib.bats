@@ -333,6 +333,77 @@ _gfh_plant_decoy_and_target() {
   [[ "$output" == *"xdg=gone"* ]]
 }
 
+# --- gfh_reset_env without `compgen` (pg2-ji9rf, root cause pg2-31f13) -------
+#
+# nixpkgs' non-interactive `bash` (the one nix check derivations run bats
+# under) is built without programmable completion, so `compgen -e` fails with
+# "command not found" and a `$(compgen -e)` loop silently scrubs nothing. We
+# reproduce that on ANY bash by disabling the builtin (`enable -n compgen`),
+# so the test is discriminating under an interactive bash AND under the nix
+# sandbox bash (where compgen is already absent and `enable -n` is a no-op
+# on it, hence `|| true`).
+
+@test "gfh_reset_env: scrubs GIT_DIR, GIT_WORK_TREE and an unlisted var even when compgen is unavailable" {
+  run bash -c "
+    enable -n compgen 2>/dev/null || true
+    if compgen -e >/dev/null 2>&1; then echo 'compgen still usable' >&2; exit 90; fi
+    source '$GFH_LIB'
+    export GIT_DIR=/some/leaked/gitdir
+    export GIT_WORK_TREE=/some/leaked/worktree
+    export FIXTURE_T_UNLISTED_VAR=leak
+    gfh_reset_env
+    echo \"git_dir=\${GIT_DIR:-gone}\"
+    echo \"work_tree=\${GIT_WORK_TREE:-gone}\"
+    echo \"unlisted=\${FIXTURE_T_UNLISTED_VAR:-gone}\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"git_dir=gone"* ]]
+  [[ "$output" == *"work_tree=gone"* ]]
+  [[ "$output" == *"unlisted=gone"* ]]
+}
+
+@test "gfh_reset_env: a compgen -e based scrub is a silent no-op when compgen is unavailable (control)" {
+  # The OLD implementation, inlined, run under the same compgen-less bash.
+  # It must leave the leaked vars in place -- proving the test above fails
+  # against the old compgen -e implementation and passes only with export -p.
+  run bash -c '
+    enable -n compgen 2>/dev/null || true
+    old_reset_env() {
+      local var
+      for var in $(compgen -e 2>/dev/null); do
+        case "$var" in PATH|BATS_*|GFH_*) continue ;; esac
+        unset "$var"
+      done
+    }
+    export GIT_DIR=/some/leaked/gitdir
+    export GIT_WORK_TREE=/some/leaked/worktree
+    export FIXTURE_T_UNLISTED_VAR=leak
+    old_reset_env
+    echo "git_dir=${GIT_DIR:-gone}"
+    echo "work_tree=${GIT_WORK_TREE:-gone}"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"git_dir=/some/leaked/gitdir"* ]]
+  [[ "$output" == *"work_tree=/some/leaked/worktree"* ]]
+}
+
+@test "gfh_reset_env: exported arrays and exported-but-unset variables are scrubbed; unexported vars survive" {
+  run bash -c "
+    source '$GFH_LIB'
+    export FIXTURE_T_EXPORTED_UNSET
+    declare -ax FIXTURE_T_EXPORTED_ARRAY=(a b)
+    FIXTURE_T_NOT_EXPORTED=keep
+    gfh_reset_env
+    [ -z \"\${FIXTURE_T_EXPORTED_ARRAY+x}\" ] && echo array_gone
+    export -p | grep -q FIXTURE_T_EXPORTED_UNSET || echo unset_gone
+    echo \"unexported=\${FIXTURE_T_NOT_EXPORTED:-lost}\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"array_gone"* ]]
+  [[ "$output" == *"unset_gone"* ]]
+  [[ "$output" == *"unexported=keep"* ]]
+}
+
 @test "gfh_reset_env: preserves the allowlisted process-plumbing vars" {
   run bash -c "
     source '$GFH_LIB'
