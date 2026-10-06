@@ -239,6 +239,12 @@ scope.
   provisioning fix (add to the HM profile) — never a silent skip, never a nix fallback.
 - Every project invocation is bounded by `timeoutSeconds`; expiry is reported as a failure with
   the project named, never waited out.
+- Every project invocation runs with a fresh, empty `TMPDIR` (`mktemp -d` under
+  `$PG_TEST_RUNNER_TMP_ROOT`, default `/tmp`) that is NOT inherited from the caller and is removed
+  afterwards on success, failure and timeout. Tools like `go test` hash every file/dir a test
+  opens for their result cache, so a long-lived session `$TMPDIR` with tens of thousands of entries
+  turned a ~90s run into a >300s timeout (bead pg2-c9j66). If the dir cannot be created the runner
+  warns and runs with the inherited environment.
 - **Parity requirement:** a `unit` test MUST pass both via this runner from the working tree and
   inside its project's nix `checks.*` derivation. The hermetic `checks.*` tier remains the
   authoritative thorough tier; this runner never replaces it.

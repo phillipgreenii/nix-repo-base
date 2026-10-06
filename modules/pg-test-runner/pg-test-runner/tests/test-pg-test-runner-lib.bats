@@ -259,3 +259,65 @@ teardown() {
   run ptr_validate_config "$CONFIG_PATH"
   [ "$status" -eq 0 ]
 }
+
+# --- ptr_invoke: private per-run TMPDIR (bead pg2-c9j66) ------------------
+#
+# `go test` hashes every file/dir a test opens for its result cache, so a huge
+# inherited $TMPDIR makes a run time out. ptr_invoke must hand each project
+# invocation a fresh, empty TMPDIR under a bounded parent and remove it again
+# however the invocation ends. PG_TEST_RUNNER_TMP_ROOT points the parent at a
+# per-test dir so "removed" is assertable as "the parent is empty".
+
+_invoke_setup() {
+  PROJ="$TEST_DIR/proj"
+  TMP_ROOT="$TEST_DIR/tmproot"
+  CALLER_TMP="$TEST_DIR/caller-tmp"
+  mkdir -p "$PROJ" "$TMP_ROOT" "$CALLER_TMP"
+  : >"$CALLER_TMP/huge-tmpdir-stand-in"
+  export PG_TEST_RUNNER_TMP_ROOT="$TMP_ROOT"
+  TIMEOUT_SECONDS=10
+  PTR_JQ="jq"
+  PTR_TIMEOUT="timeout"
+}
+
+@test "ptr_invoke runs the child in a fresh TMPDIR, not the caller's, and removes it on success" {
+  _invoke_setup
+  TMPDIR="$CALLER_TMP" run ptr_invoke "$PROJ" \
+    '["bash","-c","printf %s \"$TMPDIR\" >seen; ls -A \"$TMPDIR\" >listing; touch \"$TMPDIR/scratch\""]' 1 "" "" "" ""
+  [ "$status" -eq 0 ]
+  seen="$(<"$PROJ/seen")"
+  [ -n "$seen" ]
+  [ "$seen" != "$CALLER_TMP" ]
+  [[ "$seen" == "$TMP_ROOT"/* ]]
+  # fresh = empty at start (does not contain the caller's entries)
+  [ ! -s "$PROJ/listing" ]
+  # removed afterwards, scratch content included
+  [ -z "$(ls -A "$TMP_ROOT")" ]
+  # the caller's own TMPDIR is untouched
+  [ -e "$CALLER_TMP/huge-tmpdir-stand-in" ]
+}
+
+@test "ptr_invoke removes the private TMPDIR and keeps the exit status on failure" {
+  _invoke_setup
+  run ptr_invoke "$PROJ" '["bash","-c","touch \"$TMPDIR/x\"; exit 7"]' 1 "" "" "" ""
+  [ "$status" -eq 7 ]
+  [ -z "$(ls -A "$TMP_ROOT")" ]
+}
+
+@test "ptr_invoke removes the private TMPDIR after a timeout kill and reports exit 124" {
+  _invoke_setup
+  export TIMEOUT_SECONDS=1
+  run ptr_invoke "$PROJ" '["bash","-c","touch \"$TMPDIR/x\"; sleep 30"]' 1 "" "" "" ""
+  [ "$status" -eq 124 ]
+  [[ "$output" == *"timed out after 1s cap"* ]]
+  [ -z "$(ls -A "$TMP_ROOT")" ]
+}
+
+@test "ptr_invoke falls back to the inherited TMPDIR, with a warning, when the private one cannot be created" {
+  _invoke_setup
+  export PG_TEST_RUNNER_TMP_ROOT="$TEST_DIR/does-not-exist"
+  TMPDIR="$CALLER_TMP" run ptr_invoke "$PROJ" '["bash","-c","printf %s \"$TMPDIR\" >seen"]' 1 "" "" "" ""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cannot create a private TMPDIR"* ]]
+  [ "$(<"$PROJ/seen")" = "$CALLER_TMP" ]
+}

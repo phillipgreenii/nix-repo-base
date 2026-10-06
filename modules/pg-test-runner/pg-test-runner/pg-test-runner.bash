@@ -500,9 +500,29 @@ ptr_invoke() {
     cmd+=("$(ptr_render_token "$tok" "$jobs_val" "$labels_joined" "$label_val" "$unit_excl" "$all_labels")")
   done
 
-  local status
-  (cd "$path" && "$PTR_TIMEOUT" "$TIMEOUT_SECONDS" "${cmd[@]}")
-  status=$?
+  # Each invocation gets a FRESH, EMPTY TMPDIR under a bounded parent
+  # ($PG_TEST_RUNNER_TMP_ROOT, default /tmp), never the caller's. Tools such as
+  # `go test` hash every file/directory a test opens for their result cache; a
+  # long-lived session $TMPDIR (tens of thousands of entries, GBs) turned a ~90s
+  # run into a >300s timeout (bead pg2-c9j66). The caller's TMPDIR is
+  # deliberately NOT inherited; the dir is removed afterwards on success,
+  # failure and `timeout` expiry alike. If it cannot be created we warn and
+  # fall back to the inherited environment rather than refusing to run.
+  local status tmp_root tmp_dir=""
+  tmp_root="${PG_TEST_RUNNER_TMP_ROOT:-/tmp}"
+  if ! tmp_dir="$(mktemp -d "${tmp_root%/}/pg-test-runner.XXXXXX" 2>/dev/null)"; then
+    tmp_dir=""
+    ptr_err "warning: cannot create a private TMPDIR under $tmp_root; running $path with the inherited TMPDIR"
+  fi
+
+  if [[ -n $tmp_dir ]]; then
+    (cd "$path" && TMPDIR="$tmp_dir" "$PTR_TIMEOUT" "$TIMEOUT_SECONDS" "${cmd[@]}")
+    status=$?
+    rm -rf "$tmp_dir"
+  else
+    (cd "$path" && "$PTR_TIMEOUT" "$TIMEOUT_SECONDS" "${cmd[@]}")
+    status=$?
+  fi
   if [[ $status -eq 124 ]]; then
     ptr_err "project $path timed out after ${TIMEOUT_SECONDS}s cap"
   fi
