@@ -1624,6 +1624,20 @@ MOCK
   export WRAP_LOG
 }
 
+# Exports PATH as $MOCK_BIN plus every inherited entry that does NOT hold a
+# real pg-nix-log-wrapped (this machine has one). Filtering rather than
+# hardcoding "/usr/bin:/bin" keeps coreutils reachable on NixOS, where those
+# directories are near-empty.
+_path_without_real_wrapper() {
+  local dir new="$MOCK_BIN"
+  local -a dirs
+  IFS=: read -ra dirs <<<"$PATH"
+  for dir in "${dirs[@]}"; do
+    [[ -n $dir && ! -e $dir/pg-nix-log-wrapped ]] && new+=":$dir"
+  done
+  export PATH="$new"
+}
+
 _recording_nix_mock() {
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
@@ -1672,7 +1686,7 @@ MOCK
 
 @test "_ul_nix_wrap_prefix is empty when no wrapper is found" {
   # no real pg-nix-log-wrapped (this machine has one) may be found on PATH
-  export PATH="$MOCK_BIN:/usr/bin:/bin"
+  _path_without_real_wrapper
   export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
   export PN_NIX_LOG_WRAPPER="$MOCK_BIN/does-not-exist"
   source "$UL_LOCKS_LIB"
@@ -1683,7 +1697,7 @@ MOCK
 @test "_ul_nix_wrap_prefix is empty when the wrapper path is not executable" {
   echo "not a program" > "$MOCK_BIN/not-exec"
   # no real pg-nix-log-wrapped (this machine has one) may be found on PATH
-  export PATH="$MOCK_BIN:/usr/bin:/bin"
+  _path_without_real_wrapper
   export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
   export PN_NIX_LOG_WRAPPER="$MOCK_BIN/not-exec"
   source "$UL_LOCKS_LIB"
