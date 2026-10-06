@@ -1076,9 +1076,7 @@ func TestPush_CommitFailureUnderBrokenHookLeavesRepoCleanAndReportsCompleted(t *
 	consumer := filepath.Join(root, "consumer")
 
 	initRealRepo(t, dep)
-	bareDep := dep + ".git"
-	runGitT(t, dep, "init", "-q", "--bare", "-b", "main", bareDep)
-	runGitT(t, dep, "remote", "add", "origin", bareDep)
+	bareDep := setupLocalBareRemote(t, dep)
 	runGitT(t, dep, "push", "-q", "-u", "origin", "main")
 
 	initRealRepo(t, consumer)
@@ -1086,9 +1084,7 @@ func TestPush_CommitFailureUnderBrokenHookLeavesRepoCleanAndReportsCompleted(t *
 	writeFile(t, filepath.Join(consumer, "flake.lock"), depFlakeLockJSON("1111111111111111111111111111111111111111"))
 	runGitT(t, consumer, "add", ".")
 	runGitT(t, consumer, "commit", "-qm", "add flake")
-	bareConsumer := consumer + ".git"
-	runGitT(t, consumer, "init", "-q", "--bare", "-b", "main", bareConsumer)
-	runGitT(t, consumer, "remote", "add", "origin", bareConsumer)
+	bareConsumer := setupLocalBareRemote(t, consumer)
 	runGitT(t, consumer, "push", "-q", "-u", "origin", "main")
 
 	// Reproduce the bug: install a pre-commit hook that always fails, AFTER

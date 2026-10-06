@@ -4,46 +4,33 @@ package workspace
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/phillipgreenii/x/gitclient"
+	"github.com/phillipgreenii/x/gitfixture"
+	"github.com/phillipgreenii/x/gittest"
 )
 
-// TestMain makes the whole package's real-git tests HERMETIC: it redirects
-// git's global and system config to /dev/null for the test process so BOTH the
-// test harness (runGitT/initRealRepo, plus propagate_test.go's local git
-// helpers) AND the production code under test — which spawns git via the real
-// runner and inherits this process's environment (internal/exec.realRunner
-// copies os.Environ()) — never read the developer's ~/.gitconfig or XDG
-// global config.
+// TestMain makes the PRODUCTION code under test hermetic. The harness's own
+// git (initRealRepo, runGitT, the bare-remote helpers) now runs through
+// x/gittest/x/gitfixture, which is hermetic by construction (fixture HOME,
+// ceiling directory, no system config, GIT_* location variables never
+// inherited). What it cannot cover is the code under test: production code
+// spawns git via internal/exec.realRunner, which copies os.Environ(), so this
+// process's own environment must still be neutral.
 //
-// Why this matters (pg2-39rz2): on a developer machine with core.fsmonitor=true
-// in global config, a fresh temp repo enables the built-in fsmonitor and
-// `git add`/`commit`/`status` spawns `git fsmonitor--daemon`. A wedged/leaked
-// daemon then blocks index refreshes on the IPC socket, hanging
-// `go test ./internal/workspace/` to go's 600s panic timeout. The nix build
-// sandbox is unaffected only because its HOME is clean. Neutralizing global +
-// system config here removes that inheritance entirely (good hygiene beyond
-// fsmonitor) and mirrors the smoke harness's scrubbed env (smoke/smoke_env.go).
-//
-// It also unsets every git-location env var BEFORE any test runs (pg2-kersl,
-// mechanism proven in pg2-67h4y's design field). A git hook (pre-commit/prek,
-// invoking `go test` for this very package as its run-unit-tests hook) exports
-// GIT_DIR/GIT_INDEX_FILE for the commit in progress when the commit runs from a
-// linked worktree, and this test binary inherits that. `-C <dir>`, cmd.Dir, and
-// even an explicit path argument passed to runGitT/hermeticGitCmd do NOT
-// override these — git's own repo discovery consults the environment FIRST —
-// so a test that builds an isolated fixture under t.TempDir() and drives real
-// git (init/config/commit/add/worktree/branch/remote/push/checkout/tag/reset)
-// would otherwise silently operate on the AMBIENT repo (the canonical clone
-// this worktree links to) instead of the fixture. gitConfigIsolationEnv above
-// covers only the global/system CONFIG half of hermeticity; this covers the
-// separate REPO-LOCATION half. Unsetting these here, once, for the whole
-// process is sufficient: nothing in this package's tests or the code under
-// test re-sets them.
+// It redirects git's global and system config to /dev/null (pg2-39rz2: on a
+// developer machine with core.fsmonitor=true in global config, a fresh temp
+// repo spawns `git fsmonitor--daemon`, and a wedged daemon hung `go test` to
+// go's 600s panic timeout; the nix build sandbox is unaffected only because its
+// HOME is clean). It also unsets every git-location env var BEFORE any test
+// runs (pg2-kersl, mechanism proven in pg2-67h4y's design field): a git hook
+// invoking `go test` for this package exports GIT_DIR/GIT_INDEX_FILE for the
+// commit in progress, and `-C <dir>`/cmd.Dir do NOT override them, so production
+// git run against a fixture would otherwise operate on the AMBIENT repo.
 //
 // os.Setenv (rather than a per-command env) is used so exec'd children inherit
 // the isolation via os.Environ(); it runs once, before any test, so it is safe
@@ -101,10 +88,10 @@ func hermeticGitOptions() []gitclient.Option {
 }
 
 // gitConfigIsolationEnv returns the git env-var overrides that make a real-git
-// invocation ignore the developer's global and system git config. Harness git
-// helpers append these AFTER os.Environ() so they win over any ambient
-// GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM (os/exec keeps the last value for a
-// duplicated key). See TestMain for the rationale.
+// invocation ignore the developer's global and system git config. TestMain
+// applies it to the process environment (for production git run through
+// internal/exec) and hermeticGitOptions to x/gitclient constructors. See
+// TestMain for the rationale.
 func gitConfigIsolationEnv() map[string]string {
 	return map[string]string{
 		"GIT_CONFIG_GLOBAL": "/dev/null",
@@ -112,47 +99,171 @@ func gitConfigIsolationEnv() map[string]string {
 	}
 }
 
-// runGitT runs git in dir and returns trimmed stdout, failing the test on error.
+// fixtureRepos maps every repository and fixture root created by this
+// harness (symlink-resolved) to the x/gitfixture Repo that owns it, so runGitT
+// can find the hermetic client for a directory a test hands it.
+var (
+	fixtureMu    sync.Mutex
+	fixtureRepos = map[string]*gitfixture.Repo{}
+	scratchRepos = map[*testing.T]*gitfixture.Repo{}
+)
+
+// canonPath resolves symlinks in p even when its tail does not exist yet (a
+// worktree or clone target), so a path compares equal to the symlink-resolved
+// paths x/gitfixture records (darwin: /var -> /private/var).
+func canonPath(p string) string {
+	p = filepath.Clean(p)
+	var tail []string
+	for cur := p; ; {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				r = filepath.Join(r, tail[i])
+			}
+			return r
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
+	}
+}
+
+func registerFixture(t *testing.T, r *gitfixture.Repo) {
+	t.Helper()
+	keys := []string{r.Dir, r.Root()}
+	fixtureMu.Lock()
+	for _, k := range keys {
+		fixtureRepos[k] = r
+	}
+	fixtureMu.Unlock()
+	t.Cleanup(func() {
+		fixtureMu.Lock()
+		for _, k := range keys {
+			if fixtureRepos[k] == r {
+				delete(fixtureRepos, k)
+			}
+		}
+		fixtureMu.Unlock()
+	})
+}
+
+// fixtureFor returns the fixture repo whose hermetic client should run git for
+// dir: the repo or fixture root dir lives in (or is), else a per-test scratch
+// fixture from x/gittest for a directory outside every known root.
+func fixtureFor(t *testing.T, dir string) *gitfixture.Repo {
+	t.Helper()
+	fixtureMu.Lock()
+	defer fixtureMu.Unlock()
+	for cur := canonPath(dir); ; cur = filepath.Dir(cur) {
+		if r, ok := fixtureRepos[cur]; ok {
+			return r
+		}
+		if filepath.Dir(cur) == cur {
+			break
+		}
+	}
+	if r, ok := scratchRepos[t]; ok {
+		return r
+	}
+	r := gittest.New(t, gitfixture.RepoOptions{Name: "scratch"})
+	scratchRepos[t] = r
+	t.Cleanup(func() {
+		fixtureMu.Lock()
+		delete(scratchRepos, t)
+		fixtureMu.Unlock()
+	})
+	return r
+}
+
+// runGitT runs git in dir through the hermetic x/gitfixture client that owns
+// dir and returns trimmed stdout, failing the test on error. The command runs
+// with `-C dir`, so dir need not be a repo the fixture created (worktrees,
+// clones). A fixed author identity is supplied per call so commits made in
+// clones and worktrees never depend on ambient config.
 func runGitT(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-	// Neutralize the developer's global/system git config on EVERY harness git
-	// call. Appended after os.Environ() so it wins over any ambient
-	// GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM (os/exec keeps the last value for a
-	// duplicated key). See TestMain / gitConfigIsolationEnv for the rationale.
-	for k, v := range gitConfigIsolationEnv() {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	out, err := cmd.CombinedOutput()
+	full := append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-C", dir}, args...)
+	out, err := fixtureFor(t, dir).Client.Run(t.Context(), full...)
 	if err != nil {
-		t.Fatalf("git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, out)
+		t.Fatalf("git %s in %s: %v", strings.Join(args, " "), dir, err)
 	}
 	return strings.TrimSpace(string(out))
 }
 
-// initRealRepo creates a real git repo at dir with an initial commit on main.
+// initRealRepo creates a real git repo at dir with an initial commit on main
+// (README.md). The repo is an x/gitfixture repository named filepath.Base(dir)
+// under the fixture root filepath.Dir(dir), so several repos created beside one
+// another (dep/consumer, alpha/beta) share one hermetic fixture root. It uses
+// gitfixture.NewRepo (the core gittest.New wraps) rather than gittest.New
+// because callers dictate dir, while gittest.New always picks its own t.TempDir.
 func initRealRepo(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+	// Callers may have pre-created dir, even populated (openHookWS drops a
+	// flake.nix into each repo dir). gitfixture refuses an explicitly named repo
+	// that already exists, so park the existing entries aside, create the repo,
+	// and restore them so the initial commit still contains them.
+	held := holdExistingEntries(t, dir)
+	r, err := gitfixture.NewRepo(t.Context(), filepath.Dir(dir), gitfixture.RepoOptions{
+		Suite: t.Name(),
+		Name:  filepath.Base(dir),
+	})
+	if err != nil {
+		t.Fatalf("initRealRepo(%s): %v", dir, err)
 	}
-	runGitT(t, dir, "init", "-q", "-b", "main")
-	// Set a repo-local identity so commits made by the PRODUCTION code under
-	// test (which spawns its own git without runGitT's per-command env identity)
-	// succeed even when the environment has no global git identity — e.g. the
-	// nix build sandbox, whose auto-detected `_nixbld1@host.(none)` git rejects.
-	// Mirrors propEnv in propagate_test.go.
-	runGitT(t, dir, "config", "user.email", "t@t")
-	runGitT(t, dir, "config", "user.name", "t")
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("init\n"), 0o644); err != nil {
-		t.Fatal(err)
+	registerFixture(t, r)
+	// gitfixture points core.hooksPath at its empty hooks dir (an extra guard
+	// against an inherited global hooksPath). The fixture HOME already hides
+	// global config and a fresh repo's own .git/hooks is empty, so drop the
+	// redirect: pn's hook-bundle code reads core.hooksPath and the hook tests
+	// install hooks under .git/hooks.
+	if _, err := r.Client.Run(t.Context(), "config", "--unset", "core.hooksPath"); err != nil {
+		t.Fatalf("initRealRepo(%s): unsetting core.hooksPath: %v", dir, err)
 	}
-	runGitT(t, dir, "add", ".")
-	runGitT(t, dir, "commit", "-q", "-m", "init")
+	for _, name := range held.names {
+		if err := os.Rename(filepath.Join(held.dir, name), filepath.Join(r.Dir, name)); err != nil {
+			t.Fatalf("initRealRepo(%s): restoring %s: %v", dir, name, err)
+		}
+	}
+	if _, err := r.Commit(t.Context(), "init", map[string]string{"README.md": "init\n"}); err != nil {
+		t.Fatalf("initRealRepo(%s): %v", dir, err)
+	}
+	if _, err := r.Client.Run(t.Context(), "add", "."); err != nil {
+		t.Fatalf("initRealRepo(%s): staging pre-existing files: %v", dir, err)
+	}
+	if len(held.names) > 0 {
+		if _, err := r.Client.Run(t.Context(), "commit", "-q", "-m", "init (pre-existing files)"); err != nil {
+			t.Fatalf("initRealRepo(%s): committing pre-existing files: %v", dir, err)
+		}
+	}
+}
+
+// heldEntries is a directory's top-level entries moved out of the way.
+type heldEntries struct {
+	dir   string
+	names []string
+}
+
+// holdExistingEntries moves every top-level entry of dir (if it exists) into a
+// fresh temp dir and removes dir, so gitfixture can create a repo at the path.
+func holdExistingEntries(t *testing.T, dir string) heldEntries {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return heldEntries{} // dir absent: nothing to hold
+	}
+	h := heldEntries{dir: t.TempDir()}
+	for _, e := range entries {
+		if err := os.Rename(filepath.Join(dir, e.Name()), filepath.Join(h.dir, e.Name())); err != nil {
+			t.Fatalf("initRealRepo(%s): parking %s: %v", dir, e.Name(), err)
+		}
+		h.names = append(h.names, e.Name())
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatalf("initRealRepo(%s): removing emptied dir: %v", dir, err)
+	}
+	return h
 }
 
 // addCommit writes file=content, commits it, and returns the new HEAD sha.
@@ -176,18 +287,25 @@ func currentBranch(t *testing.T, dir string) string {
 	return runGitT(t, dir, "rev-parse", "--abbrev-ref", "HEAD")
 }
 
+// addBareSibling creates a bare x/gitfixture repo named name beside dir (under
+// the same fixture root), registers it as remote `remote` of dir, and returns
+// its path. The bare HEAD is pinned to main by gitfixture regardless of the
+// ambient init.defaultBranch.
+func addBareSibling(t *testing.T, dir, name, remote string) string {
+	t.Helper()
+	bare, err := fixtureFor(t, dir).NewSibling(t.Context(), name, gitfixture.RepoOptions{Bare: true})
+	if err != nil {
+		t.Fatalf("bare sibling %s of %s: %v", name, dir, err)
+	}
+	runGitT(t, dir, "remote", "add", remote, bare.Dir)
+	return bare.Dir
+}
+
 // setupLocalBareRemote creates a bare repo beside dir, adds it as origin,
 // and pushes the current branch. Returns the bare repo path.
 func setupLocalBareRemote(t *testing.T, dir string) string {
 	t.Helper()
-	bare := dir + ".git"
-	// -b main so the bare repo's HEAD points at main regardless of the ambient
-	// init.defaultBranch (unset in the nix sandbox → "master"). Otherwise a
-	// clone of this remote lands on an unborn "master", commits made in that
-	// clone create "master", and `push origin main` fails with
-	// "src refspec main does not match any".
-	runGitT(t, dir, "init", "-q", "--bare", "-b", "main", bare)
-	runGitT(t, dir, "remote", "add", "origin", bare)
+	bare := addBareSibling(t, dir, filepath.Base(dir)+".git", "origin")
 	runGitT(t, dir, "push", "-q", "origin", currentBranch(t, dir))
 	return bare
 }
@@ -198,10 +316,7 @@ func setupLocalBareRemote(t *testing.T, dir string) string {
 // rather than a hardcoded "origin".
 func setupLocalBareRemoteNamed(t *testing.T, dir, remote string) string {
 	t.Helper()
-	bare := dir + "." + remote + ".git"
-	// -b main: see setupLocalBareRemote for why the bare HEAD must be pinned.
-	runGitT(t, dir, "init", "-q", "--bare", "-b", "main", bare)
-	runGitT(t, dir, "remote", "add", remote, bare)
+	bare := addBareSibling(t, dir, filepath.Base(dir)+"."+remote+".git", remote)
 	runGitT(t, dir, "push", "-q", remote, currentBranch(t, dir))
 	// Track the remote branch so `git rev-parse @{u}` / aheadBehind work.
 	runGitT(t, dir, "branch", "--set-upstream-to", remote+"/"+currentBranch(t, dir))
@@ -230,40 +345,5 @@ func TestRealGitHelpers(t *testing.T) {
 	bare := setupLocalBareRemote(t, dir)
 	if _, err := os.Stat(bare); err != nil {
 		t.Fatalf("bare remote not created: %v", err)
-	}
-}
-
-// TestHarnessNeutralizesGlobalFsmonitor is the pg2-39rz2 regression guard: it
-// proves the real-git harness never inherits the developer's global git config.
-// It simulates a global config that turns core.fsmonitor on (the setting that,
-// on the affected machine, made temp repos spawn `git fsmonitor--daemon` and
-// hang the suite) and asserts a harness git invocation in a fresh repo still
-// reports core.fsmonitor unset.
-//
-// It probes via a config READ (never `git status`), so the assertion itself
-// cannot spawn an fsmonitor daemon: `git init` performs no index refresh, and
-// `git config` reads config without touching fsmonitor.
-func TestHarnessNeutralizesGlobalFsmonitor(t *testing.T) {
-	// Simulate a developer global git config that enables fsmonitor.
-	globalCfg := filepath.Join(t.TempDir(), "gitconfig")
-	if err := os.WriteFile(globalCfg, []byte("[core]\n\tfsmonitor = true\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Point git's global-config selector at it for this test only. A
-	// non-hermetic harness would inherit this via os.Environ(); the hermetic
-	// harness overrides it with GIT_CONFIG_GLOBAL=/dev/null.
-	t.Setenv("GIT_CONFIG_GLOBAL", globalCfg)
-
-	dir := filepath.Join(t.TempDir(), "repo")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runGitT(t, dir, "init", "-q", "-b", "main")
-
-	// --default false => the read exits 0 with "false" when the key is unset;
-	// a bare `config --get` exits 1 on a missing key, which runGitT would treat
-	// as a fatal error.
-	if got := runGitT(t, dir, "config", "--default", "false", "--get", "core.fsmonitor"); got == "true" {
-		t.Fatalf("harness inherited developer core.fsmonitor=%q; the real-git harness must neutralize global git config (GIT_CONFIG_GLOBAL=/dev/null)", got)
 	}
 }
