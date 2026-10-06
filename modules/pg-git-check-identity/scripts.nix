@@ -5,9 +5,18 @@
   bashBuilders,
 }:
 let
+  # The git fixture harness lives outside the script's `src`, so the sandboxed
+  # bats check cannot see it unless it is passed in as `testSupport` (mkBash*
+  # copies *.bash files into BATS_SUPPORT_PATH and exports the directory as
+  # TEST_SUPPORT). Same mechanism as modules/pnwf/scripts.nix.
+  testSupport = pkgs.runCommand "pg-git-check-identity-test-support" { } ''
+    mkdir -p $out
+    cp ${../../lib/scripts/git-fixture-harness.bash} $out/git-fixture-harness.bash
+  '';
+
   pg-git-check-identity = pkgs.callPackage ./pg-git-check-identity {
     inherit (bashBuilders) mkBashScript;
-    inherit pkgs;
+    inherit pkgs testSupport;
   };
 
   allScripts = [

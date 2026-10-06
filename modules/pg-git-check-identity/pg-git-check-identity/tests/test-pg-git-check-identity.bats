@@ -32,49 +32,38 @@ WRAPPER
 }
 
 setup() {
-  TEST_DIR="$(mktemp -d)"
+  # Hermetic git fixture (bead pg2-mf90x; rule "Tests That Need Git"): the
+  # shared harness owns the fixture root, a fresh empty HOME, the
+  # GIT_CEILING_DIRECTORIES boundary, GIT_CONFIG_SYSTEM=/dev/null and an
+  # allowlist env rebuild. That rebuild drops every inherited GIT_DIR-family
+  # variable AND any ambient GIT_AUTHOR_*/GIT_COMMITTER_* identity (which would
+  # outrank repo config in `git var`, e.g. under pg-test-runner), so this suite
+  # carries no GIT_*/XDG_* scrub of its own. In the nix check the harness comes
+  # in as testSupport (BATS_SUPPORT_PATH); locally it is the repo's canonical copy.
+  # shellcheck disable=SC1091  # runtime-resolved path (nix: BATS_SUPPORT_PATH)
+  source "${BATS_SUPPORT_PATH:-$BATS_TEST_DIRNAME/../../../../lib/scripts}/git-fixture-harness.bash"
+
+  # gfh_setup rebuilds the exported environment from an allowlist, which would
+  # drop SCRIPTS_DIR (exported by the nix check).
+  gfh_save_env SCRIPTS_DIR
+  gfh_setup test-pg-git-check-identity
+  gfh_restore_env
+
+  TEST_DIR="$GFH_WORK"
   export TEST_DIR
-  export REAL_HOME="${HOME:-}"
-  export HOME="$TEST_DIR/home"
-  mkdir -p "$HOME"
-  # Overriding HOME alone is NOT enough isolation: home-manager's git module
-  # writes identity to $XDG_CONFIG_HOME/git/config, and the ambient
-  # environment sets XDG_CONFIG_HOME to an absolute path independent of
-  # HOME -- so without this, a test relying on "no identity resolvable"
-  # (below) silently resolves the REAL machine identity instead. GIT_CONFIG_
-  # NOSYSTEM also guards against a populated /etc/gitconfig on some other
-  # machine running this suite.
-  export XDG_CONFIG_HOME="$TEST_DIR/xdg-config"
-  export GIT_CONFIG_NOSYSTEM=1
-
-  # pg2-6drqh: a linked-worktree commit hook exports GIT_DIR/GIT_INDEX_FILE,
-  # which git consults BEFORE cwd -- so the `git init` below would re-init the
-  # canonical clone and the later `git config user.*` tests would write into
-  # its shared .git/config. Scrub the family, and pin a ceiling so a fixture
-  # can never resolve to a repo above TEST_DIR.
-  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
-  GIT_CEILING_DIRECTORIES="$(cd "$TEST_DIR" && pwd -P)"
-  export GIT_CEILING_DIRECTORIES
-
-  # pg-test-runner (the commit-time unit-test hook's runner) exports a valid
-  # GIT_AUTHOR_*/GIT_COMMITTER_* identity into every child, and those env vars
-  # outrank repo config in `git var`. Under that hook the config-path tests
-  # below would then never see the placeholder config they set. Start every
-  # test with no ambient identity env; tests that need one export it.
-  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
   create_pg_git_check_identity_wrapper
   SCRIPT="$TEST_DIR/run_pg_git_check_identity"
 
-  REPO="$TEST_DIR/repo"
-  mkdir -p "$REPO"
+  # GFH_REPO carries the harness's own local fixture identity; the tests below
+  # that need a different (or no) identity set/replace it explicitly.
+  REPO="$GFH_REPO"
   cd "$REPO" || return 1
-  git init -q -b main
 }
 
 teardown() {
-  cd "$TEST_DIR" || cd /
-  [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"
+  cd / || true
+  gfh_teardown
 }
 
 @test "--help prints usage and exits 0" {
@@ -153,34 +142,41 @@ teardown() {
 }
 
 @test "a completely unresolved identity fails loudly rather than silently passing" {
-  # No env vars, no repo-local config, and setup()'s isolated HOME has no
+  # No env vars (the harness rebuilt the environment without any), no
+  # repo-local identity (--no-identity also sets user.useConfigOnly so git will
+  # not guess one from the hostname), and the harness's isolated HOME has no
   # ~/.gitconfig -- git cannot resolve any identity at all. This must NOT
   # exit 0 (silently "passing" an unattributable commit) and must NOT exit 3
   # (which specifically means "identity looks like a placeholder" -- an
   # unresolved identity is a different failure than a resolved-but-fake one).
-  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+  gfh_init_repo "$TEST_DIR/no-identity" test-pg-git-check-identity --no-identity
+  cd "$TEST_DIR/no-identity" || return 1
 
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [ "$status" -ne 3 ]
 }
 
-# Regression for pg2-6drqh: under a leaked GIT_DIR (as in a linked-worktree
-# commit hook) the identity-config tests must not touch the pointed-at repo.
-# Nested bats runs one config-writing test; the filter excludes this test.
-@test "config-writing tests under a leaked GIT_DIR leave that repo's config byte-identical (pg2-6drqh)" {
+# Regression for pg2-6drqh: under a leaked GIT_DIR/GIT_WORK_TREE (as in a
+# linked-worktree commit hook) the identity-config tests must not touch the
+# pointed-at repo. Nested bats runs one config-writing test; the filter
+# excludes this test.
+@test "config-writing tests under a leaked GIT_DIR leave that repo's config and HEAD byte-identical (pg2-6drqh)" {
   command -v bats >/dev/null || skip "bats not on PATH"
-  local canon before after
-  canon="$(mktemp -d)"
-  env -u GIT_DIR git init -q -b main "$canon"
-  before="$(cat "$canon/.git/config")"
+  local canon before_config before_head after_config after_head
+  canon="$TEST_DIR/decoy"
+  gfh_init_repo "$canon" test-pg-git-check-identity
+  before_config="$(cat "$canon/.git/config")"
+  before_head="$(cat "$canon/.git/HEAD")"
 
-  run env GIT_DIR="$canon/.git" GIT_INDEX_FILE="$canon/.git/index" \
+  run env GIT_DIR="$canon/.git" GIT_WORK_TREE="$canon" \
+    GIT_INDEX_FILE="$canon/.git/index" \
     SCRIPTS_DIR="$SCRIPTS_DIR" \
     bats --filter 'set via git config' "$BATS_TEST_FILENAME"
   [ "$status" -eq 0 ]
 
-  after="$(cat "$canon/.git/config")"
-  [ "$before" = "$after" ]
-  rm -rf "$canon"
+  after_config="$(cat "$canon/.git/config")"
+  after_head="$(cat "$canon/.git/HEAD")"
+  [ "$before_config" = "$after_config" ]
+  [ "$before_head" = "$after_head" ]
 }
