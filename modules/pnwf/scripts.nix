@@ -12,14 +12,23 @@
   pn,
 }:
 let
+  # The git fixture harness lives outside every script's `src`, so the sandboxed
+  # bats checks cannot see it unless it is passed in as `testSupport` (mkBash*
+  # copies *.bash files into BATS_SUPPORT_PATH and exports the directory as
+  # TEST_SUPPORT). Same mechanism as modules/pg-hooks/scripts.nix.
+  testSupport = pkgs.runCommand "pnwf-test-support" { } ''
+    mkdir -p $out
+    cp ${../../lib/scripts/git-fixture-harness.bash} $out/git-fixture-harness.bash
+  '';
+
   pnwf-lib = pkgs.callPackage ./lib {
     inherit (bashBuilders) mkBashLibrary;
-    inherit pkgs;
+    inherit pkgs testSupport;
   };
 
   pnwf = pkgs.callPackage ./pnwf {
     inherit (bashBuilders) mkBashScript;
-    inherit pkgs pnwf-lib;
+    inherit pkgs pnwf-lib testSupport;
   };
 
   # wsplan: the read-only Stage A land-plan emitter. A SECOND, independent
@@ -35,6 +44,7 @@ let
       pnwf-lib
       pnwf
       pn
+      testSupport
       ;
   };
 

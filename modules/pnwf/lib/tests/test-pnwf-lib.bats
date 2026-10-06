@@ -28,65 +28,15 @@ bats_require_minimum_version 1.5.0
 # guard's own error-handling code executed, not an early abort) while stdout
 # stays exactly empty (proving no bogus value was printed).
 
-# IMMUTABLE, path-stable fixtures are built ONCE per file here (bead pg2-nh1t3):
-# LIB_PATH resolution, the fsmonitor guard, and the default
-# integrate-branch-support mock TEMPLATE. The per-test MUTABLE state (TEST_DIR
-# and the real git REPO that many tests branch/commit into) stays in setup().
+# LIB_PATH resolution and the default integrate-branch-support mock TEMPLATE.
+# The per-test MUTABLE state (TEST_DIR and the real git REPO that many tests
+# branch/commit into) comes from the shared git-fixture-harness in setup().
 setup_file() {
   if [[ -z ${LIB_PATH:-} ]]; then
     # Local dev: source from source directory
     LIB_PATH="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)/pnwf-lib.bash"
   fi
   export LIB_PATH
-
-  # Hermetic + fast git (same guard as test-pnwf.bats). This suite ALSO
-  # `git init`s a real repo per test, so on a machine with global
-  # core.fsmonitor=true each throwaway repo spawns its own fsmonitor daemon that
-  # blocks every working-tree op for 2-3s -- pushing the suite to ~20min locally
-  # (and, under `bats --jobs`, many daemons at once). This used to be fixed
-  # surgically with a GIT_CONFIG_COUNT pin, but that is now redundant:
-  # GIT_CONFIG_GLOBAL/SYSTEM=/dev/null below already neutralizes
-  # core.fsmonitor/core.untrackedcache (and everything else) at the ambient
-  # global/system scope, which was the pin's only job here. The pin's one
-  # remaining edge -- it would still win over a REPO-LOCAL
-  # core.fsmonitor/untrackedcache override, which the /dev/null redirects do
-  # not touch -- is moot for this suite because no test here sets one
-  # (verified by grep); removed as redundant (pg2-zjcp6).
-
-  # Full hermeticity (bead pg2-klyn6): every git config key otherwise merged in
-  # from the developer's ~/.gitconfig, $XDG_CONFIG_HOME/git/config and
-  # /etc/gitconfig -- including core.fsmonitor/core.untrackedcache above -- is
-  # neutralized. /dev/null is the NEUTRAL setting for both scopes, so no test
-  # outcome depends on whose machine runs it. Safe here because this suite
-  # always pins what it needs explicitly — `git init -q -b <branch>` (never
-  # inheriting init.defaultBranch) and repo-local user.email/user.name. Mirrors
-  # the pg2-39rz2 Go fix's TestMain in
-  # modules/pn/internal/workspace/realgit_test.go. Requires git >= 2.32.
-  export GIT_CONFIG_GLOBAL=/dev/null
-  export GIT_CONFIG_SYSTEM=/dev/null
-
-  # HERMETIC GIT REPO LOCATION (bead pg2-5856n; same defect class and same shape
-  # as the fix landed in phillipgreenii-nix-ziprecruiter's
-  # modules/zm/test-support/test_helper.bash, commit 77231676). `git commit` FROM
-  # A LINKED WORKTREE exports GIT_DIR=<canonical>/.git/worktrees/<name> and
-  # GIT_INDEX_FILE into the hook environment, and every child process inherits
-  # them -- including the bats run that this repo's own `run-unit-tests`
-  # pre-commit hook launches. git's repo discovery consults those variables
-  # BEFORE honouring `-C <dir>`, `cd`, or an explicit path argument, so a leak
-  # silently redirects every "isolated" fixture below onto the canonical clone:
-  # `git init` re-inits the real repo, `git add` stages into the real index, and
-  # `git config` writes to $GIT_COMMON_DIR/config -- the canonical .git/config
-  # SHARED by every worktree and by the operator.
-  #
-  # This suite is the highest-severity case in the workspace because it
-  # deliberately writes `core.worktree` to a decoy path it then deletes (the
-  # REDIRECTED / REMOVED negative fixtures below). Landed in the canonical
-  # config, that single key bricks every git command in the clone -- including
-  # the `git config --unset` needed to undo it (observed live: pg2-jjlm8,
-  # pg2-12795). Unset here, once, before any real git call in this file runs;
-  # setup()'s GIT_CEILING_DIRECTORIES is the by-construction backstop for a
-  # variable this enumeration misses.
-  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
 
   # Immutable mock TEMPLATE: the default integrate-branch-support mock, called
   # bare (no --json flag), emits JSON unconditionally, mirroring the real tool.
@@ -103,19 +53,24 @@ MOCK
 }
 
 setup() {
-  TEST_DIR="$(mktemp -d)"
-  export TEST_DIR
+  # Hermetic git fixture (bead pg2-ie5ds; rule "Tests That Need Git"): the
+  # shared harness owns the fixture root, HOME, the GIT_CEILING_DIRECTORIES
+  # boundary and the allowlist env rebuild, so this suite carries no GIT_*
+  # scrub of its own. In the nix check the harness comes in as testSupport
+  # (BATS_SUPPORT_PATH); locally it is the repo's canonical copy.
+  # shellcheck disable=SC1091  # runtime-resolved path (nix: BATS_SUPPORT_PATH)
+  source "${BATS_SUPPORT_PATH:-$BATS_TEST_DIRNAME/../../../../lib/scripts}/git-fixture-harness.bash"
 
-  # BY-CONSTRUCTION BACKSTOP for the same defect (bead pg2-8wnhc's ruling: env
-  # scrubbing is a partial mitigation; no fixture path should be ABLE to reach a
-  # real repo). setup_file's `unset` enumerates variable names and so is only as
-  # good as that list; this does not depend on the list at all -- git physically
-  # refuses to chdir up out of the mktemp parent, so no fixture path can resolve
-  # to a repository outside the fixture tree. PHYSICAL path because git compares
-  # the ceiling against a getcwd() result (macOS's /var is a symlink into
-  # /private/var).
-  GIT_CEILING_DIRECTORIES="$(cd "$(dirname "$TEST_DIR")" && pwd -P)"
-  export GIT_CEILING_DIRECTORIES
+  # gfh_setup rebuilds the exported environment from an allowlist, which would
+  # drop the variables setup_file exported for this suite.
+  gfh_save_env LIB_PATH MOCK_TEMPLATE
+  gfh_setup test-pnwf-lib
+  gfh_restore_env
+
+  # The harness's work dir IS the per-test fixture directory (HOME, the git
+  # repo and every extra fixture below live under it, and it is the ceiling).
+  TEST_DIR="$GFH_WORK"
+  export TEST_DIR
 
   # Mocks live OUTSIDE the repo working tree (sibling dir), never inside it.
   # Seeded from the immutable per-file template (setup_file); copying rather than
@@ -127,32 +82,23 @@ setup() {
   PATH="$MOCK_DIR:$PATH"
   export PATH MOCK_DIR
 
-  # HERMETIC HOME (bead pg2-7hr6o), the same three lines the wsplan suites in this
-  # module already carry — copied, not reinvented. The bash-scripting skill's
-  # test-isolation rule 2 requires it and this suite lacked it, so a bare
-  # `bats modules/pnwf/lib/tests` read the developer's real HOME for every non-git
-  # purpose (the nix check's sandbox HOME hid that: only the gate was hermetic).
-  # setup_file's GIT_CONFIG_GLOBAL=/dev/null outranks HOME for GIT alone; caches,
-  # XDG defaults, tool configs and credential helpers still resolved off the real
-  # one. Per-test (not per-file) so each test gets a pristine, empty HOME.
-  HOME="$TEST_DIR/home"
-  mkdir -p "$HOME"
-  export HOME
-
-  REPO="$TEST_DIR/repo"
-  mkdir -p "$REPO"
-  command git -C "$REPO" init -q -b main
-  command git -C "$REPO" config user.email "test@example.com"
-  command git -C "$REPO" config user.name "Test"
-  echo one >"$REPO/file.txt"
-  command git -C "$REPO" add file.txt
-  command git -C "$REPO" commit -q -m "initial"
+  # The harness's initialised, single-commit repo.
+  REPO="$GFH_REPO"
   export REPO
 }
 
 teardown() {
-  rm -rf "$TEST_DIR"
+  gfh_teardown
 }
+
+# A bare remote at $1 seeded with $REPO's main (what `git clone --bare "$REPO"`
+# used to give), built from the harness primitive rather than a hand-rolled
+# clone.
+_seed_bare_origin() {
+  gfh_init_bare "$1"
+  command git -C "$REPO" push -q "$1" main
+}
+
 
 # --- pnwf_worktree_root_state ---------------------------------------------
 # Contract: PRINTS one "<state><TAB><detail>" line and always returns 0 --
@@ -195,10 +141,7 @@ teardown() {
 }
 
 @test "pnwf_worktree_root_state: a BARE repo is indeterminate (it has no work tree)" {
-  # -b main: pin the bare HEAD explicitly instead of leaving it to follow
-  # init.defaultBranch/git's compiled-in default (same precedent fix as
-  # setupLocalBareRemote, commit 2adaca1); unread here but kept consistent.
-  command git init -q --bare -b main "$TEST_DIR/bare.git"
+  gfh_init_bare "$TEST_DIR/bare.git"
   run bash -euo pipefail -c "source '$LIB_PATH'; pnwf_worktree_root_state '$TEST_DIR/bare.git'"
   [ "$status" -eq 0 ]
   [ "${output%%$'\t'*}" = "indeterminate" ]
@@ -461,10 +404,7 @@ _redirect_worktree_to_decoy() {
 # Gives $REPO's current branch a real upstream via a local bare remote.
 _upstream_publish() {
   local remote="$TEST_DIR/remote.git"
-  # -b main: pin the bare remote's HEAD explicitly (same precedent fix as
-  # setupLocalBareRemote, commit 2adaca1); harmless here since the push
-  # below creates the "main" ref explicitly, but kept consistent.
-  command git init -q --bare -b main "$remote"
+  gfh_init_bare "$remote"
   command git -C "$REPO" remote add origin "$remote"
   command git -C "$REPO" push -q -u origin main
 }
@@ -827,13 +767,11 @@ _setup_fetch_and_rebase_origin() {
   # origin configured -- mirrors a real workforest member (a worktree
   # checked out from the canonical clone, canonical remote-tracking origin).
   ORIGIN="$TEST_DIR/origin.git"
-  command git clone -q --bare "$REPO" "$ORIGIN"
+  _seed_bare_origin "$ORIGIN"
   export ORIGIN
 
   CLONE="$TEST_DIR/clone"
-  command git clone -q "$ORIGIN" "$CLONE"
-  command git -C "$CLONE" config user.email "test@example.com"
-  command git -C "$CLONE" config user.name "Test"
+  gfh_clone "$ORIGIN" "$CLONE" test-pnwf-lib
   export CLONE
 }
 
@@ -916,6 +854,11 @@ _setup_fetch_and_rebase_origin() {
   command git -C "$REPO" commit -q -m "origin advance"
   command git -C "$REPO" push -q "$ORIGIN" main
 
+  # The harness disables hooks per repo (core.hooksPath=/dev/null) so no
+  # inherited or templated hook can ever run. THIS test needs exactly one hook
+  # to run -- the one it plants -- so it re-enables hook lookup in the clone
+  # (<git-dir>/hooks) only; nothing outside the fixture is reachable.
+  command git -C "$CLONE" config --unset core.hooksPath
   cat >"$CLONE/.git/hooks/pre-rebase" <<'HOOK'
 #!/bin/sh
 echo "pre-rebase hook refuses in this test" >&2
@@ -1103,7 +1046,7 @@ _assert_member_untouched_by_refusal() {
 # and is a strict ancestor of what local history will become.
 _setup_push_test_origin() {
   ORIGIN="$TEST_DIR/origin.git"
-  command git clone -q --bare "$REPO" "$ORIGIN"
+  _seed_bare_origin "$ORIGIN"
   command git -C "$REPO" remote add origin "$ORIGIN"
   command git -C "$REPO" fetch -q origin
   export ORIGIN
@@ -1162,9 +1105,7 @@ _add_local_commit() {
   # function never fetches on its own, matching pnwf_push_canonical_primary_
   # if_ahead's own "no extra network call" invariant).
   local peer="$TEST_DIR/peer-clone"
-  command git clone -q "$ORIGIN" "$peer"
-  command git -C "$peer" config user.email "test@example.com"
-  command git -C "$peer" config user.name "Test"
+  gfh_clone "$ORIGIN" "$peer" test-pnwf-lib
   echo peer-advance >"$peer/peer.txt"
   command git -C "$peer" add peer.txt
   command git -C "$peer" commit -q -m "peer advance"
@@ -1190,7 +1131,7 @@ _add_local_commit() {
   # remote added, but no fetch ever ran, so 'origin/main..main' cannot
   # resolve.
   ORIGIN="$TEST_DIR/origin.git"
-  command git clone -q --bare "$REPO" "$ORIGIN"
+  _seed_bare_origin "$ORIGIN"
   command git -C "$REPO" remote add origin "$ORIGIN"
   _add_local_commit ahead-one
 
@@ -1256,7 +1197,7 @@ _add_local_commit() {
   # remote added, but no `git fetch` was ever run: refs/remotes/origin/main
   # does not exist, so 'origin/main..main' cannot resolve.
   ORIGIN="$TEST_DIR/origin.git"
-  command git clone -q --bare "$REPO" "$ORIGIN"
+  _seed_bare_origin "$ORIGIN"
   command git -C "$REPO" remote add origin "$ORIGIN"
   _add_local_commit ahead-one
 
@@ -1324,9 +1265,7 @@ _add_local_commit() {
   # A peer publishes directly to origin, independent of $REPO's (now stale)
   # knowledge of it -- via a THIRD clone, never through $REPO.
   local peer="$TEST_DIR/peer-clone"
-  command git clone -q "$ORIGIN" "$peer"
-  command git -C "$peer" config user.email "test@example.com"
-  command git -C "$peer" config user.name "Test"
+  gfh_clone "$ORIGIN" "$peer" test-pnwf-lib
   echo peer-advance >"$peer/peer.txt"
   command git -C "$peer" add peer.txt
   command git -C "$peer" commit -q -m "peer advance"
@@ -1452,11 +1391,10 @@ _add_local_commit() {
 # --- harness hermeticity guard --------------------------------------------
 
 @test "setup() relocates HOME off the developer's own (pg2-7hr6o regression guard)" {
-  # Discriminating guard for the HOME isolation setup() installs, mirroring the
-  # one in lib/tests/test-update-locks-lib.bats: drop `export HOME` from setup()
-  # and HOME is the developer's real one, so the equality fails; drop the whole
-  # block and $TEST_DIR/home does not exist, so the -d fails. Either way it goes
-  # red, which is what separates a guard from a restatement.
+  # Discriminating guard for the HOME isolation setup() gets from gfh_setup,
+  # mirroring the one in lib/tests/test-update-locks-lib.bats: if setup() stopped
+  # relocating HOME it would be the developer's real one, so the equality fails.
+  # Either way it goes red, which is what separates a guard from a restatement.
   #
   # The real ~ is never touched, read, or probed: the assertions look only at the
   # temp dir setup() created, and a fresh mktemp path can never BE the

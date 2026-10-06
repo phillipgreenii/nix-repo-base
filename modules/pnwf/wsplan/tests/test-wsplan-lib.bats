@@ -57,49 +57,6 @@ setup_file() {
   # shellcheck disable=SC2090  # deliberate: the quotes are for the child shell
   export PRELUDE
 
-  # Hermetic + fast git (same guard as the pnwf suites): a developer's global
-  # core.fsmonitor=true makes every throwaway `git init` spawn a daemon that
-  # blocks each working-tree op for seconds. This used to be fixed surgically
-  # with a GIT_CONFIG_COUNT pin, but that is now redundant:
-  # GIT_CONFIG_GLOBAL/SYSTEM=/dev/null below already neutralizes
-  # core.fsmonitor/core.untrackedcache (and everything else) at the ambient
-  # global/system scope, which was the pin's only job here. The pin's one
-  # remaining edge -- it would still win over a REPO-LOCAL
-  # core.fsmonitor/untrackedcache override, which the /dev/null redirects do
-  # not touch -- is moot for this suite because no test here sets one
-  # (verified by grep); removed as redundant (pg2-zjcp6).
-
-  # Full hermeticity (bead pg2-klyn6): every git config key otherwise merged in
-  # from the developer's ~/.gitconfig, $XDG_CONFIG_HOME/git/config and
-  # /etc/gitconfig -- including core.fsmonitor/core.untrackedcache above -- is
-  # neutralized. /dev/null is the NEUTRAL setting for both scopes, so no test
-  # outcome depends on whose machine runs it. Safe here because this suite
-  # always pins what it needs explicitly — `git init -q -b <branch>` (never
-  # inheriting init.defaultBranch) and repo-local user.email/user.name. Mirrors
-  # the pg2-39rz2 Go fix's TestMain in
-  # modules/pn/internal/workspace/realgit_test.go. Requires git >= 2.32.
-  export GIT_CONFIG_GLOBAL=/dev/null
-  export GIT_CONFIG_SYSTEM=/dev/null
-
-  # HERMETIC GIT REPO LOCATION (bead pg2-5856n; same defect class and same shape
-  # as the fix landed in phillipgreenii-nix-ziprecruiter's
-  # modules/zm/test-support/test_helper.bash, commit 77231676). `git commit` FROM
-  # A LINKED WORKTREE exports GIT_DIR=<canonical>/.git/worktrees/<name> and
-  # GIT_INDEX_FILE into the hook environment, and every child process inherits
-  # them -- including the bats run that this repo's own `run-unit-tests`
-  # pre-commit hook launches. git's repo discovery consults those variables
-  # BEFORE honouring `-C <dir>`, `cd`, or an explicit path argument, so a leak
-  # silently redirects every "isolated" fixture below onto the canonical clone:
-  # `git init` re-inits the real repo, `git add` stages into the real index, and
-  # `git config` writes to $GIT_COMMON_DIR/config -- the canonical .git/config
-  # SHARED by every worktree and by the operator (observed live: pg2-jjlm8,
-  # pg2-12795). The GIT_CONFIG_GLOBAL/SYSTEM redirects above close a DIFFERENT
-  # half: they neutralize the ambient global/system SCOPES, and are powerless
-  # against a redirected repo LOCATION. Unset here, once, before any real git
-  # call in this file runs; setup()'s GIT_CEILING_DIRECTORIES is the
-  # by-construction backstop for a variable this enumeration misses.
-  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
-
   MOCK_TEMPLATE="$BATS_FILE_TMPDIR/mock-template"
   mkdir -p "$MOCK_TEMPLATE"
   export MOCK_TEMPLATE
@@ -111,22 +68,28 @@ MOCK
 }
 
 setup() {
-  # `pwd -P` because git reports PHYSICAL paths (macOS's /var is a symlink to
-  # /private/var), and every containment/equality assertion below compares a
-  # fixture path against git's own output.
-  TEST_DIR="$(cd "$(mktemp -d)" && pwd -P)"
-  export TEST_DIR
+  # Hermetic git fixture (bead pg2-ie5ds; rule "Tests That Need Git"): the
+  # shared harness owns the fixture root, HOME, the GIT_CEILING_DIRECTORIES
+  # boundary and the allowlist env rebuild, so this suite carries no GIT_*
+  # scrub of its own. In the nix check the harness comes in as testSupport
+  # (BATS_SUPPORT_PATH); locally it is the repo's canonical copy.
+  # shellcheck disable=SC1091  # runtime-resolved path (nix: BATS_SUPPORT_PATH)
+  source "${BATS_SUPPORT_PATH:-$BATS_TEST_DIRNAME/../../../../lib/scripts}/git-fixture-harness.bash"
 
-  # BY-CONSTRUCTION BACKSTOP for the same defect (bead pg2-8wnhc's ruling: env
-  # scrubbing is a partial mitigation; no fixture path should be ABLE to reach a
-  # real repo). setup_file's `unset` enumerates variable names and so is only as
-  # good as that list; this does not depend on the list at all -- git physically
-  # refuses to chdir up out of the mktemp parent, so no fixture path can resolve
-  # to a repository outside the fixture tree. PHYSICAL path because git compares
-  # the ceiling against a getcwd() result (macOS's /var is a symlink into
-  # /private/var).
-  GIT_CEILING_DIRECTORIES="$(cd "$(dirname "$TEST_DIR")" && pwd -P)"
-  export GIT_CEILING_DIRECTORIES
+  # gfh_setup rebuilds the exported environment from an allowlist, which would
+  # drop the variables setup_file exported (and the nix check injects) for this
+  # suite.
+  gfh_save_env SCRIPTS_DIR LIB_PATH RESOLVED_LIB PRELUDE MOCK_TEMPLATE
+  gfh_setup test-wsplan-lib
+  gfh_restore_env
+
+  # The harness's work dir IS the per-test fixture directory (HOME and every
+  # fixture below live under it, and it is the git ceiling). `pwd -P` because
+  # git reports PHYSICAL paths (macOS's /var is a symlink to /private/var), and
+  # every containment/equality assertion below compares a fixture path against
+  # git's own output.
+  TEST_DIR="$(cd "$GFH_WORK" && pwd -P)"
+  export TEST_DIR
 
   # Mocks live OUTSIDE any git working tree a test creates.
   MOCK_BIN="$TEST_DIR/mock-bin"
@@ -135,9 +98,6 @@ setup() {
   PATH="$MOCK_BIN:$PATH"
   export PATH MOCK_BIN
 
-  HOME="$TEST_DIR/home"
-  mkdir -p "$HOME"
-  export HOME
 
   # A four-repo edge fixture: b consumes a, c consumes b, d consumes a. So
   # {b,a} has a DIRECT edge, {b,d} has none, and {a,c} is connected only
@@ -165,25 +125,26 @@ JSON
 }
 
 teardown() {
-  rm -rf "$TEST_DIR"
+  gfh_teardown
 }
 
 # --- fixture helpers --------------------------------------------------------
 
 # A real canonical git repo at $TEST_DIR/<name> with one commit on <branch>
-# (default main). `command git` bypasses any mock.
+# (default main), from the shared harness primitive. gfh_init_repo always starts
+# on main, so a different <branch> is pointed at while HEAD is still unborn --
+# `main` is never created. `command git` bypasses any mock.
 _init_repo() {
   local name="$1" branch="${2:-main}"
   local dir="$TEST_DIR/$name"
-  mkdir -p "$dir"
-  command git -C "$dir" init -q -b "$branch"
-  command git -C "$dir" config user.email "test@example.com"
-  command git -C "$dir" config user.name "Test"
+  gfh_init_repo "$dir" test-wsplan-lib
+  command git -C "$dir" symbolic-ref HEAD "refs/heads/$branch"
   echo one >"$dir/file.txt"
   command git -C "$dir" add file.txt
   command git -C "$dir" commit -q -m initial
   printf '%s\n' "$dir"
 }
+
 
 # A linked worktree of <repo_dir> at <path> on a NEW branch <branch>, carrying
 # one commit so it is genuinely ahead of (i.e. not landed on) primary.
@@ -658,8 +619,8 @@ _add_unlanded_worktree() {
   # uncreated ref), so the detached test correctly passes — but the ancestry
   # check would answer `absent`. An empty repo has nothing to land, so this
   # must classify as unborn and route to nothing-to-do.
-  mkdir -p "$TEST_DIR/unborn"
-  command git -C "$TEST_DIR/unborn" init -q -b wip
+  gfh_init_repo "$TEST_DIR/unborn" test-wsplan-lib
+  command git -C "$TEST_DIR/unborn" symbolic-ref HEAD refs/heads/wip
   run bash -euo pipefail -c "$PRELUDE wsplan_classify_work_area '$TEST_DIR/unborn' main"
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf 'unborn\twip')" ]

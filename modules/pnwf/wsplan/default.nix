@@ -4,6 +4,7 @@
   pnwf-lib,
   pnwf,
   pn,
+  testSupport ? null,
 }:
 
 mkBashScript {
@@ -43,6 +44,8 @@ mkBashScript {
   ];
   # Every test isolates itself (own mktemp TEST_DIR + own MOCK_BIN), so the
   # suite is parallel-safe; matches pnwf's batsJobs.
+  # The shared git fixture harness (outside this src), passed in by scripts.nix.
+  inherit testSupport;
   batsJobs = 8;
   testDeps = [
     pkgs.git

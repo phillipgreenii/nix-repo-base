@@ -39,48 +39,6 @@ setup_file() {
   fi
   export LIB_PATH
 
-  # Hermetic + fast git. A global core.fsmonitor=true would make every
-  # throwaway repo spawn a daemon that blocks each working-tree op for
-  # seconds. This used to be fixed surgically with a GIT_CONFIG_COUNT pin, but
-  # that is now redundant: GIT_CONFIG_GLOBAL/SYSTEM=/dev/null below already
-  # neutralizes core.fsmonitor/core.untrackedcache (and everything else) at
-  # the ambient global/system scope, which was the pin's only job here. The
-  # pin's one remaining edge -- it would still win over a REPO-LOCAL
-  # core.fsmonitor/untrackedcache override, which the /dev/null redirects do
-  # not touch -- is moot for this suite because no test here sets one
-  # (verified by grep); removed as redundant (pg2-zjcp6).
-
-  # Full hermeticity (bead pg2-klyn6): every git config key otherwise merged in
-  # from the developer's ~/.gitconfig, $XDG_CONFIG_HOME/git/config and
-  # /etc/gitconfig -- including core.fsmonitor/core.untrackedcache above -- is
-  # neutralized. /dev/null is the NEUTRAL setting for both scopes, so no test
-  # outcome depends on whose machine runs it. Safe here because this suite
-  # always pins what it needs explicitly — `git init -q -b <branch>` (never
-  # inheriting init.defaultBranch) and repo-local user.email/user.name. Mirrors
-  # the pg2-39rz2 Go fix's TestMain in
-  # modules/pn/internal/workspace/realgit_test.go. Requires git >= 2.32.
-  export GIT_CONFIG_GLOBAL=/dev/null
-  export GIT_CONFIG_SYSTEM=/dev/null
-
-  # HERMETIC GIT REPO LOCATION (bead pg2-5856n; same defect class and same shape
-  # as the fix landed in phillipgreenii-nix-ziprecruiter's
-  # modules/zm/test-support/test_helper.bash, commit 77231676). `git commit` FROM
-  # A LINKED WORKTREE exports GIT_DIR=<canonical>/.git/worktrees/<name> and
-  # GIT_INDEX_FILE into the hook environment, and every child process inherits
-  # them -- including the bats run that this repo's own `run-unit-tests`
-  # pre-commit hook launches. git's repo discovery consults those variables
-  # BEFORE honouring `-C <dir>`, `cd`, or an explicit path argument, so a leak
-  # silently redirects every "isolated" fixture below onto the canonical clone:
-  # `git init` re-inits the real repo, `git add` stages into the real index, and
-  # `git config` writes to $GIT_COMMON_DIR/config -- the canonical .git/config
-  # SHARED by every worktree and by the operator (observed live: pg2-jjlm8,
-  # pg2-12795). The GIT_CONFIG_GLOBAL/SYSTEM redirects above close a DIFFERENT
-  # half: they neutralize the ambient global/system SCOPES, and are powerless
-  # against a redirected repo LOCATION. Unset here, once, before any real git
-  # call in this file runs; setup()'s GIT_CEILING_DIRECTORIES is the
-  # by-construction backstop for a variable this enumeration misses.
-  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
-
   # Immutable mock TEMPLATE, seeded once. setup() copies these into each test's
   # own MOCK_BIN, so a test may overwrite its own mock without leaking into
   # siblings — required for `bats --jobs` safety. Every mock resolves per-test
@@ -179,22 +137,28 @@ WRAPPER
 }
 
 setup() {
-  # `pwd -P`: git reports PHYSICAL paths (macOS's /var is a symlink into
-  # /private/var), and wsplan normalizes --root the same way, so a fixture built
-  # on the unresolved path would compare unequal to git's own output.
-  TEST_DIR="$(cd "$(mktemp -d)" && pwd -P)"
-  export TEST_DIR
+  # Hermetic git fixture (bead pg2-ie5ds; rule "Tests That Need Git"): the
+  # shared harness owns the fixture root, HOME, the GIT_CEILING_DIRECTORIES
+  # boundary and the allowlist env rebuild, so this suite carries no GIT_*
+  # scrub of its own. In the nix check the harness comes in as testSupport
+  # (BATS_SUPPORT_PATH); locally it is the repo's canonical copy.
+  # shellcheck disable=SC1091  # runtime-resolved path (nix: BATS_SUPPORT_PATH)
+  source "${BATS_SUPPORT_PATH:-$BATS_TEST_DIRNAME/../../../../lib/scripts}/git-fixture-harness.bash"
 
-  # BY-CONSTRUCTION BACKSTOP for the same defect (bead pg2-8wnhc's ruling: env
-  # scrubbing is a partial mitigation; no fixture path should be ABLE to reach a
-  # real repo). setup_file's `unset` enumerates variable names and so is only as
-  # good as that list; this does not depend on the list at all -- git physically
-  # refuses to chdir up out of the mktemp parent, so no fixture path can resolve
-  # to a repository outside the fixture tree. PHYSICAL path because git compares
-  # the ceiling against a getcwd() result (macOS's /var is a symlink into
-  # /private/var).
-  GIT_CEILING_DIRECTORIES="$(cd "$(dirname "$TEST_DIR")" && pwd -P)"
-  export GIT_CEILING_DIRECTORIES
+  # gfh_setup rebuilds the exported environment from an allowlist, which would
+  # drop the variables setup_file exported (and the nix check injects) for this
+  # suite. SCRIPT_UNDER_TEST is exported by the nix check, or by setup_file.
+  gfh_save_env SCRIPTS_DIR LIB_PATH MOCK_TEMPLATE SCRIPT_UNDER_TEST
+  gfh_setup test-wsplan
+  gfh_restore_env
+
+  # The harness's work dir IS the per-test fixture directory (HOME and every
+  # fixture below live under it, and it is the git ceiling). `pwd -P`: git
+  # reports PHYSICAL paths (macOS's /var is a symlink into /private/var), and
+  # wsplan normalizes --root the same way, so a fixture built on the
+  # unresolved path would compare unequal to git's own output.
+  TEST_DIR="$(cd "$GFH_WORK" && pwd -P)"
+  export TEST_DIR
 
   MOCK_BIN="$TEST_DIR/mock-bin"
   mkdir -p "$MOCK_BIN"
@@ -203,9 +167,6 @@ setup() {
   PATH="$MOCK_BIN:$PATH"
   export PATH MOCK_BIN
 
-  HOME="$TEST_DIR/home"
-  mkdir -p "$HOME"
-  export HOME
 
   MOCK_PNWF_CWD_LOG="$TEST_DIR/pnwf-cwd.log"
   : >"$MOCK_PNWF_CWD_LOG"
@@ -215,13 +176,12 @@ setup() {
   # needs the edge test sets WS_EDGES, and the absolute-layout test sets
   # WS_WORKFORESTS_DIR, before calling _ws_write_lock / _ws_write_info.
   WS_EDGES='[]'
-  unset WS_WORKFORESTS_DIR
   WS="$TEST_DIR/ws"
   export WS WS_EDGES
 }
 
 teardown() {
-  rm -rf "$TEST_DIR"
+  gfh_teardown
 }
 
 # --- fixture helpers --------------------------------------------------------
@@ -238,10 +198,8 @@ _ws_init() {
 _ws_member() {
   local name="$1" branch="${2:-main}"
   local dir="$WS/$name"
-  mkdir -p "$dir"
-  command git -C "$dir" init -q -b "$branch"
-  command git -C "$dir" config user.email "test@example.com"
-  command git -C "$dir" config user.name "Test"
+  gfh_init_repo "$dir" test-wsplan
+  command git -C "$dir" symbolic-ref HEAD "refs/heads/$branch"
   echo one >"$dir/file.txt"
   command git -C "$dir" add file.txt
   command git -C "$dir" commit -q -m initial
@@ -773,8 +731,8 @@ _ws_simple() {
 # --- §5.5: the three ancestry answers --------------------------------------
 
 @test "unborn branch (a repo with no commits) reports nothing-to-do, NOT absent-ref" {
-  mkdir -p "$TEST_DIR/unborn"
-  command git -C "$TEST_DIR/unborn" init -q -b wip
+  gfh_init_repo "$TEST_DIR/unborn" test-wsplan
+  command git -C "$TEST_DIR/unborn" symbolic-ref HEAD refs/heads/wip
 
   run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan --root "$TEST_DIR/unborn"
   [ "$status" -eq 0 ]
@@ -934,10 +892,7 @@ _ws_simple() {
 # --- the standalone (non-workspace) path -----------------------------------
 
 @test "a standalone repo outside any workspace plans at single-repo" {
-  mkdir -p "$TEST_DIR/solo"
-  command git -C "$TEST_DIR/solo" init -q -b main
-  command git -C "$TEST_DIR/solo" config user.email "test@example.com"
-  command git -C "$TEST_DIR/solo" config user.name "Test"
+  gfh_init_repo "$TEST_DIR/solo" test-wsplan
   echo one >"$TEST_DIR/solo/f.txt"
   command git -C "$TEST_DIR/solo" add f.txt
   command git -C "$TEST_DIR/solo" commit -q -m initial
@@ -954,10 +909,7 @@ _ws_simple() {
 }
 
 @test "a DEEP --root in a standalone repo emits the work area, never the subdirectory" {
-  mkdir -p "$TEST_DIR/solo"
-  command git -C "$TEST_DIR/solo" init -q -b main
-  command git -C "$TEST_DIR/solo" config user.email "test@example.com"
-  command git -C "$TEST_DIR/solo" config user.name "Test"
+  gfh_init_repo "$TEST_DIR/solo" test-wsplan
   mkdir -p "$TEST_DIR/solo/sub/deeper"
   echo one >"$TEST_DIR/solo/sub/deeper/f.txt"
   command git -C "$TEST_DIR/solo" add .

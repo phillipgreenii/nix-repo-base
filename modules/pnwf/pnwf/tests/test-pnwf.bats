@@ -39,54 +39,6 @@ setup_file() {
   fi
   export LIB_PATH
 
-  # Hermetic + fast git. A developer's global `core.fsmonitor=true` makes every
-  # throwaway repo these tests `git init` spawn its own fsmonitor daemon that
-  # blocks each working-tree op (commit/worktree/status) for 2-3s -- pushing the
-  # full suite to ~20min locally (the nix-check sandbox is immune: clean HOME).
-  # This used to be fixed surgically with a GIT_CONFIG_COUNT pin (same class of
-  # fix as pg2-0sa8p), but that is now redundant: GIT_CONFIG_GLOBAL/SYSTEM=
-  # /dev/null below already neutralizes core.fsmonitor/core.untrackedcache (and
-  # everything else) at the ambient global/system scope, which was the pin's
-  # only job here. The GIT_CONFIG_COUNT pin's one remaining edge -- it would
-  # still win over a REPO-LOCAL core.fsmonitor/untrackedcache override, which
-  # the /dev/null redirects do not touch -- is moot for this suite because no
-  # test here sets one (verified by grep); removed as redundant (pg2-zjcp6).
-
-  # Full hermeticity (bead pg2-klyn6): every git config key otherwise merged in
-  # from the developer's ~/.gitconfig, $XDG_CONFIG_HOME/git/config and
-  # /etc/gitconfig -- including core.fsmonitor/core.untrackedcache above -- is
-  # neutralized. /dev/null is the NEUTRAL setting for both scopes, so no test
-  # outcome depends on whose machine runs it. Safe here because this suite
-  # always pins what it needs explicitly — `git init -q -b <branch>` (never
-  # inheriting init.defaultBranch) and repo-local user.email/user.name. Mirrors
-  # the pg2-39rz2 Go fix's TestMain in
-  # modules/pn/internal/workspace/realgit_test.go. Requires git >= 2.32.
-  export GIT_CONFIG_GLOBAL=/dev/null
-  export GIT_CONFIG_SYSTEM=/dev/null
-
-  # HERMETIC GIT REPO LOCATION (bead pg2-5856n; same defect class and same shape
-  # as the fix landed in phillipgreenii-nix-ziprecruiter's
-  # modules/zm/test-support/test_helper.bash, commit 77231676). `git commit` FROM
-  # A LINKED WORKTREE exports GIT_DIR=<canonical>/.git/worktrees/<name> and
-  # GIT_INDEX_FILE into the hook environment, and every child process inherits
-  # them -- including the bats run that this repo's own `run-unit-tests`
-  # pre-commit hook launches. git's repo discovery consults those variables
-  # BEFORE honouring `-C <dir>`, `cd`, or an explicit path argument, so a leak
-  # silently redirects every "isolated" fixture below onto the canonical clone:
-  # `git init` re-inits the real repo, `git add` stages into the real index, and
-  # `git config` writes to $GIT_COMMON_DIR/config -- the canonical .git/config
-  # SHARED by every worktree and by the operator.
-  #
-  # This suite is the highest-severity case in the workspace because it
-  # deliberately writes `core.worktree` to a decoy path it then deletes (the
-  # REDIRECTED / REMOVED negative fixtures below). Landed in the canonical
-  # config, that single key bricks every git command in the clone -- including
-  # the `git config --unset` needed to undo it (observed live: pg2-jjlm8,
-  # pg2-12795). Unset here, once, before any real git call in this file runs;
-  # setup()'s GIT_CEILING_DIRECTORIES is the by-construction backstop for a
-  # variable this enumeration misses.
-  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
-
   # Immutable mock TEMPLATE, seeded once. setup() copies these into each test's
   # own MOCK_BIN, so a test may still overwrite its own integrate-branch-support
   # (or drop in a `git` shim) without leaking into sibling tests.
@@ -231,19 +183,25 @@ WRAPPER
 }
 
 setup() {
-  TEST_DIR="$(mktemp -d)"
-  export TEST_DIR
+  # Hermetic git fixture (bead pg2-ie5ds; rule "Tests That Need Git"): the
+  # shared harness owns the fixture root, HOME, the GIT_CEILING_DIRECTORIES
+  # boundary and the allowlist env rebuild, so this suite carries no GIT_*
+  # scrub of its own. In the nix check the harness comes in as testSupport
+  # (BATS_SUPPORT_PATH); locally it is the repo's canonical copy.
+  # shellcheck disable=SC1091  # runtime-resolved path (nix: BATS_SUPPORT_PATH)
+  source "${BATS_SUPPORT_PATH:-$BATS_TEST_DIRNAME/../../../../lib/scripts}/git-fixture-harness.bash"
 
-  # BY-CONSTRUCTION BACKSTOP for the same defect (bead pg2-8wnhc's ruling: env
-  # scrubbing is a partial mitigation; no fixture path should be ABLE to reach a
-  # real repo). setup_file's `unset` enumerates variable names and so is only as
-  # good as that list; this does not depend on the list at all -- git physically
-  # refuses to chdir up out of the mktemp parent, so no fixture path can resolve
-  # to a repository outside the fixture tree. PHYSICAL path because git compares
-  # the ceiling against a getcwd() result (macOS's /var is a symlink into
-  # /private/var).
-  GIT_CEILING_DIRECTORIES="$(cd "$(dirname "$TEST_DIR")" && pwd -P)"
-  export GIT_CEILING_DIRECTORIES
+  # gfh_setup rebuilds the exported environment from an allowlist, which would
+  # drop the variables setup_file exported (and the nix check injects) for this
+  # suite. SCRIPT_UNDER_TEST is exported by the nix check, or by setup_file.
+  gfh_save_env SCRIPTS_DIR LIB_PATH MOCK_TEMPLATE SCRIPT_UNDER_TEST
+  gfh_setup test-pnwf
+  gfh_restore_env
+
+  # The harness's work dir IS the per-test fixture directory (HOME and every
+  # fixture below live under it, and it is the git ceiling).
+  TEST_DIR="$GFH_WORK"
+  export TEST_DIR
 
   # Per-test MOCK_BIN seeded from the immutable per-file template (setup_file).
   # Copying rather than rebuilding keeps each test able to overwrite its own
@@ -256,18 +214,6 @@ setup() {
   cp -p "$MOCK_TEMPLATE/pn" "$MOCK_TEMPLATE/integrate-branch-support" "$MOCK_TEMPLATE/wtdone" "$MOCK_BIN/"
   PATH="$MOCK_BIN:$PATH"
   export PATH MOCK_BIN
-
-  # HERMETIC HOME (bead pg2-7hr6o), the same three lines the wsplan suites in this
-  # module already carry — copied, not reinvented. The bash-scripting skill's
-  # test-isolation rule 2 requires it and this suite lacked it, so a bare
-  # `bats modules/pnwf/pnwf/tests` read the developer's real HOME for every non-git
-  # purpose (the nix check's sandbox HOME hid that: only the gate was hermetic).
-  # setup_file's GIT_CONFIG_GLOBAL=/dev/null outranks HOME for GIT alone; caches,
-  # XDG defaults, tool configs and credential helpers still resolved off the real
-  # one. Per-test (not per-file) so each test gets a pristine, empty HOME.
-  HOME="$TEST_DIR/home"
-  mkdir -p "$HOME"
-  export HOME
 
   MOCK_PN_ENV_LOG="$TEST_DIR/pn-env.log"
   : >"$MOCK_PN_ENV_LOG"
@@ -308,7 +254,7 @@ setup() {
 }
 
 teardown() {
-  rm -rf "$TEST_DIR"
+  gfh_teardown
 }
 
 # --- fixture helpers (stage) ------------------------------------------------
@@ -320,6 +266,16 @@ _stage_write_lock() {
     >"$SET_DIR/pn-workspace.lock.json"
 }
 
+# A real git repo at $1 with one commit on main, from the shared harness
+# primitive (never a hand-rolled `git init`).
+_init_member_repo() {
+  local dir="$1"
+  gfh_init_repo "$dir" test-pnwf
+  echo one >"$dir/file.txt"
+  command git -C "$dir" add file.txt
+  command git -C "$dir" commit -q -m initial
+}
+
 # Creates a real canonical git repo for $1 (one commit on main) plus a real
 # `git worktree add` checkout of $BRANCH into the set dir — mirroring pn's
 # own WorkforestAdd, so members share one object database the way a real
@@ -327,13 +283,7 @@ _stage_write_lock() {
 _stage_init_member() {
   local member="$1"
   local canon="$CANONICAL_DIR/$member"
-  mkdir -p "$canon"
-  command git -C "$canon" init -q -b main
-  command git -C "$canon" config user.email "test@example.com"
-  command git -C "$canon" config user.name "Test"
-  echo one >"$canon/file.txt"
-  command git -C "$canon" add file.txt
-  command git -C "$canon" commit -q -m initial
+  _init_member_repo "$canon"
   command git -C "$canon" worktree add -q "$SET_DIR/$member" -b "$BRANCH"
 }
 
@@ -537,13 +487,7 @@ _stage_init_member() {
 _fp_init_canonical_repo() {
   local name="$1"
   local dir="$CANONICAL_DIR/$name"
-  mkdir -p "$dir"
-  command git -C "$dir" init -q -b main
-  command git -C "$dir" config user.email "test@example.com"
-  command git -C "$dir" config user.name "Test"
-  echo one >"$dir/file.txt"
-  command git -C "$dir" add file.txt
-  command git -C "$dir" commit -q -m initial
+  _init_member_repo "$dir"
 }
 
 # Overwrites CANONICAL_DIR's info fixture with a populated `.repos[]` for the
@@ -696,13 +640,10 @@ _fp_write_canonical_info() {
   # it had never read (bd pg2-xc9b7). The enclosing repo is made CLEAN and on
   # `main` on purpose: that is what made the old code's checks all pass.
   #
-  # git config is set explicitly in the fixture repo (the harness is hermetic
-  # against ambient config and HOME -- pg2-klyn6/pg2-7hr6o), and `git status` is
-  # given `--untracked-files=no` here for the same reason: the assertion must not
-  # depend on `status.showUntrackedFiles`.
-  command git -C "$CANONICAL_DIR" init -q -b main
-  command git -C "$CANONICAL_DIR" config user.email "test@example.com"
-  command git -C "$CANONICAL_DIR" config user.name "Test"
+  # The fixture repo comes from the harness (hermetic against ambient config
+  # and HOME), and `git status` is given `--untracked-files=no` here for the
+  # same reason: the assertion must not depend on `status.showUntrackedFiles`.
+  gfh_init_repo "$CANONICAL_DIR" test-pnwf
   mkdir -p "$CANONICAL_DIR/repoA"
   echo placeholder >"$CANONICAL_DIR/repoA/.keep"
   _fp_write_canonical_info repoA
@@ -724,9 +665,7 @@ _fp_write_canonical_info() {
   # enclosing repo, and the old boolean reported it as the member's, printing
   # `resume` -- which sends the caller into a resume-vs-discard decision about a
   # set that does not exist. It must stop instead.
-  command git -C "$CANONICAL_DIR" init -q -b main
-  command git -C "$CANONICAL_DIR" config user.email "test@example.com"
-  command git -C "$CANONICAL_DIR" config user.name "Test"
+  gfh_init_repo "$CANONICAL_DIR" test-pnwf
   mkdir -p "$CANONICAL_DIR/repoA"
   echo placeholder >"$CANONICAL_DIR/repoA/.keep"
   _fp_write_canonical_info repoA
@@ -849,12 +788,7 @@ MOCK
 @test "land-plan: present worktree with an absent member branch (128) does not abort" {
   mkdir -p "$SET_DIR/repoC"
   mkdir -p "$CANONICAL_DIR/repoC"
-  command git -C "$CANONICAL_DIR/repoC" init -q -b main
-  command git -C "$CANONICAL_DIR/repoC" config user.email "test@example.com"
-  command git -C "$CANONICAL_DIR/repoC" config user.name "Test"
-  echo one >"$CANONICAL_DIR/repoC/file.txt"
-  command git -C "$CANONICAL_DIR/repoC" add file.txt
-  command git -C "$CANONICAL_DIR/repoC" commit -q -m initial
+  _init_member_repo "$CANONICAL_DIR/repoC"
 
   _stage_write_lock repoC
   cd "$SET_DIR"
@@ -947,12 +881,7 @@ MOCK
   # created in it -- and it never got a worktree in the set either (mirrors
   # a member already fully cleaned up elsewhere, or never forked into).
   mkdir -p "$CANONICAL_DIR/repoC"
-  command git -C "$CANONICAL_DIR/repoC" init -q -b main
-  command git -C "$CANONICAL_DIR/repoC" config user.email "test@example.com"
-  command git -C "$CANONICAL_DIR/repoC" config user.name "Test"
-  echo one >"$CANONICAL_DIR/repoC/file.txt"
-  command git -C "$CANONICAL_DIR/repoC" add file.txt
-  command git -C "$CANONICAL_DIR/repoC" commit -q -m initial
+  _init_member_repo "$CANONICAL_DIR/repoC"
 
   _stage_write_lock repoA repoB repoC
 
@@ -2148,13 +2077,7 @@ _ur_set_upstream() {
   local member="$1"
   local wt="$SET_DIR/$member"
   local remote="$TEST_DIR/remotes/$member.git"
-  # -b main: pin the bare remote's HEAD explicitly rather than leaving it to
-  # follow init.defaultBranch (neutralized to /dev/null by GIT_CONFIG_GLOBAL
-  # above anyway) or git's compiled-in default. Harmless today (the push
-  # below creates the "$BRANCH" ref explicitly, so nothing reads the bare
-  # HEAD), but matches this repo's own precedent fix for the same latent
-  # shape (setupLocalBareRemote, commit 2adaca1).
-  command git init -q --bare -b main "$remote"
+  gfh_init_bare "$remote"
   command git -C "$wt" remote add origin "$remote"
   command git -C "$wt" push -q -u origin "$BRANCH"
 }
