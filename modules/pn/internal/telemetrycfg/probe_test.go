@@ -80,9 +80,35 @@ func TestPrepare_UnreachableUnderVerbose(t *testing.T) {
 	}
 }
 
-// TestPrepare_NoProbeWithoutVerbose: a dead endpoint without -v is silent and
-// the probe is never attempted (no latency, no output).
-func TestPrepare_NoProbeWithoutVerbose(t *testing.T) {
+// TestPrepare_UnreachableWithoutVerbose: a dead endpoint without -v turns
+// telemetry off silently (pg2-aoza4): pn must not try to export to a machine
+// with no collector, and must not print anything by default.
+func TestPrepare_UnreachableWithoutVerbose(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close() // nothing listens here now
+
+	var stderr bytes.Buffer
+	res := Prepare(context.Background(), []string{"--otlp-endpoint", "http://" + addr, "workspace"},
+		envMap(map[string]string{"XDG_CONFIG_HOME": t.TempDir()}), false, &stderr)
+	if res.Enabled || res.Endpoint != "" || res.Source != SourceNone {
+		t.Fatalf("unreachable collector must leave telemetry off without -v: %+v", res)
+	}
+	if res.Forced != "collector unreachable" {
+		t.Fatalf("Forced = %q; want %q", res.Forced, "collector unreachable")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("no -v: stderr must be empty, got %q", stderr.String())
+	}
+}
+
+// TestPrepare_ReachableWithoutVerbose: with a live collector and no -v,
+// telemetry stays enabled, the probe connects exactly once, and nothing is
+// printed. This is the "keep working on the machine with the OTel suite" case.
+func TestPrepare_ReachableWithoutVerbose(t *testing.T) {
 	var conns atomic.Int32
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -102,12 +128,15 @@ func TestPrepare_NoProbeWithoutVerbose(t *testing.T) {
 	var stderr bytes.Buffer
 	res := Prepare(context.Background(), []string{"--otlp-endpoint", "http://" + ln.Addr().String(), "workspace"},
 		envMap(map[string]string{"XDG_CONFIG_HOME": t.TempDir()}), false, &stderr)
-	if !res.Enabled || stderr.Len() != 0 {
+	if !res.Enabled || res.Endpoint == "" || stderr.Len() != 0 {
 		t.Fatalf("expected enabled+silent, got %+v / %q", res, stderr.String())
 	}
-	time.Sleep(50 * time.Millisecond) // allow any stray connection to land
-	if n := conns.Load(); n != 0 {
-		t.Fatalf("probe ran without -v: %d connections", n)
+	deadline := time.Now().Add(2 * time.Second)
+	for conns.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := conns.Load(); n != 1 {
+		t.Fatalf("probe connections = %d; want exactly 1", n)
 	}
 }
 

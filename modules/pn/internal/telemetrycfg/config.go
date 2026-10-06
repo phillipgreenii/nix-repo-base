@@ -174,16 +174,20 @@ func Resolve(in Inputs) Resolution {
 }
 
 // Prepare is the entry-point helper: it scans args for the telemetry flags,
-// resolves the configuration and, only when telemetry is enabled AND -v was
-// given, probes the collector. An unreachable collector prints one line to
-// stderr (`telemetry disabled: collector unreachable (...)`) and turns
-// telemetry off for the run, so the message is true. Without -v there is no
-// probe at all: the exporter simply fails open with a bounded flush.
+// resolves the configuration and, whenever telemetry is enabled, probes the
+// collector with one bounded TCP connect (pg2-aoza4). An unreachable collector
+// turns telemetry off for the run, so pn never tries to write to a machine
+// that has no local OTel suite running; the one-line
+// `telemetry disabled: collector unreachable (...)` note goes to stderr only
+// under -v, so the message (when printed) is true and a default run stays
+// silent. The disabled path (no endpoint, or forced off) never probes.
 func Prepare(ctx context.Context, args []string, getenv func(string) string, isRoot bool, stderr io.Writer) Resolution {
 	res := Resolve(Inputs{Flags: ScanArgs(args), Getenv: getenv, IsRoot: isRoot})
-	if res.Enabled && res.Verbose {
+	if res.Enabled {
 		if err := Probe(ctx, res.Endpoint, ProbeTimeout); err != nil {
-			_, _ = fmt.Fprintln(stderr, UnreachableMessage(res.Endpoint))
+			if res.Verbose {
+				_, _ = fmt.Fprintln(stderr, UnreachableMessage(res.Endpoint))
+			}
 			res.Enabled = false
 			res.Endpoint = ""
 			res.Source = SourceNone

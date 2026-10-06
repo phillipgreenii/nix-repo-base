@@ -361,10 +361,12 @@ does not apply, and there is no `pn-workspace.toml` schema change.
   `PN_TRACE_HINT=1`, and only if the run has a trace id. stdout MUST stay byte-identical.
 - `pn workspace update` MUST add the same `trace_id` to its `run_start` and `run_end` records in
   `events.jsonl` (and to no other record kind), so a human can find the trace from Loki or the file.
-- Under `-v`, when telemetry is enabled, pn MUST probe the collector with one TCP connect (bounded to
-  750 ms). If it does not answer, pn MUST print the single line
-  `telemetry disabled: collector unreachable (<endpoint>)` to stderr and MUST run with telemetry off,
-  so the message is true. Without `-v` pn MUST NOT probe; the exporter fails open with a bounded flush.
+- Whenever telemetry is enabled, pn MUST probe the collector with one TCP connect (bounded to
+  750 ms) and MUST run with telemetry off if it does not answer, so a machine with an endpoint
+  configured but no collector running never attempts an export (pg2-aoza4; this supersedes the
+  earlier "probe only under `-v`" rule). Under `-v` only, pn MUST also print the single line
+  `telemetry disabled: collector unreachable (<endpoint>)` to stderr, so the message is true; without
+  `-v` the downgrade is silent. When telemetry is off (no endpoint, or forced off) pn MUST NOT probe.
 - The trace id reaches the hint and the event log through a `RunState` carried in the command
   context (an Observer-style seam): the root `pn.verb` span setup calls `RunState.SetTraceID`.
 - `pn workspace doctor` MUST include a `telemetry` check that runs `pg-nix-log-wrapped --check` when
