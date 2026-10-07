@@ -368,6 +368,84 @@ _bats_tagged() {
   [ "$status" -eq 13 ]
 }
 
+# --- projectTimeouts: per-project timeoutSeconds override (bead pg2-x86sp) ---
+# A one-language config whose "suite" is `sleep 3` under a 1s global cap, so a
+# project is killed unless an override names it. Proves the override raises
+# ONLY the named project's cap and leaves every other project on the global one.
+
+_timeout_config() {
+  # $1: the projectTimeouts JSON value ("" = key absent)
+  local extra=""
+  [[ -n $1 ]] && extra="\"projectTimeouts\": $1,"
+  cat >"$TEST_DIR/timeout-config.json" <<JSON
+{
+  "version": 1,
+  "jobs": 1,
+  "timeoutSeconds": 1,
+  $extra
+  "ignore": [".git/"],
+  "nonUnitLabels": [],
+  "languages": [
+    {
+      "name": "sleeper",
+      "markers": ["SLEEP.marker"],
+      "tools": ["bash"],
+      "run": { "unit": ["bash", "-c", "sleep 3"], "labels": ["bash", "-c", "sleep 3"], "all": ["bash", "-c", "sleep 3"] }
+    }
+  ]
+}
+JSON
+}
+
+_timeout_repo() {
+  mkdir -p "$TEST_DIR/trepo/.git" "$TEST_DIR/trepo/packages/slow" "$TEST_DIR/trepo/packages/other"
+  : >"$TEST_DIR/trepo/packages/slow/SLEEP.marker"
+  : >"$TEST_DIR/trepo/packages/other/SLEEP.marker"
+}
+
+@test "without projectTimeouts the global timeoutSeconds cap kills a slow project (exit 10)" {
+  _timeout_config ""
+  _timeout_repo
+  cd "$TEST_DIR/trepo" || return 1
+  run "$SCRIPT" --config "$TEST_DIR/timeout-config.json" --labels unit packages/slow
+  [ "$status" -eq 10 ]
+  [[ "$output" == *"timed out after 1s cap"* ]]
+}
+
+@test "a projectTimeouts entry raises only the named project's cap" {
+  _timeout_config '{"packages/slow": 20}'
+  _timeout_repo
+  cd "$TEST_DIR/trepo" || return 1
+  run "$SCRIPT" --config "$TEST_DIR/timeout-config.json" --labels unit packages/slow
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS]"* ]]
+  # a sibling project the entry does not name still hits the global 1s cap
+  run "$SCRIPT" --config "$TEST_DIR/timeout-config.json" --labels unit packages/other
+  [ "$status" -eq 10 ]
+  [[ "$output" == *"timed out after 1s cap"* ]]
+}
+
+@test "an overridden project that exceeds its own larger cap still fails, naming that cap" {
+  _timeout_config '{"packages/slow": 2}'
+  _timeout_repo
+  cd "$TEST_DIR/trepo" || return 1
+  run "$SCRIPT" --config "$TEST_DIR/timeout-config.json" --labels unit packages/slow
+  [ "$status" -eq 10 ]
+  [[ "$output" == *"timed out after 2s cap"* ]]
+}
+
+@test "a malformed projectTimeouts is exit 13, not a silent fallback" {
+  _timeout_repo
+  cd "$TEST_DIR/trepo" || return 1
+  local bad
+  for bad in '{"packages/slow": 0}' '{"packages/slow": "20"}' '{"packages/slow": 1.5}' '{"/packages/slow": 20}' '{"packages/slow/": 20}' '[20]'; do
+    _timeout_config "$bad"
+    run "$SCRIPT" --config "$TEST_DIR/timeout-config.json" --labels unit packages/slow
+    [ "$status" -eq 13 ] || { echo "expected 13 for $bad, got $status: $output" >&2; return 1; }
+    [[ "$output" == *"projectTimeouts"* ]]
+  done
+}
+
 # NOTE on the PG_TEST_RUNNER_JQ_BIN/PG_TEST_RUNNER_TIMEOUT_BIN ordering bug
 # (bead pg2-jcqar): mkBashScript's config injection is an UNCONDITIONAL
 # (re)assignment inside the assembled script, so it is not actually

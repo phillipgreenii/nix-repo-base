@@ -62,6 +62,16 @@ ptr_validate_config() {
   version="$("$PTR_JQ" -r '.version // empty' "$path" 2>/dev/null)"
   [[ $version == "1" ]] || ptr_die 13 "config has unsupported version '$version' (expected 1): $path"
 
+  # projectTimeouts (optional): object of <project path suffix> -> positive
+  # integer seconds. A malformed override must fail loudly at startup, never
+  # silently fall back to (or worse, disable) the cap.
+  "$PTR_JQ" -e '
+      (.projectTimeouts // {}) as $o |
+      ($o | type) == "object" and
+      all($o | to_entries[]; (.key | test("^[^/].*[^/]$|^[^/]$")) and (.value | type) == "number" and .value > 0 and .value == (.value | floor))
+    ' "$path" >/dev/null 2>&1 ||
+    ptr_die 13 "config projectTimeouts must map project path suffixes (no leading/trailing '/') to positive integer seconds: $path"
+
   local known=(jobs labels label unitExclusion allLabels)
   local tokens
   tokens="$("$PTR_JQ" -r '
@@ -486,8 +496,21 @@ ptr_render_token() {
   printf '%s' "$token"
 }
 
+# Prints the timeout cap (seconds) for project directory $1: the config's
+# `projectTimeouts` entry whose key equals the path or is a trailing run of its
+# path components (longest key wins), else the global TIMEOUT_SECONDS. A project's
+# cap differs from the global one only when an entry names it explicitly.
+ptr_timeout_for() {
+  local path="$1" overrides='{}'
+  overrides="${PROJECT_TIMEOUTS_JSON:-$overrides}"
+  "$PTR_JQ" -r --arg p "$path" --arg d "$TIMEOUT_SECONDS" '
+    [ to_entries[] | select(.key as $k | $p == $k or ($p | endswith("/" + $k))) ]
+    | sort_by(.key | length) | (last // {value: $d}) | .value | tostring
+  ' <<<"$overrides"
+}
+
 # Runs one argv template (JSON array, already placeholder-substituted values
-# supplied) in $1 (project root), bounded by TIMEOUT_SECONDS. Returns the
+# supplied) in $1 (project root), bounded by ptr_timeout_for. Returns the
 # underlying tool's exit status; a `timeout` expiry (124) is reported as a
 # failure naming the project and the cap (section 2.1/2.6).
 ptr_invoke() {
@@ -508,7 +531,8 @@ ptr_invoke() {
   # deliberately NOT inherited; the dir is removed afterwards on success,
   # failure and `timeout` expiry alike. If it cannot be created we warn and
   # fall back to the inherited environment rather than refusing to run.
-  local status tmp_root tmp_dir=""
+  local status tmp_root tmp_dir="" timeout_secs
+  timeout_secs="$(ptr_timeout_for "$path")"
   tmp_root="${PG_TEST_RUNNER_TMP_ROOT:-/tmp}"
   if ! tmp_dir="$(mktemp -d "${tmp_root%/}/pg-test-runner.XXXXXX" 2>/dev/null)"; then
     tmp_dir=""
@@ -516,15 +540,15 @@ ptr_invoke() {
   fi
 
   if [[ -n $tmp_dir ]]; then
-    (cd "$path" && TMPDIR="$tmp_dir" "$PTR_TIMEOUT" "$TIMEOUT_SECONDS" "${cmd[@]}")
+    (cd "$path" && TMPDIR="$tmp_dir" "$PTR_TIMEOUT" "$timeout_secs" "${cmd[@]}")
     status=$?
     rm -rf "$tmp_dir"
   else
-    (cd "$path" && "$PTR_TIMEOUT" "$TIMEOUT_SECONDS" "${cmd[@]}")
+    (cd "$path" && "$PTR_TIMEOUT" "$timeout_secs" "${cmd[@]}")
     status=$?
   fi
   if [[ $status -eq 124 ]]; then
-    ptr_err "project $path timed out after ${TIMEOUT_SECONDS}s cap"
+    ptr_err "project $path timed out after ${timeout_secs}s cap"
   fi
   return "$status"
 }
@@ -686,6 +710,7 @@ ptr_run() {
   mapfile -t IGNORE_PATTERNS < <("$PTR_JQ" -r '.ignore[]?' "$PTR_CONFIG")
   NON_UNIT_LABELS_JSON="$("$PTR_JQ" -c '.nonUnitLabels // []' "$PTR_CONFIG")"
   TIMEOUT_SECONDS="$("$PTR_JQ" -r '.timeoutSeconds' "$PTR_CONFIG")"
+  PROJECT_TIMEOUTS_JSON="$("$PTR_JQ" -c '.projectTimeouts // {}' "$PTR_CONFIG")"
   JOBS_CONFIGURED="$("$PTR_JQ" -r '.jobs' "$PTR_CONFIG")"
 
   # Guarded so the exit-code check below always runs — matters when ptr_run is

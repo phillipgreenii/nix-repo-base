@@ -37,6 +37,22 @@
 
 `pg-test-runner --help`
 
+## Timeouts
+
+Every project invocation is bounded by the config's `timeoutSeconds` (default `300`). A single
+slow project can raise ITS OWN cap through the optional `projectTimeouts` map in the same config:
+keys are project path suffixes (no leading or trailing `/`) that match a project directory when
+equal to it or to a trailing run of its path components, values are positive integer seconds, and
+the longest matching key wins. Projects not named keep the global cap. A malformed
+`projectTimeouts` is exit `13`.
+
+```json
+{
+  "timeoutSeconds": 300,
+  "projectTimeouts": { "packages/claude-extended-tool-approver": 900 }
+}
+```
+
 ## Exit codes
 
 | Code | Meaning                                                                |

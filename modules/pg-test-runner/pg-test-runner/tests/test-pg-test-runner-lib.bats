@@ -313,6 +313,58 @@ _invoke_setup() {
   [ -z "$(ls -A "$TMP_ROOT")" ]
 }
 
+# --- ptr_timeout_for: per-project cap resolution (bead pg2-x86sp) -------
+
+@test "ptr_timeout_for returns the global cap when projectTimeouts is unset or empty" {
+  TIMEOUT_SECONDS=300
+  unset PROJECT_TIMEOUTS_JSON
+  [ "$(ptr_timeout_for /r/packages/a)" = "300" ]
+  # shellcheck disable=SC2034  # read by ptr_timeout_for in the sourced library, not this file
+  PROJECT_TIMEOUTS_JSON='{}'
+  [ "$(ptr_timeout_for /r/packages/a)" = "300" ]
+}
+
+@test "ptr_timeout_for matches an exact path or a trailing run of path components" {
+  TIMEOUT_SECONDS=300
+  # shellcheck disable=SC2034  # read by ptr_timeout_for in the sourced library, not this file
+  PROJECT_TIMEOUTS_JSON='{"packages/a": 900}'
+  [ "$(ptr_timeout_for /r/packages/a)" = "900" ]
+  [ "$(ptr_timeout_for /elsewhere/r/packages/a)" = "900" ]
+  [ "$(ptr_timeout_for packages/a)" = "900" ]
+}
+
+@test "ptr_timeout_for does not match a partial component or a different project" {
+  TIMEOUT_SECONDS=300
+  # shellcheck disable=SC2034  # read by ptr_timeout_for in the sourced library, not this file
+  PROJECT_TIMEOUTS_JSON='{"packages/a": 900}'
+  [ "$(ptr_timeout_for /r/packages/ab)" = "300" ]
+  [ "$(ptr_timeout_for /r/xpackages/a)" = "300" ]
+  [ "$(ptr_timeout_for /r/packages/a/sub)" = "300" ]
+  [ "$(ptr_timeout_for /r/packages/b)" = "300" ]
+}
+
+@test "ptr_timeout_for prefers the longest matching key" {
+  TIMEOUT_SECONDS=300
+  # shellcheck disable=SC2034  # read by ptr_timeout_for in the sourced library, not this file
+  PROJECT_TIMEOUTS_JSON='{"a": 400, "packages/a": 900}'
+  [ "$(ptr_timeout_for /r/packages/a)" = "900" ]
+  [ "$(ptr_timeout_for /r/other/a)" = "400" ]
+}
+
+@test "ptr_invoke honours the per-project cap from projectTimeouts" {
+  _invoke_setup
+  export TIMEOUT_SECONDS=1
+  # shellcheck disable=SC2034  # read by ptr_timeout_for in the sourced library, not this file
+  PROJECT_TIMEOUTS_JSON="{\"$PROJ\": 20}"
+  run ptr_invoke "$PROJ" '["bash","-c","sleep 2"]' 1 "" "" "" ""
+  [ "$status" -eq 0 ]
+  # shellcheck disable=SC2034  # read by ptr_timeout_for in the sourced library, not this file
+  PROJECT_TIMEOUTS_JSON='{}'
+  run ptr_invoke "$PROJ" '["bash","-c","sleep 30"]' 1 "" "" "" ""
+  [ "$status" -eq 124 ]
+  [[ "$output" == *"timed out after 1s cap"* ]]
+}
+
 @test "ptr_invoke falls back to the inherited TMPDIR, with a warning, when the private one cannot be created" {
   _invoke_setup
   export PG_TEST_RUNNER_TMP_ROOT="$TEST_DIR/does-not-exist"

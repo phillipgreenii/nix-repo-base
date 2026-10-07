@@ -102,6 +102,12 @@ registering a label is a configuration change, never a code change.
 - `jobs` — parallelism width substituted for `{jobs}`; `0` means the CPU count.
 - `timeoutSeconds` — wall-clock cap per project invocation; expiry reports as a test failure
   (exit `10`) naming the project and the cap, so a hung suite is never waited on indefinitely.
+- `projectTimeouts` (optional) — per-project override of `timeoutSeconds` (pg2-x86sp): an object
+  mapping a project path suffix (no leading/trailing `/`; equal to the project directory or a
+  trailing run of its path components, longest match wins) to a positive integer number of
+  seconds. Projects not named keep the global cap, so one slow suite gets a larger cap without
+  raising the default or skipping tests. Anything other than a string-to-positive-integer object
+  is exit `13`.
 - `ignore` — gitignore-style patterns matched against the path RELATIVE to the repo toplevel (or
   the scan root outside a repo), so a bare `node_modules/` prunes at ANY depth (support-apps
   carries a nested in-tree `node_modules/`). Applied in every mode. The defaults prune

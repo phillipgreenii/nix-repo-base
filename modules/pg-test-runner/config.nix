@@ -21,6 +21,21 @@
   version = 1;
   jobs = 0; # 0 = resolve to CPU count at run time
   timeoutSeconds = 300;
+  # Per-project cap overrides (pg2-x86sp): project path suffix -> seconds. A key
+  # matches a project directory when it equals the path or is a trailing run of
+  # its path components (no leading/trailing "/"); longest match wins. Every
+  # project NOT named here keeps the global timeoutSeconds above — the default
+  # is deliberately not raised.
+  #
+  # packages/claude-extended-tool-approver (phillipgreenii-nix-agent-support):
+  # its `go test -race ./...` suite is minutes of work on an idle machine
+  # (per-package 8-55s in one measured run) and blew through the 300s cap on
+  # two pre-land runs and one commit-time run under load average 19-85. The
+  # tests are NOT skipped or weakened; the cap is 3x the default so a loaded
+  # machine still passes while a genuinely hung suite is still killed.
+  projectTimeouts = {
+    "packages/claude-extended-tool-approver" = 900;
+  };
   ignore = [
     ".git/"
     ".worktrees/"
