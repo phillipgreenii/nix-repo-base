@@ -56,6 +56,11 @@ type RepoConfig struct {
 	Branch  string   `toml:"branch"`
 	Remotes []Remote `toml:"remotes,omitempty"`
 	Slug    string   `toml:"slug,omitempty"`
+	// MirrorURLs are read-only pull-mirror URLs of this same repo (e.g. a
+	// Forgejo mirror of a GitHub repo). They are used ONLY to match flake input
+	// URLs to this workspace repo when deriving edges (see buildEdges). Unlike
+	// Remotes they are NOT push targets: a pull-mirror is read-only.
+	MirrorURLs []string `toml:"mirror_urls,omitempty"`
 	// FlakePath is the path to the repo's flake.nix relative to the repo root.
 	// When set, this overrides the default search paths (flake.nix, nix/flake.nix).
 	// Recorded in pn-workspace.toml only for non-default locations.

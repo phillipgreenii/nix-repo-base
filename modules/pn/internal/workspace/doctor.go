@@ -268,6 +268,7 @@ func (ws *Workspace) registerChecks() []check {
 		{id: "repos", run: ws.checkRepos},
 		{id: "branches", run: ws.checkBranches},
 		{id: "terminal", run: ws.checkTerminal},
+		{id: terminalEdgesCheckID, run: ws.checkTerminalEdges},
 		{id: "flake-lock", run: ws.checkFlakeLockFresh},
 		{id: "hooks", run: ws.checkHookExpressions},
 		{id: "hooks-trusted", run: ws.checkHooksTrusted},

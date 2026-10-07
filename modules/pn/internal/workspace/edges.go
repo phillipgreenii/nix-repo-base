@@ -167,33 +167,28 @@ func buildEdges(
 	// on the lock-derived topological order.
 	repoKeys := orderedRepoNames(repos)
 
-	// Build canonical URL → repo key index, detecting duplicates.
-	canonByKey := make(map[string]string, len(repoKeys)) // repoKey → canonical
+	// Build canonical URL → repo key index across each repo's display URL and
+	// every mirror_urls entry, detecting duplicates. The same repo listing a
+	// URL twice is fine; two different repos claiming one canonical URL is not.
+	keyByCanon := make(map[string]string)
 	for _, key := range repoKeys {
 		r := repos[key]
-		raw := displayURL(r)
-		if raw == "" {
-			continue
+		urls := make([]string, 0, 1+len(r.MirrorURLs))
+		urls = append(urls, displayURL(r))
+		urls = append(urls, r.MirrorURLs...)
+		for _, raw := range urls {
+			if raw == "" {
+				continue
+			}
+			canon := canonicalURL(raw)
+			if canon == "" {
+				continue
+			}
+			if existing, dup := keyByCanon[canon]; dup && existing != key {
+				return nil, nil, fmt.Errorf("duplicate_remote_url: repos %q and %q both resolve to %q", existing, key, canon)
+			}
+			keyByCanon[canon] = key
 		}
-		canonByKey[key] = canonicalURL(raw)
-	}
-
-	// Check for duplicate canonical URLs.
-	seen := make(map[string]string) // canonical → first repoKey
-	for key, canon := range canonByKey {
-		if canon == "" {
-			continue
-		}
-		if existing, dup := seen[canon]; dup {
-			return nil, nil, fmt.Errorf("duplicate_remote_url: repos %q and %q both resolve to %q", existing, key, canon)
-		}
-		seen[canon] = key
-	}
-
-	// Invert: canonical URL → repoKey.
-	keyByCanon := make(map[string]string, len(seen))
-	for canon, key := range seen {
-		keyByCanon[canon] = key
 	}
 
 	var edges []LockEdge

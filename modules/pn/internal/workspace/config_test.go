@@ -3,6 +3,8 @@ package workspace
 import (
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 const sampleTOML = `
@@ -623,5 +625,23 @@ func TestParseConfig_WorkspaceID(t *testing.T) {
 	}
 	if _, err := ParseConfig([]byte("[workspace]\nid = \"Bad_ID\"\nterminal=\"r\"\n[repos.r]\nurl=\"u\"\n")); err == nil {
 		t.Fatal("malformed id (uppercase/underscore) should be rejected")
+	}
+}
+
+func TestMirrorURLsTOMLRoundTrip(t *testing.T) {
+	src := "[workspace]\nname = \"w\"\n\n[repos.a]\nurl = \"github:o/a\"\nbranch = \"main\"\nmirror_urls = [\"git+https://m.example/a.git\"]\n"
+	cfg, err := ParseConfig([]byte(src))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if got := cfg.Repos["a"].MirrorURLs; len(got) != 1 || got[0] != "git+https://m.example/a.git" {
+		t.Fatalf("MirrorURLs = %v", got)
+	}
+	out, err := toml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "mirror_urls") {
+		t.Errorf("marshalled config lost mirror_urls:\n%s", out)
 	}
 }

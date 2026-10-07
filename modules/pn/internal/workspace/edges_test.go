@@ -386,3 +386,90 @@ url = "github:owner/nogit"
 		t.Errorf("repo with no flake on disk must NOT be in evalFailed; got %v", evalFailed)
 	}
 }
+
+// TestBuildEdges_MirrorURLs covers matching flake inputs to workspace repos via
+// mirror_urls and the duplicate_remote_url rule across url + mirror_urls.
+func TestBuildEdges_MirrorURLs(t *testing.T) {
+	const mirror = "git+https://forgejo.example/github-mirrors/b.git"
+	consumerInputs := map[string]map[string]InputSpec{
+		"a": {"b-in": {URL: mirror, Flake: true}},
+	}
+	tests := []struct {
+		name      string
+		repos     map[string]RepoConfig
+		inputs    map[string]map[string]InputSpec
+		wantEdges []LockEdge
+		wantErr   string
+	}{
+		{
+			name: "match via mirror",
+			repos: map[string]RepoConfig{
+				"a": {URL: "github:o/a"},
+				"b": {URL: "github:o/b", MirrorURLs: []string{mirror}},
+			},
+			inputs:    consumerInputs,
+			wantEdges: []LockEdge{{Consumer: "a", Alias: "b-in", Target: "b"}},
+		},
+		{
+			name: "no match without mirror_urls",
+			repos: map[string]RepoConfig{
+				"a": {URL: "github:o/a"},
+				"b": {URL: "github:o/b"},
+			},
+			inputs: consumerInputs,
+		},
+		{
+			name: "duplicate across repos via mirror",
+			repos: map[string]RepoConfig{
+				"a": {URL: "github:o/a", MirrorURLs: []string{mirror}},
+				"b": {URL: "github:o/b", MirrorURLs: []string{mirror}},
+			},
+			inputs:  map[string]map[string]InputSpec{},
+			wantErr: "duplicate_remote_url",
+		},
+		{
+			name: "mirror collides with another repo's url",
+			repos: map[string]RepoConfig{
+				"a": {URL: "github:o/a", MirrorURLs: []string{"github:o/b"}},
+				"b": {URL: "github:o/b"},
+			},
+			inputs:  map[string]map[string]InputSpec{},
+			wantErr: "duplicate_remote_url",
+		},
+		{
+			name: "same repo repeats a url is fine",
+			repos: map[string]RepoConfig{
+				"a": {URL: "github:o/a"},
+				"b": {URL: "github:o/b", MirrorURLs: []string{mirror, mirror, "github:o/b"}},
+			},
+			inputs:    consumerInputs,
+			wantEdges: []LockEdge{{Consumer: "a", Alias: "b-in", Target: "b"}},
+		},
+		{
+			name: "self edge via own mirror is skipped",
+			repos: map[string]RepoConfig{
+				"b": {URL: "github:o/b", MirrorURLs: []string{mirror}},
+			},
+			inputs: map[string]map[string]InputSpec{
+				"b": {"self": {URL: mirror, Flake: true}},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			edges, _, err := buildEdges(tc.repos, tc.inputs)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildEdges: %v", err)
+			}
+			if len(edges) != len(tc.wantEdges) || (len(edges) > 0 && !reflect.DeepEqual(edges, tc.wantEdges)) {
+				t.Errorf("edges = %v, want %v", edges, tc.wantEdges)
+			}
+		})
+	}
+}

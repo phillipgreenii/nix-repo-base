@@ -15,6 +15,13 @@ and what hooks to run around workspace commands.
 - pn-workspace.toml lives at workspace root (machine-local, not inside any repo)
 - [workspace] section: name, description, id (slug `^[a-z0-9][a-z0-9-]*$`, machine-invariant; the wsid used by `pn:applied` gates — see ADR-0012)
 - [repos.<key>] table-of-tables: url (flake URL), optional branch (default: "main")
+- `[repos.<key>]` optional `mirror_urls = [..]` (tc-31llk): read-only pull-mirror URLs of the same
+  repo (e.g. a Forgejo mirror of a GitHub repo). They are used ONLY to match flake input URLs to
+  this workspace repo when deriving edges, so a consumer whose flake points at a mirror still gets
+  an edge and `--override-input`. They are NOT push targets (unlike `remotes`). Two different repos
+  claiming the same canonical URL, via `url` or `mirror_urls`, is a `duplicate_remote_url` error.
+  `pn workspace doctor` (`terminal-has-edges`) reports a terminal with zero edges in a multi-repo
+  workspace and suggests adding `mirror_urls`.
 - **Hooks — SUPERSEDED by [ADR-0019](0019-per-repo-event-hooks.md).** As originally
   decided here, hooks were `[hooks.<command>]` tables with `pre`/`post` arrays run once at the
   workspace root. ADR-0019 replaced that with event-hook **lists** — `[[hooks]]` (workspace-scoped)
