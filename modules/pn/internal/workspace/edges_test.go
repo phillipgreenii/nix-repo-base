@@ -473,3 +473,205 @@ func TestBuildEdges_MirrorURLs(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Foundation repos (ADR-0033): ordered before every flake consumer, while their
+// own flake edges stay in the edge list.
+// ---------------------------------------------------------------------------
+
+// flakeIn builds a workspace-matching flake input for repo target.
+func flakeIn(target string) InputSpec {
+	return InputSpec{URL: "github:o/" + target, Flake: true}
+}
+
+// sixRepoRepos mirrors the real workspace shape: x (foundation) imports only
+// repo-base's flake; ziprecruiter is the terminal consuming everything.
+func sixRepoWorkspace(foundation bool) (map[string]RepoConfig, map[string]map[string]InputSpec) {
+	repos := map[string]RepoConfig{
+		"phillipg-nix-repo-base":           {URL: "github:o/phillipg-nix-repo-base"},
+		"phillipgreenii-nix-overlay":       {URL: "github:o/phillipgreenii-nix-overlay"},
+		"phillipgreenii-nix-agent-support": {URL: "github:o/phillipgreenii-nix-agent-support"},
+		"phillipgreenii-nix-personal":      {URL: "github:o/phillipgreenii-nix-personal"},
+		"phillipgreenii-nix-support-apps":  {URL: "github:o/phillipgreenii-nix-support-apps"},
+		"phillipg-nix-ziprecruiter":        {URL: "github:o/phillipg-nix-ziprecruiter"},
+		"phillipgreenii-x":                 {URL: "github:o/phillipgreenii-x", Foundation: foundation},
+	}
+	base := "phillipg-nix-repo-base"
+	inputs := map[string]map[string]InputSpec{
+		"phillipgreenii-x":                 {"base": flakeIn(base)},
+		"phillipgreenii-nix-overlay":       {"base": flakeIn(base)},
+		"phillipgreenii-nix-agent-support": {"base": flakeIn(base), "overlay": flakeIn("phillipgreenii-nix-overlay")},
+		"phillipgreenii-nix-support-apps":  {"base": flakeIn(base)},
+		"phillipgreenii-nix-personal": {
+			"base": flakeIn(base), "overlay": flakeIn("phillipgreenii-nix-overlay"),
+			"agent": flakeIn("phillipgreenii-nix-agent-support"),
+		},
+		"phillipg-nix-ziprecruiter": {
+			"base": flakeIn(base), "overlay": flakeIn("phillipgreenii-nix-overlay"),
+			"agent": flakeIn("phillipgreenii-nix-agent-support"), "apps": flakeIn("phillipgreenii-nix-support-apps"),
+			"personal": flakeIn("phillipgreenii-nix-personal"),
+		},
+	}
+	return repos, inputs
+}
+
+func TestBuildEdges_FoundationSortsFirstAndKeepsItsFlakeEdge(t *testing.T) {
+	repos := map[string]RepoConfig{
+		"app":  {URL: "github:o/app"},
+		"base": {URL: "github:o/base"},
+		"x":    {URL: "github:o/x", Foundation: true},
+	}
+	inputURLs := map[string]map[string]InputSpec{
+		"app": {"base": flakeIn("base")},
+		"x":   {"base": flakeIn("base")}, // x's flake imports base's treefmt module
+	}
+	edges, order, err := buildEdges(repos, inputURLs)
+	if err != nil {
+		t.Fatalf("buildEdges: %v", err)
+	}
+	if want := []string{"x", "base", "app"}; !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v (foundation first; its x->base edge must not constrain order)", order, want)
+	}
+	wantEdges := []LockEdge{
+		{Consumer: "app", Alias: "base", Target: "base"},
+		{Consumer: "x", Alias: "base", Target: "base"},
+	}
+	if !reflect.DeepEqual(edges, wantEdges) {
+		t.Errorf("edges = %v, want %v (foundation's flake edge must stay in Lock.Edges)", edges, wantEdges)
+	}
+}
+
+func TestBuildEdges_FoundationToFoundationOrderPreserved(t *testing.T) {
+	repos := map[string]RepoConfig{
+		"app": {URL: "github:o/app"},
+		"f1":  {URL: "github:o/f1", Foundation: true},
+		"f2":  {URL: "github:o/f2", Foundation: true},
+	}
+	// f1 (alphabetically first) consumes f2, so f2 must still come first.
+	inputURLs := map[string]map[string]InputSpec{"f1": {"f2": flakeIn("f2")}}
+	_, order, err := buildEdges(repos, inputURLs)
+	if err != nil {
+		t.Fatalf("buildEdges: %v", err)
+	}
+	if want := []string{"f2", "f1", "app"}; !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+}
+
+func TestBuildEdges_FoundationDedupesAgainstExistingFlakeEdge(t *testing.T) {
+	repos := map[string]RepoConfig{
+		"app": {URL: "github:o/app"},
+		"x":   {URL: "github:o/x", Foundation: true},
+	}
+	// app already consumes x as a flake input: the synthetic foundation dep
+	// must not double-count (topoSortByDeps sets inDegree = len(deps)).
+	inputURLs := map[string]map[string]InputSpec{"app": {"x": flakeIn("x")}}
+	_, order, err := buildEdges(repos, inputURLs)
+	if err != nil {
+		t.Fatalf("buildEdges: %v", err)
+	}
+	if want := []string{"x", "app"}; !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v (a double-counted dep would strand app as a cycle remainder)", order, want)
+	}
+}
+
+func TestOrderingDeps_DedupesExistingFoundationDep(t *testing.T) {
+	repos := map[string]RepoConfig{
+		"app": {URL: "u"},
+		"x":   {URL: "u", Foundation: true},
+	}
+	edges := []LockEdge{{Consumer: "app", Alias: "x", Target: "x"}}
+	got := orderingDeps(repos, edges, []string{"app", "x"})
+	if want := []string{"x"}; !reflect.DeepEqual(got["app"], want) {
+		t.Errorf("app deps = %v, want %v", got["app"], want)
+	}
+	if len(got["x"]) != 0 {
+		t.Errorf("x deps = %v, want none", got["x"])
+	}
+}
+
+func TestBuildEdges_AllReposFoundationBehavesLikeNoFoundation(t *testing.T) {
+	mk := func(f bool) map[string]RepoConfig {
+		return map[string]RepoConfig{
+			"a": {URL: "github:o/a", Foundation: f},
+			"b": {URL: "github:o/b", Foundation: f},
+			"c": {URL: "github:o/c", Foundation: f},
+		}
+	}
+	inputURLs := map[string]map[string]InputSpec{
+		"a": {"c": flakeIn("c")},
+		"b": {"a": flakeIn("a")},
+	}
+	_, want, err := buildEdges(mk(false), inputURLs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, got, err := buildEdges(mk(true), inputURLs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("all-foundation order = %v, want %v (their own edges still order them)", got, want)
+	}
+	if wantOrder := []string{"c", "a", "b"}; !reflect.DeepEqual(got, wantOrder) {
+		t.Errorf("order = %v, want %v", got, wantOrder)
+	}
+}
+
+// TestBuildEdges_NoFoundationMatchesEdgeDerivedOrder is the regression guard:
+// with no foundation repos the order MUST equal the pure edge-derived order.
+func TestBuildEdges_NoFoundationMatchesEdgeDerivedOrder(t *testing.T) {
+	repos, inputs := sixRepoWorkspace(false)
+	edges, order, err := buildEdges(repos, inputs)
+	if err != nil {
+		t.Fatalf("buildEdges: %v", err)
+	}
+	keys := orderedRepoNames(repos)
+	want := topoSortByDeps(keys, edgesToDependsOn(edges, keys))
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want edge-derived %v", order, want)
+	}
+	if got := orderingDeps(repos, edges, keys); !reflect.DeepEqual(got, edgesToDependsOn(edges, keys)) {
+		t.Errorf("orderingDeps with no foundation = %v, want exactly edgesToDependsOn %v", got, edgesToDependsOn(edges, keys))
+	}
+}
+
+func TestBuildEdges_SixRepoWorkspaceFoundationFirstTerminalLast(t *testing.T) {
+	repos, inputs := sixRepoWorkspace(true)
+	edges, order, err := buildEdges(repos, inputs)
+	if err != nil {
+		t.Fatalf("buildEdges: %v", err)
+	}
+	if len(order) != 7 {
+		t.Fatalf("order = %v, want 7 repos", order)
+	}
+	if order[0] != "phillipgreenii-x" {
+		t.Errorf("foundation must be first; order = %v", order)
+	}
+	if order[len(order)-1] != "phillipg-nix-ziprecruiter" {
+		t.Errorf("terminal must be last; order = %v", order)
+	}
+	pos := func(k string) int {
+		for i, o := range order {
+			if o == k {
+				return i
+			}
+		}
+		return -1
+	}
+	if pos("phillipg-nix-repo-base") >= pos("phillipgreenii-nix-overlay") {
+		t.Errorf("repo-base must still precede its consumers; order = %v", order)
+	}
+	var xEdge bool
+	for _, e := range edges {
+		if e.Consumer == "phillipgreenii-x" && e.Target == "phillipg-nix-repo-base" {
+			xEdge = true
+		}
+		if e.Target == "phillipgreenii-x" {
+			t.Errorf("no foundation-derived edge may enter Lock.Edges; got %v", e)
+		}
+	}
+	if !xEdge {
+		t.Errorf("x -> repo-base flake edge must remain in Lock.Edges; edges = %v", edges)
+	}
+}

@@ -200,6 +200,12 @@ func TestSmoke_S2_TopoNotAlpha(t *testing.T) {
 	runScenario(t, "s2-topo-not-alpha")
 }
 
+// TestSmoke_S41_FoundationOrdering: foundation repo zzz (flake edge zzz->base)
+// is ordered before everything, and its flake edge stays in the lock (ADR-0033).
+func TestSmoke_S41_FoundationOrdering(t *testing.T) {
+	runScenario(t, "s41-foundation-ordering")
+}
+
 // TestSmoke_S3_SubdirFlake: repo whose flake.nix lives at nix/flake.nix.
 func TestSmoke_S3_SubdirFlake(t *testing.T) {
 	runScenario(t, "s3-subdir-flake")

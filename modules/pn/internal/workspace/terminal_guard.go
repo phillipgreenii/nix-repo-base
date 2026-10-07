@@ -54,8 +54,8 @@ func (ws *Workspace) detectTerminalCandidates(ctx context.Context) []string {
 	// Candidates: repos with zero inbound edges and a flake_path.
 	var candidates []string
 	for key, count := range inbound {
-		if count > 0 {
-			continue
+		if count > 0 || ws.config.Repos[key].Foundation {
+			continue // consumed, or a foundation repo (never a terminal; ADR-0033)
 		}
 		fp := ws.resolveFlakePath(key)
 		if fp != "" {
@@ -66,11 +66,11 @@ func (ws *Workspace) detectTerminalCandidates(ctx context.Context) []string {
 	return candidates
 }
 
-// reposWithFlakePath returns repo keys that have a resolvable flake path.
+// reposWithFlakePath returns non-foundation repo keys that have a resolvable flake path.
 func (ws *Workspace) reposWithFlakePath() []string {
 	var out []string
-	for key := range ws.config.Repos {
-		if ws.resolveFlakePath(key) != "" {
+	for key, rc := range ws.config.Repos {
+		if !rc.Foundation && ws.resolveFlakePath(key) != "" {
 			out = append(out, key)
 		}
 	}
@@ -84,6 +84,9 @@ func (ws *Workspace) reposWithFlakePath() []string {
 // auto-detected candidate list.
 func (ws *Workspace) requireTerminal(ctx context.Context, flagTerminal string) (string, error) {
 	if flagTerminal != "" {
+		if err := checkTerminalNotFoundation("--terminal", flagTerminal, ws.config.Repos); err != nil {
+			return "", err
+		}
 		return flagTerminal, nil
 	}
 	t := ws.config.Workspace.Terminal

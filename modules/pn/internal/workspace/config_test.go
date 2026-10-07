@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -643,5 +645,98 @@ func TestMirrorURLsTOMLRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "mirror_urls") {
 		t.Errorf("marshalled config lost mirror_urls:\n%s", out)
+	}
+}
+
+// foundationTOML declares one foundation repo, one explicitly non-foundation
+// repo and one that omits the key (ADR-0033).
+const foundationTOML = `
+[repos.x]
+url = "github:o/x"
+foundation = true
+
+[repos.base]
+url = "github:o/base"
+foundation = false
+
+[repos.app]
+url = "github:o/app"
+`
+
+func TestParseConfig_Foundation(t *testing.T) {
+	cfg, err := ParseConfig([]byte(foundationTOML))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	for name, want := range map[string]bool{"x": true, "base": false, "app": false} {
+		if got := cfg.Repos[name].Foundation; got != want {
+			t.Errorf("repos.%s.foundation = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestParseConfig_TerminalMayNotBeFoundation(t *testing.T) {
+	_, err := ParseConfig([]byte(`
+[workspace]
+terminal = "x"
+
+[repos.x]
+url = "github:o/x"
+foundation = true
+`))
+	if err == nil {
+		t.Fatal("expected an error when workspace.terminal names a foundation repo")
+	}
+	for _, want := range []string{"terminal", "foundation", `"x"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+}
+
+func TestWriteConfigTOMLTo_PreservesFoundation(t *testing.T) {
+	cfg, err := ParseConfig([]byte(foundationTOML))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	dest := filepath.Join(t.TempDir(), "pn-workspace.toml")
+	if err := writeConfigTOMLTo(dest, cfg); err != nil {
+		t.Fatalf("writeConfigTOMLTo: %v", err)
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if !back.Repos["x"].Foundation {
+		t.Errorf("foundation=true lost on round-trip:\n%s", data)
+	}
+	if back.Repos["app"].Foundation || back.Repos["base"].Foundation {
+		t.Errorf("foundation leaked onto other repos:\n%s", data)
+	}
+	// omitempty: a non-foundation repo writes no key at all.
+	if n := strings.Count(string(data), "foundation"); n != 1 {
+		t.Errorf("want exactly one foundation key in output, got %d:\n%s", n, data)
+	}
+}
+
+func TestEnforceKeys_PreservesFoundation(t *testing.T) {
+	p := writeTemp(t, "pn-workspace.toml", foundationTOML, 0o600)
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	if err != nil {
+		t.Fatalf("EnforceKeys: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected EnforceKeys to rewrite the file (id + hook were missing)")
+	}
+	cfg, err := loadConfigFile(t, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Repos["x"].Foundation {
+		t.Error("EnforceKeys dropped repos.x.foundation")
 	}
 }

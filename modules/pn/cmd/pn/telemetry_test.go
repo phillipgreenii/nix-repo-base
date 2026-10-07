@@ -11,6 +11,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/phillipgreenii/x/gitfixture"
+	"github.com/phillipgreenii/x/gittest"
 )
 
 // End to end with the real binary: a SIGTERM-killed pn still flushes its
@@ -31,19 +34,15 @@ func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	root := t.TempDir()
-	repoDir := filepath.Join(root, "r")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+	// The workspace's only repo is the hermetic fixture repo (x/gittest); the
+	// workspace root is the fixture tree that contains it, at <root>/repo.
+	fixture := gittest.New(t, gitfixture.RepoOptions{Suite: "pn-telemetry"})
+	root := filepath.Dir(fixture.Dir)
+	if err := os.WriteFile(filepath.Join(root, "pn-workspace.toml"), []byte("[repos.repo]\nurl = \"github:o/repo\"\n[[repos.repo.hooks]]\nwhen = [\"post-clone\"]\nrun = [\"{nix_run install-pre-commit-hooks}\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := exec.Command("git", "init", repoDir).Run(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "pn-workspace.toml"), []byte("[repos.r]\nurl = \"github:o/r\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// A fake `pg-hooks` (what pre-commit-check runs for a repo without a legacy
-	// config) that execs sleep so SIGTERM reaches the sleeping process itself
+	// A fake `pg-hooks` (what pre-commit-check runs for a repo that declares the
+	// install-pre-commit-hooks hook) that execs sleep so SIGTERM reaches the sleeping process itself
 	// and records that it started.
 	bin := t.TempDir()
 	started := filepath.Join(bin, "started")

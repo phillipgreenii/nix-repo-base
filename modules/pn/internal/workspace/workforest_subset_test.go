@@ -362,3 +362,135 @@ func strSliceEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// ============================================================
+// foundation repos (ADR-0033) in subset sets
+// ============================================================
+
+// foundationSubsetWorkspace is a three-repo workspace (app terminal, base, x
+// foundation) with a committed lock ordering x first.
+func foundationSubsetWorkspace(t *testing.T) (root string, f *exec.FakeRunner) {
+	t.Helper()
+	root = t.TempDir()
+	writeFile(t, filepath.Join(root, ConfigFileName), `
+[workspace]
+terminal = "app"
+
+[repos.app]
+url = "github:o/app"
+
+[repos.base]
+url = "github:o/base"
+
+[repos.x]
+url = "github:o/x"
+foundation = true
+`)
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "terminal": "app",
+  "order": ["x","base","app"],
+  "repos": {
+    "app":  {"remote_url": "github:o/app",  "flake_path": "flake.nix"},
+    "base": {"remote_url": "github:o/base", "flake_path": "flake.nix"},
+    "x":    {"remote_url": "github:o/x",    "flake_path": "flake.nix"}
+  },
+  "edges": [
+    {"consumer": "app", "alias": "base", "target": "base"},
+    {"consumer": "x",   "alias": "base", "target": "base"}
+  ]
+}`)
+	return root, exec.NewFakeRunner()
+}
+
+func TestFilterConfig_PreservesFoundation(t *testing.T) {
+	root, f := foundationSubsetWorkspace(t)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got := filterConfig(w.Config(), map[string]bool{"x": true, "base": true})
+	if !got.Repos["x"].Foundation {
+		t.Error("filterConfig dropped repos.x.foundation")
+	}
+	if got.Repos["base"].Foundation {
+		t.Error("filterConfig set foundation on base")
+	}
+	if got.Workspace.Terminal != "" {
+		t.Errorf("terminal app is not a member and must be cleared; got %q", got.Workspace.Terminal)
+	}
+	// And the serialized subset config still carries the key (writeConfigTOMLTo).
+	dest := filepath.Join(t.TempDir(), ConfigFileName)
+	if err := writeConfigTOMLTo(dest, got); err != nil {
+		t.Fatalf("writeConfigTOMLTo: %v", err)
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("re-parse subset config: %v", err)
+	}
+	if !back.Repos["x"].Foundation {
+		t.Errorf("subset toml lost foundation:\n%s", data)
+	}
+}
+
+func TestMemberRepos_FoundationSubsetKeepsFoundationFirst(t *testing.T) {
+	root, f := foundationSubsetWorkspace(t)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got, err := w.memberRepos(context.Background(), []string{"base", "x"})
+	if err != nil {
+		t.Fatalf("memberRepos: %v", err)
+	}
+	if want := []string{"x", "base"}; !strSliceEqual(got, want) {
+		t.Errorf("subset order = %v, want %v", got, want)
+	}
+}
+
+// TestDeriveLock_FoundationSubsetOrdersFirstAndNeverPicksFoundationTerminal
+// re-derives the lock for the {x, base} subset config (terminal cleared, as
+// filterConfig leaves it): x is the connected sink, which auto-detect would
+// otherwise pick.
+func TestDeriveLock_FoundationSubsetOrdersFirstAndNeverPicksFoundationTerminal(t *testing.T) {
+	root := t.TempDir()
+	for _, r := range []string{"base", "x"} {
+		mkRepoDir(t, root, r)
+		writeFile(t, filepath.Join(root, r, "flake.nix"), "{ inputs = {}; }")
+	}
+	writeFile(t, filepath.Join(root, ConfigFileName), `
+[repos.base]
+url = "github:o/base"
+
+[repos.x]
+url = "github:o/x"
+foundation = true
+`)
+	apply := `is: builtins.mapAttrs (n: v: { url = v.url or null; flake = v.flake or true; }) is`
+	evalArgs := func(repo string) []string {
+		return []string{"eval", "--json", "--file", filepath.Join(root, repo, "flake.nix"), "inputs", "--apply", apply}
+	}
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", evalArgs("base"), exec.Result{Stdout: []byte(`{}`)}, nil)
+	f.AddResponse("nix", evalArgs("x"), exec.Result{Stdout: []byte(`{"b":{"url":"github:o/base","flake":true}}`)}, nil)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	lock, _, err := deriveLock(context.Background(), w, "")
+	if err != nil {
+		t.Fatalf("deriveLock: %v", err)
+	}
+	if want := []string{"x", "base"}; !strSliceEqual(lock.Order, want) {
+		t.Errorf("order = %v, want %v", lock.Order, want)
+	}
+	if lock.Terminal == "x" {
+		t.Error("auto-detect picked the foundation repo x as terminal")
+	}
+	if len(lock.Edges) != 1 || lock.Edges[0].Consumer != "x" || lock.Edges[0].Target != "base" {
+		t.Errorf("x->base flake edge must stay in Lock.Edges; got %v", lock.Edges)
+	}
+}

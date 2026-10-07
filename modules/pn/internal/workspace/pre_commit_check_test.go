@@ -15,9 +15,15 @@ func TestPreCommitCheck_PerRepoInOrder(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.foo]
 url = "github:owner/foo"
+[[repos.foo.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 
 [repos.bar]
 url = "github:owner/bar"
+[[repos.bar.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `)
 
 	f := exec.NewFakeRunner()
@@ -56,6 +62,9 @@ func TestPreCommitCheck_NoWarningWhenFlagSet(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.foo]
 url = "github:owner/foo"
+[[repos.foo.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `)
 
 	f := exec.NewFakeRunner()
@@ -85,6 +94,9 @@ terminal = "term"
 
 [repos.term]
 url = "github:owner/term"
+[[repos.term.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `)
 
 	f := exec.NewFakeRunner()
@@ -108,9 +120,15 @@ func TestPreCommitCheck_ContinuesPastFailure(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.foo]
 url = "github:owner/foo"
+[[repos.foo.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 
 [repos.bar]
 url = "github:owner/bar"
+[[repos.bar.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `)
 
 	f := exec.NewFakeRunner()
@@ -134,7 +152,7 @@ url = "github:owner/bar"
 func preCommitCheckRepo(t *testing.T) (*Workspace, *exec.FakeRunner, string) {
 	t.Helper()
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.foo]\nurl = \"github:owner/foo\"\n")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), "[repos.foo]\nurl = \"github:owner/foo\"\n"+declareInstallHook("foo"))
 	foo := filepath.Join(root, "foo")
 	initRealRepo(t, foo)
 	f := exec.NewFakeRunner()
@@ -197,15 +215,27 @@ func TestPreCommitCheck_NeverRunsPreCommit(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.a]
 url = "github:owner/a"
+[[repos.a.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 
 [repos.b]
 url = "github:owner/b"
+[[repos.b.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 
 [repos.c]
 url = "github:owner/c"
+[[repos.c.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 
 [repos.d]
 url = "github:owner/d"
+[[repos.d.hooks]]
+when = ["post-clone"]
+run = ["{nix_run install-pre-commit-hooks}"]
 `)
 	initRealRepo(t, filepath.Join(root, "a"))
 	writeFakeBundle(t, filepath.Join(root, "a"), hbBundleOpts{})
@@ -236,5 +266,44 @@ url = "github:owner/d"
 	}
 	if pgh != 4 {
 		t.Errorf("want 4 pg-hooks calls (a, b, c, d); got %d", pgh)
+	}
+}
+
+// declareInstallHook returns the toml that opts repo into the pg-hooks bundle
+// (a per-repo hook running install-pre-commit-hooks), which is what makes
+// pre-commit-check run `pg-hooks` there (see installHookDeclared).
+func declareInstallHook(repo string) string {
+	return "[[repos." + repo + ".hooks]]\nwhen = [\"post-clone\"]\nrun = [\"{nix_run install-pre-commit-hooks}\"]\n"
+}
+
+// TestPreCommitCheck_SkipsRepoThatDeclaresNoInstallHook: a repo with no
+// install-pre-commit-hooks hook (the Go-only foundation repo, ADR-0033) has no
+// bundle by design; running pg-hooks there would record exit 13 as a failure.
+func TestPreCommitCheck_SkipsRepoThatDeclaresNoInstallHook(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.declared]
+url = "github:owner/declared"
+`+declareInstallHook("declared")+`
+[repos.undeclared]
+url = "github:owner/undeclared"
+foundation = true
+`)
+	f := exec.NewFakeRunner()
+	f.AddResponse("pg-hooks", []string{"run", "pre-commit", "--all-files"}, exec.Result{}, nil)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out bytes.Buffer
+	if err := w.PreCommitCheck(context.Background(), &out, &bytes.Buffer{}, PreCommitCheckOptions{}); err != nil {
+		t.Fatalf("PreCommitCheck: %v", err)
+	}
+	calls := f.Calls()
+	if len(calls) != 1 || calls[0].Opts.Dir != filepath.Join(root, "declared") {
+		t.Fatalf("only the declared repo may run pg-hooks; calls=%+v", calls)
+	}
+	if !strings.Contains(out.String(), "undeclared") || !strings.Contains(out.String(), "skipped") {
+		t.Errorf("a one-line skip notice naming the repo is expected; out=%q", out.String())
 	}
 }

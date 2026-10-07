@@ -154,8 +154,9 @@ func parseInputSpecJSON(data []byte) (map[string]InputSpec, error) {
 // The remoteURLs parameter maps repoKey → canonical URL (pre-computed from
 // the config's url/remotes fields).
 //
-// Also returns a topological order over the resulting edge set (Kahn's algorithm,
-// same as topoSortByDeps).
+// Also returns a topological order (Kahn's algorithm, same as topoSortByDeps)
+// over the edge set, except that foundation repos are ordered first (see
+// orderingDeps; foundation repos first, ADR-0033).
 //
 // Errors: if two workspace repos share the same canonical URL (duplicate_remote_url),
 // returns a non-nil error naming both repos.
@@ -227,9 +228,9 @@ func buildEdges(
 		}
 	}
 
-	// Compute topological order over the edge set.
-	dependsOn := edgesToDependsOn(edges, repoKeys)
-	order := topoSortByDeps(repoKeys, dependsOn)
+	// Compute topological order over the edge set, with foundation repos
+	// ordered first (edges itself stays the pure flake-edge list; ADR-0033).
+	order := topoSortByDeps(repoKeys, orderingDeps(repos, edges, repoKeys))
 
 	return edges, order, nil
 }
@@ -256,6 +257,58 @@ func edgesToDependsOn(edges []LockEdge, repoKeys []string) map[string][]string {
 		}
 		sort.Strings(deps)
 		dependsOn[key] = deps
+	}
+	return dependsOn
+}
+
+// orderingDeps is the dependsOn map that drives Lock.Order (and thereby push and
+// land order). It starts from edgesToDependsOn, then applies the foundation
+// rule of ADR-0033: a foundation repo keeps only its dependencies on other
+// foundation repos, and every non-foundation repo additionally depends on every
+// foundation repo (deduped: topoSortByDeps sets inDegree = len(deps)). The edge
+// list itself is NOT changed, and edgesToDependsOn stays a pure edge view for
+// callers such as tree. With no foundation repos the result equals
+// edgesToDependsOn.
+func orderingDeps(repos map[string]RepoConfig, edges []LockEdge, repoKeys []string) map[string][]string {
+	dependsOn := edgesToDependsOn(edges, repoKeys)
+	foundation := make(map[string]bool)
+	var foundationKeys []string
+	for _, k := range repoKeys {
+		if repos[k].Foundation {
+			foundation[k] = true
+			foundationKeys = append(foundationKeys, k)
+		}
+	}
+	if len(foundationKeys) == 0 {
+		return dependsOn
+	}
+	for _, k := range repoKeys {
+		if foundation[k] {
+			var keep []string
+			for _, d := range dependsOn[k] {
+				if foundation[d] {
+					keep = append(keep, d)
+				}
+			}
+			if len(keep) == 0 {
+				delete(dependsOn, k)
+			} else {
+				dependsOn[k] = keep
+			}
+			continue
+		}
+		have := make(map[string]bool, len(dependsOn[k]))
+		for _, d := range dependsOn[k] {
+			have[d] = true
+		}
+		deps := dependsOn[k]
+		for _, f := range foundationKeys {
+			if !have[f] {
+				deps = append(deps, f)
+			}
+		}
+		sort.Strings(deps)
+		dependsOn[k] = deps
 	}
 	return dependsOn
 }

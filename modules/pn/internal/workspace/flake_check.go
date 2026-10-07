@@ -25,7 +25,7 @@ type FlakeCheckOptions struct {
 // failed. Matches the bash "full sweep" behavior — does not short-circuit on
 // first failure. Each check's output is streamed live to out. Warning output
 // goes to errOut (stderr). Repos are processed in topological order
-// (dependencies before consumers).
+// (dependencies before consumers; foundation repos first, see ADR-0033).
 // FlakeCheck is a terminal-optional command: if no terminal is configured it
 // emits a warning to errOut and continues.
 func (ws *Workspace) FlakeCheck(ctx context.Context, out io.Writer, errOut io.Writer, opts FlakeCheckOptions) error {

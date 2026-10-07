@@ -1,0 +1,8 @@
+{
+  "terminal": "app",
+  "order": ["zzz", "base", "app"],
+  "edges": [
+    { "consumer": "app", "alias": "base", "target": "base" },
+    { "consumer": "zzz", "alias": "base", "target": "base" }
+  ]
+}

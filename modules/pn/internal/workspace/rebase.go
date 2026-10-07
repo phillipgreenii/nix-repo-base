@@ -135,7 +135,7 @@ func (ws *Workspace) syncDefault(ctx context.Context, client gitMutator, out io.
 }
 
 // Rebase runs git rebase operations across all workspace repos in topological
-// order (dependencies before consumers).
+// order (dependencies before consumers; foundation repos first, see ADR-0033).
 //
 // Without Onto (default): runs `git fetch` then `git pull --rebase --autostash`
 // in each repo that has a configured upstream. Repos without an upstream are

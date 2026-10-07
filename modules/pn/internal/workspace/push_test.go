@@ -1165,3 +1165,54 @@ url = %q
 		t.Errorf("dep's remote should match local HEAD (it was pushed before the abort); remote=%s local=%s", depRemote, depLocal)
 	}
 }
+
+// TestPush_FoundationRepoIsPushedFirst pins ADR-0033: a foundation repo (a Go
+// module consumed through go.mod pins pn cannot see) is published BEFORE every
+// other repo, even when its own flake input points at a sibling and it sorts
+// last alphabetically. No lock file exists, so the order is derived.
+func TestPush_FoundationRepoIsPushedFirst(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[repos.alpha]
+url = "github:owner/alpha"
+
+[repos.beta]
+url = "github:owner/beta"
+
+[repos.zeta]
+url = "github:owner/zeta"
+foundation = true
+`)
+	dirs := map[string]string{}
+	for _, n := range []string{"alpha", "beta", "zeta"} {
+		dirs[n] = mkGitRepoDir(t, root, n)
+	}
+	stubGitOpener(t, map[string]*fakeGitReader{
+		dirs["alpha"]: {hasUpstreamVal: true},
+		dirs["beta"]:  {hasUpstreamVal: true},
+		dirs["zeta"]:  {hasUpstreamVal: true},
+	})
+	order := &[]string{}
+	stubGitMutatorOpener(t, map[string]*fakeGitMutator{
+		dirs["alpha"]: {name: "alpha", log: order},
+		dirs["beta"]:  {name: "beta", log: order},
+		dirs["zeta"]:  {name: "zeta", log: order},
+	})
+
+	w, err := Open(root, exec.NewFakeRunner())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Push(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, PushOptions{Terminal: "alpha", NoSiblings: true}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	var pushes []string
+	for _, e := range *order {
+		if strings.HasSuffix(e, ":push") {
+			pushes = append(pushes, e)
+		}
+	}
+	if want := []string{"zeta:push", "alpha:push", "beta:push"}; !strSliceEqual(pushes, want) {
+		t.Errorf("push order = %v, want %v (foundation first)", pushes, want)
+	}
+}

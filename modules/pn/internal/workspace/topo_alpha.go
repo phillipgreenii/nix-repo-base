@@ -3,7 +3,7 @@ package workspace
 import "context"
 
 // topoAlpha returns the workspace repos in topological order (dependencies
-// before consumers). The 3-tier priority mirrors effectiveLock:
+// before consumers; foundation repos first, see ADR-0033). The 3-tier priority mirrors effectiveLock:
 //
 //  1. Disk lock matches config → return lock.Order directly (no nix eval).
 //  2. effectiveLock succeeds → return derived lock.Order.

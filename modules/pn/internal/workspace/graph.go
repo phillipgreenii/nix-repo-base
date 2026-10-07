@@ -89,11 +89,21 @@ func buildGraph(cfg *WorkspaceConfig, repoInputs map[string]map[string]string) (
 func selectTerminal(cfg *WorkspaceConfig, g *graph, flagTerminal string) (string, error) {
 	candidates := make([]string, 0, len(g.inDegree))
 	for name, d := range g.inDegree {
-		if d == 0 {
+		if d == 0 && !cfg.Repos[name].Foundation { // foundation repos are never candidates
 			candidates = append(candidates, name)
 		}
 	}
 	sort.Strings(candidates)
+
+	// A foundation repo MUST NOT be the terminal (ADR-0033).
+	for _, named := range []struct{ source, name string }{{"--terminal", flagTerminal}, {"workspace.terminal", cfg.Workspace.Terminal}} {
+		if named.name == "" {
+			continue
+		}
+		if err := checkTerminalNotFoundation(named.source, named.name, cfg.Repos); err != nil {
+			return "", err
+		}
+	}
 
 	// Tier 1: --terminal flag takes highest priority.
 	if flagTerminal != "" {
@@ -183,6 +193,26 @@ func topoSort(g *graph) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// foundationFirst stably moves foundation repos to the front of order,
+// matching the ordering rule of Lock.Order (ADR-0033). Discover's display order
+// is otherwise derived independently from buildGraph/topoSort (flake inputs
+// only), so without this `pn workspace discover` would list a foundation repo
+// after its flake dependencies while push/land use foundation-first.
+func foundationFirst(cfg *WorkspaceConfig, order []string) []string {
+	out := make([]string, 0, len(order))
+	for _, n := range order {
+		if cfg.Repos[n].Foundation {
+			out = append(out, n)
+		}
+	}
+	for _, n := range order {
+		if !cfg.Repos[n].Foundation {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func remaining(deg map[string]int) []string {

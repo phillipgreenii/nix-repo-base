@@ -156,12 +156,13 @@ func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptio
 // The provided context is checked between repos and between sub-steps; a
 // cancelled context aborts cleanly with the next ctx.Err() observed.
 //
-// Repos are processed in topological order (dependencies before consumers). Note
+// Repos are processed in topological order (dependencies before consumers;
+// foundation repos first, see ADR-0033). Note
 // that order no longer buys cross-repo convergence here: with no push, an
 // upstream's fresh commits are not on its remote, and a consumer can only relock
 // to a rev that IS on the remote (C1). The order is kept because it is the
 // workspace's canonical iteration order and because `pn workspace push` — which
-// does converge — relies on the same ordering.
+// does converge — relies on the same ordering (including foundation-first).
 // updateInPlace is a required-terminal command: it errors when no terminal is configured.
 func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts UpdateOptions) error {
 	if _, err := ws.requireTerminal(ctx, opts.Terminal); err != nil {

@@ -21,7 +21,7 @@ type StatusOptions struct {
 
 // Status writes a per-repo git status report to w. Error and warning output
 // goes to errOut (stderr). Repos are processed in topological order
-// (dependencies before consumers). A repo that fails its status call is
+// (dependencies before consumers; foundation repos first, see ADR-0033). A repo that fails its status call is
 // reported but does not abort the loop.
 //
 // Each per-repo block is laid out as:

@@ -298,3 +298,33 @@ func TestTopoSort_StableByNameWithinLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestFoundationFirst_StablePartition(t *testing.T) {
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"a": {}, "b": {}, "x": {Foundation: true}, "y": {Foundation: true}, "z": {},
+	}}
+	got := foundationFirst(cfg, []string{"a", "y", "b", "x", "z"})
+	want := []string{"y", "x", "a", "b", "z"}
+	if !strSliceEqual(got, want) {
+		t.Errorf("foundationFirst = %v, want %v", got, want)
+	}
+}
+
+func TestSelectTerminal_FoundationNeverACandidateOrTerminal(t *testing.T) {
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"app": {URL: "github:o/app"},
+		"x":   {URL: "github:o/x", Foundation: true},
+	}}
+	// Both are sinks; x is foundation so app is the unambiguous candidate.
+	g := &graph{
+		edges:    map[string]map[string]bool{"app": {}, "x": {}},
+		inDegree: map[string]int{"app": 0, "x": 0},
+	}
+	got, err := selectTerminal(cfg, g, "")
+	if err != nil || got != "app" {
+		t.Errorf("selectTerminal = %q, %v; want app, nil", got, err)
+	}
+	if _, err := selectTerminal(cfg, g, "x"); err == nil {
+		t.Error("--terminal naming a foundation repo must error")
+	}
+}

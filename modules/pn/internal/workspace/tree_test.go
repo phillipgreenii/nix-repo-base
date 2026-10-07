@@ -223,3 +223,49 @@ url = "github:o/overlay"
 		t.Errorf("Tree mismatch:\n got:\n%q\nwant:\n%q", buf.String(), want)
 	}
 }
+
+// TestTree_FoundationRepoIsNotShownAndAddsNoEdges pins ADR-0033: tree is a pure
+// flake-edge view rooted at the terminal. A foundation repo (x) outside the
+// terminal's closure never appears, and ordering-only dependencies (every
+// non-foundation repo "depends" on x for push/land order) are not rendered.
+func TestTree_FoundationRepoIsNotShownAndAddsNoEdges(t *testing.T) {
+	root := t.TempDir()
+	for _, r := range []string{"term", "base", "x"} {
+		mkRepoDir(t, root, r)
+		writeFile(t, filepath.Join(root, r, "flake.nix"), "{ inputs = {}; }")
+	}
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "term"
+
+[repos.term]
+url = "github:o/term"
+
+[repos.base]
+url = "github:o/base"
+
+[repos.x]
+url = "github:o/x"
+foundation = true
+`)
+	fullApplyExpr := `is: builtins.mapAttrs (n: v: { url = v.url or null; flake = v.flake or true; }) is`
+	evalArgs := func(repo string) []string {
+		return []string{"eval", "--json", "--file", filepath.Join(root, repo, "flake.nix"), "inputs", "--apply", fullApplyExpr}
+	}
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", evalArgs("base"), exec.Result{Stdout: []byte(`{}`)}, nil)
+	f.AddResponse("nix", evalArgs("x"), exec.Result{Stdout: []byte(`{"nb":{"url":"github:o/base","flake":true}}`)}, nil)
+	f.AddResponse("nix", evalArgs("term"), exec.Result{Stdout: []byte(`{"nb":{"url":"github:o/base","flake":true}}`)}, nil)
+
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := w.Tree(context.Background(), &buf, TreeOptions{}); err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+	if want := "term\n└── base\n"; buf.String() != want {
+		t.Errorf("Tree mismatch:\n got:\n%q\nwant:\n%q", buf.String(), want)
+	}
+}

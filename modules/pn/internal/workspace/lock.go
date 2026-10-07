@@ -20,7 +20,8 @@ type Lock struct {
 	// Terminal is the workspace terminal repo key (may be empty if unset).
 	Terminal string `json:"terminal,omitempty"`
 	// Order is every workspace repo key in topological order: dependencies
-	// first, the terminal flake last, siblings broken alphabetically.
+	// first, the terminal flake last, siblings broken alphabetically. Foundation
+	// repos (RepoConfig.Foundation) are ordered before all others; see ADR-0033.
 	Order []string `json:"order"`
 	// Repos maps each workspace repo key to its per-repo lock metadata.
 	Repos map[string]LockRepoEntry `json:"repos"`

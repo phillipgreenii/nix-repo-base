@@ -61,6 +61,13 @@ type RepoConfig struct {
 	// URLs to this workspace repo when deriving edges (see buildEdges). Unlike
 	// Remotes they are NOT push targets: a pull-mirror is read-only.
 	MirrorURLs []string `toml:"mirror_urls,omitempty"`
+
+	// Foundation marks a repo that is consumed outside the flake graph (e.g. a
+	// Go module pinned via go.mod), which pn cannot see. It is ORDERED BEFORE
+	// every non-foundation repo (Lock.Order, push, land); its own flake-input
+	// edges stay in Lock.Edges but do not constrain ordering. A foundation repo
+	// MUST NOT be the terminal. See ADR-0033.
+	Foundation bool `toml:"foundation,omitempty"`
 	// FlakePath is the path to the repo's flake.nix relative to the repo root.
 	// When set, this overrides the default search paths (flake.nix, nix/flake.nix).
 	// Recorded in pn-workspace.toml only for non-default locations.
@@ -248,6 +255,9 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 	if cfg.Workspace.Terminal != "" {
 		if _, ok := cfg.Repos[cfg.Workspace.Terminal]; !ok {
 			return nil, fmt.Errorf("workspace.terminal %q is not a declared repo", cfg.Workspace.Terminal)
+		}
+		if err := checkTerminalNotFoundation("workspace.terminal", cfg.Workspace.Terminal, cfg.Repos); err != nil {
+			return nil, err
 		}
 	}
 	// Validate build_command / apply_command placeholders at parse time so a

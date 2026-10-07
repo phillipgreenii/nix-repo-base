@@ -1,7 +1,12 @@
 package workspace
 
 import (
+	"context"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
 // makeEdgeLock builds a Lock with the given edges and flake paths for edge targets.
@@ -255,5 +260,114 @@ func TestResolveTerminal_FlagPointingAtNonSink(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected terminal_not_sink validation error, got %v", validErrs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Foundation repos (ADR-0033) can never be the workspace terminal.
+// ---------------------------------------------------------------------------
+
+// foundationTerminalFixture: term -> base <- x, where x is a foundation repo
+// (an unconsumed sink that, unguarded, would compete with term for terminal).
+func foundationTerminalFixture(terminalCfg string) (*WorkspaceConfig, []LockEdge, map[string]LockRepoEntry) {
+	edges := []LockEdge{
+		{Consumer: "term", Alias: "base", Target: "base"},
+		{Consumer: "x", Alias: "base", Target: "base"},
+	}
+	allKeys := []string{"base", "term", "x"}
+	fp := map[string]string{"base": "flake.nix", "term": "flake.nix", "x": "flake.nix"}
+	lock := makeEdgeLock(edges, fp, allKeys)
+	cfg := makeConfig(terminalCfg, allKeys...)
+	cfg.Repos["x"] = RepoConfig{URL: "github:o/x", Foundation: true}
+	return cfg, edges, lock.Repos
+}
+
+func TestResolveTerminal_FlagNamingFoundationRepoErrors(t *testing.T) {
+	cfg, edges, repos := foundationTerminalFixture("term")
+	_, _, err := resolveTerminal(cfg, "x", edges, repos)
+	if err == nil {
+		t.Fatal("expected --terminal naming a foundation repo to error")
+	}
+	if !strings.Contains(err.Error(), "foundation") || !strings.Contains(err.Error(), `"x"`) {
+		t.Errorf("error should name the foundation repo; got %v", err)
+	}
+}
+
+func TestResolveTerminal_ConfigTerminalNamingFoundationRepoErrors(t *testing.T) {
+	// A config built without ParseConfig (or an old lock tier) must still be refused.
+	cfg, edges, repos := foundationTerminalFixture("x")
+	if _, _, err := resolveTerminal(cfg, "", edges, repos); err == nil {
+		t.Fatal("expected config terminal naming a foundation repo to error")
+	}
+}
+
+func TestResolveTerminal_AutoDetectSkipsFoundation(t *testing.T) {
+	// Sinks are {term, x}; without the skip this is ambiguous and yields "".
+	cfg, edges, repos := foundationTerminalFixture("")
+	term, validErrs, err := resolveTerminal(cfg, "", edges, repos)
+	if err != nil {
+		t.Fatalf("resolveTerminal: %v", err)
+	}
+	if term != "term" {
+		t.Errorf("terminal = %q, want term (foundation x must not compete)", term)
+	}
+	if len(validErrs) != 0 {
+		t.Errorf("expected no validation errors, got %v", validErrs)
+	}
+}
+
+func TestResolveTerminal_ExplicitConfigTerminalUnaffectedByUnconsumedFoundation(t *testing.T) {
+	cfg, edges, repos := foundationTerminalFixture("term")
+	term, validErrs, err := resolveTerminal(cfg, "", edges, repos)
+	if err != nil {
+		t.Fatalf("resolveTerminal: %v", err)
+	}
+	if term != "term" || len(validErrs) != 0 {
+		t.Errorf("terminal = %q validErrs = %v, want term and none", term, validErrs)
+	}
+}
+
+func TestAutoDetectTerminal_OnlyFoundationSinkYieldsNone(t *testing.T) {
+	// {x, base} subset shape: x is the only sink and it is a foundation repo.
+	edges := []LockEdge{{Consumer: "x", Alias: "base", Target: "base"}}
+	repos := map[string]LockRepoEntry{"x": {FlakePath: "flake.nix"}, "base": {FlakePath: "flake.nix"}}
+	if got := autoDetectTerminal(edges, repos, map[string]bool{"x": true}); got != "" {
+		t.Errorf("autoDetectTerminal = %q, want none (x is foundation)", got)
+	}
+	if got := autoDetectTerminal(edges, repos, nil); got != "x" {
+		t.Errorf("without the foundation set x is the connected sink; got %q", got)
+	}
+}
+
+func TestRequireTerminal_FlagNamingFoundationRepoErrors(t *testing.T) {
+	ws := &Workspace{
+		root: t.TempDir(), runner: exec.NewFakeRunner(), lock: emptyLock(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
+			"x": {URL: "github:o/x", Foundation: true}, "app": {URL: "github:o/app"},
+		}},
+	}
+	if _, err := ws.requireTerminal(context.Background(), "x"); err == nil {
+		t.Fatal("expected requireTerminal(--terminal x) to refuse a foundation repo")
+	}
+	if got, err := ws.requireTerminal(context.Background(), "app"); err != nil || got != "app" {
+		t.Errorf("requireTerminal(app) = %q, %v; want app, nil", got, err)
+	}
+}
+
+func TestDetectTerminalCandidates_SkipsFoundation(t *testing.T) {
+	root := t.TempDir()
+	mkRepoDir(t, root, "app")
+	mkRepoDir(t, root, "x")
+	writeFile(t, filepath.Join(root, "app", "flake.nix"), "{}")
+	writeFile(t, filepath.Join(root, "x", "flake.nix"), "{}")
+	ws := &Workspace{
+		root: root, runner: exec.NewFakeRunner(), lock: emptyLock(),
+		config: &WorkspaceConfig{Repos: map[string]RepoConfig{
+			"x": {URL: "github:o/x", Foundation: true}, "app": {URL: "github:o/app"},
+		}},
+	}
+	got := ws.detectTerminalCandidates(context.Background())
+	if len(got) != 1 || got[0] != "app" {
+		t.Errorf("candidates = %v, want [app] (foundation x excluded)", got)
 	}
 }

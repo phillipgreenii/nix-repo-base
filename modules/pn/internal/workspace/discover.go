@@ -21,7 +21,7 @@ type DiscoverOptions struct {
 }
 
 // Discover returns the workspace's repos in topological order (dependencies
-// first, terminal last). Each repo is annotated with IsTerminal.
+// first, terminal last; foundation repos first, see ADR-0033). Each repo is annotated with IsTerminal.
 //
 // Discover performs per-repo subprocess fan-out (nix eval + git remote -v)
 // in parallel via the workspace's worker pool. Per-repo failures are tolerated
@@ -79,6 +79,9 @@ func (ws *Workspace) Discover(ctx context.Context, opts DiscoverOptions) ([]Repo
 	if err != nil {
 		return nil, err
 	}
+	// Display order only (independent of Lock.Order): keep it consistent with
+	// the foundation-first rule of ADR-0033.
+	order = foundationFirst(ws.config, order)
 	out := make([]Repo, 0, len(order))
 	for _, name := range order {
 		out = append(out, Repo{

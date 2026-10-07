@@ -86,6 +86,37 @@ func TestCheckLock_SubsetWithNoInternalEdgesIsNotStale(t *testing.T) {
 	}
 }
 
+// TestCheckLock_ToggledFoundationOnSameRepoSetIsStale pins ADR-0033 caveat (b):
+// lockMatchesConfig compares only the repo-key SET, so flipping `foundation` on
+// an existing repo leaves a disk lock whose Order is stale. lock-current MUST
+// catch it (the operator fix is `pn workspace lock`).
+func TestCheckLock_ToggledFoundationOnSameRepoSetIsStale(t *testing.T) {
+	root := t.TempDir()
+	cfg := &WorkspaceConfig{Repos: map[string]RepoConfig{
+		"app":  {URL: "u1", Branch: "main"},
+		"zlib": {URL: "u2", Branch: "main", Foundation: true}, // just toggled on
+	}}
+	// Disk lock written BEFORE the toggle: alphabetical, same repo keys.
+	onDisk := &Lock{
+		Order: []string{"app", "zlib"},
+		Repos: map[string]LockRepoEntry{"app": {RemoteURL: "u1"}, "zlib": {RemoteURL: "u2"}},
+	}
+	ws := &Workspace{root: root, runner: exec.NewFakeRunner(), config: cfg, lock: onDisk}
+	env := &doctorEnv{ws: ws, mode: "primary", lock: onDisk}
+
+	fs := ws.checkLock(context.Background(), env)
+	if !hasFinding(fs, "lock-current", SevError) {
+		t.Fatalf("expected lock-current error after toggling foundation, got %+v", fs)
+	}
+
+	// Control: a lock whose Order already puts the foundation repo first is current.
+	onDisk.Order = []string{"zlib", "app"}
+	fs = ws.checkLock(context.Background(), env)
+	if hasFinding(fs, "lock-current", SevError) {
+		t.Fatalf("a lock ordered foundation-first must be current, got %+v", fs)
+	}
+}
+
 // TestLockEdgesEqual_NilVsEmptyAreEqual pins the nil-vs-empty-slice
 // equivalence directly (the mechanical bug reflect.DeepEqual had).
 func TestLockEdgesEqual_NilVsEmptyAreEqual(t *testing.T) {

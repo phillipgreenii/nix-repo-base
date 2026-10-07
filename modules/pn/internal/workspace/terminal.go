@@ -15,13 +15,41 @@ type ValidationError struct {
 
 func (v ValidationError) Error() string { return v.Message }
 
+// checkTerminalNotFoundation errors when source (e.g. "--terminal") names a
+// foundation repo: a foundation repo is ordered before every consumer, so it can
+// never be the workspace terminal (ADR-0033).
+func checkTerminalNotFoundation(source, name string, repos map[string]RepoConfig) error {
+	if r, ok := repos[name]; ok && r.Foundation {
+		return fmt.Errorf("%s %q is a foundation repo (foundation = true); a foundation repo is ordered before every consumer and MUST NOT be the terminal", source, name)
+	}
+	return nil
+}
+
+// foundationKeys returns the set of repo keys marked foundation in cfg.
+func foundationKeys(cfg *WorkspaceConfig) map[string]bool {
+	out := make(map[string]bool)
+	if cfg == nil {
+		return out
+	}
+	for k, r := range cfg.Repos {
+		if r.Foundation {
+			out[k] = true
+		}
+	}
+	return out
+}
+
 // resolveTerminal resolves the workspace terminal repo following a 3-tier
 // priority:
 //
 //  1. flagTerminal — if non-empty, validates it exists in repos and returns it.
 //  2. cfg.Workspace.Terminal — if set, use it.
 //  3. Auto-detect: unique sink among flake repos that is in the same connected
-//     component as at least one other flake repo.
+//     component as at least one other flake repo. Foundation repos are never
+//     candidates.
+//
+// A foundation repo MUST NOT be the terminal: tiers 1 and 2 return an error if
+// they name one (a flag bypasses ParseConfig; ADR-0033).
 //
 // After resolution (any tier), if the resolved terminal is non-empty and has
 // inbound edges (i.e., it is consumed by another workspace repo), a
@@ -38,6 +66,11 @@ func resolveTerminal(
 	edges []LockEdge,
 	repos map[string]LockRepoEntry,
 ) (terminal string, validErrs []ValidationError, err error) {
+	var cfgRepos map[string]RepoConfig
+	if cfg != nil {
+		cfgRepos = cfg.Repos
+	}
+
 	// Tier 1: explicit flag.
 	if flagTerminal != "" {
 		found := false
@@ -51,17 +84,23 @@ func resolveTerminal(
 		if !found {
 			return "", nil, fmt.Errorf("--terminal %q: repo not found in workspace", flagTerminal)
 		}
+		if err := checkTerminalNotFoundation("--terminal", flagTerminal, cfgRepos); err != nil {
+			return "", nil, err
+		}
 		terminal = flagTerminal
 	}
 
 	// Tier 2: config terminal.
 	if terminal == "" && cfg != nil && cfg.Workspace.Terminal != "" {
+		if err := checkTerminalNotFoundation("workspace.terminal", cfg.Workspace.Terminal, cfgRepos); err != nil {
+			return "", nil, err
+		}
 		terminal = cfg.Workspace.Terminal
 	}
 
 	// Tier 3: auto-detect.
 	if terminal == "" {
-		terminal = autoDetectTerminal(edges, repos)
+		terminal = autoDetectTerminal(edges, repos, foundationKeys(cfg))
 	}
 
 	// Safety check: terminal_not_sink.
@@ -90,7 +129,10 @@ func resolveTerminal(
 //  4. Filter out isolated candidates: keep only those in the same connected
 //     component as at least one other flake repo (i.e., reachable > 0 from that node).
 //  5. If exactly one connected sink remains: return it. Otherwise return "".
-func autoDetectTerminal(edges []LockEdge, repos map[string]LockRepoEntry) string {
+//
+// foundation repos stay in the graph (their flake edges still count toward
+// inbound edges and reachability) but are never terminal candidates.
+func autoDetectTerminal(edges []LockEdge, repos map[string]LockRepoEntry, foundation map[string]bool) string {
 	// Step 1: flake repo set.
 	flakeRepos := make(map[string]bool)
 	for k, v := range repos {
@@ -119,7 +161,7 @@ func autoDetectTerminal(edges []LockEdge, repos map[string]LockRepoEntry) string
 	// Step 3: sinks among flake repos.
 	var sinks []string
 	for k := range flakeRepos {
-		if inbound[k] == 0 {
+		if inbound[k] == 0 && !foundation[k] {
 			sinks = append(sinks, k)
 		}
 	}

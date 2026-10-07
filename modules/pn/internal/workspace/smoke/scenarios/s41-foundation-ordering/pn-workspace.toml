@@ -1,0 +1,13 @@
+[workspace]
+name = "smoke-s41"
+terminal = "app"
+
+[repos.app]
+url = "file:///PLACEHOLDER"
+
+[repos.base]
+url = "file:///PLACEHOLDER"
+
+[repos.zzz]
+url = "file:///PLACEHOLDER"
+foundation = true

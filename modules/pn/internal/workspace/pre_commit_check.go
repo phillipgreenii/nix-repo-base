@@ -21,7 +21,10 @@ type PreCommitCheckOptions struct {
 // goes to errOut (stderr).
 // Matches the bash version which does NOT abort on per-repo failure; we mirror
 // that by collecting failures and returning a combined error at the end. Repos
-// are processed in topological order (dependencies before consumers).
+// are processed in topological order (dependencies before consumers; foundation
+// repos first, see ADR-0033). A repo whose config declares no
+// install-pre-commit-hooks hook (installHookDeclared) has no hook bundle by
+// design, so it is skipped with a notice instead of failing on pg-hooks' exit 13.
 // PreCommitCheck is a terminal-optional command: if no terminal is configured
 // it emits a warning to errOut and continues.
 func (ws *Workspace) PreCommitCheck(ctx context.Context, out io.Writer, errOut io.Writer, opts PreCommitCheckOptions) error {
@@ -38,6 +41,10 @@ func (ws *Workspace) PreCommitCheck(ctx context.Context, out io.Writer, errOut i
 			fmt.Fprintln(out)
 		}
 		first = false
+		if !ws.installHookDeclared(name) {
+			fmt.Fprintf(out, "  --== pre-commit %s: skipped (no install-pre-commit-hooks hook declared) ==--  \n", name)
+			continue
+		}
 		fmt.Fprintf(out, "  --== pre-commit %s ==--  \n", name)
 		cmd, args := "pg-hooks", []string{"run", "pre-commit", "--all-files"}
 		if err := inRepoSpan(ctx, name, func(ctx context.Context) error {
