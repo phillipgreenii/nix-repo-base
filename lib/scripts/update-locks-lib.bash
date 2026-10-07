@@ -164,6 +164,17 @@
 #   exit (a resource abort exits earlier, from ul_run_step, with UL_RC_ABORT).
 #
 # -----------------------------------------------------------------
+# ul_refresh_action_pins [--pin-mutable] [--workflows-dir DIR]
+# -----------------------------------------------------------------
+# ANCHOR: ul_refresh_action_pins
+#   A STEP COMMAND (run it as `ul_run_step <name> <msg> ul_refresh_action_pins`),
+#   defined in the sibling update-action-pins-lib.bash, which this lib sources.
+#   Refreshes `uses: owner/repo@<40-hex> # <ref>` pins in .github/workflows to the
+#   current commit of <ref> (annotated tags peeled), keeping the comment; mutable refs
+#   are reported, not rewritten, unless --pin-mutable; unresolvable refs exit 3 and
+#   write nothing. Full contract at the top of update-action-pins-lib.bash (bead pg2-ehu9q).
+#
+# -----------------------------------------------------------------
 # Exit codes used by step commands invoked under ul_run_step
 # -----------------------------------------------------------------
 # ANCHOR: ul-exit-codes
@@ -181,6 +192,11 @@
 # =================================================================
 
 _UL_LOCKS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Sibling lib: ul_refresh_action_pins, the shared GitHub Action SHA-pin refresh step
+# (bead pg2-ehu9q). Sourced here so every consumer of this lib gets it.
+# shellcheck disable=SC1091  # path resolved at runtime
+source "${_UL_LOCKS_LIB_DIR}/update-action-pins-lib.bash"
 
 # Exit code a step returns to mean "valid attempt, no update applied" — roll
 # back content but record the timestamp (so it isn't retried until the window

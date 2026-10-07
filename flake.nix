@@ -309,6 +309,7 @@
               mkdir -p $out/lib/scripts
               cp ${./lib/scripts/update-locks-lib.bash} $out/lib/scripts/update-locks-lib.bash
               cp ${./lib/scripts/update-cache-lib.bash} $out/lib/scripts/update-cache-lib.bash
+              cp ${./lib/scripts/update-action-pins-lib.bash} $out/lib/scripts/update-action-pins-lib.bash
             '';
 
             # git-fixture-harness: shared hermetic-by-construction bats
@@ -421,6 +422,7 @@
               scripts = [
                 ./lib/scripts/update-locks-lib.bash
                 ./lib/scripts/update-cache-lib.bash
+                ./lib/scripts/update-action-pins-lib.bash
                 ./lib/scripts/git-fixture-harness.bash
               ];
             };

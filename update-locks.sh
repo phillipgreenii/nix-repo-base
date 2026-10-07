@@ -35,4 +35,11 @@ ul_run_step "nix-flake-update" \
   "update-locks: update nix flake.lock" \
   nix flake update
 
+# Refresh the SHA pins of every `uses: owner/repo@<sha> # <ref>` in .github/workflows
+# (ul_refresh_action_pins, lib/scripts/update-action-pins-lib.bash). Mutable refs are
+# reported, not rewritten.
+ul_run_step "github-action-pins" \
+  "update-locks: refresh GitHub Action SHA pins" \
+  ul_refresh_action_pins
+
 ul_finalize
