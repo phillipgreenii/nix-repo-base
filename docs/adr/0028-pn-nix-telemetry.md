@@ -550,12 +550,90 @@ identifies the host once the collector sets one. The trace-shape acceptance for 
 { name = "pn.verb" } >> { name = "pn.repo" } >> { name = "pn.exec" } >> { name = "nix.invocation" } >> { name = "nix.build" || name = "nix.substitute" }
 ```
 
+### Phase 7 hardening review of the real binaries (`pg2-kqrrs.14`)
+
+Run on 2026-10-06 against the deployed binaries (home-manager and system generations current at
+that date; `pg-nix-log-wrapped` from the operator's profile), jointly by the operator (everything
+that needs root or a real apply) and an agent (read-only probes). This gates Phase 5: agents are
+told to use the wrapper only after this passes.
+
+| #   | Pass bar                                                                                                    | Result                   |
+| --- | ----------------------------------------------------------------------------------------------------------- | ------------------------ |
+| 1   | Root-run log files are mode 0600 inside a root-owned 0750 directory                                         | PASS                     |
+| 2   | No file is created under `/Users/phillipg` during a sudo apply                                              | PASS (bounded scan)      |
+| 3   | A pn-driven cancel of a real `pn workspace apply` leaves no nix or darwin-rebuild process and no stuck lock | PASS (operator-reported) |
+| 4   | `pg-nix-log-wrapped --check` is accurate with the collector up and down                                     | PASS                     |
+
+**1. Modes.** Operator, root:
+
+```text
+$ sudo find /var/log/pg-nix-log-wrapped -exec /usr/bin/stat -f '%Sp %Su:%Sg %HT' {} + | sort | uniq -c
+  22 -rw------- root:wheel Regular File
+   1 drwxr-x--- root:wheel Directory
+```
+
+Use `/usr/bin/stat`: under `sudo` a bare `stat` resolved to GNU `stat`, where `-f` means filesystem
+status and the command prints no modes. The 22 files span 2026-10-03 to 2026-10-07 (UTC names), so
+the check covers real apply history, not a staged run.
+
+**2. Nothing under the home directory.** Agent, non-root, after real sudo applies had run in the
+window (system generations 972 at 18:35 and 973 at 20:37 on 2026-10-06):
+
+```text
+$ find /Users/phillipg -xdev -maxdepth 5 \( -name .git -o -name .worktrees -o -name .workforests \
+    -o -name node_modules -o -name Library \) -prune -o -user root -mtime -3 -print
+(no output)
+```
+
+The scan is bounded: depth 5, and it prunes the trees above. It is strong evidence, not an
+exhaustive proof.
+
+**3. Cancel.** Operator, with the wrapper live, cancelled a real `pn workspace apply` with Ctrl-C
+and then checked for leftovers, using the queries below as the agreed procedure. The operator
+reported "no lock problems and no remaining processes"; no command output was pasted and the exact
+commands run were not recorded, so this row rests on that report.
+
+```bash
+# both print nothing (pgrep exits 1 when nothing matches)
+pgrep -u root -lx 'nix|nix-build|nix-store|nix-env|darwin-rebuild|pg-nix-log-wrapped'
+pgrep -lx darwin-rebuild
+# a follow-up build must show no "waiting for lock" line
+pn workspace build
+```
+
+The process query is deliberately exact-name and root-scoped. A substring match (`pgrep -fl
+'nix|darwin-rebuild'`) returned 131 rows on this machine, from shell wrappers, Go test binaries and
+other sessions' builds, so it cannot show a leak. Unscoped user-owned `nix` processes belong to
+concurrent sessions and MUST be compared against a baseline of PIDs, not expected to be empty. This
+closes the "pn's own cancel code against a root wrapper" gap that item 3 left open.
+
+**4. `--check` accuracy.** Agent. The collector-down case uses a dead port (confirmed with `lsof`
+that nothing listens), so the real collector was not stopped; it exercises the same TCP probe path.
+
+```text
+$ pg-nix-log-wrapped --check
+endpoint: http://127.0.0.1:4318 (from file)
+reachable: yes
+log-dir: /Users/phillipg/.local/state/pn/nix-logs (writable: yes)
+(exit 0)
+
+$ pg-nix-log-wrapped --check --otlp-endpoint http://127.0.0.1:4399
+endpoint: http://127.0.0.1:4399 (from flag)
+reachable: no (dial tcp 127.0.0.1:4399: connect: connection refused)
+log-dir: /Users/phillipg/.local/state/pn/nix-logs (writable: yes)
+(exit 1)
+```
+
+Outcome: all four pass; Phase 5 (`pg2-kqrrs.10`, `pg2-kqrrs.11`) and Phase 8 (`pg2-kqrrs.15`) are
+unblocked.
+
 ## Consequences
 
 - Phases 2b and 3 may start; the golden files give the activity state machine real input.
 - Verified (operator, root, 2026-10-05): a non-root cancel of a root wrapper gets EPERM and the root
-  build keeps running; an interactive Ctrl-C leaves no stale lock (item 3). Not exercised: pn's own
-  cancel code against a root wrapper.
+  build keeps running; an interactive Ctrl-C leaves no stale lock (item 3). Verified (operator,
+  2026-10-06, Phase 7): pn's own cancel of a real `pn workspace apply` leaves no nix or
+  darwin-rebuild process and no stuck lock.
 - Not measured: a real `sudo darwin-rebuild switch` through the wrapper; `darwin-rebuild` cancel by
   signal (build-only run only).
 - Alternatives rejected earlier (socket, timestamps from nix) stay as in the plan (F4, F10).
