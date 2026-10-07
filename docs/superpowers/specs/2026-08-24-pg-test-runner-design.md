@@ -108,6 +108,17 @@ registering a label is a configuration change, never a code change.
   seconds. Projects not named keep the global cap, so one slow suite gets a larger cap without
   raising the default or skipping tests. Anything other than a string-to-positive-integer object
   is exit `13`.
+- `maxConcurrentRuns` / `slotWaitSeconds` / `niceLevel` (optional, pg2-r9ly8) — host-wide load
+  bounds. At most `maxConcurrentRuns` project invocations (default `2` in the shipped config, `0` = unlimited; a custom config omitting the key means no cap) run at
+  once across ALL pg-test-runner processes on the host, via per-slot symlinks under
+  `/tmp/pg-test-runner-slots.<uid>` (owner recorded as `<pid>:<start time>`, dead owners
+  reclaimed). A slot is taken before the `timeoutSeconds` clock starts. After `slotWaitSeconds`
+  (default `600`) without a slot the run proceeds anyway with a warning (fail open, a hook never
+  blocks forever). Each run executes under `nice -n niceLevel` (default `10`, `0` = off, max 19).
+  The `PG_TEST_RUNNER_MAX_CONCURRENT_RUNS`, `PG_TEST_RUNNER_SLOT_WAIT_SECONDS` and
+  `PG_TEST_RUNNER_NICE_LEVEL` environment variables override the config per run (non-integer is
+  exit `2`); a malformed config value is exit `13`. The cap is soft: a reclaim race can admit one
+  extra run.
 - `ignore` — gitignore-style patterns matched against the path RELATIVE to the repo toplevel (or
   the scan root outside a repo), so a bare `node_modules/` prunes at ANY depth (support-apps
   carries a nested in-tree `node_modules/`). Applied in every mode. The defaults prune

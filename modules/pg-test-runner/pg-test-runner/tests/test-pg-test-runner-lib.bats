@@ -373,3 +373,214 @@ _invoke_setup() {
   [[ "$output" == *"cannot create a private TMPDIR"* ]]
   [ "$(<"$PROJ/seen")" = "$CALLER_TMP" ]
 }
+
+# --- host-wide run slots + nice (bead pg2-r9ly8) -------------------------
+# Every project invocation takes one of MAX_CONCURRENT_RUNS machine-wide slots
+# before it starts (symlink-per-slot under a lock root shared by all callers),
+# runs under `nice`, and never counts slot-queue time against its timeout cap.
+
+_slots_setup() {
+  export PG_TEST_RUNNER_LOCK_ROOT="$TEST_DIR/slots"
+  PTR_JQ="jq"
+  PTR_TIMEOUT="timeout"
+  TIMEOUT_SECONDS=10
+  PROJ="$TEST_DIR/proj"
+  TMP_ROOT="$TEST_DIR/tmproot"
+  mkdir -p "$PROJ" "$TMP_ROOT"
+  export PG_TEST_RUNNER_TMP_ROOT="$TMP_ROOT"
+}
+
+@test "ptr_slot_acquire hands out at most max slots and ptr_slot_release frees one" {
+  _slots_setup
+  ptr_slot_acquire 2 0
+  a="$PTR_SLOT_HELD"
+  ptr_slot_acquire 2 0
+  b="$PTR_SLOT_HELD"
+  [ "$a" != "$b" ]
+  # third request cannot get a slot (wait 0 = fail immediately)
+  run ptr_slot_acquire 2 0
+  [ "$status" -ne 0 ]
+  PTR_SLOT_HELD="$a" ptr_slot_release
+  ptr_slot_acquire 2 0
+  [ "$PTR_SLOT_HELD" = "$a" ]
+}
+
+@test "ptr_slot_acquire reclaims a slot whose owner process is dead" {
+  _slots_setup
+  mkdir -p "$PG_TEST_RUNNER_LOCK_ROOT"
+  bash -c 'echo $$' >"$TEST_DIR/deadpid"
+  dead="$(<"$TEST_DIR/deadpid")"
+  ln -s "$dead:Thu Jan  1 00:00:00 1970" "$PG_TEST_RUNNER_LOCK_ROOT/slot.1"
+  ptr_slot_acquire 1 0
+  [ "$PTR_SLOT_HELD" = "$PG_TEST_RUNNER_LOCK_ROOT/slot.1" ]
+}
+
+@test "ptr_slot_acquire reclaims a slot whose pid was recycled by a different process" {
+  _slots_setup
+  mkdir -p "$PG_TEST_RUNNER_LOCK_ROOT"
+  # $$ is alive, but its recorded start time is not ours: a recycled pid.
+  ln -s "$$:Thu Jan  1 00:00:00 1970" "$PG_TEST_RUNNER_LOCK_ROOT/slot.1"
+  ptr_slot_acquire 1 0
+  [ "$PTR_SLOT_HELD" = "$PG_TEST_RUNNER_LOCK_ROOT/slot.1" ]
+}
+
+@test "ptr_slot_acquire does NOT reclaim a slot held by a live process" {
+  _slots_setup
+  ptr_slot_acquire 1 0
+  run ptr_slot_acquire 1 0
+  [ "$status" -ne 0 ]
+}
+
+@test "ptr_slot_acquire waits for a slot to be released within the wait budget" {
+  _slots_setup
+  ptr_slot_acquire 1 0
+  held="$PTR_SLOT_HELD"
+  (
+    sleep 2
+    PTR_SLOT_HELD="$held" ptr_slot_release
+  ) &
+  bg=$!
+  ptr_slot_acquire 1 20
+  wait "$bg"
+  [ "$PTR_SLOT_HELD" = "$held" ]
+}
+
+@test "ptr_slot_acquire gives up after the wait budget" {
+  _slots_setup
+  ptr_slot_acquire 1 0
+  start=$SECONDS
+  run ptr_slot_acquire 1 2
+  [ "$status" -ne 0 ]
+  [ $((SECONDS - start)) -ge 2 ]
+}
+
+@test "ptr_invoke with MAX_CONCURRENT_RUNS=1 never overlaps two runs" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=1
+  SLOT_WAIT_SECONDS=60
+  NICE_LEVEL=0
+  cmd='["bash","-c","echo start >>\"$0\"; sleep 1; echo end >>\"$0\"","'"$TEST_DIR"'/log"]'
+  ptr_invoke "$PROJ" "$cmd" 1 "" "" "" "" &
+  p1=$!
+  ptr_invoke "$PROJ" "$cmd" 1 "" "" "" "" &
+  p2=$!
+  wait "$p1"
+  wait "$p2"
+  [ "$(tr '\n' ' ' <"$TEST_DIR/log")" = "start end start end " ]
+  # slots all released afterwards
+  [ -z "$(ls -A "$PG_TEST_RUNNER_LOCK_ROOT")" ]
+}
+
+@test "ptr_invoke with MAX_CONCURRENT_RUNS=0 takes no slot" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=0
+  run ptr_invoke "$PROJ" '["true"]' 1 "" "" "" ""
+  [ "$status" -eq 0 ]
+  [ ! -e "$PG_TEST_RUNNER_LOCK_ROOT" ]
+}
+
+@test "ptr_invoke queue time does not count against the project timeout" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=1
+  SLOT_WAIT_SECONDS=30
+  NICE_LEVEL=0
+  TIMEOUT_SECONDS=2
+  ptr_slot_acquire 1 0
+  held="$PTR_SLOT_HELD"
+  (
+    sleep 3
+    PTR_SLOT_HELD="$held" ptr_slot_release
+  ) &
+  bg=$!
+  run ptr_invoke "$PROJ" '["true"]' 1 "" "" "" ""
+  wait "$bg"
+  [ "$status" -eq 0 ]
+}
+
+@test "ptr_invoke runs anyway, with a warning, when no slot frees up within the wait budget" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=1
+  SLOT_WAIT_SECONDS=1
+  NICE_LEVEL=0
+  ptr_slot_acquire 1 0
+  run ptr_invoke "$PROJ" '["bash","-c","echo ran"]' 1 "" "" "" ""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no run slot free after 1s"* ]]
+  [[ "$output" == *"ran"* ]]
+}
+
+@test "ptr_invoke runs the child at the configured niceness" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=0
+  NICE_LEVEL=7
+  base="$(ps -o nice= -p $$ | tr -d ' ')"
+  run ptr_invoke "$PROJ" '["bash","-c","ps -o nice= -p $$ | tr -d \" \""]' 1 "" "" "" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "$((base + 7))" ]
+}
+
+@test "ptr_invoke leaves niceness alone when NICE_LEVEL is 0" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=0
+  NICE_LEVEL=0
+  base="$(ps -o nice= -p $$ | tr -d ' ')"
+  run ptr_invoke "$PROJ" '["bash","-c","ps -o nice= -p $$ | tr -d \" \""]' 1 "" "" "" ""
+  [ "$output" = "$base" ]
+}
+
+# --- ptr_load_limits: config + env resolution ----------------------------
+
+@test "ptr_load_limits reads the config values" {
+  cfg="$TEST_DIR/limits.json"
+  echo '{"version":1,"maxConcurrentRuns":3,"niceLevel":5,"slotWaitSeconds":42}' >"$cfg"
+  PTR_CONFIG="$cfg"
+  ptr_load_limits
+  [ "$MAX_CONCURRENT_RUNS" = 3 ]
+  [ "$NICE_LEVEL" = 5 ]
+  [ "$SLOT_WAIT_SECONDS" = 42 ]
+}
+
+@test "ptr_load_limits defaults to no cap and no niceness when the config omits the keys" {
+  cfg="$TEST_DIR/limits.json"
+  echo '{"version":1}' >"$cfg"
+  PTR_CONFIG="$cfg"
+  ptr_load_limits
+  [ "$MAX_CONCURRENT_RUNS" = 0 ]
+  [ "$NICE_LEVEL" = 0 ]
+  [ "$SLOT_WAIT_SECONDS" = 600 ]
+}
+
+@test "ptr_load_limits lets the environment override the config" {
+  cfg="$TEST_DIR/limits.json"
+  echo '{"version":1,"maxConcurrentRuns":3,"niceLevel":5,"slotWaitSeconds":42}' >"$cfg"
+  PTR_CONFIG="$cfg"
+  PG_TEST_RUNNER_MAX_CONCURRENT_RUNS=1 PG_TEST_RUNNER_NICE_LEVEL=0 PG_TEST_RUNNER_SLOT_WAIT_SECONDS=7 \
+    ptr_load_limits
+  [ "$MAX_CONCURRENT_RUNS" = 1 ]
+  [ "$NICE_LEVEL" = 0 ]
+  [ "$SLOT_WAIT_SECONDS" = 7 ]
+}
+
+@test "ptr_load_limits rejects a non-numeric environment override with exit 2" {
+  cfg="$TEST_DIR/limits.json"
+  echo '{"version":1}' >"$cfg"
+  PTR_CONFIG="$cfg"
+  PG_TEST_RUNNER_MAX_CONCURRENT_RUNS=lots run ptr_load_limits
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"PG_TEST_RUNNER_MAX_CONCURRENT_RUNS"* ]]
+}
+
+@test "ptr_validate_config rejects malformed run-limit keys with exit 13" {
+  for bad in '"maxConcurrentRuns": -1' '"maxConcurrentRuns": "2"' '"niceLevel": 25' '"niceLevel": -3' '"slotWaitSeconds": 1.5'; do
+    printf '{"version":1,%s,"languages":[]}\n' "$bad" >"$TEST_DIR/bad.json"
+    run ptr_validate_config "$TEST_DIR/bad.json"
+    [ "$status" -eq 13 ]
+    [[ "$output" == *"maxConcurrentRuns"* ]]
+  done
+}
+
+@test "ptr_validate_config accepts well-formed run-limit keys" {
+  printf '{"version":1,"maxConcurrentRuns":0,"niceLevel":19,"slotWaitSeconds":0,"languages":[]}\n' >"$TEST_DIR/ok.json"
+  run ptr_validate_config "$TEST_DIR/ok.json"
+  [ "$status" -eq 0 ]
+}

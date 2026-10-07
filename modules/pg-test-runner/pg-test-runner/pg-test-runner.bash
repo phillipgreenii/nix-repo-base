@@ -72,6 +72,17 @@ ptr_validate_config() {
     ' "$path" >/dev/null 2>&1 ||
     ptr_die 13 "config projectTimeouts must map project path suffixes (no leading/trailing '/') to positive integer seconds: $path"
 
+  # Run limits (optional, bead pg2-r9ly8): maxConcurrentRuns and
+  # slotWaitSeconds are non-negative integers, niceLevel an integer 0..19. A
+  # malformed value must fail loudly, never silently disable the policy.
+  "$PTR_JQ" -e '
+      def nonneg_int: type == "number" and . >= 0 and . == floor;
+      (.maxConcurrentRuns // 0 | nonneg_int) and
+      (.slotWaitSeconds // 0 | nonneg_int) and
+      (.niceLevel // 0 | nonneg_int and . <= 19)
+    ' "$path" >/dev/null 2>&1 ||
+    ptr_die 13 "config maxConcurrentRuns/slotWaitSeconds must be non-negative integers and niceLevel an integer 0-19: $path"
+
   local known=(jobs labels label unitExclusion allLabels)
   local tokens
   tokens="$("$PTR_JQ" -r '
@@ -496,6 +507,134 @@ ptr_render_token() {
   printf '%s' "$token"
 }
 
+# ---------------------------------------------------------------------------
+# Host-wide run slots + niceness (bead pg2-r9ly8)
+# ---------------------------------------------------------------------------
+# Many agent sessions share one machine, and each commit-time / pre-land hook
+# run starts a `go test -race ./...` that by itself wants every core. Observed
+# 2026-10-07: 2-5 such runs at once plus nix builds pushed the 1m load average
+# to 50-150 on 11 cores. Two policies bound that, both configurable:
+#
+#   maxConcurrentRuns  at most N project invocations run at once ACROSS ALL
+#                      pg-test-runner processes on the host (0 = unlimited);
+#   niceLevel          each invocation runs under `nice -n <level>` so
+#                      interactive work and daemons keep the CPU.
+#
+# The semaphore is a set of symlinks `slot.1 .. slot.N` under a lock root that
+# every caller shares regardless of its own TMPDIR. `ln -s` is atomic and
+# fails when the name exists, so creating the link IS taking the slot; the link
+# target records the owner as "<pid>:<process start time>". A slot is STALE
+# (reclaimable) when that pid is dead or now belongs to a process with a
+# different start time (pid recycling). Reclaiming is best-effort: the cap is a
+# SOFT bound, and in the worst case a reclaim race lets one extra run through.
+# The slot wait is bounded (slotWaitSeconds) and FAILS OPEN: a runner that
+# cannot get a slot in time runs anyway, with a warning, rather than blocking a
+# commit or pre-land gate indefinitely.
+
+# Directory holding the slot links. Per-user so another account's stale files
+# can never wedge this one.
+ptr_slot_root() {
+  printf '%s' "${PG_TEST_RUNNER_LOCK_ROOT:-/tmp/pg-test-runner-slots.$(id -u)}"
+}
+
+# $1: pid. Prints that process's start time, whitespace-normalised; empty and
+# non-zero when the process does not exist.
+ptr_proc_stamp() {
+  local out
+  out="$(ps -o lstart= -p "$1" 2>/dev/null)" || return 1
+  [[ -n $out ]] || return 1
+  tr -s ' ' <<<"$out"
+}
+
+# $1: a slot link's recorded owner ("<pid>:<start time>"). Succeeds when that
+# exact process is still alive.
+ptr_slot_owner_alive() {
+  local owner="$1" pid stamp now
+  pid="${owner%%:*}"
+  stamp="${owner#*:}"
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  now="$(ptr_proc_stamp "$pid")" || return 1
+  [[ $now == "$stamp" ]]
+}
+
+# $1: max slots (>= 1), $2: seconds to wait for one (0 = try once). On
+# success sets PTR_SLOT_HELD to the slot's path and returns 0; returns 1 when
+# none became free within the wait budget (or the lock root is unusable).
+ptr_slot_acquire() {
+  local max="$1" wait_secs="$2" root owner k link target aside deadline stamp
+  root="$(ptr_slot_root)"
+  mkdir -p "$root" 2>/dev/null || return 1
+  stamp="$(ptr_proc_stamp "$$")" || return 1
+  owner="$$:$stamp"
+  deadline=$((SECONDS + wait_secs))
+  while :; do
+    for ((k = 1; k <= max; k++)); do
+      link="$root/slot.$k"
+      if ln -s "$owner" "$link" 2>/dev/null; then
+        PTR_SLOT_HELD="$link"
+        return 0
+      fi
+      target="$(readlink "$link" 2>/dev/null)" || continue
+      if ! ptr_slot_owner_alive "$target"; then
+        # Stale: move it aside first (rename is atomic, so only one reclaimer
+        # wins), re-check what we actually moved, then try to take the slot.
+        aside="$root/.reclaim.$$.$k"
+        if mv "$link" "$aside" 2>/dev/null; then
+          if ptr_slot_owner_alive "$(readlink "$aside" 2>/dev/null)"; then
+            # Lost a race: we moved a live owner's fresh link. Put it back.
+            # (BSD `mv -n` exits 0 without moving when the target exists, so
+            # always sweep the leftover aside link afterwards.)
+            mv -n "$aside" "$link" 2>/dev/null
+            rm -f "$aside"
+            continue
+          fi
+          rm -f "$aside"
+          if ln -s "$owner" "$link" 2>/dev/null; then
+            PTR_SLOT_HELD="$link"
+            return 0
+          fi
+        fi
+      fi
+    done
+    ((SECONDS >= deadline)) && return 1
+    sleep 1
+  done
+}
+
+# Releases the slot named by PTR_SLOT_HELD, but only if it is still OURS (a
+# reclaimer may have taken it if we were wrongly judged dead).
+ptr_slot_release() {
+  local link="${PTR_SLOT_HELD:-}" target stamp
+  [[ -n $link ]] || return 0
+  target="$(readlink "$link" 2>/dev/null)" || return 0
+  stamp="$(ptr_proc_stamp "$$")" || stamp=""
+  [[ $target == "$$:$stamp" ]] && rm -f "$link"
+  PTR_SLOT_HELD=""
+  return 0
+}
+
+# Resolves the run limits into MAX_CONCURRENT_RUNS, NICE_LEVEL and
+# SLOT_WAIT_SECONDS: environment override, else config key, else default
+# (no cap, no niceness, 600s wait). Needs PTR_CONFIG. The environment wins so
+# an operator can disable or tune the policy for one run without editing the
+# nix-generated config; a bad override is a usage error (exit 2).
+ptr_load_limits() {
+  local pair var env_name key default val
+  for pair in \
+    "MAX_CONCURRENT_RUNS:PG_TEST_RUNNER_MAX_CONCURRENT_RUNS:maxConcurrentRuns:0" \
+    "NICE_LEVEL:PG_TEST_RUNNER_NICE_LEVEL:niceLevel:0" \
+    "SLOT_WAIT_SECONDS:PG_TEST_RUNNER_SLOT_WAIT_SECONDS:slotWaitSeconds:600"; do
+    IFS=: read -r var env_name key default <<<"$pair"
+    val="${!env_name:-}"
+    if [[ -n $val ]]; then
+      [[ $val =~ ^[0-9]+$ ]] || ptr_die 2 "$env_name must be a non-negative integer, got '$val'"
+    else
+      val="$("$PTR_JQ" -r --arg k "$key" --arg d "$default" '.[$k] // $d | tostring' "$PTR_CONFIG")"
+    fi
+    printf -v "$var" '%s' "$val"
+  done
+}
+
 # Prints the timeout cap (seconds) for project directory $1: the config's
 # `projectTimeouts` entry whose key equals the path or is a trailing run of its
 # path components (longest key wins), else the global TIMEOUT_SECONDS. A project's
@@ -523,6 +662,23 @@ ptr_invoke() {
     cmd+=("$(ptr_render_token "$tok" "$jobs_val" "$labels_joined" "$label_val" "$unit_excl" "$all_labels")")
   done
 
+  # Host-wide run slot (see "Host-wide run slots" above). Taken BEFORE the
+  # timeout starts, so time spent queued never counts against the project's
+  # cap, and before the private TMPDIR exists so a queued run holds no
+  # temp dir while it waits. Unset limits (a direct library test) mean no cap and no niceness.
+  local -a nice_prefix=()
+  local slot_wait="${SLOT_WAIT_SECONDS:-600}" have_slot=0
+  if [[ ${NICE_LEVEL:-0} -gt 0 ]] && command -v nice >/dev/null 2>&1; then
+    nice_prefix=(nice -n "$NICE_LEVEL")
+  fi
+  if [[ ${MAX_CONCURRENT_RUNS:-0} -gt 0 ]]; then
+    if ptr_slot_acquire "$MAX_CONCURRENT_RUNS" "$slot_wait"; then
+      have_slot=1
+    else
+      ptr_err "warning: no run slot free after ${slot_wait}s (maxConcurrentRuns=$MAX_CONCURRENT_RUNS); running $path without one"
+    fi
+  fi
+
   # Each invocation gets a FRESH, EMPTY TMPDIR under a bounded parent
   # ($PG_TEST_RUNNER_TMP_ROOT, default /tmp), never the caller's. Tools such as
   # `go test` hash every file/directory a test opens for their result cache; a
@@ -540,13 +696,14 @@ ptr_invoke() {
   fi
 
   if [[ -n $tmp_dir ]]; then
-    (cd "$path" && TMPDIR="$tmp_dir" "$PTR_TIMEOUT" "$timeout_secs" "${cmd[@]}")
+    (cd "$path" && TMPDIR="$tmp_dir" "$PTR_TIMEOUT" "$timeout_secs" "${nice_prefix[@]}" "${cmd[@]}")
     status=$?
     rm -rf "$tmp_dir"
   else
-    (cd "$path" && "$PTR_TIMEOUT" "$timeout_secs" "${cmd[@]}")
+    (cd "$path" && "$PTR_TIMEOUT" "$timeout_secs" "${nice_prefix[@]}" "${cmd[@]}")
     status=$?
   fi
+  if [[ $have_slot == 1 ]]; then ptr_slot_release; fi
   if [[ $status -eq 124 ]]; then
     ptr_err "project $path timed out after ${timeout_secs}s cap"
   fi
@@ -712,6 +869,7 @@ ptr_run() {
   TIMEOUT_SECONDS="$("$PTR_JQ" -r '.timeoutSeconds' "$PTR_CONFIG")"
   PROJECT_TIMEOUTS_JSON="$("$PTR_JQ" -c '.projectTimeouts // {}' "$PTR_CONFIG")"
   JOBS_CONFIGURED="$("$PTR_JQ" -r '.jobs' "$PTR_CONFIG")"
+  ptr_load_limits
 
   # Guarded so the exit-code check below always runs — matters when ptr_run is
   # exercised directly (e.g. a lib-level bats test) without the assembled

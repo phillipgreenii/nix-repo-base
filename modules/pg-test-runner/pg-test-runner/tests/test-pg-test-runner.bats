@@ -446,6 +446,84 @@ _timeout_repo() {
   done
 }
 
+# --- host-wide run slots + nice (bead pg2-r9ly8) -------------------------
+# Two separate pg-test-runner PROCESSES sharing one lock root must not run
+# their projects at the same time when maxConcurrentRuns is 1; the cap is
+# per host, not per process.
+
+_slots_config() {
+  # $1: extra top-level JSON members (with trailing comma), e.g. '"maxConcurrentRuns": 1,'
+  cat >"$TEST_DIR/slots-config.json" <<JSON
+{
+  "version": 1,
+  "jobs": 1,
+  "timeoutSeconds": 30,
+  $1
+  "ignore": [".git/"],
+  "nonUnitLabels": [],
+  "languages": [
+    {
+      "name": "logger",
+      "markers": ["LOG.marker"],
+      "tools": ["bash"],
+      "run": {
+        "unit": ["bash", "-c", "echo start >>\"\$LOG\"; sleep 1; echo end >>\"\$LOG\""],
+        "labels": ["true"],
+        "all": ["true"]
+      }
+    }
+  ]
+}
+JSON
+}
+
+_slots_repo() {
+  mkdir -p "$TEST_DIR/srepo/.git" "$TEST_DIR/srepo/packages/a" "$TEST_DIR/srepo/packages/b"
+  : >"$TEST_DIR/srepo/packages/a/LOG.marker"
+  : >"$TEST_DIR/srepo/packages/b/LOG.marker"
+}
+
+@test "maxConcurrentRuns=1 serialises two separate pg-test-runner processes" {
+  _slots_config '"maxConcurrentRuns": 1, "niceLevel": 1, "slotWaitSeconds": 60,'
+  _slots_repo
+  export LOG="$TEST_DIR/slots.log" PG_TEST_RUNNER_LOCK_ROOT="$TEST_DIR/slot-root"
+  cd "$TEST_DIR/srepo" || return 1
+  "$SCRIPT" --config "$TEST_DIR/slots-config.json" --labels unit packages/a >/dev/null &
+  p1=$!
+  "$SCRIPT" --config "$TEST_DIR/slots-config.json" --labels unit packages/b >/dev/null &
+  p2=$!
+  wait "$p1"
+  wait "$p2"
+  [ "$(tr '\n' ' ' <"$LOG")" = "start end start end " ]
+}
+
+@test "the environment can lift the cap for one run (PG_TEST_RUNNER_MAX_CONCURRENT_RUNS=0)" {
+  _slots_config '"maxConcurrentRuns": 1, "slotWaitSeconds": 60,'
+  _slots_repo
+  export LOG="$TEST_DIR/slots.log" PG_TEST_RUNNER_LOCK_ROOT="$TEST_DIR/slot-root" PG_TEST_RUNNER_MAX_CONCURRENT_RUNS=0
+  cd "$TEST_DIR/srepo" || return 1
+  "$SCRIPT" --config "$TEST_DIR/slots-config.json" --labels unit packages/a >/dev/null &
+  p1=$!
+  "$SCRIPT" --config "$TEST_DIR/slots-config.json" --labels unit packages/b >/dev/null &
+  p2=$!
+  wait "$p1"
+  wait "$p2"
+  [ "$(tr '\n' ' ' <"$LOG")" = "start start end end " ]
+  [ ! -e "$TEST_DIR/slot-root" ]
+}
+
+@test "a malformed run limit is exit 13, not a silent fallback" {
+  _slots_repo
+  cd "$TEST_DIR/srepo" || return 1
+  local bad
+  for bad in '"maxConcurrentRuns": -1,' '"maxConcurrentRuns": "2",' '"niceLevel": 20,' '"slotWaitSeconds": 0.5,'; do
+    _slots_config "$bad"
+    run "$SCRIPT" --config "$TEST_DIR/slots-config.json" --labels unit packages/a
+    [ "$status" -eq 13 ] || { echo "expected 13 for $bad, got $status: $output" >&2; return 1; }
+    [[ "$output" == *"maxConcurrentRuns"* ]]
+  done
+}
+
 # NOTE on the PG_TEST_RUNNER_JQ_BIN/PG_TEST_RUNNER_TIMEOUT_BIN ordering bug
 # (bead pg2-jcqar): mkBashScript's config injection is an UNCONDITIONAL
 # (re)assignment inside the assembled script, so it is not actually

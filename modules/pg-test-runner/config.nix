@@ -21,6 +21,27 @@
   version = 1;
   jobs = 0; # 0 = resolve to CPU count at run time
   timeoutSeconds = 300;
+  # Host-wide run limits (pg2-r9ly8). Many agent sessions share this machine
+  # and every commit-time / pre-land hook run starts a `go test -race ./...`
+  # that alone wants all cores; 2-5 at once plus nix builds drove the 1m load
+  # average to 50-150 on 11 cores (2026-10-07 router health review).
+  #   maxConcurrentRuns: at most this many project invocations run at once
+  #     across ALL pg-test-runner processes on the host (0 = unlimited). 2 is a
+  #     deliberately conservative middle: one run can use the whole machine, so
+  #     a bound of 1 would serialise unrelated repos, while the observed 5+
+  #     overloads it. Raise it on a bigger machine.
+  #   slotWaitSeconds: how long a run queues for a slot before running anyway
+  #     with a warning (fail open; a hook must never block forever). Queue time
+  #     never counts against timeoutSeconds. Kept under a typical 10 minute
+  #     tool-call cap.
+  #   niceLevel: runs execute under `nice -n <level>` (0 = off, max 19) so
+  #     interactive work and daemons keep the CPU.
+  # Override per run with PG_TEST_RUNNER_MAX_CONCURRENT_RUNS,
+  # PG_TEST_RUNNER_SLOT_WAIT_SECONDS and PG_TEST_RUNNER_NICE_LEVEL; the lock
+  # root defaults to /tmp/pg-test-runner-slots.<uid> (PG_TEST_RUNNER_LOCK_ROOT).
+  maxConcurrentRuns = 2;
+  slotWaitSeconds = 600;
+  niceLevel = 10;
   # Per-project cap overrides (pg2-x86sp): project path suffix -> seconds. A key
   # matches a project directory when it equals the path or is a trailing run of
   # its path components (no leading/trailing "/"); longest match wins. Every

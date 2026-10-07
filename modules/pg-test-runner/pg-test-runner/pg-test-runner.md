@@ -53,6 +53,29 @@ the longest matching key wins. Projects not named keep the global cap. A malform
 }
 ```
 
+## Concurrency and niceness
+
+Every project invocation first takes one of `maxConcurrentRuns` host-wide slots (default `2` in the shipped config;
+`0` = unlimited) shared by ALL pg-test-runner processes on the machine, so concurrent commit-time
+and pre-land hook runs from many sessions queue instead of piling `go test -race` onto the same
+cores. Queue time never counts against the `timeoutSeconds` cap. If no slot frees up within
+`slotWaitSeconds` (default `600`) the run proceeds anyway with a warning (fail open). Each run
+executes under `nice -n niceLevel` (default `10`; `0` = off). Slots are symlinks under
+`/tmp/pg-test-runner-slots.<uid>` recording `<pid>:<start time>`; a slot whose owner is dead is
+reclaimed automatically. The bound is a soft cap (a reclaim race can let one extra run through).
+
+Per-run environment overrides win over the config: `PG_TEST_RUNNER_MAX_CONCURRENT_RUNS`,
+`PG_TEST_RUNNER_SLOT_WAIT_SECONDS`, `PG_TEST_RUNNER_NICE_LEVEL` (non-negative integers; anything
+else is exit `2`) and `PG_TEST_RUNNER_LOCK_ROOT`. A malformed config value is exit `13`.
+
+```json
+{
+  "maxConcurrentRuns": 2,
+  "slotWaitSeconds": 600,
+  "niceLevel": 10
+}
+```
+
 ## Exit codes
 
 | Code | Meaning                                                                |
