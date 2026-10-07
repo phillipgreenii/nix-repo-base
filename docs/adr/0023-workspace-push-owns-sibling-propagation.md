@@ -152,3 +152,16 @@ RELOCKED BRANCH (typically `origin/main` advanced mid-run). The summary now poin
 branch (`reset --hard pn-update/<ts>` / `branch -f main pn-update/<ts>`), not at `origin/main`:
 the branch carries this run's relock plus any local commits it replayed, so resetting to
 `origin/main` would discard both.
+
+## Amendment (2026-10-07): foundation repos are pushed first (ADR-0033)
+
+[ADR-0033](0033-foundation-repos-ordered-before-flake-consumers.md) adds an optional
+`foundation = true` repo key. A foundation repo (a Go module consumed through `go.mod` pins that `pn`
+cannot see) is ordered before every non-foundation repo in `Lock.Order`, so the interleaved loop
+above pushes it first. Its own flake edges stay in `Lock.Edges` but do not constrain ordering.
+
+Consequence for the loop: a foundation repo's own `flake.lock` relocks its flake siblings (for
+`phillipgreenii-x`, repo-base) to their **pre-push** remote tip, because the sibling has not been
+pushed yet when the foundation repo is processed. Its lock therefore lags that sibling by one push
+run, and `doctor flake-lock-fresh` MAY flag it until the next `pn workspace push` converges it. C1
+(relock only to what is already on the remote) still holds and there is no loop.

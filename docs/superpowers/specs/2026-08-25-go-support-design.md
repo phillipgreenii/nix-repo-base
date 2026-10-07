@@ -60,9 +60,12 @@ multiple independent ways of doing config loading, metrics emission, or any of t
 
 ## 3. Non-goals
 
-- This is NOT a nix flake. It MUST NOT gain a `flake.nix` and MUST NOT be added to
-  `pn-workspace.toml` — it is not built, checked, or applied by `pn workspace` tooling; it is
-  resolved purely as a Go module dependency.
+- ~~This is NOT a nix flake / MUST NOT be added to `pn-workspace.toml`.~~ **Superseded
+  (operator ruling, Phillip, 2026-10-07):** `x` is added to the pn workspace so that all repos
+  operate together. `x` now has a formatting-only `flake.nix` (bead `pg2-naxmd`) and is declared in
+  `pn-workspace.toml` with `foundation = true`, so `pn workspace push` and land order publish it
+  BEFORE every other repo. It is still consumed by other repos purely as a Go module (via `go.mod`
+  pins). See [ADR-0033](../../adr/0033-foundation-repos-ordered-before-flake-consumers.md).
 - This is NOT a place for app-specific domain modeling. `pg-pr`'s rich beads modeling
   (`pkg/beads`: `mergerequest.go`, `deptree.go`, `adjudication.go`, …) stays in `pg-pr` — only the
   generic plumbing and verbs common to every consumer move here.

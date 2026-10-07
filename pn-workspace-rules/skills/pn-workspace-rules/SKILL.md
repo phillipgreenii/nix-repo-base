@@ -114,6 +114,7 @@ Evaluates each cloned repo's `flake.nix` inputs, discovers workspace dependency 
 ## Config and Lock Files
 
 - **`pn-workspace.toml`**: Declares repos, workspace settings (terminal, apply command, etc.), and hooks. The `workspace.terminal` key names the repo whose flake is the build/apply target.
+- **`foundation = true`** (optional, per `[repos.<key>]`): the repo is consumed OUTSIDE the flake graph (e.g. the Go module `phillipgreenii-x`, pinned via consumers' `go.mod`, which `pn` cannot see). A foundation repo is ordered BEFORE every non-foundation repo (`Lock.Order`, `push`, land); its own flake-input edges stay in the lock but do not constrain ordering. It MUST NOT be the terminal. After editing the key run `pn workspace lock` (the disk lock is not invalidated by a key toggle; `doctor` `lock-current` flags the drift), and land/apply a `pn` that understands the key BEFORE adding it (an older `pn` ignores it silently). See ADR-0033.
 - **`pn-workspace.lock.json`**: Records dependency edges (consumer → alias → target triples), topological order, per-repo flake paths, and the terminal repo. Written by `pn workspace lock`.
 
 The `input-name` field on `[repos.*]` sections has been removed. Alias names are now derived automatically from each consumer's declared flake input aliases at lock time. If you see an error about `input-name`, remove that field from `pn-workspace.toml`.

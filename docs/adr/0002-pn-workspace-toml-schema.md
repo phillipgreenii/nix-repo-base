@@ -1,7 +1,7 @@
 # ADR-0002: pn-workspace.toml schema for multi-repo workspace management
 
 **Date:** 2026-06-01
-**Status:** Accepted (amended by [ADR-0012](0012-pn-applied-state-store-and-info-api.md); hooks superseded by [ADR-0019](0019-per-repo-event-hooks.md))
+**Status:** Accepted (amended by [ADR-0012](0012-pn-applied-state-store-and-info-api.md) and [ADR-0033](0033-foundation-repos-ordered-before-flake-consumers.md); hooks superseded by [ADR-0019](0019-per-repo-event-hooks.md))
 **Deciders:** phillipgreenii
 
 ## Context
@@ -14,7 +14,7 @@ and what hooks to run around workspace commands.
 
 - pn-workspace.toml lives at workspace root (machine-local, not inside any repo)
 - [workspace] section: name, description, id (slug `^[a-z0-9][a-z0-9-]*$`, machine-invariant; the wsid used by `pn:applied` gates — see ADR-0012)
-- [repos.<key>] table-of-tables: url (flake URL), optional branch (default: "main")
+- [repos.<key>] table-of-tables: url (flake URL), optional branch (default: "main"), optional `foundation` (bool, default false; amended by [ADR-0033](0033-foundation-repos-ordered-before-flake-consumers.md): the repo is consumed outside the flake graph, e.g. as a Go module, so it is ordered before every non-foundation repo and MUST NOT be the terminal)
 - `[repos.<key>]` optional `mirror_urls = [..]` (tc-31llk): read-only pull-mirror URLs of the same
   repo (e.g. a Forgejo mirror of a GitHub repo). They are used ONLY to match flake input URLs to
   this workspace repo when deriving edges, so a consumer whose flake points at a mirror still gets
