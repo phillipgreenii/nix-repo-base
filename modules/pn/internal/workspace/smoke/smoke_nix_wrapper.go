@@ -3,6 +3,7 @@
 package smoke
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,52 @@ import (
 	"strings"
 	"testing"
 )
+
+// collectorEndpointPlaceholder is the token a scenario's command.txt uses for an
+// OTLP endpoint that must be reachable.
+const collectorEndpointPlaceholder = "@OTLP_ENDPOINT@"
+
+// expandCollectorEndpoint replaces collectorEndpointPlaceholder in lines with
+// the URL of a live loopback listener. pn only keeps telemetry on (and so only
+// routes nix through the wrapper) when a TCP connect to the endpoint succeeds
+// (pg2-aoza4), and a hard-coded port such as 127.0.0.1:9 never answers, so
+// S38-S40 would silently exercise the telemetry-off path. The listener accepts
+// and immediately closes connections, like the probe's connect-and-close. When
+// no line uses the placeholder no listener is started and lines is returned
+// unchanged.
+func expandCollectorEndpoint(t *testing.T, lines []string) []string {
+	t.Helper()
+	uses := false
+	for _, l := range lines {
+		if strings.Contains(l, collectorEndpointPlaceholder) {
+			uses = true
+			break
+		}
+	}
+	if !uses {
+		return lines
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start loopback OTLP collector stand-in: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	endpoint := "http://" + ln.Addr().String()
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = strings.ReplaceAll(l, collectorEndpointPlaceholder, endpoint)
+	}
+	return out
+}
 
 // envValue returns the value of key in an env slice ("" if absent).
 func envValue(env []string, key string) string {
@@ -35,6 +82,9 @@ func readArgvFile(t *testing.T, path string) (args []string, ok bool) {
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"), true
 }
 
+// loopbackEndpointRE is the live loopback collector stand-in's endpoint.
+var loopbackEndpointRE = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]+$`)
+
 // traceparentRE is a W3C traceparent: version 00, 32-hex trace id, 16-hex span id, flags.
 var traceparentRE = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
 
@@ -53,13 +103,17 @@ func assertS38WrapperArgvRewrite(t *testing.T, wsRoot string, env []string) {
 	if wrapper[0] != "--traceparent" || !traceparentRE.MatchString(wrapper[1]) {
 		t.Errorf("S38: wrapper argv does not start with a valid --traceparent: %q", wrapper)
 	}
+	// wrapper[3] is the endpoint pn was given: the loopback listener's URL, whose
+	// port is only known at run time (see expandCollectorEndpoint).
+	if wrapper[2] != "--otlp-endpoint" || !loopbackEndpointRE.MatchString(wrapper[3]) {
+		t.Errorf("S38: wrapper argv has no loopback --otlp-endpoint after the traceparent: %q", wrapper)
+	}
 	wantTail := []string{
-		"--otlp-endpoint", "http://127.0.0.1:9",
 		"--log-dir", filepath.Join(envValue(env, "XDG_STATE_HOME"), "pn", "nix-logs"),
 		"--",
 		"darwin-rebuild", "build",
 	}
-	if got := wrapper[2:]; !reflect.DeepEqual(got, wantTail) {
+	if got := wrapper[4:]; !reflect.DeepEqual(got, wantTail) {
 		t.Errorf("S38: wrapper argv tail = %q, want %q", got, wantTail)
 	}
 	darwin, ok := readArgvFile(t, filepath.Join(wsRoot, "darwin.argv"))

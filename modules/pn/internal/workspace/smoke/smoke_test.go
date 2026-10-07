@@ -586,6 +586,12 @@ func runScenario(t *testing.T, name string) {
 		"pn-workspace.toml",
 	})
 
+	// pn probes a telemetry endpoint with one TCP connect and turns telemetry
+	// (and so the nix wrapper) off when nothing answers (pg2-aoza4). A scenario
+	// that needs telemetry ON therefore writes the endpoint as a placeholder and
+	// gets a live loopback listener here, instead of a dead hard-coded port.
+	commandLines = expandCollectorEndpoint(t, commandLines)
+
 	// Execute all commands; only assert exit code of the LAST command.
 	var lastResult scenarioResult
 	for i, line := range commandLines {
