@@ -26,7 +26,7 @@ and what hooks to run around workspace commands.
 ## Consequences
 
 Each pn-workspace-\* command calls RunHooks before/after its work.
-The hook mechanism generalizes platform-specific gating (e.g., pn-osx-tcc-check)
+The hook mechanism generalizes platform-specific gating (e.g., a macOS permission check)
 to user-configurable TOML entries.
 
 Reference: docs/superpowers/specs/2026-05-31-monorepo-nix-refactor-phase-1-design.md §4.2

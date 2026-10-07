@@ -125,20 +125,3 @@ url = "github:test/test-repo"
 		t.Errorf("expected output to mention test-repo, got %q", string(out))
 	}
 }
-
-func TestIntegration_OSXSubcommandHiddenOnLinux(t *testing.T) {
-	if runtimeGOOS == "darwin" {
-		t.Skip("osx subcommand IS registered on darwin")
-	}
-	out, err := exec.Command(pnBinary, "--help").CombinedOutput()
-	if err != nil {
-		t.Fatalf("--help: %v: %s", err, out)
-	}
-	if strings.Contains(string(out), "osx") {
-		t.Errorf("expected --help to NOT mention osx on linux, got %q", string(out))
-	}
-	out2, err := exec.Command(pnBinary, "osx").CombinedOutput()
-	if err == nil {
-		t.Errorf("expected pn osx to fail on linux, got output %q", string(out2))
-	}
-}

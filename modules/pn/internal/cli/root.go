@@ -24,8 +24,9 @@ func init() {
 	cobra.EnableTraverseRunHooks = true
 }
 
-// addOSXCmdHook is set by osx_darwin.go's init() on darwin. Nil on other platforms.
-var addOSXCmdHook func(*cobra.Command)
+// addExtraCmdHook is a test seam: tests set it to graft extra verbs onto the
+// root command built by newRootCmd. Always nil in production.
+var addExtraCmdHook func(*cobra.Command)
 
 // Execute builds the root command tree and runs it against os.Args[1:].
 // version must be a real version string from mkVersion; "dev" is rejected.
@@ -183,8 +184,8 @@ func newRootCmd(version string) *cobra.Command {
 	addTelemetryFlags(root)
 	addWorkspaceCmd(root)
 	addStoreCmd(root)
-	if addOSXCmdHook != nil {
-		addOSXCmdHook(root)
+	if addExtraCmdHook != nil {
+		addExtraCmdHook(root)
 	}
 	return root
 }

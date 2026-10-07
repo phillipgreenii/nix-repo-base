@@ -5,7 +5,7 @@ the commands involved, the expected outcomes (success and error), and the
 smoke scenario (`Sx`) that exercises it. Journeys without a smoke scenario
 are marked **GAP** with rationale.
 
-Scope: `pn workspace`. The `pn store` and `pn osx` subtrees are out of
+Scope: `pn workspace`. The `pn store` subtree is out of
 scope here (different domains; covered separately if at all).
 
 ---

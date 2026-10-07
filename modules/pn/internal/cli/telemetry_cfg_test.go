@@ -41,8 +41,8 @@ func isolateTelemetryEnv(t *testing.T) string {
 // span setup (it records a trace id) and prints "payload" to stdout.
 func withTraceCmd(t *testing.T) {
 	t.Helper()
-	prev := addOSXCmdHook
-	addOSXCmdHook = func(root *cobra.Command) {
+	prev := addExtraCmdHook
+	addExtraCmdHook = func(root *cobra.Command) {
 		root.AddCommand(&cobra.Command{
 			Use:    "tracecmd",
 			Hidden: true,
@@ -53,7 +53,7 @@ func withTraceCmd(t *testing.T) {
 			},
 		})
 	}
-	t.Cleanup(func() { addOSXCmdHook = prev })
+	t.Cleanup(func() { addExtraCmdHook = prev })
 }
 
 func run(t *testing.T, args ...string) (stdout, stderr string, err error) {

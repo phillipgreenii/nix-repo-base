@@ -21,6 +21,6 @@ cd "$PN_DIR"
 # synthesized <date>-<rev> that could be mistaken for a real Nix-built release.
 #
 # CGO_ENABLED=0 builds a pure-Go binary so the shim runs without a C toolchain on
-# PATH (pn shells out to nix/git/nvd/sqlite as subprocesses — no direct cgo).
+# PATH (pn shells out to nix/git/nvd as subprocesses — no direct cgo).
 # Matches the homelab bin/tc-secrets go-run shim.
 exec env CGO_ENABLED=0 go run -ldflags "-X main.Version=dev-wrapped" ./cmd/pn "$@"

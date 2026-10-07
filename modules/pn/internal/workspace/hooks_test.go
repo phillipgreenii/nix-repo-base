@@ -52,11 +52,11 @@ func TestResolveHookPath_FileRelative(t *testing.T) {
 }
 
 func TestResolveHookPath_PATHRelative(t *testing.T) {
-	got, err := resolveHookPath("pn-osx-tcc-check", "/workspace")
+	got, err := resolveHookPath("pg-check-ready", "/workspace")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != "pn-osx-tcc-check" {
+	if got != "pg-check-ready" {
 		t.Errorf("got %q (PATH-relative names returned as-is)", got)
 	}
 }

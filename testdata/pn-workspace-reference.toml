@@ -34,7 +34,7 @@ url = "github:twistcone/homelab"
 # the old [hooks.<command>] pre/post tables from ADR 0002.
 [[hooks]]
 when = ["pre-update"]
-run = ["pn-osx-tcc-check", "./hooks/check-vault-ready.sh"]
+run = ["pg-check-ready", "./hooks/check-vault-ready.sh"]
 
 [[hooks]]
 when = ["post-update"]

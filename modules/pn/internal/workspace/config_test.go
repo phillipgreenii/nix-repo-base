@@ -19,7 +19,7 @@ url = "github:phillipgreenii/nix-overlay"
 
 [[hooks]]
 when = ["pre-update"]
-run = ["pn-osx-tcc-check", "./hooks/check-vault-ready.sh"]
+run = ["pg-check-ready", "./hooks/check-vault-ready.sh"]
 
 [[hooks]]
 when = ["post-update"]
@@ -88,7 +88,7 @@ func TestParseConfig_Hooks(t *testing.T) {
 	if preUpdate == nil {
 		t.Fatal("missing pre-update hook")
 	}
-	if len(preUpdate.Run) != 2 || preUpdate.Run[0] != "pn-osx-tcc-check" {
+	if len(preUpdate.Run) != 2 || preUpdate.Run[0] != "pg-check-ready" {
 		t.Errorf("pre-update run: got %v", preUpdate.Run)
 	}
 }
