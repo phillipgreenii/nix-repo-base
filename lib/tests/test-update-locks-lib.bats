@@ -26,31 +26,40 @@ _fix_mock_shebang() {
 }
 
 setup() {
-  TEST_DIR=$(mktemp -d)
+  # Hermetic git fixture (bead pg2-blc3y; rule "Tests That Need Git"): the shared
+  # harness owns the fixture root, the fresh empty HOME, the neutralised system
+  # git config, the GIT_CEILING_DIRECTORIES boundary and the allowlist env
+  # rebuild (which also drops any GIT_DIR-family and GIT_CONFIG_COUNT/KEY_n/
+  # VALUE_n entry a pre-commit hook run injected, and any TRACEPARENT /
+  # PN_NIX_LOG_* hand-off from the developer's own session), so this suite
+  # carries no GIT_* scrub of its own. In the nix check the harness is found
+  # next to the library under test (UL_LIB_SCRIPTS_DIR); locally it is the
+  # repo's canonical copy.
+  # shellcheck disable=SC1091  # runtime-resolved path
+  source "${UL_LIB_SCRIPTS_DIR:-$BATS_TEST_DIRNAME/../scripts}/git-fixture-harness.bash"
+
+  # gfh_setup rebuilds the exported environment from an allowlist, which would
+  # drop UL_LIB_SCRIPTS_DIR (injected by the nix check).
+  gfh_save_env UL_LIB_SCRIPTS_DIR
+  gfh_setup "test-update-locks-lib"
+  gfh_restore_env
+
+  # TEST_DIR is the git working tree (GFH_REPO); everything else below lives
+  # beside it under GFH_WORK, outside the tree, so `git add -A` in a step's
+  # commit never sweeps it into the per-step stamp commits.
+  TEST_DIR="$GFH_REPO"
   # XDG_STATE_HOME must live OUTSIDE the repo: ul_init writes the per-step stamps
-  # under it. If it were nested in TEST_DIR (the git repo), `git add -A` in a
-  # step's commit would sweep them into the commit, polluting the per-step stamp
-  # commits the tests assert.
-  STATE_DIR=$(mktemp -d)
+  # under it.
+  STATE_DIR="$GFH_WORK/state"
+  mkdir -p "$STATE_DIR"
   export XDG_STATE_HOME="$STATE_DIR"
   export NIX_UL_FORCE_UPDATE="true"
-  # pn's telemetry hand-off to the script (pg2-2i29w). A developer's own session
-  # may carry these; the suite must start with no wrapper in play.
-  unset TRACEPARENT PN_NIX_LOG_WRAPPER PN_NIX_LOG_OTLP_ENDPOINT PG_NIX_LOG_DISABLE OTEL_SDK_DISABLED
-
-  # pg-hooks-run exports an env-form `-c core.fsmonitor=false`
-  # (GIT_CONFIG_COUNT/KEY_n/VALUE_n) into every hook child, which outranks the
-  # per-test `git config core.fsmonitor true` the _ul_disable_fsmonitor tests
-  # rely on and made them fail under a commit-time hook run. Start with none.
-  unset GIT_CONFIG_COUNT
-  for _gc_var in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_[0-9]+$' || true); do
-    unset "$_gc_var"
-  done
 
   # Mock nix so that `nix fmt` is a no-op in tests
   # (real nix fmt requires treefmt/flake context not available in test sandbox)
   # Mock lives OUTSIDE TEST_DIR to survive `git clean -fd` inside test steps
-  MOCK_BIN=$(mktemp -d)
+  MOCK_BIN="$GFH_WORK/mock-bin"
+  mkdir -p "$MOCK_BIN"
   cat > "$MOCK_BIN/nix" <<'MOCK'
 #!/usr/bin/env bash
 exit 0
@@ -78,90 +87,12 @@ MOCK
   _fix_mock_shebang "$MOCK_BIN/pg-hooks"
   chmod +x "$MOCK_BIN/pg-hooks"
 
-  # HERMETIC HOME (bead pg2-7hr6o, closing the half pg2-klyn6 below left open):
-  # the bash-scripting skill's test-isolation rule 2 requires every suite to
-  # override HOME, and this one never did. Only the NIX check supplied a clean one
-  # (flake-modules/checks.nix's testUpdateLocksLib), so `nix flake check` was
-  # hermetic while the bare `bats lib/tests` a developer actually types read the
-  # developer's real HOME for every non-git purpose — caches, XDG defaults, tool
-  # configs, credential helpers. GIT_CONFIG_GLOBAL=/dev/null below now outranks
-  # HOME for GIT specifically and for nothing else; HOME is the very path by which
-  # the fsmonitor leak entered, which is why the pg2-klyn6 guard simulates it.
-  #
-  # Same shape as the wsplan suites (modules/pnwf/wsplan/tests/*.bats), with one
-  # deliberate difference: it is rooted in its OWN mktemp rather than under
-  # TEST_DIR, because TEST_DIR here IS the git working tree and `git add -A` in a
-  # step's commit would sweep a $TEST_DIR/home into the per-step stamp commits —
-  # the identical reason XDG_STATE_HOME above lives outside it.
-  HOME_DIR=$(mktemp -d)
-  export HOME="$HOME_DIR"
-
-  # HERMETIC GIT (bead pg2-klyn6, mirroring the pg2-39rz2 Go fix's TestMain in
-  # modules/pn/internal/workspace/realgit_test.go): neutralise the developer's
-  # GLOBAL and SYSTEM git config for every git invocation in this test — the
-  # harness's own, the library under test's, and any `bash -c` / background
-  # subprocess a test spawns, all of which inherit these exports.
-  #
-  # Setting only repo-LOCAL user.email/user.name below is not isolation: every
-  # other key still merges in from ~/.gitconfig, $XDG_CONFIG_HOME/git/config and
-  # /etc/gitconfig, so the suite's outcome depended on whose machine ran it. The
-  # concrete hazard is `core.fsmonitor=true`: it would be inherited by every temp
-  # repo these tests create, and then ul_setup's clean-tree gate refreshes the
-  # index and spawns git's native fsmonitor daemon — which is deterministically
-  # wedged on some setups (bead pg2-mgcv5), hanging the whole suite.
-  #
-  # /dev/null is the NEUTRAL setting. A test that deliberately needs a global
-  # value opts in by pointing GIT_CONFIG_GLOBAL at a temp file of its own (see
-  # the fsmonitor scoping tests below); it must never touch the real one.
-  # Requires git >= 2.32 for these two variables; this repo pins a modern git.
-  export GIT_CONFIG_GLOBAL=/dev/null
-  export GIT_CONFIG_SYSTEM=/dev/null
-
-  # HERMETIC GIT REPO LOCATION (bead pg2-5856n; same defect class and same shape
-  # as the fix landed in phillipgreenii-nix-ziprecruiter's
-  # modules/zm/test-support/test_helper.bash, commit 77231676). `git commit` FROM
-  # A LINKED WORKTREE exports GIT_DIR=<canonical>/.git/worktrees/<name> and
-  # GIT_INDEX_FILE into the hook environment, and every child process inherits
-  # them -- including the bats run that this repo's own `run-unit-tests`
-  # pre-commit hook launches. git's repo discovery consults those variables
-  # BEFORE honouring `cd`, `-C <dir>`, or an explicit path argument, so a leak
-  # silently redirects the `cd "$TEST_DIR"; git init` fixture below onto the
-  # canonical clone: `git init` re-inits the real repo, `git add`/`git commit`
-  # act on the real index and branch, and `git config user.email` writes into
-  # $GIT_COMMON_DIR/config -- the canonical .git/config SHARED by every worktree
-  # and by the operator (observed live: pg2-jjlm8, pg2-12795). The
-  # GIT_CONFIG_GLOBAL/SYSTEM redirects above close a DIFFERENT half: they
-  # neutralize the ambient global/system SCOPES, and are powerless against a
-  # redirected repo LOCATION. This suite has no setup_file, so the scrub lives
-  # here -- still before the first real git call.
-  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
-
-  # BY-CONSTRUCTION BACKSTOP for the same defect (bead pg2-8wnhc's ruling: env
-  # scrubbing is a partial mitigation; no fixture path should be ABLE to reach a
-  # real repo). The `unset` above enumerates variable names and so is only as
-  # good as that list; this does not depend on the list at all -- git physically
-  # refuses to chdir up out of the mktemp parent, which is the shared parent of
-  # TEST_DIR, STATE_DIR, MOCK_BIN and HOME_DIR alike. PHYSICAL path because git
-  # compares the ceiling against a getcwd() result (macOS's /var is a symlink
-  # into /private/var).
-  GIT_CEILING_DIRECTORIES="$(cd "$(dirname "$TEST_DIR")" && pwd -P)"
-  export GIT_CEILING_DIRECTORIES
-
   cd "$TEST_DIR" || return 1
-  git init
-  git config user.email "test@test.com"
-  git config user.name "Test"
-  echo "initial" > file.txt
-  git add file.txt
-  git commit -m "initial"
 }
 
 teardown() {
   cd /
-  rm -rf "$TEST_DIR"
-  rm -rf "${MOCK_BIN:-}"
-  rm -rf "${STATE_DIR:-}"
-  rm -rf "${HOME_DIR:-}"
+  gfh_teardown
 }
 
 # --- ul_setup ---
@@ -907,8 +838,8 @@ SCRIPT
 # `git status` (the ul_setup tests do reach the clean-tree gate's `git status`,
 # which is safe only because the env override is already in effect): an index refresh with
 # fsmonitor live spawns git's native daemon, which is wedged on some setups (bead
-# pg2-mgcv5) and would hang the run. The shared setup() pins GIT_CONFIG_GLOBAL and
-# GIT_CONFIG_SYSTEM to /dev/null (bead pg2-klyn6); a test that needs a global
+# pg2-mgcv5) and would hang the run. The shared setup() gets a fresh empty HOME from the harness and pins
+# GIT_CONFIG_SYSTEM to /dev/null (beads pg2-klyn6, pg2-blc3y); a test that needs a global
 # value OPTS IN by repointing GIT_CONFIG_GLOBAL at a temp file of its own, never
 # at the real ~/.gitconfig.
 
@@ -1157,53 +1088,21 @@ SCRIPT
 
 # --- harness hermeticity guard ---
 
-@test "setup() neutralises an ambient global core.fsmonitor (pg2-klyn6 regression guard)" {
-  # The pg2-klyn6 guard, mirroring TestHarnessNeutralizesGlobalFsmonitor from the
-  # pg2-39rz2 Go fix: prove the harness never inherits the developer's global git
-  # config. Plant a SIMULATED developer global config that turns core.fsmonitor on
-  # — the setting that, on an affected machine, made every temp repo spawn `git
-  # fsmonitor--daemon` and hang the suite — at both locations git looks for a
-  # global config, then assert git in this test's repo still sees it unset.
+@test "fixture neutralises an ambient global core.fsmonitor (pg2-klyn6/pg2-7hr6o guard, harness-backed)" {
+  # The hermeticity itself (fresh empty HOME, GIT_CONFIG_SYSTEM=/dev/null, the
+  # allowlist env rebuild) is owned and tested by git-fixture-harness.bash
+  # (lib/tests/test-git-fixture-harness-lib.bats). This keeps ONE suite-level
+  # assertion of the property that motivated it here: an ambient global
+  # core.fsmonitor=true spawns git's native fsmonitor daemon, wedged on some
+  # setups (bead pg2-mgcv5), and would hang the run.
   #
-  # The simulation is via HOME / XDG_CONFIG_HOME rather than GIT_CONFIG_GLOBAL,
-  # deliberately: that is the exact path by which the real defect enters, and it
-  # is what setup()'s GIT_CONFIG_GLOBAL=/dev/null outranks. Drop that export from
-  # setup() and this test reads back "true" and fails. The developer's real
-  # ~/.gitconfig is never written — only these temp copies, outside TEST_DIR.
-  local fake_home="$STATE_DIR/fake-home"
-  mkdir -p "$fake_home/.config/git"
-  printf '[core]\n\tfsmonitor = true\n' > "$fake_home/.gitconfig"
-  cp "$fake_home/.gitconfig" "$fake_home/.config/git/config"
-  export HOME="$fake_home"
-  export XDG_CONFIG_HOME="$fake_home/.config"
-
-  # CONFIG READ ONLY — never `git status`. `git config` merges config without
-  # touching the index, so this assertion cannot itself spawn an fsmonitor daemon;
-  # a guard that hung the suite it protects would be worse than no guard at all.
-  # `--default false` so an unset key reads back as "false" instead of exiting 1.
+  # CONFIG READ ONLY — never `git status`, so the assertion cannot itself spawn a
+  # daemon. `--default false` so an unset key reads back as "false".
   [ "$(git config --default false --type=bool --get core.fsmonitor)" = "false" ]
-
-  # The SYSTEM half cannot be simulated the same way — /etc/gitconfig and git's
-  # compiled-in prefix are not writable by the test (and must not be), so assert
-  # the neutralisation directly.
   [ "${GIT_CONFIG_SYSTEM:-}" = "/dev/null" ]
-}
-
-@test "setup() relocates HOME off the developer's own (pg2-7hr6o regression guard)" {
-  # The HOME half of the same property, guarded the same discriminating way: drop
-  # `export HOME="$HOME_DIR"` from setup() and HOME is the developer's real one,
-  # so the equality below fails; drop the whole block and HOME_DIR is unset, so the
-  # first assertion fails. Either way the guard goes red, which is what makes it a
-  # guard rather than a restatement.
-  #
-  # The real ~ is never touched, read, or probed — the assertions look only at the
-  # temp dir setup() created, and a fresh `mktemp -d` can never BE the developer's
-  # home, so "is it isolated?" needs no reference to the real path at all.
-  [ -n "${HOME_DIR:-}" ]
-  [ "$HOME" = "$HOME_DIR" ]
-  [ -d "$HOME" ]
-  # Empty, i.e. nothing of the developer's is reachable through $HOME. This also
-  # catches a HOME pointed at a shared or reused directory.
+  # HOME is the harness's fresh, empty directory: nothing of the developer's is
+  # reachable through it, and it is not the repo under test.
+  [ "$HOME" = "$GFH_WORK/home" ]
   [ -z "$(ls -A "$HOME")" ]
 }
 
@@ -1611,7 +1510,7 @@ MOCK
 # the real wrapper's contract.
 
 _install_mock_wrapper() { # <path>
-  WRAP_LOG="$HOME_DIR/wrapper.log"
+  WRAP_LOG="$GFH_WORK/wrapper.log"
   cat > "$1" <<'MOCK'
 #!/usr/bin/env bash
 echo "wrapper: $*" >> "$WRAP_LOG"
