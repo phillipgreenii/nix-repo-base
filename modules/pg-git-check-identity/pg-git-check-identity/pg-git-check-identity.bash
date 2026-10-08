@@ -26,7 +26,14 @@
 # "notbashfixture.invalid" does not. LOCK-STEP: this pattern and
 # GFH_IDENTITY_DOMAIN in git-fixture-harness.bash are defined together and
 # MUST be updated together.
-PGCI_FAKE_DOMAIN_RE='(^|\.)example\.(com|org|net)$|(^|\.)gitfixture\.invalid$|(^|\.)bashfixture\.invalid$'
+#
+# The fourth alternative catches `example.invalid`, the placeholder domain ad-hoc
+# agent fixtures reach for (incident 2026-10-07: `agent <agent@example.invalid>`
+# leaked into a shared monorepo .git/config and replaced the operator's identity
+# in every worktree). It is a specific domain, not the blanket `.invalid` the
+# first paragraph rules out, so `<username>@non-human.invalid` stays legal; the
+# same `(^|\.)` left guard keeps "notexample.invalid" from matching.
+PGCI_FAKE_DOMAIN_RE='(^|\.)example\.(com|org|net)$|(^|\.)gitfixture\.invalid$|(^|\.)bashfixture\.invalid$|(^|\.)example\.invalid$'
 
 # Placeholder/test-fixture names, not a real person -- e.g. a test suite that
 # overrode git config and never restored it (the incident this exists for).

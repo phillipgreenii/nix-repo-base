@@ -106,6 +106,26 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "pgci_is_fake_domain: matches the example.invalid placeholder domain and a subdomain of it" {
+  run pgci_is_fake_domain "example.invalid"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_domain "EXAMPLE.INVALID"
+  [ "$status" -eq 0 ]
+  run pgci_is_fake_domain "sub.example.invalid"
+  [ "$status" -eq 0 ]
+}
+
+@test "pgci_is_fake_domain: does not false-positive on a domain merely ending in example.invalid" {
+  run pgci_is_fake_domain "notexample.invalid"
+  [ "$status" -ne 0 ]
+}
+
+@test "pgci_check_identity: rejects the agent@example.invalid placeholder identity" {
+  run pgci_check_identity author "agent <agent@example.invalid> 1700000000 -0500"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"placeholder address"* ]]
+}
+
 # -- pgci_is_fake_name ----------------------------------------------------------
 
 @test "pgci_is_fake_name: matches common test/placeholder names case-insensitively" {
