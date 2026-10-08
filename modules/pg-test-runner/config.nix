@@ -54,8 +54,17 @@
   # two pre-land runs and one commit-time run under load average 19-85. The
   # tests are NOT skipped or weakened; the cap is 3x the default so a loaded
   # machine still passes while a genuinely hung suite is still killed.
+  #
+  # modules/daily-focus/df-survey (phillipg-nix-ziprecruiter; pg2-csfvi): its
+  # bats suite (147-155 tests) needs ~390s on an idle machine and 447s under
+  # load (pg2-rzr08 evidence, 2026-10-07) against the 300s default, so any
+  # branch touching it timed out the pre-land hook. The tests are NOT skipped
+  # or weakened; 900s is ~2x the loaded run so a loaded machine still passes
+  # while a genuinely hung suite is still killed. (Operator ruling, Phillip,
+  # 2026-10-08: "ok, raise the cap.")
   projectTimeouts = {
     "packages/claude-extended-tool-approver" = 900;
+    "modules/daily-focus/df-survey" = 900;
   };
   ignore = [
     ".git/"
