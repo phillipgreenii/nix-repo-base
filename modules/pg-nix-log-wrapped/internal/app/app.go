@@ -199,6 +199,9 @@ func Run(d Deps) int {
 	}
 	res := config.Resolve(config.Inputs{Opts: opts, Getenv: r.getenv, Euid: d.Euid, Home: d.Home, ReadFile: d.ReadFile})
 	if res.Endpoint == "" {
+		if res.Off != "" {
+			return passthrough(res.Off)
+		}
 		return passthrough("no OTLP endpoint resolved")
 	}
 
@@ -467,7 +470,10 @@ func (r *runner) check(opts config.Options) int {
 		healthy = false
 	}
 	res := config.Resolve(config.Inputs{Opts: opts, Getenv: r.getenv, Euid: r.Euid, Home: r.Home, ReadFile: r.ReadFile})
-	if res.Endpoint == "" {
+	if res.Off != "" {
+		fmt.Fprintf(r.Stdout, "telemetry: disabled (%s)\n", res.Off)
+		healthy = false
+	} else if res.Endpoint == "" {
 		fmt.Fprintln(r.Stdout, "endpoint: none resolved (telemetry is off)")
 		healthy = false
 	} else {

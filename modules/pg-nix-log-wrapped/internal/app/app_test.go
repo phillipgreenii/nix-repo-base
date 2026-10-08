@@ -911,3 +911,53 @@ func TestExitCodeMapping(t *testing.T) {
 		t.Errorf("nil state = %d", got)
 	}
 }
+
+// writeUserToml puts a telemetry.toml under the rig's injected home.
+func (r *rig) writeUserToml(t *testing.T, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(r.home, ".config", "pn"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.home, ".config", "pn", "telemetry.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// telemetry.toml `enabled = false` is the per-system off switch: even with an
+// endpoint in the environment the wrapper execs CMD untouched and silently.
+func TestTomlEnabledFalseFailsOpenSilently(t *testing.T) {
+	r := newRig(t, fakecmd.Spec{}) // rig sets OTEL_EXPORTER_OTLP_ENDPOINT
+	r.writeUserToml(t, "enabled = false\nendpoint = \"http://127.0.0.1:4999\"\n")
+	before := append([]string(nil), r.d.Environ...)
+	if code := r.run("fake-nix", "build"); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if len(r.execs) != 1 || strings.Join(r.execs[0].env, "\x00") != strings.Join(before, "\x00") {
+		t.Fatalf("expected one exec with an unmodified environment, got %+v", r.execs)
+	}
+	if r.mem.calls != 0 || r.stderr.Len() != 0 || r.stdout.Len() != 0 {
+		t.Errorf("off path must print nothing: calls=%d stderr=%q stdout=%q", r.mem.calls, r.stderr, r.stdout)
+	}
+	if _, err := os.Stat(r.state); err == nil {
+		t.Error("off path must not create the log directory")
+	}
+}
+
+// pn passes the endpoint it resolved as --otlp-endpoint; that explicit flag
+// wins over the file's enabled = false (pn only passes it when it decided on).
+func TestTomlEnabledFalseDoesNotBlockExplicitFlag(t *testing.T) {
+	r := newRig(t, fakecmd.Spec{})
+	r.writeUserToml(t, "enabled = false\n")
+	r.run("--otlp-endpoint", "http://127.0.0.1:4777", "fake-nix")
+	if r.mem.cfg.Endpoint != "http://127.0.0.1:4777" {
+		t.Errorf("endpoint = %q", r.mem.cfg.Endpoint)
+	}
+}
+
+func TestCheckReportsTomlEnabledFalse(t *testing.T) {
+	r := newRig(t, fakecmd.Spec{})
+	r.writeUserToml(t, "enabled = false\n")
+	if code := r.run("--check"); code != 1 || !strings.Contains(r.stdout.String(), "telemetry: disabled (telemetry.toml enabled = false)") {
+		t.Errorf("code=%d out=%s", code, r.stdout)
+	}
+}

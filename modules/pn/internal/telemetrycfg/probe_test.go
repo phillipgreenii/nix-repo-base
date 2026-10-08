@@ -204,3 +204,63 @@ func TestNoOpPath_ZeroConnectionsNoGoroutinesNoFiles(t *testing.T) {
 		t.Fatalf("files created under HOME: %s", strings.Join(names, ", "))
 	}
 }
+
+// TestPrepare_UnreachableKeepsConfiguredEndpointForDoctor: the probe failure
+// turns the run's telemetry off but keeps what was probed, so the doctor can
+// still report a configured-on system whose collector is down.
+func TestPrepare_UnreachableKeepsConfiguredEndpointForDoctor(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	env := writeTOML(t, "enabled = true\nendpoint = \"http://"+addr+"\"\n")
+	var stderr bytes.Buffer
+	res := Prepare(context.Background(), []string{"workspace"}, envMap(env), false, &stderr)
+	if res.Enabled || res.Forced != ForcedUnreachable {
+		t.Fatalf("expected off + unreachable, got %+v", res)
+	}
+	if res.ProbeErr == nil || res.ProbeEndpoint != "http://"+addr || res.ProbeSource != SourceFile {
+		t.Fatalf("probe details not kept: %+v", res)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("default run must stay silent, got %q", stderr.String())
+	}
+}
+
+// TestPrepare_EnabledFalseNeverProbes: telemetry.toml `enabled = false` is the
+// off path: zero connections to the configured endpoint, no output.
+func TestPrepare_EnabledFalseNeverProbes(t *testing.T) {
+	var conns atomic.Int32
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns.Add(1)
+			_ = c.Close()
+		}
+	}()
+	env := writeTOML(t, "enabled = false\nendpoint = \"http://"+ln.Addr().String()+"\"\n")
+	env[EnvEndpoint] = "http://" + ln.Addr().String()
+	var stderr bytes.Buffer
+	res := Prepare(context.Background(), []string{"-v", "workspace"}, envMap(env), false, &stderr)
+	if res.Enabled || res.Forced != ForcedByFile || res.ProbeErr != nil {
+		t.Fatalf("expected off by file, got %+v", res)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := conns.Load(); n != 0 {
+		t.Fatalf("off path connected %d times; want 0", n)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("off path must print nothing even under -v, got %q", stderr.String())
+	}
+}

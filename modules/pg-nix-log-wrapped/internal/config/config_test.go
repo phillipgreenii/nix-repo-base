@@ -145,3 +145,39 @@ func TestDisabled(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveEnabledKey is the wrapper side of the ADR 0028 precedence
+// contract: flag > toml enabled=false > env > toml endpoint, root = flags only.
+func TestResolveEnabledKey(t *testing.T) {
+	const path = "/home/u/.config/pn/telemetry.toml"
+	env := envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://env:4318"})
+	cases := []struct {
+		name       string
+		toml       string
+		getenv     func(string) string
+		opts       Options
+		euid       int
+		wantEP     string
+		wantSource string
+		wantOff    string
+	}{
+		{"enabled=false beats env", "enabled = false\nendpoint = \"http://file:4318\"", env, Options{}, 501, "", "", OffByFile},
+		{"enabled=false beats file endpoint", "enabled = false\nendpoint = \"http://file:4318\"", envOf(nil), Options{}, 501, "", "", OffByFile},
+		{"flag beats enabled=false", "enabled = false", env, Options{OTLPEndpoint: "http://flag:4318"}, 501, "http://flag:4318", SourceFlag, ""},
+		{"enabled=true + env", "enabled = true", env, Options{}, 501, "http://env:4318", SourceEnv, ""},
+		{"enabled=true + file endpoint", "enabled = true\nendpoint = \"http://file:4318\"", envOf(nil), Options{}, 501, "http://file:4318", SourceFile, ""},
+		{"enabled=true, nothing else", "enabled = true", envOf(nil), Options{}, 501, "", "", ""},
+		{"env beats file endpoint when enabled=true", "enabled = true\nendpoint = \"http://file:4318\"", env, Options{}, 501, "http://env:4318", SourceEnv, ""},
+		{"absent key keeps legacy behaviour", "endpoint = \"http://file:4318\"", envOf(nil), Options{}, 501, "http://file:4318", SourceFile, ""},
+		{"wrongly typed enabled is garbage: fail open to env", "enabled = \"no\"", env, Options{}, 501, "http://env:4318", SourceEnv, ""},
+		{"root ignores the file", "enabled = false", env, Options{}, 0, "", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := Resolve(Inputs{Opts: c.opts, Getenv: c.getenv, Euid: c.euid, Home: "/home/u", ReadFile: files(map[string]string{path: c.toml})})
+			if r.Endpoint != c.wantEP || r.EndpointSource != c.wantSource || r.Off != c.wantOff {
+				t.Errorf("got %+v; want endpoint=%q source=%q off=%q", r, c.wantEP, c.wantSource, c.wantOff)
+			}
+		})
+	}
+}

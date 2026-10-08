@@ -114,9 +114,12 @@ per 20 ms, which the spike showed is not needed.
 
 ### Config file schema
 
-`~/.config/pn/telemetry.toml` is read by non-root runs as a last resort. Its only key is
-`endpoint = "http://127.0.0.1:4318"`. A malformed file is treated as absent. The home-manager module
-that renders it (`phillipgreenii.pn.telemetry`) MUST emit that key.
+`~/.config/pn/telemetry.toml` is read by non-root runs. The wrapper reads two keys,
+`endpoint = "http://127.0.0.1:4318"` (last resort) and `enabled` (boolean; `false` switches telemetry
+off even when an env or file endpoint is set, but never overrides an explicit `--otlp-endpoint`; ADR
+0028 "Amendment 2026-10-08" is authoritative for precedence). A malformed file, including a
+wrongly typed key, is treated as absent. The home-manager module that renders it
+(`phillipgreenii.pn.telemetry`) MUST emit both keys.
 
 ### `--check`
 

@@ -92,8 +92,9 @@ const Usage = `usage: pg-nix-log-wrapped [--traceparent TP] [--otlp-endpoint URL
 Runs CMD unchanged and, when an OTLP/HTTP endpoint resolves, turns nix's
 --json-log-path activity stream into OpenTelemetry spans and metrics.
 
-Endpoint precedence (non-root): --otlp-endpoint, then OTEL_EXPORTER_OTLP_ENDPOINT,
-then "endpoint" in ~/.config/pn/telemetry.toml. A root wrapper reads flags only.
+Endpoint precedence (non-root): --otlp-endpoint, then telemetry.toml
+"enabled = false" (off), then OTEL_EXPORTER_OTLP_ENDPOINT, then "endpoint" in
+~/.config/pn/telemetry.toml. A root wrapper reads flags only.
 
 Escape hatches: PG_NIX_LOG_DISABLE=1 or OTEL_SDK_DISABLED=true run CMD
 unmodified; PG_NIX_LOG_DEBUG=1 prints diagnostics to stderr.
@@ -121,7 +122,14 @@ type Resolved struct {
 	Endpoint       string
 	EndpointSource string
 	Traceparent    string
+	// Off is non-empty when the per-user telemetry.toml switched telemetry off
+	// (`enabled = false`); Endpoint is then empty. The force-off environment
+	// controls are reported by Disabled, not here.
+	Off string
 }
+
+// OffByFile is Resolved.Off when telemetry.toml says `enabled = false`.
+const OffByFile = "telemetry.toml enabled = false"
 
 // Disabled reports whether the environment forces telemetry off.
 func Disabled(getenv func(string) string) (bool, string) {
@@ -138,10 +146,16 @@ func Disabled(getenv func(string) string) (bool, string) {
 const TOMLRelPath = ".config/pn/telemetry.toml"
 
 type fileConfig struct {
+	Enabled  *bool  `toml:"enabled"`
 	Endpoint string `toml:"endpoint"`
 }
 
-// Resolve applies the W-1 precedence. A root wrapper (Euid 0) uses flags only.
+// Resolve applies the W-1 precedence (ADR 0028, "Runtime configuration
+// contract"): the --otlp-endpoint flag, then telemetry.toml `enabled = false`
+// (off, even when OTEL_EXPORTER_OTLP_ENDPOINT or the file endpoint is set),
+// then OTEL_EXPORTER_OTLP_ENDPOINT, then the file's endpoint. The force-off
+// environment controls are applied by the caller (Disabled) before this. A
+// root wrapper (Euid 0) uses flags only.
 func Resolve(in Inputs) Resolved {
 	var r Resolved
 	r.Traceparent = in.Opts.Traceparent
@@ -154,19 +168,26 @@ func Resolve(in Inputs) Resolved {
 	if r.Traceparent == "" {
 		r.Traceparent = in.Getenv("TRACEPARENT")
 	}
-	if r.Endpoint == "" {
-		if v := in.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
-			r.Endpoint, r.EndpointSource = v, SourceEnv
-		}
+	if r.Endpoint != "" {
+		return r // an explicit flag endpoint beats the file's enabled = false
 	}
-	if r.Endpoint == "" && in.Home != "" && in.ReadFile != nil {
+	var fc fileConfig
+	if in.Home != "" && in.ReadFile != nil {
 		if b, err := in.ReadFile(strings.TrimRight(in.Home, "/") + "/" + TOMLRelPath); err == nil {
-			var fc fileConfig
 			// A garbage file is treated as absent: the wrapper fails open.
-			if toml.Unmarshal(b, &fc) == nil && fc.Endpoint != "" {
-				r.Endpoint, r.EndpointSource = fc.Endpoint, SourceFile
+			if toml.Unmarshal(b, &fc) != nil {
+				fc = fileConfig{}
 			}
 		}
+	}
+	if fc.Enabled != nil && !*fc.Enabled {
+		r.Off = OffByFile
+		return r
+	}
+	if v := in.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
+		r.Endpoint, r.EndpointSource = v, SourceEnv
+	} else if fc.Endpoint != "" {
+		r.Endpoint, r.EndpointSource = fc.Endpoint, SourceFile
 	}
 	return r
 }

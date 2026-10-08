@@ -1828,15 +1828,16 @@
               '';
 
             # Hermetic eval check for home/pn/default.nix's telemetry options
-            # (ADR 0028, bead pg2-kqrrs.6). Proves, with repo-base's
-            # overlays.default applied (the consuming machine repo's job):
+            # (ADR 0028, beads pg2-kqrrs.6 and pg2-arayh). The tool is always
+            # built to emit; whether it does is the RUNTIME `enabled` key. Proves,
+            # with repo-base's overlays.default applied (the consuming machine
+            # repo's job):
             #   * `lib.getExe pkgs.pg-nix-log-wrapped` resolves (the wrapperPath
-            #     default), and with telemetry.enable it is rendered into
-            #     ~/.config/pn/telemetry.toml next to the endpoint;
-            #   * telemetry.enable = false writes NO telemetry.toml and does NOT
-            #     add the wrapper to home.packages -- and evaluates on a pkgs
-            #     that has no pg-nix-log-wrapped at all (the default is lazy);
-            #   * a null endpoint omits the endpoint key (telemetry stays off).
+            #     default) and is rendered into ~/.config/pn/telemetry.toml;
+            #   * the wrapper is in home.packages and telemetry.toml is written
+            #     whether telemetry.enable is true OR false (no install gate);
+            #   * `enabled` mirrors telemetry.enable (true / false);
+            #   * a null endpoint omits the endpoint key.
             # Same narrow-stub shape as pg-go-mutate-tui-config-rendered above.
             # TEMPORARY STUB: until Phase 3 (pg2-kqrrs.7) adds
             # pg-nix-log-wrapped to overlays.default, a placeholder
@@ -1895,28 +1896,53 @@
                   endpoint = "http://127.0.0.1:4318";
                 };
                 noEndpoint = mkEval pkgsWithOverlay { enable = true; };
-                # `pkgs` here has NO pg-nix-log-wrapped: enable = false must not need it.
-                off = mkEval pkgs { enable = false; };
-                tomlSource = on.config.home.file.".config/pn/telemetry.toml".source;
-                noEndpointToml = noEndpoint.config.home.file.".config/pn/telemetry.toml".source;
+                # Off is a RUNTIME state: the wrapper is still installed and the
+                # file is still written, with enabled = false.
+                off = mkEval pkgsWithOverlay {
+                  enable = false;
+                  endpoint = "http://127.0.0.1:4318";
+                };
+                defaults = mkEval pkgsWithOverlay { };
+                tomlOf = e: e.config.home.file.".config/pn/telemetry.toml".source;
+                tomlSource = tomlOf on;
+                noEndpointToml = tomlOf noEndpoint;
+                offToml = tomlOf off;
+                defaultsToml = tomlOf defaults;
               in
               if on.config.phillipgreenii.pn.telemetry.wrapperPath != wrapperExe then
                 throw "pn telemetry wrapperPath default is not lib.getExe pkgs.pg-nix-log-wrapped"
               else if !(pkgs.lib.elem "pg-nix-log-wrapped" (pkgNames on)) then
                 throw "telemetry.enable = true did not add pg-nix-log-wrapped to home.packages"
-              else if pkgs.lib.elem "pg-nix-log-wrapped" (pkgNames off) then
-                throw "telemetry.enable = false still added pg-nix-log-wrapped to home.packages"
-              else if off.config.home.file ? ".config/pn/telemetry.toml" then
-                throw "telemetry.enable = false still rendered ~/.config/pn/telemetry.toml"
+              else if !(pkgs.lib.elem "pg-nix-log-wrapped" (pkgNames off)) then
+                throw "telemetry.enable = false must still install pg-nix-log-wrapped (always built to emit)"
+              else if !(pkgs.lib.elem "pg-nix-log-wrapped" (pkgNames defaults)) then
+                throw "default telemetry options must still install pg-nix-log-wrapped"
+              else if !(off.config.home.file ? ".config/pn/telemetry.toml") then
+                throw "telemetry.enable = false must still render ~/.config/pn/telemetry.toml (runtime switch)"
               else
                 pkgs.runCommand "pn-telemetry-hm-options"
                   {
-                    inherit tomlSource noEndpointToml wrapperExe;
+                    inherit
+                      tomlSource
+                      noEndpointToml
+                      offToml
+                      defaultsToml
+                      wrapperExe
+                      ;
                   }
                   ''
                     cat "$tomlSource"
+                    grep -qxF 'enabled = true' "$tomlSource"
                     grep -qxF 'endpoint = "http://127.0.0.1:4318"' "$tomlSource"
                     grep -qxF "wrapper_path = \"$wrapperExe\"" "$tomlSource"
+                    echo --- off
+                    cat "$offToml"
+                    grep -qxF 'enabled = false' "$offToml"
+                    grep -qxF 'endpoint = "http://127.0.0.1:4318"' "$offToml"
+                    grep -qxF "wrapper_path = \"$wrapperExe\"" "$offToml"
+                    echo --- defaults
+                    cat "$defaultsToml"
+                    grep -qxF 'enabled = false' "$defaultsToml"
                     echo ---
                     cat "$noEndpointToml"
                     if grep -q '^endpoint' "$noEndpointToml"; then

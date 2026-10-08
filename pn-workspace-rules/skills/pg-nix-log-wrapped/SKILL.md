@@ -21,6 +21,12 @@ stream, and exports it as OpenTelemetry spans and metrics to the local collector
 **fail open**: any setup problem, or no endpoint resolved, and it just `exec`s the command, with
 nothing extra on stderr. Using it is therefore safe; not using it only loses visibility.
 
+The tool is **always built and installed to emit**; whether a given system emits is a **runtime**
+per-system setting in `~/.config/pn/telemetry.toml` (`enabled`, `endpoint`, `wrapper_path`; ADR 0028
+"Amendment 2026-10-08"). Telemetry MAY be off on a given system (`enabled = false`): the wrapper is
+still installed and still safe to use, it simply execs CMD with no output. Agents do not need to
+know which; always use the wrapper when it is on `PATH`.
+
 Reference for the details below: `modules/pg-nix-log-wrapped/README.md` and ADR 0030
 (`docs/adr/0030-pg-nix-log-wrapped.md`) in phillipg-nix-repo-base.
 
@@ -79,21 +85,25 @@ pg-nix-log-wrapped --check [--otlp-endpoint URL] [--log-dir DIR]
   of signal `n`).
 - Timeouts still apply. The wrapper does not make a nix run shorter. A long run MUST still use the
   caller's explicit timeout or `run_in_background`; the wrapper only records it.
-- Where the endpoint comes from (non-root): `--otlp-endpoint`, then `OTEL_EXPORTER_OTLP_ENDPOINT`,
-  then `endpoint` in `~/.config/pn/telemetry.toml`. Agents SHOULD NOT pass `--otlp-endpoint` by
-  hand in the normal case; the home-manager `phillipgreenii.pn.telemetry` option renders that file.
+- Where the endpoint comes from (non-root): `--otlp-endpoint`; then `enabled = false` in
+  `~/.config/pn/telemetry.toml` (off, even if an endpoint is set below); then
+  `OTEL_EXPORTER_OTLP_ENDPOINT`; then `endpoint` in that file. Agents SHOULD NOT pass
+  `--otlp-endpoint` by hand in the normal case; the home-manager `phillipgreenii.pn.telemetry`
+  option renders that file on every system.
 - Joining an existing trace: the wrapper reads `--traceparent`, else `TRACEPARENT`. A malformed
   value starts a fresh root trace.
 
 ### When the wrapper is absent
 
-The wrapper is installed only on a machine whose home-manager config sets
-`phillipgreenii.pn.telemetry.enable = true`. If `command -v pg-nix-log-wrapped` fails:
+The wrapper is installed on every system that applies the repo-base `pn` home-manager module,
+telemetry on or off. It can still be absent on a machine that has not yet applied that module. If
+`command -v pg-nix-log-wrapped` fails:
 
 - The agent MUST run nix directly, MUST say once in its report or message that the wrapper was
   absent (not once per command), and MUST NOT block, retry, or try to install it.
-- A present wrapper with **no endpoint** also does nothing (it execs CMD). That case is not an
-  error either; use `--check` to see why.
+- A present wrapper with **no endpoint**, or on a system whose `telemetry.toml` says
+  `enabled = false`, also does nothing (it execs CMD). That case is not an error either; use
+  `--check` to see why.
 
 ### Under `sudo`
 

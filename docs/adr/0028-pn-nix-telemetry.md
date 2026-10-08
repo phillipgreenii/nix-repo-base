@@ -1,7 +1,7 @@
 # ADR-0028: pn / nix build telemetry — spike findings, configuration precedence and escape hatches
 
 **Date:** 2026-10-01
-**Status:** Accepted
+**Status:** Accepted (amended 2026-10-08, `pg2-arayh`: runtime configuration contract, see "Amendment 2026-10-08")
 **Deciders:** phillipgreenii
 
 ## Context
@@ -308,6 +308,10 @@ procedure regenerates them.
 
 ### Configuration precedence (Phase 2d)
 
+> Amended 2026-10-08 (`pg2-arayh`): `enabled = false` in `telemetry.toml` adds a per-system off
+> switch to the order below; see "Amendment 2026-10-08: runtime configuration contract", which is
+> authoritative for precedence.
+
 Telemetry is ON only when an OTLP endpoint resolves. For a non-root process the endpoint MUST be
 resolved in this order, first match wins: the `--otlp-endpoint` flag, then
 `OTEL_EXPORTER_OTLP_ENDPOINT`, then `endpoint` in `~/.config/pn/telemetry.toml`. A root process
@@ -336,15 +340,110 @@ to nix). The cobra flags of the same names are registered so `--help` lists them
 ### The home-manager module and the config file
 
 `phillipgreenii.pn.telemetry.{enable, endpoint, wrapperPath}` in `home/pn/default.nix` render
-`~/.config/pn/telemetry.toml` (keys `endpoint`, `wrapper_path`) through `pkgs.formats.toml`, like
-`store.toml`. `enable` is a `mkEnableOption` (default false). When `enable = false` the module MUST
-NOT write the file and MUST NOT add the wrapper package to `home.packages`. The `wrapperPath` default
-is `lib.getExe pkgs.pg-nix-log-wrapped`; the consuming machine repo MUST apply this flake's
-`overlays.default`, and the default is lazy so a machine with `enable = false` evaluates without it.
+`~/.config/pn/telemetry.toml` (keys `enabled`, `endpoint`, `wrapper_path`) through
+`pkgs.formats.toml`, like `store.toml`. `enable` is a `mkEnableOption` (default false) and is the
+value of the file's `enabled` key; it is NOT an install gate (amended 2026-10-08: the original rule
+that `enable = false` writes no file and installs no wrapper is struck, see the amendment below). The
+module MUST always write the file and MUST always add the wrapper package to `home.packages`. The
+`wrapperPath` default is `lib.getExe pkgs.pg-nix-log-wrapped`; the consuming machine repo MUST apply
+this flake's `overlays.default` on every system that enables `phillipgreenii.pn`, telemetry on or off.
 This layer is below support-apps and MUST NOT call `mkEmitterEnv`; the machine repo sets `endpoint`
 from the observability module's http port option (never a literal) and leaves it null otherwise. The
-flake check `pn-telemetry-hm-options` proves the default resolves, the file renders, and the
-disabled case adds nothing.
+flake check `pn-telemetry-hm-options` proves the default resolves, the file renders with `enabled`
+mirroring `enable`, and the wrapper is installed whether `enable` is true or false.
+
+### Amendment 2026-10-08: runtime configuration contract (`pg2-arayh`)
+
+Operator rulings (Phillip, 2026-10-08): the tooling is ALWAYS built and installed so it can emit
+telemetry; whether it does is a per-system RUNTIME setting in `~/.config/pn/telemetry.toml`
+(endpoint URL, enabled/disabled, and the existing keys), checked at run time, not a build-time or
+install-time switch. If pn is configured to use telemetry for a system, it assumes the collector is
+there and does not guard against a missing wrapper, overlay or collector: a visible error is
+acceptable. `pn workspace doctor` raises no finding when telemetry is off and does a quick
+reachability check when it is on. A cleaner message for an unreachable endpoint is optional.
+
+This amendment supersedes: the rule that `phillipgreenii.pn.telemetry.enable = false` writes no
+`telemetry.toml` and installs no wrapper; "Off permanently" in the escape-hatch table; and the
+statement that `telemetry.toml`'s only keys are `endpoint` and `wrapper_path`.
+
+#### Keys
+
+All keys optional; a missing or malformed file is treated as absent (fail open).
+
+| Key            | Type    | Meaning                                                                                                            |
+| -------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `enabled`      | boolean | Per-system runtime switch. Absent means "on iff an endpoint resolves" (the pre-amendment rule). `false` means off. |
+| `endpoint`     | string  | OTLP/HTTP collector URL. There is no default endpoint.                                                             |
+| `wrapper_path` | string  | Absolute path of `pg-nix-log-wrapped`; pn alone reads it (sudo rule unchanged: real path under `/nix/store`).      |
+
+A value of the wrong type (for example `enabled = "no"`) makes the whole file malformed, hence
+absent. The home-manager module always writes all three keys (`endpoint` only when non-null).
+
+#### Precedence (non-root; first match wins)
+
+1. Force-off: `--no-telemetry`, `PG_NIX_LOG_DISABLE=1` or `OTEL_SDK_DISABLED=true`: OFF. These beat
+   everything, including an explicit `--otlp-endpoint`.
+2. `--otlp-endpoint URL`: ON with that endpoint. An explicit per-run flag is an opt-in that beats the
+   file's `enabled = false`. pn passes the endpoint it resolved to the wrapper this way, and only
+   when it decided telemetry is on, so a wrapper started by pn never contradicts pn's decision.
+3. `telemetry.toml` `enabled = false`: OFF, even when `OTEL_EXPORTER_OTLP_ENDPOINT` or the file's
+   `endpoint` is set. A globally exported OTLP variable (set for some other tool) MUST NOT re-enable
+   telemetry on a system declared off.
+4. `OTEL_EXPORTER_OTLP_ENDPOINT`: ON with that endpoint.
+5. `telemetry.toml` `endpoint`: ON with that endpoint (whether `enabled` is `true` or absent).
+6. Otherwise OFF. `enabled = true` with no endpoint anywhere is OFF (nothing to export to) and is a
+   misconfiguration that doctor reports.
+
+A root process (pn or wrapper) never reads the file and ignores the file's `enabled`; it follows
+flags (and, for pn, the environment) only, exactly as before. Both binaries MUST implement the same
+precedence: pn in `telemetrycfg.Resolve`, the wrapper in `config.Resolve` (plus `Disabled` for the
+environment force-off controls). `pg-nix-log-wrapped --check` prints
+`telemetry: disabled (telemetry.toml enabled = false)` and exits 1 in case 3.
+
+```mermaid
+flowchart TD
+  F["1. force-off: --no-telemetry, PG_NIX_LOG_DISABLE=1, OTEL_SDK_DISABLED=true"] -->|set| OFF["OFF: Null Object, no exporter, no probe, no output"]
+  F -->|unset| P1["2. --otlp-endpoint flag"]
+  P1 -->|set| ON["ON with that endpoint"]
+  P1 -->|unset| P2["3. toml enabled = false"]
+  P2 -->|yes| OFF
+  P2 -->|no or absent| P3["4. OTEL_EXPORTER_OTLP_ENDPOINT"]
+  P3 -->|set| ON
+  P3 -->|unset| P4["5. toml endpoint"]
+  P4 -->|set| ON
+  P4 -->|unset| OFF
+```
+
+The matrix is covered by `TestResolve_EnabledKeyMatrix` (`modules/pn/internal/telemetrycfg`) and
+`TestResolveEnabledKey` (`modules/pg-nix-log-wrapped/internal/config`).
+
+#### Off path and "on" path behavior
+
+- **Off** (cases 1, 3, 6): no exporter, no probe, no connection, no wrapper, no output, even under
+  `-v`; pn runs nix unwrapped and the wrapper execs its command untouched. Flipping `enabled` in
+  the file takes effect on the next run with no rebuild or re-install.
+- **On, collector down** (probe fails, ruling 1): unchanged from "Finding a run's trace": pn runs
+  that invocation with telemetry off, silent unless `-v`. The failed-POST text that reached the
+  screen came from the OpenTelemetry SDK's default error handler, which logs an export failure to
+  stderr when a collector answers the TCP probe but the later OTLP POST fails (or the collector
+  goes away mid-run). pn installs no handler, so under `enabled = true` that visible error is
+  accepted (ruling 1: no guarding against a missing collector); the toggle is the remedy. The wrapper
+  already installs a silent handler. A cleaner pn-side message remains optional and is not done here.
+- **Doctor** (`telemetry` check): no finding when off by any cause (cases 1, 3, 6 without
+  `enabled = true`). When configured on it runs `pg-nix-log-wrapped --check` (reachability, 15 s
+  bound). Because pn's start-up probe turns an unreachable collector into "off for this run", the
+  resolution keeps the probe failure (`ProbeErr`, `ProbeEndpoint`, `ProbeSource`) and doctor reports
+  it as a warning (never an error). Doctor also warns for `enabled = true` with no endpoint.
+
+#### Installation
+
+`home/pn` always installs `pkgs.pg-nix-log-wrapped` and always writes `telemetry.toml`;
+`phillipgreenii.pn.telemetry.enable` sets `enabled`. The consuming machine repo sets `endpoint` from
+its observability option and `enable` from the same condition (the machine repo's choice of the
+runtime default), so one set of options feeds the file and flipping a machine's observability changes
+only the file's content. The repo-level rules (the workspace `CLAUDE.md` section "Nix Runs Go Through
+pg-nix-log-wrapped" and the `pg-nix-log-wrapped` skill) state the same model: always built to emit,
+telemetry possibly off on a given system.
 
 ### Security of the root path
 
@@ -371,20 +470,22 @@ does not apply, and there is no `pn-workspace.toml` schema change.
   context (an Observer-style seam): the root `pn.verb` span setup calls `RunState.SetTraceID`.
 - `pn workspace doctor` MUST include a `telemetry` check that runs `pg-nix-log-wrapped --check` when
   telemetry is on and reports a missing wrapper or a failing check as a warning (never an error); it
-  MUST be silent when telemetry is off.
+  MUST be silent when telemetry is off (amended 2026-10-08: "on" means configured on, so an
+  unreachable collector is reported even though pn's start-up probe turned telemetry off for that
+  run; see the amendment).
 
 ### Escape hatches
 
 One table is authoritative; it appears in `modules/pn/README.md` and in `pn --help`.
 
-| Control                                      | Effect                                                             |
-| -------------------------------------------- | ------------------------------------------------------------------ |
-| `phillipgreenii.pn.telemetry.enable = false` | Off permanently (no config file, no wrapper package); the rollback |
-| `pn --no-telemetry`                          | Off for one pn run                                                 |
-| `PG_NIX_LOG_DISABLE=1`                       | Off for pn; the wrapper execs its command unmodified               |
-| `pg-nix-log-wrapped --check`                 | Prints resolved endpoint, reachability and log-dir writability     |
-| `OTEL_SDK_DISABLED=true`                     | Both binaries off                                                  |
-| `PG_NIX_LOG_DEBUG=1`                         | The wrapper prints diagnostics to stderr                           |
+| Control                                      | Effect                                                                                                                                                   |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `phillipgreenii.pn.telemetry.enable = false` | Off for the system: `telemetry.toml` gets `enabled = false` (runtime switch; the wrapper stays installed). Editing the file takes effect with no rebuild |
+| `pn --no-telemetry`                          | Off for one pn run                                                                                                                                       |
+| `PG_NIX_LOG_DISABLE=1`                       | Off for pn; the wrapper execs its command unmodified                                                                                                     |
+| `pg-nix-log-wrapped --check`                 | Prints resolved endpoint, reachability and log-dir writability                                                                                           |
+| `OTEL_SDK_DISABLED=true`                     | Both binaries off                                                                                                                                        |
+| `PG_NIX_LOG_DEBUG=1`                         | The wrapper prints diagnostics to stderr                                                                                                                 |
 
 `-v`/`--verbose` is introduced as a global pn flag by this change; it replaces cobra's default `-v`
 shorthand for `--version` (use `pn --version`).
@@ -492,8 +593,9 @@ their nix calls through `pg-nix-log-wrapped`, each with the mechanism that fits 
   `WrapNix` decorator uses for a non-root call (telemetry on, an endpoint, an absolute
   `wrapper_path` that is an executable regular file); under any failure the prefix is nil and the
   expansion is the byte-identical bare `nix run ...`. Hooks that are not `{nix_run}` stay untouched.
-- **`update-locks.sh` (bash).** The wrapper is not on `PATH` (it is deliberately not in
-  `home.packages`), so `exec.WithTraceEnv` adds two variables next to `TRACEPARENT`, only when the
+- **`update-locks.sh` (bash).** The script cannot assume the wrapper is on `PATH` (it may run
+  outside a login environment; since the 2026-10-08 amendment the package is in `home.packages` on
+  every system, but pn passes the resolved path anyway), so `exec.WithTraceEnv` adds two variables next to `TRACEPARENT`, only when the
   wrapper is usable: `PN_NIX_LOG_WRAPPER` (absolute path) and `PN_NIX_LOG_OTLP_ENDPOINT`.
   `lib/scripts/update-locks-lib.bash` reads them in `_ul_nix_wrap_prefix` and prefixes `nix` for:
   a `ul_run_step` step whose command is `nix ...`, `nix develop` in `ul_reexec_in_dev_shell`,

@@ -282,3 +282,53 @@ url = "github:owner/myterm"
 		t.Error("trace id leaked into stdout")
 	}
 }
+
+// TestTomlEnabledFalse_OffPathIsSilentAndConnectionFree: with telemetry.toml
+// `enabled = false` (and an endpoint present in both the file and the
+// environment, pointing at a live listener) a pn run prints nothing about
+// telemetry, even under -v, records no trace id and opens zero connections.
+func TestTomlEnabledFalse_OffPathIsSilentAndConnectionFree(t *testing.T) {
+	home := isolateTelemetryEnv(t)
+	withTraceCmd(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	conns := make(chan struct{}, 8)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns <- struct{}{}
+			_ = c.Close()
+		}
+	}()
+	ep := "http://" + ln.Addr().String()
+	dir := filepath.Join(home, ".config", "pn")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "telemetry.toml"), []byte("enabled = false\nendpoint = \""+ep+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", ep)
+
+	out, errOut, err := run(t, "-v", "tracecmd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "payload\n" {
+		t.Errorf("stdout = %q", out)
+	}
+	if strings.Contains(errOut, "telemetry") || strings.Contains(errOut, "collector") {
+		t.Errorf("off path must print no telemetry output, got stderr %q", errOut)
+	}
+	select {
+	case <-conns:
+		t.Error("off path opened a connection to the configured endpoint")
+	default:
+	}
+}

@@ -36,12 +36,19 @@ func enabledRes(wrapper string) *telemetrycfg.Resolution {
 	}
 }
 
+var (
+	trueVal  = true
+	falseVal = false
+)
+
 func TestCheckTelemetry_SilentWhenOff(t *testing.T) {
 	ws, f := telemetryWS(t)
 	for name, res := range map[string]*telemetrycfg.Resolution{
-		"nil":      nil,
-		"disabled": {Forced: "--no-telemetry", WrapperPath: "/nix/store/x/w"},
-		"no ep":    {WrapperPath: "/nix/store/x/w"},
+		"nil":                              nil,
+		"disabled":                         {Forced: "--no-telemetry", WrapperPath: "/nix/store/x/w"},
+		"no ep":                            {WrapperPath: "/nix/store/x/w"},
+		"toml enabled=false":               {Forced: telemetrycfg.ForcedByFile, FileEnabled: &falseVal, WrapperPath: "/nix/store/x/w"},
+		"toml enabled=false with endpoint": {Forced: telemetrycfg.ForcedByFile, FileEnabled: &falseVal, Endpoint: "", WrapperPath: "/nix/store/x/w"},
 	} {
 		if got := ws.checkTelemetry(context.Background(), &doctorEnv{ws: ws, telemetry: res}); len(got) != 0 {
 			t.Errorf("%s: expected no findings, got %+v", name, got)
@@ -125,4 +132,40 @@ func TestRegisterChecks_IncludesTelemetry(t *testing.T) {
 		}
 	}
 	t.Fatal("telemetry check is not registered")
+}
+
+// A system configured on whose collector is down: pn's start-up probe turned
+// telemetry off for the run, but doctor still reports it (warning, no wrapper
+// run: the probe already answered).
+func TestCheckTelemetry_ConfiguredOnButUnreachableWarns(t *testing.T) {
+	ws, f := telemetryWS(t)
+	res := &telemetrycfg.Resolution{
+		Forced: telemetrycfg.ForcedUnreachable, FileEnabled: &trueVal,
+		ProbeErr: errors.New("dial tcp 127.0.0.1:4318: connection refused"), ProbeEndpoint: "http://127.0.0.1:4318", ProbeSource: telemetrycfg.SourceFile,
+		WrapperPath: fakeWrapper(t),
+	}
+	got := ws.checkTelemetry(context.Background(), &doctorEnv{ws: ws, telemetry: res})
+	if len(got) != 1 || got[0].Severity != SevWarning || got[0].CheckID != "telemetry" {
+		t.Fatalf("expected one telemetry warning, got %+v", got)
+	}
+	if !strings.Contains(got[0].Message, "http://127.0.0.1:4318") || !strings.Contains(got[0].Message, "unreachable") {
+		t.Errorf("message should name the endpoint and the failure: %q", got[0].Message)
+	}
+	if len(f.Calls()) != 0 {
+		t.Fatalf("must not run the wrapper after a failed probe: %+v", f.Calls())
+	}
+}
+
+// enabled = true with no endpoint anywhere is a misconfiguration worth a warning.
+func TestCheckTelemetry_EnabledWithoutEndpointWarns(t *testing.T) {
+	ws, _ := telemetryWS(t)
+	got := ws.checkTelemetry(context.Background(), &doctorEnv{ws: ws, telemetry: &telemetrycfg.Resolution{FileEnabled: &trueVal}})
+	if len(got) != 1 || !strings.Contains(got[0].Message, "no endpoint") {
+		t.Fatalf("expected a no-endpoint warning, got %+v", got)
+	}
+	// A force-off control wins: the operator asked for off, so stay silent.
+	got = ws.checkTelemetry(context.Background(), &doctorEnv{ws: ws, telemetry: &telemetrycfg.Resolution{FileEnabled: &trueVal, Forced: "--no-telemetry"}})
+	if len(got) != 0 {
+		t.Fatalf("forced off must be silent, got %+v", got)
+	}
 }

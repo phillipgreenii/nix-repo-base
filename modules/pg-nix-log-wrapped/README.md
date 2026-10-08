@@ -34,12 +34,18 @@ size cap was hit.
 
 ## Endpoint and configuration
 
-For a **non-root** wrapper, in order: `--otlp-endpoint`, `OTEL_EXPORTER_OTLP_ENDPOINT`, then
-`endpoint` in `~/.config/pn/telemetry.toml`:
+For a **non-root** wrapper, in order: `--otlp-endpoint`; then `enabled = false` in
+`~/.config/pn/telemetry.toml` (off, even if an endpoint is set elsewhere); then
+`OTEL_EXPORTER_OTLP_ENDPOINT`; then `endpoint` in the file:
 
 ```toml
+enabled = true
 endpoint = "http://127.0.0.1:4318"
 ```
+
+`enabled` is the per-system runtime switch (absent means "on iff an endpoint resolves"; ADR 0028,
+"Amendment 2026-10-08"). The wrapper is installed on every system; this file decides whether it
+emits. `PG_NIX_LOG_DISABLE=1` and `OTEL_SDK_DISABLED=true` still force it off first.
 
 OTLP over HTTP only. `--traceparent` falls back to `TRACEPARENT` the same way. A **root** wrapper
 (under `sudo`, which drops the environment) reads **flags only**, never a user file, and always

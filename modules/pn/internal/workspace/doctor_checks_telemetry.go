@@ -25,13 +25,17 @@ const wrapperCheckTimeout = 15 * time.Second
 // misconfiguration — the wrapper is deliberately silent when it fails open —
 // is detectable.
 //
-// When telemetry is OFF (no endpoint resolved, or forced off) the check
-// produces NO finding: a machine without OTel sees doctor output identical to
-// before. Findings are warnings, never errors: telemetry is optional and a
-// broken collector must not fail workspace health.
+// When telemetry is OFF (telemetry.toml `enabled = false`, a force-off flag or
+// variable, or no endpoint resolved) the check produces NO finding: a machine
+// without OTel sees doctor output identical to before. "On" means configured
+// on: a collector that pn's start-up probe found unreachable (which turns
+// telemetry off for that run) is still reported here, because the system is
+// configured to emit and the collector is down. So is `enabled = true` with no
+// endpoint anywhere. Findings are warnings, never errors: telemetry is
+// optional and a broken collector must not fail workspace health.
 func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Finding {
 	res := env.telemetry
-	if res == nil || !res.Enabled {
+	if res == nil {
 		return nil
 	}
 	warn := func(msg, manual string) []Finding {
@@ -39,6 +43,21 @@ func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Findi
 			CheckID: telemetryCheckID, Severity: SevWarning,
 			Message: msg, Manual: manual,
 		}}
+	}
+	if !res.Enabled {
+		switch {
+		case res.ProbeErr != nil:
+			return warn(
+				fmt.Sprintf("telemetry is enabled (endpoint %s from %s) but the collector is unreachable: %v", res.ProbeEndpoint, res.ProbeSource, res.ProbeErr),
+				"start the observability stack, or set phillipgreenii.pn.telemetry.enable = false (telemetry.toml enabled = false) and apply",
+			)
+		case res.Forced == "" && res.FileEnabled != nil && *res.FileEnabled:
+			return warn(
+				"telemetry.toml has enabled = true but no endpoint resolves; telemetry stays off",
+				"set phillipgreenii.pn.telemetry.endpoint (or OTEL_EXPORTER_OTLP_ENDPOINT) and apply, or set enable = false",
+			)
+		}
+		return nil
 	}
 
 	wrapper := res.WrapperPath
@@ -51,7 +70,7 @@ func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Findi
 	if _, err := os.Stat(wrapper); err != nil {
 		return warn(
 			fmt.Sprintf("telemetry is enabled but the wrapper %s is not usable: %v", wrapper, err),
-			"pn workspace apply  # reinstalls the pg-nix-log-wrapped package; or phillipgreenii.pn.telemetry.enable = false",
+			"pn workspace apply  # reinstalls the pg-nix-log-wrapped package; or set phillipgreenii.pn.telemetry.enable = false",
 		)
 	}
 

@@ -9,12 +9,20 @@
 // side effects (the Null Object rule: with no endpoint, nothing is created, no
 // goroutine is started, no connection is opened and no file is written).
 //
-// Precedence for the endpoint (non-root only for the file):
+// Precedence, first match wins (the file is read by non-root only):
 //
-//	--otlp-endpoint flag  >  OTEL_EXPORTER_OTLP_ENDPOINT  >  ~/.config/pn/telemetry.toml
+//  1. forced off, in any case: --no-telemetry, PG_NIX_LOG_DISABLE=1,
+//     OTEL_SDK_DISABLED=true;
+//  2. --otlp-endpoint flag (an explicit per-run opt-in: beats the file's
+//     enabled = false);
+//  3. telemetry.toml `enabled = false` (the per-system runtime switch: off,
+//     even when OTEL_EXPORTER_OTLP_ENDPOINT or the file's endpoint is set);
+//  4. OTEL_EXPORTER_OTLP_ENDPOINT;
+//  5. telemetry.toml `endpoint`.
 //
-// Forced off, in any case: --no-telemetry, PG_NIX_LOG_DISABLE=1,
-// OTEL_SDK_DISABLED=true.
+// An absent `enabled` key means "on iff an endpoint resolves" (the original
+// rule); `enabled = true` without any endpoint resolves to off (there is no
+// default endpoint) and the doctor reports it.
 package telemetrycfg
 
 import (
@@ -50,8 +58,10 @@ const (
 
 // FileConfig is the parsed ~/.config/pn/telemetry.toml. The file is generated
 // by the home-manager module (phillipgreenii.pn.telemetry.*); every key is
-// optional.
+// optional. Enabled is a pointer so "absent" (derive from the endpoint) is
+// distinguishable from an explicit false.
 type FileConfig struct {
+	Enabled     *bool  `toml:"enabled"`
 	Endpoint    string `toml:"endpoint"`
 	WrapperPath string `toml:"wrapper_path"`
 }
@@ -100,7 +110,8 @@ type Flags struct {
 
 // Resolution is the outcome of Resolve.
 type Resolution struct {
-	// Enabled is true iff an endpoint resolved and nothing forced telemetry off.
+	// Enabled is true iff an endpoint resolved and nothing forced telemetry off
+	// (including telemetry.toml `enabled = false`).
 	Enabled bool
 	// Endpoint is the OTLP endpoint; empty when !Enabled.
 	Endpoint string
@@ -110,13 +121,31 @@ type Resolution struct {
 	// (empty if none or if the file was not read). It is only a candidate: pn
 	// MUST apply ValidateSudoWrapper before running it as root.
 	WrapperPath string
-	// Forced names the control that forced telemetry off ("" if none).
+	// Forced names the control that forced telemetry off ("" if none). It is
+	// ForcedByFile when telemetry.toml says `enabled = false`, and
+	// ForcedUnreachable when the collector probe failed (Prepare).
 	Forced string
+	// FileEnabled is telemetry.toml's `enabled` key (nil if absent or the file
+	// was not read).
+	FileEnabled *bool
+	// ProbeErr is the collector-probe failure that turned telemetry off for
+	// the run (Prepare); ProbeEndpoint and ProbeSource name what was probed.
+	// The doctor uses them to report a configured-on but unreachable collector,
+	// which Enabled=false alone would hide.
+	ProbeErr      error
+	ProbeEndpoint string
+	ProbeSource   string
 	// Verbose mirrors Flags.Verbose.
 	Verbose bool
 	// FileErr is a non-fatal telemetry.toml parse/read error, for -v diagnostics.
 	FileErr error
 }
+
+// Forced reasons that are not a flag or an environment variable.
+const (
+	ForcedByFile      = "telemetry.toml enabled = false"
+	ForcedUnreachable = "collector unreachable"
+)
 
 // Inputs are the dependencies of Resolve, injectable for tests.
 type Inputs struct {
@@ -148,6 +177,7 @@ func Resolve(in Inputs) Resolution {
 		res.FileErr = err
 	}
 	res.WrapperPath = file.WrapperPath
+	res.FileEnabled = file.Enabled
 
 	switch {
 	case in.Flags.NoTelemetry:
@@ -158,6 +188,11 @@ func Resolve(in Inputs) Resolution {
 		res.Forced = EnvSDKDisabled + "=true"
 	}
 	if res.Forced != "" {
+		return res
+	}
+
+	if in.Flags.Endpoint == "" && file.Enabled != nil && !*file.Enabled {
+		res.Forced = ForcedByFile
 		return res
 	}
 
@@ -188,10 +223,11 @@ func Prepare(ctx context.Context, args []string, getenv func(string) string, isR
 			if res.Verbose {
 				_, _ = fmt.Fprintln(stderr, UnreachableMessage(res.Endpoint))
 			}
+			res.ProbeErr, res.ProbeEndpoint, res.ProbeSource = err, res.Endpoint, res.Source
 			res.Enabled = false
 			res.Endpoint = ""
 			res.Source = SourceNone
-			res.Forced = "collector unreachable"
+			res.Forced = ForcedUnreachable
 		}
 	}
 	return res

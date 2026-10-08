@@ -174,3 +174,73 @@ func TestNixLogDir(t *testing.T) {
 		})
 	}
 }
+
+// TestResolve_EnabledKeyMatrix is the precedence matrix for telemetry.toml
+// `enabled` against the flag, the environment and the force-off controls
+// (ADR 0028, "Runtime configuration contract").
+func TestResolve_EnabledKeyMatrix(t *testing.T) {
+	const (
+		fileEP = "http://file:4318"
+		envEP  = "http://env:4318"
+		flagEP = "http://flag:4318"
+	)
+	tests := []struct {
+		name       string
+		toml       string // "" = no file at all
+		flags      Flags
+		env        map[string]string
+		isRoot     bool
+		wantOn     bool
+		wantEP     string
+		wantSource string
+		wantForced string
+	}{
+		{name: "absent key, file endpoint: on (legacy rule)", toml: `endpoint = "` + fileEP + `"`, wantOn: true, wantEP: fileEP, wantSource: SourceFile},
+		{name: "enabled true, file endpoint: on", toml: "enabled = true\nendpoint = \"" + fileEP + "\"", wantOn: true, wantEP: fileEP, wantSource: SourceFile},
+		{name: "enabled true, env endpoint, no file endpoint: on", toml: "enabled = true", env: map[string]string{EnvEndpoint: envEP}, wantOn: true, wantEP: envEP, wantSource: SourceEnv},
+		{name: "enabled true, flag endpoint: on", toml: "enabled = true", flags: Flags{Endpoint: flagEP}, wantOn: true, wantEP: flagEP, wantSource: SourceFlag},
+		{name: "enabled true, env beats file endpoint", toml: "enabled = true\nendpoint = \"" + fileEP + "\"", env: map[string]string{EnvEndpoint: envEP}, wantOn: true, wantEP: envEP, wantSource: SourceEnv},
+		{name: "enabled true, no endpoint anywhere: off, not forced", toml: "enabled = true"},
+		{name: "enabled false, file endpoint: off", toml: "enabled = false\nendpoint = \"" + fileEP + "\"", wantForced: ForcedByFile},
+		{name: "enabled false beats env endpoint", toml: "enabled = false\nendpoint = \"" + fileEP + "\"", env: map[string]string{EnvEndpoint: envEP}, wantForced: ForcedByFile},
+		{name: "enabled false, flag endpoint wins (explicit per-run opt-in)", toml: "enabled = false\nendpoint = \"" + fileEP + "\"", flags: Flags{Endpoint: flagEP}, wantOn: true, wantEP: flagEP, wantSource: SourceFlag},
+		{name: "force-off beats enabled true", toml: "enabled = true\nendpoint = \"" + fileEP + "\"", flags: Flags{NoTelemetry: true}, wantForced: "--no-telemetry"},
+		{name: "force-off beats enabled false (force-off reason wins)", toml: "enabled = false", env: map[string]string{EnvWrapDisable: "1"}, wantForced: EnvWrapDisable + "=1"},
+		{name: "force-off beats flag endpoint and enabled false", toml: "enabled = false", flags: Flags{Endpoint: flagEP}, env: map[string]string{EnvSDKDisabled: "true"}, wantForced: EnvSDKDisabled + "=true"},
+		{name: "no file: env endpoint on", env: map[string]string{EnvEndpoint: envEP}, wantOn: true, wantEP: envEP, wantSource: SourceEnv},
+		{name: "root never reads the file, so enabled false is not seen", toml: "enabled = false", env: map[string]string{EnvEndpoint: envEP}, isRoot: true, wantOn: true, wantEP: envEP, wantSource: SourceEnv},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"XDG_CONFIG_HOME": t.TempDir()}
+			if tc.toml != "" {
+				env = writeTOML(t, tc.toml)
+			}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			got := Resolve(Inputs{Flags: tc.flags, Getenv: envMap(env), IsRoot: tc.isRoot})
+			if got.Enabled != tc.wantOn || got.Endpoint != tc.wantEP || got.Source != tc.wantSource || got.Forced != tc.wantForced {
+				t.Fatalf("Resolve = %+v; want on=%v endpoint=%q source=%q forced=%q", got, tc.wantOn, tc.wantEP, tc.wantSource, tc.wantForced)
+			}
+		})
+	}
+}
+
+func TestResolve_FileEnabledIsReported(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want *bool
+	}{
+		{"endpoint = \"http://e\"", nil},
+		{"enabled = true", boolPtr(true)},
+		{"enabled = false", boolPtr(false)},
+	} {
+		got := Resolve(Inputs{Getenv: envMap(writeTOML(t, tc.body))}).FileEnabled
+		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("%q: FileEnabled = %v; want %v", tc.body, got, tc.want)
+		}
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

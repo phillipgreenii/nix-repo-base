@@ -18,18 +18,20 @@
 # matches it, so no path override is needed. That registration is inert until a
 # machine flake imports `repo-base.darwinModules.default`.
 #
-# Telemetry (ADR 0028, optional, OFF by default): `phillipgreenii.pn.telemetry.*`
-# renders `~/.config/pn/telemetry.toml` (endpoint + wrapper_path), the same
-# pattern as store.toml above, and installs the `pg-nix-log-wrapped` package.
-# With `telemetry.enable = false` (the default) NO file is written and the
-# wrapper package is NOT added to `home.packages` (no closure bloat on machines
-# without OTel). The wrapper's default path is `lib.getExe pkgs.pg-nix-log-wrapped`,
-# so the consuming machine repo MUST apply this flake's `overlays.default`
-# (which carries `pkgs.pg-nix-log-wrapped`); the default is lazy, so a machine
-# that never enables telemetry evaluates fine without it. This layer is below
-# support-apps, so it MUST NOT call mkEmitterEnv: the machine repo sets
-# `telemetry.endpoint` from the observability module's option (never a literal
-# port) and leaves it null when observability is off.
+# Telemetry (ADR 0028, always built to emit, switched at RUN time): the tool is
+# ALWAYS built and installed so it can emit telemetry; whether it does is a
+# per-system runtime setting in `~/.config/pn/telemetry.toml`, checked on every
+# run, so flipping it needs no rebuild or re-install. `phillipgreenii.pn.telemetry.*`
+# renders that file on EVERY system (keys `enabled`, `endpoint`, `wrapper_path`),
+# the same pattern as store.toml above, and ALWAYS adds the `pg-nix-log-wrapped`
+# package to `home.packages`. `telemetry.enable` is the value of the file's
+# `enabled` key (default false), NOT an install gate. The wrapper's default path
+# is `lib.getExe pkgs.pg-nix-log-wrapped`, so the consuming machine repo MUST
+# apply this flake's `overlays.default` (which carries `pkgs.pg-nix-log-wrapped`)
+# on every system that enables `phillipgreenii.pn`, whether or not telemetry is
+# on. This layer is below support-apps, so it MUST NOT call mkEmitterEnv: the
+# machine repo sets `telemetry.endpoint` from the observability module's option
+# (never a literal port) and leaves it null when there is no collector.
 {
   config,
   lib,
@@ -53,14 +55,17 @@ let
   tomlFormat = pkgs.formats.toml { };
   tcfg = cfg.telemetry;
 
-  # telemetry.toml: only the keys that have a value are written, so a null
-  # endpoint leaves telemetry OFF (an endpoint is what turns it on; precedence
-  # in pn is --otlp-endpoint, OTEL_EXPORTER_OTLP_ENDPOINT, then this file).
-  # The wrapper_path is honoured by pn under sudo only if it resolves into
-  # /nix/store (ADR 0028).
+  # telemetry.toml is written on EVERY system: `enabled` and `wrapper_path`
+  # always, `endpoint` when non-null (a null endpoint with enabled = true leaves
+  # telemetry off and `pn workspace doctor` warns). `enabled = false` is the
+  # runtime off switch; precedence against the flag, the environment and the
+  # force-off controls is ADR 0028 "Runtime configuration contract". The
+  # wrapper_path is honoured by pn under sudo only if it resolves into
+  # /nix/store.
   telemetryToml = tomlFormat.generate "pn-telemetry.toml" (
     lib.optionalAttrs (tcfg.endpoint != null) { inherit (tcfg) endpoint; }
     // {
+      enabled = tcfg.enable;
       wrapper_path = tcfg.wrapperPath;
     }
   );
@@ -131,16 +136,17 @@ in
     };
 
     telemetry = {
-      enable = mkEnableOption "pn / nix build telemetry (OpenTelemetry over OTLP/HTTP to a local collector). Off permanently when false: no config file is written and the pg-nix-log-wrapped package is not installed";
+      enable = mkEnableOption "emitting pn / nix build telemetry (OpenTelemetry over OTLP/HTTP to a collector). This is the RUNTIME default written to `~/.config/pn/telemetry.toml` as `enabled`, not an install gate: the pn tooling and the pg-nix-log-wrapped package are always installed and `enabled = false` only turns emission off";
 
       endpoint = mkOption {
         type = types.nullOr types.str;
         default = null;
         example = "http://127.0.0.1:4318";
         description = ''
-          OTLP/HTTP collector endpoint written to `~/.config/pn/telemetry.toml`.
-          Telemetry is ON only when an endpoint resolves (flag, then
-          `OTEL_EXPORTER_OTLP_ENDPOINT`, then this file); null leaves it off.
+          OTLP/HTTP collector endpoint written to `~/.config/pn/telemetry.toml`
+          (omitted when null). Telemetry is ON only when the file's `enabled`
+          (from `enable`) is true AND an endpoint resolves (`--otlp-endpoint`,
+          then `OTEL_EXPORTER_OTLP_ENDPOINT`, then this file); null leaves it off.
           The machine repo SHOULD derive this from the observability module's
           http port option instead of a literal.
         '';
@@ -162,8 +168,12 @@ in
   };
 
   config = mkIf cfg.enable {
-    # The wrapper package is added ONLY when telemetry is enabled.
-    home.packages = [ cfg.package ] ++ lib.optional tcfg.enable pkgs.pg-nix-log-wrapped;
+    # Always built to emit: the wrapper is installed on every system, enabled or
+    # not (ADR 0028); whether it emits is the runtime `enabled` key.
+    home.packages = [
+      cfg.package
+      pkgs.pg-nix-log-wrapped
+    ];
 
     # Install store config when searchDirs or any post-GC hook is set
     # (keepDays/keepCount default to the tool's prior hardcoded 14/3).
@@ -173,7 +183,7 @@ in
         {
           ".config/pn/store.toml".source = storeToml;
         }
-      // lib.optionalAttrs tcfg.enable {
+      // {
         ".config/pn/telemetry.toml".source = telemetryToml;
       };
   };
