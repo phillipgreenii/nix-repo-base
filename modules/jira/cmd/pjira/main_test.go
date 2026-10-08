@@ -159,6 +159,43 @@ func TestCLI_Issue(t *testing.T) {
 	}
 }
 
+// TestCLI_IssueStatusCategoryAndParent pins the CLI's issue JSON: status_category
+// and parent are emitted when Jira supplies them, and omitted when it does not.
+func TestCLI_IssueStatusCategoryAndParent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/ENG-2") {
+			_, _ = w.Write([]byte(`{"key":"ENG-2","fields":{"summary":"S","status":{"name":"Open","statusCategory":{"key":"undefined"}},"issuetype":{"name":"Bug"},"labels":[]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Done","statusCategory":{"key":"done"}},"issuetype":{"name":"Bug"},"labels":[],"parent":{"key":"ENG-100"}}}`))
+	}))
+	defer srv.Close()
+	out, err := runCLI(t, srv.URL, "issue", "ENG-1")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if got["status_category"] != "done" || got["parent"] != "ENG-100" {
+		t.Errorf("status_category/parent = %v/%v", got["status_category"], got["parent"])
+	}
+	out, err = runCLI(t, srv.URL, "issue", "ENG-2")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	got = nil
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	for _, k := range []string{"status_category", "parent"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("expected %q omitted, got %v", k, got)
+		}
+	}
+}
+
 func TestCLI_Search(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"issues":[{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}],"isLast":true}`))

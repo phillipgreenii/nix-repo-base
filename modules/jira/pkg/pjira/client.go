@@ -62,12 +62,41 @@ type rawFields struct {
 	Created   string                `json:"created"`
 	Updated   string                `json:"updated"`
 	Duedate   *string               `json:"duedate"`
-	Status    struct{ Name string } `json:"status"`
+	Status    rawStatus             `json:"status"`
 	IssueType struct{ Name string } `json:"issuetype"`
 	Priority  struct{ Name string } `json:"priority"`
 	Project   struct{ Key string }  `json:"project"`
 	Reporter  *rawUser              `json:"reporter"`
 	Assignee  *rawUser              `json:"assignee"`
+	Parent    *struct{ Key string } `json:"parent"`
+}
+
+// rawStatus is the status field: its display name plus the status category,
+// which rides inside the already-requested status field.
+type rawStatus struct {
+	Name           string `json:"name"`
+	StatusCategory struct {
+		Key string `json:"key"`
+	} `json:"statusCategory"`
+}
+
+// statusCategory maps Jira's status category key onto the closed set exposed
+// as Issue.StatusCategory: new, indeterminate, done. Jira's legacy "undefined"
+// category (and any unknown or absent key) maps to the empty string.
+func statusCategory(key string) string {
+	switch key {
+	case "new", "indeterminate", "done":
+		return key
+	}
+	return ""
+}
+
+// parentKey returns the parent issue key, or empty when the issue has no parent.
+func parentKey(p *struct{ Key string }) string {
+	if p == nil {
+		return ""
+	}
+	return p.Key
 }
 
 func (c *Client) mapIssue(key string, f rawFields) Issue {
@@ -76,19 +105,21 @@ func (c *Client) mapIssue(key string, f rawFields) Issue {
 		labels = []string{}
 	}
 	return Issue{
-		Key:       key,
-		Summary:   f.Summary,
-		Status:    f.Status.Name,
-		IssueType: f.IssueType.Name,
-		Labels:    labels,
-		URL:       c.browseURL(key),
-		Priority:  f.Priority.Name,
-		Project:   f.Project.Key,
-		Created:   f.Created,
-		Updated:   f.Updated,
-		Duedate:   f.Duedate,
-		Reporter:  f.Reporter.toUser(),
-		Assignee:  f.Assignee.toUser(),
+		Key:            key,
+		Summary:        f.Summary,
+		Status:         f.Status.Name,
+		StatusCategory: statusCategory(f.Status.StatusCategory.Key),
+		Parent:         parentKey(f.Parent),
+		IssueType:      f.IssueType.Name,
+		Labels:         labels,
+		URL:            c.browseURL(key),
+		Priority:       f.Priority.Name,
+		Project:        f.Project.Key,
+		Created:        f.Created,
+		Updated:        f.Updated,
+		Duedate:        f.Duedate,
+		Reporter:       f.Reporter.toUser(),
+		Assignee:       f.Assignee.toUser(),
 	}
 }
 
@@ -156,7 +187,7 @@ func (c *Client) SearchPage(ctx context.Context, jql string, limit int, exp Expa
 	if strings.TrimSpace(jql) == "" {
 		return nil, fmt.Errorf("pjira: empty jql")
 	}
-	fields := []string{"summary", "status", "issuetype", "labels", "priority", "project", "created", "updated", "duedate", "reporter", "assignee"}
+	fields := []string{"summary", "status", "issuetype", "labels", "priority", "project", "created", "updated", "duedate", "reporter", "assignee", "parent"}
 	if exp.Comments {
 		fields = append(fields, "comment")
 	}
@@ -268,7 +299,7 @@ func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
 		return nil, fmt.Errorf("pjira: empty issue key")
 	}
 	endpoint := c.BaseURL + "/rest/api/3/issue/" + url.PathEscape(key) +
-		"?fields=summary,status,issuetype,labels,priority,project,created,updated,duedate,reporter,assignee"
+		"?fields=summary,status,issuetype,labels,priority,project,created,updated,duedate,reporter,assignee,parent"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err

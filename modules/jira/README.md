@@ -19,6 +19,22 @@ specifics are injected as configuration at the edge.
   an issue; writes `{key,url}`. `--description` is plain text, encoded to Atlassian Document
   Format (`pjira.EncodeADFText`) before being sent.
 
+### Issue JSON
+
+`pjira issue` returns one issue object; `pjira search` returns the same object for
+each entry of `items`. Always present: `key`, `summary`, `status`, `issuetype`,
+`labels`, `url`. Optional fields are omitted when empty, including:
+
+- `status_category` — Jira's status category key for the issue's status, one of
+  `new` (To Do), `indeterminate` (In Progress) or `done`. Lets a consumer ask
+  "is it finished" without listing workflow-specific status names. The legacy
+  "No Category" (`undefined`) and an absent category are both omitted.
+- `parent` — the key of the parent issue (the Epic of a child issue, or the
+  parent of a sub-task), e.g. `ENG-100`. Omitted when the issue has no parent.
+
+Epic membership is read from `parent` only; the legacy Epic Link custom field is
+not read (no tenant-specific custom field ids live in `pkg/pjira`).
+
 ### Configuration
 
 The default config path is `$XDG_CONFIG_HOME/pjira/config.toml` (or

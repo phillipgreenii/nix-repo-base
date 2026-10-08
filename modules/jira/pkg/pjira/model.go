@@ -46,9 +46,15 @@ type Comment struct {
 
 // Issue is the unified normalized issue returned by GetIssue and Search.
 type Issue struct {
-	Key       string           `json:"key"`
-	Summary   string           `json:"summary"`
-	Status    string           `json:"status"`
+	Key     string `json:"key"`
+	Summary string `json:"summary"`
+	Status  string `json:"status"`
+	// StatusCategory is Jira's status category key: new, indeterminate or done.
+	// Empty (omitted) when Jira reports the legacy "undefined" category or none.
+	StatusCategory string `json:"status_category,omitempty"`
+	// Parent is the parent issue key (for a child of an Epic, or a sub-task's
+	// parent). Empty (omitted) when the issue has no parent.
+	Parent    string           `json:"parent,omitempty"`
 	IssueType string           `json:"issuetype"`
 	Labels    []string         `json:"labels"`
 	URL       string           `json:"url"`

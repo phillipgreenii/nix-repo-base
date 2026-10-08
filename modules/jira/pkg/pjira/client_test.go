@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -939,5 +941,110 @@ func TestClient_requestConstructionErrorsSurface(t *testing.T) {
 	}
 	if state != AuthError {
 		t.Errorf("AuthStatus state = %s, want %s", state, AuthError)
+	}
+}
+
+// TestPjiraStatusCategoryDecoded pins the status category mapping for GetIssue
+// and Search: the three real categories pass through, the legacy "undefined"
+// category (and an unknown key) maps to empty, and an absent category is empty.
+func TestPjiraStatusCategoryDecoded(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{"new", `{"name":"To Do","statusCategory":{"key":"new"}}`, "new"},
+		{"indeterminate", `{"name":"In Progress","statusCategory":{"key":"indeterminate"}}`, "indeterminate"},
+		{"done", `{"name":"Done","statusCategory":{"key":"done"}}`, "done"},
+		{"undefined maps to empty", `{"name":"Legacy","statusCategory":{"key":"undefined"}}`, ""},
+		{"unknown key maps to empty", `{"name":"Odd","statusCategory":{"key":"surprise"}}`, ""},
+		{"category absent", `{"name":"Open"}`, ""},
+	}
+	for _, c := range cases {
+		issueBody := `{"key":"ENG-1","fields":{"summary":"S","status":` + c.status + `,"issuetype":{"name":"Bug"},"labels":[]}}`
+		searchBody := `{"issues":[` + issueBody + `],"isLast":true}`
+		t.Run("GetIssue/"+c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(issueBody))
+			}))
+			defer srv.Close()
+			got, err := testClient(srv).GetIssue(context.Background(), "ENG-1")
+			if err != nil {
+				t.Fatalf("GetIssue: %v", err)
+			}
+			if got.StatusCategory != c.want {
+				t.Errorf("StatusCategory = %q, want %q", got.StatusCategory, c.want)
+			}
+		})
+		t.Run("Search/"+c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(searchBody))
+			}))
+			defer srv.Close()
+			res, err := testClient(srv).Search(context.Background(), "project = ENG", 10, ExpandOpts{})
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if len(res.Items) != 1 || res.Items[0].StatusCategory != c.want {
+				t.Errorf("items = %+v, want StatusCategory %q", res.Items, c.want)
+			}
+		})
+	}
+}
+
+// TestPjiraParentDecoded pins the parent KEY mapping for GetIssue and Search,
+// and that both requests ask Jira for the parent field.
+func TestPjiraParentDecoded(t *testing.T) {
+	cases := []struct {
+		name   string
+		parent string
+		want   string
+	}{
+		{"child of an epic", `,"parent":{"id":"10","key":"ENG-100","fields":{"summary":"E"}}`, "ENG-100"},
+		{"explicit null", `,"parent":null`, ""},
+		{"absent", ``, ""},
+	}
+	for _, c := range cases {
+		issueBody := `{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]` + c.parent + `}}`
+		searchBody := `{"issues":[` + issueBody + `],"isLast":true}`
+		t.Run("GetIssue/"+c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.Contains(r.URL.RawQuery, "parent") {
+					t.Errorf("GetIssue fields query must include parent, got %q", r.URL.RawQuery)
+				}
+				_, _ = w.Write([]byte(issueBody))
+			}))
+			defer srv.Close()
+			got, err := testClient(srv).GetIssue(context.Background(), "ENG-1")
+			if err != nil {
+				t.Fatalf("GetIssue: %v", err)
+			}
+			if got.Parent != c.want {
+				t.Errorf("Parent = %q, want %q", got.Parent, c.want)
+			}
+		})
+		t.Run("Search/"+c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				var req struct {
+					Fields []string `json:"fields"`
+				}
+				if err := json.Unmarshal(b, &req); err != nil {
+					t.Errorf("request body: %v", err)
+				}
+				if !slices.Contains(req.Fields, "parent") {
+					t.Errorf("Search fields must include parent, got %v", req.Fields)
+				}
+				_, _ = w.Write([]byte(searchBody))
+			}))
+			defer srv.Close()
+			res, err := testClient(srv).Search(context.Background(), "project = ENG", 10, ExpandOpts{})
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if len(res.Items) != 1 || res.Items[0].Parent != c.want {
+				t.Errorf("items = %+v, want Parent %q", res.Items, c.want)
+			}
+		})
 	}
 }
