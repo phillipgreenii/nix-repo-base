@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	osexec "os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -113,10 +112,8 @@ func (r *fsNixRunner) Run(ctx context.Context, name string, args []string, opts 
 // Returns the repo dir and a writer that overwrites flake.lock.
 func propEnv(t *testing.T, flakeFileRel, initialLock string) (dir string, writeLock func(string)) {
 	t.Helper()
-	dir = t.TempDir()
-	runGit(t, dir, "init", "-q")
-	runGit(t, dir, "config", "user.email", "t@t")
-	runGit(t, dir, "config", "user.name", "t")
+	dir = filepath.Join(t.TempDir(), "repo")
+	newFixtureRepo(t, dir)
 	flakeFile := filepath.Join(dir, flakeFileRel)
 	flakeDir := filepath.Dir(flakeFile)
 	if err := osMkdirAll(flakeDir); err != nil {
@@ -129,8 +126,8 @@ func propEnv(t *testing.T, flakeFileRel, initialLock string) (dir string, writeL
 	if err := osWrite(lockPath, initialLock); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGitT(t, dir, "add", "-A")
+	runGitT(t, dir, "commit", "-qm", "init")
 	return dir, func(s string) {
 		if err := osWrite(lockPath, s); err != nil {
 			t.Fatal(err)
@@ -262,20 +259,15 @@ func TestPropagate_FlakeRelViaResolveFlakePath(t *testing.T) {
 	root := t.TempDir()
 	const repoKey = "foo"
 	dir := filepath.Join(root, repoKey)
-	if err := osMkdirAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, dir, "init", "-q")
-	runGit(t, dir, "config", "user.email", "t@t")
-	runGit(t, dir, "config", "user.name", "t")
+	newFixtureRepo(t, dir)
 	if err := osWrite(filepath.Join(dir, "flake.nix"), "{ }\n"); err != nil { // FILE
 		t.Fatal(err)
 	}
 	if err := osWrite(filepath.Join(dir, "flake.lock"), lockWith("1111111111111111111111111111111111111111", 1)); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGitT(t, dir, "add", "-A")
+	runGitT(t, dir, "commit", "-qm", "init")
 
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		if err := osWrite(filepath.Join(dir, "flake.lock"), lockWith("2222222222222222222222222222222222222222", 2)); err != nil {
@@ -487,48 +479,18 @@ url = "github:owner/foo"
 	}
 }
 
-// --- small git/file helpers (kept local to avoid touching shared helpers) ---
-
-// hermeticGitCmd builds a `git -C dir args...` command whose env ignores the
-// developer's global/system git config (see realgit_test.go's TestMain and
-// gitConfigIsolationEnv) so these local propagate helpers stay hermetic — e.g.
-// a global core.fsmonitor=true never leaks into the temp repo (pg2-39rz2).
-func hermeticGitCmd(dir string, args ...string) *osexec.Cmd {
-	full := append([]string{"-C", dir}, args...)
-	cmd := osexec.Command("git", full...)
-	cmd.Env = os.Environ()
-	for k, v := range gitConfigIsolationEnv() {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	return cmd
-}
-
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	if out, err := hermeticGitCmd(dir, args...).CombinedOutput(); err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
-}
-
-func gitOut(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	out, err := hermeticGitCmd(dir, args...).Output()
-	if err != nil {
-		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
-	}
-	return strings.TrimSpace(string(out))
-}
+// --- small git/file helpers (git runs through realgit_test.go's runGitT) ---
 
 func commitCount(t *testing.T, dir string) int {
 	var n int
-	_, _ = fmt.Sscanf(gitOut(t, dir, "rev-list", "--count", "HEAD"), "%d", &n)
+	_, _ = fmt.Sscanf(runGitT(t, dir, "rev-list", "--count", "HEAD"), "%d", &n)
 	return n
 }
 
-func headSubject(t *testing.T, dir string) string { return gitOut(t, dir, "log", "-1", "--format=%s") }
+func headSubject(t *testing.T, dir string) string { return runGitT(t, dir, "log", "-1", "--format=%s") }
 
 func commitFiles(t *testing.T, dir string) []string {
-	out := gitOut(t, dir, "show", "--name-only", "--format=", "HEAD")
+	out := runGitT(t, dir, "show", "--name-only", "--format=", "HEAD")
 	var files []string
 	for _, l := range strings.Split(out, "\n") {
 		if l = strings.TrimSpace(l); l != "" {
@@ -541,7 +503,7 @@ func commitFiles(t *testing.T, dir string) []string {
 
 func assertCleanTree(t *testing.T, dir string) {
 	t.Helper()
-	if s := gitOut(t, dir, "status", "--porcelain"); s != "" {
+	if s := runGitT(t, dir, "status", "--porcelain"); s != "" {
 		t.Errorf("working tree not clean:\n%s", s)
 	}
 }

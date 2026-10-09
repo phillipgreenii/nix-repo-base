@@ -192,25 +192,21 @@ func runGitT(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// initRealRepo creates a real git repo at dir with an initial commit on main
-// (README.md). The repo is an x/gitfixture repository named filepath.Base(dir)
-// under the fixture root filepath.Dir(dir), so several repos created beside one
-// another (dep/consumer, alpha/beta) share one hermetic fixture root. It uses
-// gitfixture.NewRepo (the core gittest.New wraps) rather than gittest.New
-// because callers dictate dir, while gittest.New always picks its own t.TempDir.
-func initRealRepo(t *testing.T, dir string) {
+// newFixtureRepo creates an empty (unborn) x/gitfixture repository named
+// filepath.Base(dir) under the fixture root filepath.Dir(dir) and registers it
+// so runGitT resolves dir to its hermetic client. dir MUST NOT exist yet.
+// Several repos created beside one another (dep/consumer, alpha/beta) share one
+// hermetic fixture root. It uses gitfixture.NewRepo (the core gittest.New wraps)
+// rather than gittest.New because callers dictate dir, while gittest.New always
+// picks its own t.TempDir.
+func newFixtureRepo(t *testing.T, dir string) *gitfixture.Repo {
 	t.Helper()
-	// Callers may have pre-created dir, even populated (openHookWS drops a
-	// flake.nix into each repo dir). gitfixture refuses an explicitly named repo
-	// that already exists, so park the existing entries aside, create the repo,
-	// and restore them so the initial commit still contains them.
-	held := holdExistingEntries(t, dir)
 	r, err := gitfixture.NewRepo(t.Context(), filepath.Dir(dir), gitfixture.RepoOptions{
 		Suite: t.Name(),
 		Name:  filepath.Base(dir),
 	})
 	if err != nil {
-		t.Fatalf("initRealRepo(%s): %v", dir, err)
+		t.Fatalf("newFixtureRepo(%s): %v", dir, err)
 	}
 	registerFixture(t, r)
 	// gitfixture points core.hooksPath at its empty hooks dir (an extra guard
@@ -219,8 +215,21 @@ func initRealRepo(t *testing.T, dir string) {
 	// redirect: pn's hook-bundle code reads core.hooksPath and the hook tests
 	// install hooks under .git/hooks.
 	if _, err := r.Client.Run(t.Context(), "config", "--unset", "core.hooksPath"); err != nil {
-		t.Fatalf("initRealRepo(%s): unsetting core.hooksPath: %v", dir, err)
+		t.Fatalf("newFixtureRepo(%s): unsetting core.hooksPath: %v", dir, err)
 	}
+	return r
+}
+
+// initRealRepo creates a real git repo at dir with an initial commit on main
+// (README.md), via newFixtureRepo.
+func initRealRepo(t *testing.T, dir string) {
+	t.Helper()
+	// Callers may have pre-created dir, even populated (openHookWS drops a
+	// flake.nix into each repo dir). gitfixture refuses an explicitly named repo
+	// that already exists, so park the existing entries aside, create the repo,
+	// and restore them so the initial commit still contains them.
+	held := holdExistingEntries(t, dir)
+	r := newFixtureRepo(t, dir)
 	for _, name := range held.names {
 		if err := os.Rename(filepath.Join(held.dir, name), filepath.Join(r.Dir, name)); err != nil {
 			t.Fatalf("initRealRepo(%s): restoring %s: %v", dir, name, err)
