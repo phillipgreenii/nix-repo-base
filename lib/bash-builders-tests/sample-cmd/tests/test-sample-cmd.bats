@@ -48,3 +48,13 @@ run_cmd() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"Unknown option: --bogus"* ]]
 }
+
+@test "nix check exports GFH_LIB as a readable git-fixture-harness.bash (tc-4i1ke)" {
+  # Only the nix check (SCRIPT_UNDER_TEST is exported by mkBashScript's check)
+  # is obliged to provide GFH_LIB; local runs get it from the workspace .envrc.
+  [[ -n ${SCRIPT_UNDER_TEST:-} ]] || skip "not running under the nix package check"
+  [ -n "${GFH_LIB:-}" ]
+  [[ "$GFH_LIB" == *-git-fixture-harness.bash ]]
+  [ -r "$GFH_LIB" ]
+  grep -q 'gfh_setup' "$GFH_LIB"
+}

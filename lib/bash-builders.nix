@@ -14,6 +14,12 @@ let
   versionLib = import ./version.nix;
   gitHash = versionLib.mkGitHash (self.rev or self.dirtyRev or null);
 
+  # GFH_LIB: path to the shared hermetic git-fixture-harness.bash. Exported by
+  # every package-level bats check (independent of testSupport, which is a
+  # directory and is optional) so suites can require GFH_LIB alone (tc-4i1ke).
+  gfhLib = ./scripts/git-fixture-harness.bash;
+  gfhExport = ''export GFH_LIB="${gfhLib}"'';
+
   # mkBashLibrary — build a sourceable bash library with dependency chaining
   #
   # Arguments:
@@ -78,6 +84,7 @@ let
           ''
             shellcheck -e SC1091 ${src}/${name}.bash
             export LIB_PATH="${composedLib}"
+            ${gfhExport}
             ${lib.optionalString (testSupport != null) ''
               export TEST_SUPPORT="${testSupport}"
               export BATS_SUPPORT_PATH="$TMPDIR"
@@ -407,6 +414,7 @@ let
             ${lib.optionalString (libraries != [ ]) ''
               export LIB_PATH="${lib.concatMapStringsSep ":" (dep: "${dep.lib}") libraries}"
             ''}
+            ${gfhExport}
             ${lib.optionalString (testSupport != null) ''
               export TEST_SUPPORT="${testSupport}"
               export BATS_SUPPORT_PATH="$TMPDIR"

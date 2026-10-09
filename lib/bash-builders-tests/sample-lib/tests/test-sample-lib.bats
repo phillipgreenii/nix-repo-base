@@ -52,3 +52,12 @@ setup() {
   run sample_add
   [ "$status" -ne 0 ]
 }
+
+@test "nix check exports GFH_LIB as a readable git-fixture-harness.bash (tc-4i1ke)" {
+  # LIB_PATH is a file only under the nix composed-library check.
+  [[ -f ${LIB_PATH} ]] || skip "not running under the nix package check"
+  [ -n "${GFH_LIB:-}" ]
+  [[ "$GFH_LIB" == *-git-fixture-harness.bash ]]
+  [ -r "$GFH_LIB" ]
+  grep -q 'gfh_setup' "$GFH_LIB"
+}
