@@ -168,6 +168,13 @@ You don't need to push branches for builds to work. `pn workspace build/flake-ch
 
 A failing remote build is **not** a reason to push agent-only branches.
 
+**Working in the workspace with its overrides is SUFFICIENT; nothing blocks on a push or a relock** (operator ruling, Phillip, 2026-10-09). `pn workspace build/apply/flake-check` inject `--override-input <alias> git+file://<local-clone>` for every workspace sibling, so a change that is landed locally but unpushed, or a consumer's `flake.lock` that still pins an older sibling rev, is already built from the local clones. The operator owns publishing and relocking and does them later, on their own schedule.
+
+- A green `pn workspace build` (or `flake-check`) is the completion bar for workspace work. An agent MUST NOT treat "not yet pushed" or "not yet relocked" as unfinished work, MUST NOT report it as a blocker, and MUST NOT park, defer, `human`-label, or add a blocking edge to a bead because of it.
+- An agent MUST NOT file a bead whose job is only to push or relock, and MUST NOT make another bead depend on one. A bead that exists today solely to await a push or relock is moot for dependents: its dependents are unblocked by the overrides.
+- A verification MUST run with the overrides (`pn workspace build`, `pn workspace flake-check`, or a hand-built `--override-input` command per the worktree workaround in the repo's `CLAUDE.md`). A plain locked eval (`nix eval --no-write-lock-file`, a bare `nix build` against the committed `flake.lock`) answers a different question — how the published lock resolves — and its failure is NOT a reason to block work, only a note that a relock will be needed when the operator publishes.
+- This restates, and does not relax, the restraint above: an agent still MUST NOT run `pn workspace push`, `update` or `apply` on its own initiative.
+
 **`pn workspace push` is the ONLY thing in this workspace that pushes.** `pn workspace update`
 (including `--siblings-only`) is local-only — it fetches and relocks, and never writes to a remote
 (ADR 0023). `push` is also the only thing that CONVERGES workspace-sibling flake locks across
