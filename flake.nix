@@ -2077,6 +2077,28 @@
                   touch $out
                 '';
 
+            # Bead pg2-fvejk acceptance: the rendered pg-test-runner config reports a
+            # 900s cap for the modules/pn project path suffix, while the global
+            # default stays 300s.
+            pg-test-runner-config-pn-timeout =
+              pkgs.runCommand "check-pg-test-runner-config-pn-timeout"
+                {
+                  nativeBuildInputs = [ pkgs.jq ];
+                }
+                ''
+                  set -euo pipefail
+                  cfg=${pgTestRunnerRepoConfigJson}
+                  jq -e '.timeoutSeconds == 300' "$cfg" >/dev/null || {
+                    echo "FAIL: default timeoutSeconds is not 300" >&2
+                    exit 1
+                  }
+                  jq -e '.projectTimeouts["modules/pn"] == 900' "$cfg" >/dev/null || {
+                    echo "FAIL: projectTimeouts has no 900s cap for modules/pn" >&2
+                    exit 1
+                  }
+                  touch $out
+                '';
+
             # Cross-check `pgm_pkg_hash` (modules/pg-go-mutate/lib/pg-go-mutate-lib.bash) against
             # the Go pkghash.Compute implementation (pg-go-mutate-tui/internal/pkghash) on the same
             # fixture. Originally a bats test inside pg-go-mutate-lib's OWN check

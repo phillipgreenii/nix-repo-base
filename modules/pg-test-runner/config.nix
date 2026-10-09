@@ -62,9 +62,18 @@
   # or weakened; 900s is ~2x the loaded run so a loaded machine still passes
   # while a genuinely hung suite is still killed. (Operator ruling, Phillip,
   # 2026-10-08: "ok, raise the cap.")
+  #
+  # modules/pn (pg2-fvejk): its Go suite (internal/workspace alone is ~250s)
+  # hit the 300s cap on 3 of 4 pre-commit/pre-land runs under load average
+  # 23-187 (observed 2026-10-09 landing pg2-y59kf), every listed package
+  # passing. The tests are NOT skipped or weakened; 900s is a ~2x+ loaded run
+  # so a loaded machine passes while a genuinely hung suite is still killed.
+  # (900 is the orchestrator's default by the df-survey precedent; the bead
+  # left the value operator-chosen, so it is reversible.)
   projectTimeouts = {
     "packages/claude-extended-tool-approver" = 900;
     "modules/daily-focus/df-survey" = 900;
+    "modules/pn" = 900;
   };
   ignore = [
     ".git/"
