@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -19,12 +18,6 @@ import (
 // End to end with the real binary: a SIGTERM-killed pn still flushes its
 // spans to the collector, within the bounded timeout.
 func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
-	for _, kv := range os.Environ() {
-		if k, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "GIT_") {
-			t.Setenv(k, "")
-			_ = os.Unsetenv(k)
-		}
-	}
 	var traces atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/traces" {
@@ -54,8 +47,7 @@ func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
 	home := t.TempDir()
 	cmd := exec.Command(pnBinary, "workspace", "pre-commit-check")
 	cmd.Dir = root
-	cmd.Env = append(
-		os.Environ(),
+	cmd.Env = pnEnv(
 		"PATH="+bin+":"+os.Getenv("PATH"),
 		"HOME="+home,
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+srv.URL,

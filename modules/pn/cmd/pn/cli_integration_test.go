@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/phillipgreenii/x/gitfixture"
+	"github.com/phillipgreenii/x/gittest"
 )
 
 var pnBinary string
@@ -18,45 +21,28 @@ func TestMain(m *testing.M) {
 	os.Exit(runIntegrationTests(m))
 }
 
-func runIntegrationTests(m *testing.M) int {
-	// Unset every git-location env var BEFORE any test runs (pg2-kersl,
-	// mechanism proven in pg2-67h4y's design field). A git hook (pre-commit/
-	// prek, invoking `go test` for this package as its run-unit-tests hook)
-	// exports GIT_DIR/GIT_INDEX_FILE for the commit in progress when the commit
-	// runs from a linked worktree, and this test binary inherits that. `-C
-	// <dir>`, cmd.Dir, and even an explicit path argument (the bare
-	// exec.Command("git", "init", repoDir) in TestIntegration_WorkspaceStatus
-	// below, which sets no Env at all) do NOT override these — git's own repo
-	// discovery consults the environment FIRST — so that `git init` would
-	// otherwise silently re-init the AMBIENT repo (the canonical clone this
-	// worktree links to) instead of the fixture directory. Unsetting these
-	// here, once, for the whole process is sufficient: nothing in this
-	// package's tests re-sets them.
-	for _, k := range []string{
-		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES",
-		"GIT_COMMON_DIR", "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
-	} {
-		_ = os.Unsetenv(k)
-	}
-
-	// Make git hermetic for the whole integration suite: redirect global and
-	// system git config to /dev/null so neither the harness `git init` below nor
-	// the pn binary's own git invocations (e.g. `git status` from
-	// `pn workspace status`) inherit the developer's ~/.gitconfig / XDG global
-	// config. On a machine with core.fsmonitor=true in global config, that temp
-	// repo would otherwise enable the built-in fsmonitor and `git status` would
-	// spawn/contend for `git fsmonitor--daemon`; a wedged daemon blocks the IPC
-	// socket and hangs the suite to go's panic timeout (bead pg2-39rz2). Setenv
-	// (not a per-command env) so the pn subprocess inherits it via os.Environ().
-	for k, v := range map[string]string{
-		"GIT_CONFIG_GLOBAL": "/dev/null",
-		"GIT_CONFIG_SYSTEM": "/dev/null",
-	} {
-		if err := os.Setenv(k, v); err != nil {
-			panic("cli_integration_test: os.Setenv " + k + ": " + err.Error())
+// pnEnv is the environment for a subprocess that runs the pn binary (or builds
+// it): the test process's environment with every GIT_* variable dropped and the
+// global/system git config redirected to /dev/null. The test fixtures
+// (x/gittest) are hermetic by construction, but the pn binary runs its own git
+// subprocesses and would otherwise inherit what a git hook exports (GIT_DIR and
+// friends from the commit in progress, which discovery consults FIRST) and the
+// developer's ~/.gitconfig (a global core.fsmonitor=true makes `git status`
+// contend for a possibly wedged fsmonitor daemon and hang the suite, pg2-39rz2).
+// Scoping this to the subprocess, rather than mutating the test process, keeps
+// the fixtures honest: they must not depend on a pre-scrubbed environment.
+func pnEnv(extra ...string) []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			env = append(env, kv)
 		}
 	}
+	env = append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	return append(env, extra...)
+}
 
+func runIntegrationTests(m *testing.M) int {
 	// Build the pn binary once for all integration tests.
 	tmp, err := os.MkdirTemp("", "pn-binary-")
 	if err != nil {
@@ -65,6 +51,7 @@ func runIntegrationTests(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(tmp) }()
 	pnBinary = filepath.Join(tmp, "pn")
 	cmd := exec.Command("go", "build", "-ldflags", "-X main.Version=20260531-test", "-o", pnBinary, ".")
+	cmd.Env = pnEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -86,7 +73,9 @@ func TestIntegration_Version(t *testing.T) {
 func TestIntegration_RejectsDevVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 	devBinary := filepath.Join(tmpDir, "pn-dev")
-	if err := exec.Command("go", "build", "-o", devBinary, ".").Run(); err != nil {
+	build := exec.Command("go", "build", "-o", devBinary, ".")
+	build.Env = pnEnv()
+	if err := build.Run(); err != nil {
 		t.Fatal(err)
 	}
 	out, err := exec.Command(devBinary, "--version").CombinedOutput()
@@ -99,14 +88,10 @@ func TestIntegration_RejectsDevVersion(t *testing.T) {
 }
 
 func TestIntegration_WorkspaceStatus(t *testing.T) {
-	workspaceRoot := t.TempDir()
-	repoDir := filepath.Join(workspaceRoot, "test-repo")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := exec.Command("git", "init", repoDir).Run(); err != nil {
-		t.Fatal(err)
-	}
+	// The hermetic fixture repo (x/gittest) is the workspace's only repo; the
+	// workspace root is the fixture tree that contains it, at <root>/test-repo.
+	fixture := gittest.New(t, gitfixture.RepoOptions{Suite: "pn-integration", Name: "test-repo"})
+	workspaceRoot := filepath.Dir(fixture.Dir)
 	tomlPath := filepath.Join(workspaceRoot, "pn-workspace.toml")
 	if err := os.WriteFile(tomlPath, []byte(`
 [repos.test-repo]
@@ -117,6 +102,7 @@ url = "github:test/test-repo"
 
 	cmd := exec.Command(pnBinary, "workspace", "status")
 	cmd.Dir = workspaceRoot
+	cmd.Env = pnEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("workspace status: %v: %s", err, out)

@@ -5,11 +5,12 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/phillipgreenii/x/gitfixture"
+	"github.com/phillipgreenii/x/gittest"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -27,16 +28,12 @@ import (
 // `workspace status` exercises pn.verb > pn.repo > pn.exec deterministically.
 func withTracedWorkspace(t *testing.T) {
 	t.Helper()
-	scrubGitEnv(t)
-	root := t.TempDir()
-	for _, n := range []string{"alpha", "beta"} {
-		dir := filepath.Join(root, n)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v: %s", err, out)
-		}
+	// Hermetic sibling repos alpha and beta (x/gittest) under one workspace root.
+	alpha := gittest.New(t, gitfixture.RepoOptions{Suite: "pn-telemetry", Name: "alpha"})
+	beta := gittest.NewSibling(t, alpha, "beta", gitfixture.RepoOptions{})
+	root := filepath.Dir(alpha.Dir)
+	if filepath.Dir(beta.Dir) != root {
+		t.Fatalf("alpha (%s) and beta (%s) do not share a workspace root", alpha.Dir, beta.Dir)
 	}
 	toml := "[repos.alpha]\nurl = \"github:o/alpha\"\n\n[repos.beta]\nurl = \"github:o/beta\"\n"
 	if err := os.WriteFile(filepath.Join(root, workspace.ConfigFileName), []byte(toml), 0o644); err != nil {
@@ -283,19 +280,6 @@ func TestExecuteAndShutdown_ShutdownFailureDoesNotChangeOutcome(t *testing.T) {
 		}
 		if strings.Contains(e2.String(), "collector exploded") {
 			t.Errorf("shutdown failure leaked to stderr: %q", e2.String())
-		}
-	}
-}
-
-// scrubGitEnv removes GIT_* variables (a git hook run exports the committing
-// repository's git-dir/index variables) so `git init` and gitclient act on the
-// temp repos the test builds, not on the repository that is committing.
-func scrubGitEnv(t *testing.T) {
-	t.Helper()
-	for _, kv := range os.Environ() {
-		if k, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "GIT_") {
-			t.Setenv(k, "")
-			_ = os.Unsetenv(k)
 		}
 	}
 }
