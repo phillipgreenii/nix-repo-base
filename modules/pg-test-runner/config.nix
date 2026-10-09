@@ -70,10 +70,15 @@
   # so a loaded machine passes while a genuinely hung suite is still killed.
   # (900 is the orchestrator's default by the df-survey precedent; the bead
   # left the value operator-chosen, so it is reversible.)
+  #
+  # packages/pg-desk (phillipgreenii-nix-agent-support, bead tc-fz1vr): its
+  # `go test -race ./...` suite takes ~211s standalone and exceeds the 300s
+  # default under load. Same rationale and 3x cap as above; tests not weakened.
   projectTimeouts = {
     "packages/claude-extended-tool-approver" = 900;
     "modules/daily-focus/df-survey" = 900;
     "modules/pn" = 900;
+    "packages/pg-desk" = 900;
   };
   ignore = [
     ".git/"
