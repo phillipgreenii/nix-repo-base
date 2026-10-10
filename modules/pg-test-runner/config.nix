@@ -74,6 +74,16 @@
   # packages/pg-desk (phillipgreenii-nix-agent-support, bead tc-fz1vr): its
   # `go test -race ./...` suite takes ~211s standalone and exceeds the 300s
   # default under load. Same rationale and 3x cap as above; tests not weakened.
+  #
+  # packages/pg-desk, further evidence (pg2-3ejv4): its
+  # `go test -race ./...` suite timed out the commit-time hook on 3 consecutive
+  # attempts at load average 125-170 (cmd/pg-desk alone took 219s) with every
+  # package printing ok, and passed at load ~78 (observed 2026-10-09, pg2-0n4na).
+  # The tests and -race are NOT skipped or weakened; 900s keeps the same
+  # ~3x-the-loaded-run margin as the entries above while a genuinely hung
+  # suite is still killed. A timeout still reports as a failure (exit 10),
+  # never as a pass. (900 by the df-survey/pn precedent; the bead left the
+  # value to the orchestrator, so it is reversible.)
   projectTimeouts = {
     "packages/claude-extended-tool-approver" = 900;
     "modules/daily-focus/df-survey" = 900;

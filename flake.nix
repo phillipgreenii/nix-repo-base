@@ -2099,6 +2099,28 @@
                   touch $out
                 '';
 
+            # Bead pg2-3ejv4 acceptance: the rendered pg-test-runner config reports a
+            # 900s cap for the packages/pg-desk project path suffix, while the global
+            # default stays 300s.
+            pg-test-runner-config-pg-desk-timeout =
+              pkgs.runCommand "check-pg-test-runner-config-pg-desk-timeout"
+                {
+                  nativeBuildInputs = [ pkgs.jq ];
+                }
+                ''
+                  set -euo pipefail
+                  cfg=${pgTestRunnerRepoConfigJson}
+                  jq -e '.timeoutSeconds == 300' "$cfg" >/dev/null || {
+                    echo "FAIL: default timeoutSeconds is not 300" >&2
+                    exit 1
+                  }
+                  jq -e '.projectTimeouts["packages/pg-desk"] == 900' "$cfg" >/dev/null || {
+                    echo "FAIL: projectTimeouts has no 900s cap for packages/pg-desk" >&2
+                    exit 1
+                  }
+                  touch $out
+                '';
+
             # Cross-check `pgm_pkg_hash` (modules/pg-go-mutate/lib/pg-go-mutate-lib.bash) against
             # the Go pkghash.Compute implementation (pg-go-mutate-tui/internal/pkghash) on the same
             # fixture. Originally a bats test inside pg-go-mutate-lib's OWN check

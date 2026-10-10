@@ -288,6 +288,27 @@ Precedence when classes mix: `2`/`13` preempt at startup and `12` at resolution 
 during execution the run continues across projects and the final exit is `10` if anything
 failed, else `11` if any tool was missing, else `0`.
 
+#### Timeout handling under load (bead pg2-3ejv4)
+
+A correct commit MUST be able to land when the host is heavily loaded (load average 125-170 made
+`packages/pg-desk`'s `go test -race ./...` exceed the 300s default on three consecutive commit-time
+runs, every package `ok`). The policy is: a project whose suite is legitimately slow under load gets
+its OWN larger cap through `projectTimeouts` (section 2.1; precedent: df-survey, `modules/pn`,
+claude-extended-tool-approver, and now `packages/pg-desk` at 900s). The default stays `300`, and a
+timeout MUST still exit `10` — it MUST NOT read as a pass. Alternatives evaluated:
+
+- Per-project `projectTimeouts` override: ADOPTED. Mechanism already exists, no code or contract
+  change, scoped to the slow project, keeps hung-suite detection (kill at 900s).
+- Scale the cap with load average or a CPU-time budget: REJECTED for now. Load-scaled caps make the
+  verdict non-deterministic across machines and hide a genuinely hung suite exactly when load is
+  high; a CPU-time budget needs per-OS accounting of a process tree the runner does not own.
+- Distinct exit status for "timed out, every completed test passed": REJECTED. Go prints `ok` per
+  package, but the runner is language-agnostic and cannot know the unrun packages passed; a status
+  callers may read as "retry" would turn a partial run into a softer pass and change the section 2.6
+  contract that every non-zero tool exit maps to `10`.
+- Drop `-race` from the commit-time stage: REJECTED. It weakens what the gate verifies, which is
+  the one thing this change must not do.
+
 ### 2.7 Output
 
 One summary line per project run: project path, language, pass/fail counts, duration. Silent on
