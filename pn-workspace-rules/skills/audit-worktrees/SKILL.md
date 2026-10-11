@@ -52,6 +52,13 @@ action it takes is executed by a skill or tool that already implements that acti
 
 - MUST run the liveness check (Step 2a) before any research or action on a candidate that has a
   worktree. MUST NOT act on, or write a bead about, a candidate a blocking process (per Step 2a's allow-list) is anchored in.
+- MUST run the drain-claim guard (Step 3a) before dispatching `wtdone` for any candidate whose
+  branch is merged into the primary. MUST NOT remove a candidate whose correlated bead is
+  `in_progress` or has a non-empty assignee or lease ("claimed by live drain session"), and MUST
+  NOT treat a branch with zero commits of its own ahead of the primary as merged while its bead is
+  not `closed`: a freshly isolated drain worktree is vacuously an ancestor of the primary, and the
+  Step 2a `lsof` probe cannot see a drain-pool session. If the bead lookup fails, MUST fail closed
+  (leave the candidate in place).
 - MUST check a correlated bead's **existing** labels before classifying it (Step 2c/3b). A bead
   already carrying `worktree-review` is, per `beads-lifecycle` W-3/W-4, **not to be re-labeled,
   re-promoted, or re-classified** — it stays exactly as a prior pass left it until a person
@@ -98,7 +105,9 @@ flowchart TD
     SLP -->|empty: fully landed| SCU["dispatch: cleanup-workforest"]
     SLP -->|non-empty| CLS
     SET -->|no| M{"Merged into primary?\n(merge-base --is-ancestor)"}
-    M -->|yes| RM["dispatch: wtdone"]
+    M -->|yes| G{"Drain-claim guard (3a):\nbead in_progress or has assignee or lease,\nor zero own commits while bead not closed?"}
+    G -->|yes| LIVE["Skip, report: claimed by live drain session\nor isolated and not yet worked"]
+    G -->|no, or lookup finds no bead| RM["dispatch: wtdone"]
     M -->|no| CLS["Bead correlation +\nexisting worktree-review check"]
     CLS --> RV{"Already\nworktree-review?"}
     RV -->|yes| PEND["Report: pending human review, skip"]
@@ -165,12 +174,44 @@ fast path.** Do not skip straight to landing.
 
 ## Step 3 — Standalone worktree / dangling branch: classify and act
 
-**3a. Merged check.** `git merge-base --is-ancestor <branch> <primary>` (exit 0), or the branch is
-already absent from `git branch --list` (already torn down elsewhere). Either way: dispatch an
-action subagent to run `wtdone <branch>` — it is the uniform handler for _every_ removal in this
-skill, whether or not a worktree exists (per `wtdone.sh`, a branch with no worktree simply skips
-the worktree steps and goes straight to the branch delete). **No approval; no bead write needed**
-unless a bead was already open for it, in which case close it with a landed reason.
+**3a. Merged check, then drain-claim guard.** `git merge-base --is-ancestor <branch> <primary>`
+(exit 0), or the branch is already absent from `git branch --list` (already torn down elsewhere).
+"Is an ancestor of the primary" alone is NOT proof that nothing is using the branch: a freshly
+isolated `drain/<bead-id>` worktree has zero commits of its own, so it is vacuously an ancestor of
+the primary while its bead is claimed and an implementer is working in it, and Step 2a's `lsof`
+probe cannot see a drain-pool session (its cwd is the workspace root, not the worktree). So a
+merged candidate MUST pass the drain-claim guard below BEFORE any `wtdone` dispatch.
+
+_Drain-claim guard (MUST; run from inside the candidate's own repo, read-only)._
+
+1. Extract the bead-id token from the branch name (`drain/<bead-id>` yields `<bead-id>`; for any
+   other shape use Step 3b's token rule) and validate it with `bd show <token> --json`, exactly as
+   Step 3b does. For the fields use the shape-agnostic J-1 prelude, tolerating a not-found reply
+   that carries no array:
+   `bd show <token> --json | jq -r '(if type=="object" and has("data") then .data else . end)[0]? | select(type=="object") | [.status, (.assignee // ""), (.lease_expires_at // "")] | @tsv'`
+   (empty output = no such bead).
+2. If a bead resolves and its `status` is `in_progress`, OR its `assignee` or `lease_expires_at`
+   is non-empty (an expired lease still counts: only a drain session's own release clears it) →
+   the candidate is claimed. MUST NOT dispatch `wtdone`, and MUST NOT write or close any bead. Report
+   "claimed by live drain session" with the bead id and assignee, then move on to the next
+   candidate.
+3. If a bead resolves and its `status` is not `closed`, and the branch has ZERO commits of its own
+   ahead of the primary (`git rev-list --count <primary>..<branch>` prints `0`, which includes
+   HEAD level with the primary tip) → the work has not been done yet, so it is NOT "merged". MUST
+   NOT dispatch `wtdone`. Report "isolated, not yet worked (bead `<id>` `<status>`)" and move on.
+4. If `bd` is unreachable or its output is unparsable, fail closed: MUST NOT dispatch `wtdone`;
+   report "bead lookup failed, left in place". Only a clean "no such issue" reply (no bead) or a
+   `closed` bead lets the candidate proceed.
+5. Otherwise (no bead, or a `closed` bead, or an unclaimed non-closed bead whose branch has commits
+   of its own that are all on the primary): dispatch an action subagent to run `wtdone <branch>` —
+   it is the uniform handler for _every_ removal in this skill, whether or not a worktree exists
+   (per `wtdone.sh`, a branch with no worktree simply skips the worktree steps and goes straight
+   to the branch delete). **No approval; no bead write needed** unless a bead was already open for
+   it, in which case close it with a landed reason.
+
+Known limitation: `drain-one`'s own landing retirement runs `wtdone` before its bead is closed,
+but that path does not go through this skill, so this guard belongs here only. `wtdone` and
+`drain-one` are unchanged by it.
 
 **3b. Not merged — research (parallelizable across candidates, read-only, run from inside the
 candidate's own repo per the Safety contract's `bd`-cwd rule).**
@@ -243,6 +284,7 @@ Audit-worktrees — <N> candidates (<sets>, <standalone worktrees>, <dangling br
 
 Skipped (active/anchored): 1 (feat-y, blocking process anchored in ziprecruiter worktree)
 Already pending review: 1 (pg2-oldrev, left untouched)
+Skipped (claimed by live drain session / isolated, not yet worked): 1 (drain/pg2-7c3dd, bead in_progress)
 Degraded detection: pa-monitor unreachable for <repo> — relied on lsof only (no functional loss)
 ```
 
@@ -271,6 +313,7 @@ would make it unreachable outright, not just less discoverable.
 | liveness check (primary)                         | `lsof -a -d cwd +D <worktree-path> -F pcn`, then keep only allow-listed names (Step 2a)       |
 | liveness check (informational only)              | `pa-monitor status` / `info path:<worktree-path>` — exact-match cwd, not subdirectory-aware   |
 | set fast path                                    | `pnwf land-plan <branch>` (empty → already fully landed)                                      |
+| drain-claim guard (before `wtdone`)              | `bd show <token> --json` + `git rev-list --count <primary>..<branch>` (Step 3a)               |
 | remove a worktree and/or branch (uniform)        | `wtdone <branch> [--cc <canonical>]` — handles no-worktree case natively, never force-deletes |
 | land a standalone branch                         | invoke `integrate-branch:integrate-branch` (Skill tool)                                       |
 | validate + land + cleanup a set                  | invoke `validate-workforest`, then `land-workforest`, then `cleanup-workforest` (Skill tool)  |

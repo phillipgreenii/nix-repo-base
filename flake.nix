@@ -972,6 +972,48 @@
               touch $out
             '';
 
+            # Regression guard for the audit-worktrees drain-claim guard (bead
+            # pg2-gdzr8). The skill once removed two LIVE drain worktrees because
+            # Step 3a read "branch tip is an ancestor of the primary" as "merged,
+            # nothing is using it": a freshly isolated `drain/<bead-id>` worktree
+            # has zero commits of its own (vacuously an ancestor) while its bead
+            # is claimed, and the Step 2a `lsof` probe cannot see a drain-pool
+            # session (cwd is the workspace root). The skill is prose, so nothing
+            # else validates it (treefmt only formats it): assert the three places
+            # that must agree - the flowchart (a guard node between the merged
+            # check and the `wtdone` dispatch), the Step 3a text, and the Safety
+            # contract - all still carry the load-bearing wording, and that the
+            # flowchart no longer routes a merged candidate straight to removal.
+            audit-worktrees-drain-claim-guard = pkgs.runCommand "check-audit-worktrees-drain-claim-guard" { } ''
+              set -euo pipefail
+              f=${./pn-workspace-rules/skills/audit-worktrees/SKILL.md}
+
+              for needle in \
+                'M -->|yes| G{"Drain-claim guard (3a):' \
+                'G -->|yes| LIVE["Skip, report: claimed by live drain session' \
+                'G -->|no, or lookup finds no bead| RM["dispatch: wtdone"]' \
+                '**3a. Merged check, then drain-claim guard.**' \
+                'MUST NOT dispatch `wtdone`, and MUST NOT write or close any bead.' \
+                'ZERO commits of its own' \
+                'git rev-list --count <primary>..<branch>' \
+                'bd show <token> --json' \
+                'fail closed' \
+                '- MUST run the drain-claim guard (Step 3a) before dispatching `wtdone`'; do
+                grep -qF -- "$needle" "$f" || {
+                  echo "$f: missing required text: $needle" >&2
+                  exit 1
+                }
+              done
+
+              # The merged check must never feed removal directly again.
+              if grep -qF -- 'M -->|yes| RM' "$f"; then
+                echo "$f: flowchart routes a merged candidate straight to wtdone, bypassing the drain-claim guard" >&2
+                exit 1
+              fi
+
+              touch $out
+            '';
+
             # Regression guard for the dropped full-flake-check land gate (bead
             # pg2-pla9d.1; operator ruling 2026-10-01). The ff-merge-to-main land
             # step that ran a full nix flake check was removed, and so was every
