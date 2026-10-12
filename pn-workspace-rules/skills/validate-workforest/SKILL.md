@@ -52,7 +52,27 @@ doctor`'s `terminal-resolvable` check unresolvable by construction — step 6
      below is the classifier carve-out this implies.
 3. **Run the selected `pn` check verbs** for that tier (e.g. `pn workspace
 flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
-   final consistency gate.
+   final consistency gate. **The build can outlast the Bash tool's 600000 ms
+   foreground maximum** — after a relock every flake input has changed, so it is a
+   COLD build of the whole closure — so HOW it runs depends on who is validating
+   (bd `pg2-td9zo`):
+   - **A session that survives to receive a background job's completion
+     notification (the main session) MUST run the build as a background job**
+     (Bash `run_in_background: true`) and take its verdict from the completion
+     notification's TRUE exit status — never from a quiet log or a launcher exit
+     code. It MUST NOT run the build in the foreground: at the ceiling the harness
+     moves the command to the background and leaves it running with an exit status
+     no one can read, and a second build of the same set MUST NOT be started beside
+     it. A non-zero exit is a FAILED build (quote its real error), not "unproven".
+     Doctor is short and runs in the foreground afterwards.
+   - **A dispatched subagent cannot await a background job across the end of its
+     turn** (bd `pg2-es5nn`: a backgrounded stage is torn down mid-write), so it
+     MUST NOT background the build. It runs it in the foreground under an explicit
+     `timeout` of `600000` ms and, if that is not enough, reports validate as
+     UNPROVEN — not failed. That build is then still running as an orphan, so the
+     dispatcher MUST NOT start a second build of the same set while it is live
+     (`lsof -a -d cwd +D <set>`): it waits for the orphan to exit, then validates
+     again.
 4. **Dirty tree → WARN, do not fail (MUST).** If the set has uncommitted changes,
    validate MUST NOT fail on that alone — it **warns** (the WORK may be
    mid-flight). Landing has its own no-uncommitted-changes precondition.
@@ -182,6 +202,10 @@ workspace workforest add <branch> --repos a,b` gets its own filtered
 ## Policies
 
 - MUST guarantee validity on success.
+- MUST run the whole-set `pn workspace build` as a background job whenever the
+  validating session can await its completion notification, MUST NOT background it
+  from a dispatched subagent, and MUST NOT start a second build of the same set
+  while one is live (step 3).
 - MUST NOT fail solely because the working tree is dirty — warn instead.
 - MUST NOT fail solely because an in-set `flake.lock` still pins a sibling this run
   is about to land — warn instead (step 5). This is a NARROWING, not a removal:
@@ -244,9 +268,10 @@ This stage MUST NOT carry `disable-model-invocation` in its frontmatter. The fla
 is enforced against the `Skill` tool and also drops the entry from the
 model-visible skill listing, so setting it makes this stage unreachable by the
 two things that actually reach it: the `Fires on:` prose triggers declared in its
-own `description` above, and the orchestrators that dispatch it as a pipeline
-stage (`/pn-workspace-sync` and `/pn-workspace-update` steps 3-4, and
-`/drain-beads` for the fork stage).
+own `description` above, and the orchestrators that invoke it as a pipeline stage
+(`/pn-workspace-update` step 2b, which invokes it on EVERY run since bd
+`pg2-td9zo`; `/pn-workspace-sync`'s re-validate escape; and `/drain-beads` for the
+fork stage).
 
 It was set here once as an always-on-listing token saving and reverted for
 exactly this reason (bd `pg2-dytfv`; the sibling case in `integrate-branch`'s two

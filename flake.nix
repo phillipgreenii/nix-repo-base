@@ -895,6 +895,16 @@
             # R4 is the prohibition on running it, and the incomplete-update
             # halt reason lives in the /pn-workspace-update command, while
             # `pnwf-runner` (sync) keeps its incomplete-sync halt reason.
+            # Since bead pg2-td9zo the validate build is not a runner stage of
+            # the update flow either: a runner-owned `pn workspace build` that hit
+            # the ceiling halted `validate-failed` while the harness left the
+            # build running as an ORPHAN with no readable exit status, and the
+            # documented recovery would have started a second build beside it.
+            # `pnwf-update-runner` is fork-only (its R5 forbids the build), and
+            # /pn-workspace-update runs the build itself as a background job
+            # through the `validate-workforest` skill, whose step 3 carries the
+            # rule. `pnwf-runner` (sync) still builds in Stage 3 and records why
+            # (R2), so it is deliberately NOT asserted here.
             # Nothing else validates these markdown definitions
             # (treefmt only formats them), so assert the load-bearing text is
             # present AND that no path re-permits backgrounding: every
@@ -905,6 +915,7 @@
               sync_runner=${./pn-workspace-rules/agents/pnwf-runner.md}
               update_cmd=${./pn-workspace-rules/commands/pn-workspace-update.md}
               sync_cmd=${./pn-workspace-rules/commands/pn-workspace-sync.md}
+              validate_skill=${./pn-workspace-rules/skills/validate-workforest/SKILL.md}
 
               for f in "$update_runner" "$sync_runner"; do
                 for needle in \
@@ -957,6 +968,35 @@
               }
               grep -qF -- 'incomplete-sync' "$sync_runner" || {
                 echo "pnwf-runner.md: missing the incomplete-sync halt reason" >&2
+                exit 1
+              }
+
+              # bd pg2-td9zo: the validate build left the update runner too. The
+              # runner must refuse it (R5)...
+              grep -qF -- 'You MUST NOT run `pn workspace build`' "$update_runner" || {
+                echo "pnwf-update-runner.md: missing the R5 prohibition on running the validate build" >&2
+                exit 1
+              }
+              # ...the command must no longer dispatch a validate runner...
+              if grep -qF -- 'STAGE = validate' "$update_cmd"; then
+                echo "pn-workspace-update.md: names a STAGE = validate runner dispatch again; the validate build belongs in the main session as a background job (bd pg2-td9zo)" >&2
+                exit 1
+              fi
+              # ...and must run BOTH long steps (the relock and the validate build)
+              # as background jobs in the main session.
+              grep -qF -- 'pn workspace build' "$update_cmd" || {
+                echo "pn-workspace-update.md: missing the main-session validate build" >&2
+                exit 1
+              }
+              bg_jobs=$(grep -cF -- 'run_in_background: true' "$update_cmd" || true)
+              [ "$bg_jobs" -ge 2 ] || {
+                echo "pn-workspace-update.md: expected the relock AND the validate build to run as background jobs (found $bg_jobs run_in_background: true lines)" >&2
+                exit 1
+              }
+              # The skill the command invokes must carry the rule for a validating
+              # session that can await a notification.
+              grep -qF -- 'MUST run the build as a background job' "$validate_skill" || {
+                echo "validate-workforest/SKILL.md: missing the rule that the main session runs the build as a background job" >&2
                 exit 1
               }
 

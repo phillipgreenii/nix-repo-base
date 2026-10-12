@@ -31,22 +31,20 @@ authorization. (If a repo's `integrate-branch` strategy turns out to be
 
 ## The pipeline
 
-The two short, read/build-heavy stages that bracket the relock (fork, validate) run
-in isolated runner subagents. The relock itself — the one stage that can outlast a
-subagent's foreground ceiling — runs in THIS session as a background job, because
-only this session survives to receive its completion notification. Land, cleanup,
-and publish also stay here. Stop and report if any stage halts.
+Only the fork stage, which is short, runs in an isolated runner subagent. The two
+stages that can outlast a subagent's foreground ceiling run in THIS session as
+background jobs, because only this session survives to receive their completion
+notifications: the relock, and the validate build that follows it (a cold build of
+a freshly relocked set). Land, cleanup, and publish also stay here. Stop and report
+if any stage halts.
 
 ```mermaid
 flowchart TD
     F["Step 1 FORK - runner, STAGE fork"] --> R["Step 2a RELOCK - this session, background job"]
-    R -->|"exit 0"| V["Step 2b VALIDATE - runner, STAGE validate"]
+    R -->|"exit 0"| V["Step 2b VALIDATE - this session, background build, then doctor"]
     R -->|"non-zero or no exit status"| H["HALT and report with the dirty array"]
-    V -->|"done"| L["Step 3 land-workforest"]
-    V -->|"validate-failed"| H
-    V -->|"build exceeded the runner ceiling"| M["Step 2b fallback - validate in this session, background build"]
-    M -->|"clear"| L
-    M -->|"failed"| H
+    V -->|"build exit 0 and no BLOCKING doctor line"| L["Step 3 land-workforest"]
+    V -->|"build failed, no exit status, or a BLOCKING doctor line"| H2["HALT and report"]
     L --> C["Step 4 cleanup-workforest"]
     C --> P["Step 5 POST - pn workspace push"]
 ```
@@ -64,10 +62,11 @@ flowchart TD
    which survives to receive the completion notification. A subagent does not, so
    a backgrounded stage is torn down mid-write: no JSON status line, prose in its
    place (bd `pg2-es5nn`). Forward the **timeout half only**; the runner's own R2
-   pins `600000` ms for its one long step (the validate build). If the brief
-   restates the long-command rule, it MUST state that the background option is
-   withheld for a subagent. The brief MUST NOT ask the runner to relock either
-   (its R4 forbids it): the relock is step 2a, and is yours.
+   pins `600000` ms for its one slow step (`pn workspace workforest add`). If the
+   brief restates the long-command rule, it MUST state that the background option
+   is withheld for a subagent. The brief MUST NOT ask the runner to relock (its R4
+   forbids it) or to validate (its R5 forbids that): the relock is step 2a and the
+   validate is step 2b, and both are yours.
 
    Handle the runner's JSON status:
    - **`gate` / `fork` / `resume-vs-discard`** → decide WITH the user per
@@ -76,7 +75,8 @@ flowchart TD
      preserved. It re-confirms the set and returns `forked`.
    - **`halt`** → surface the reason and STOP; do NOT work around it. At this
      stage that is a `pnwf fork-preflight` reason line (a canonical anomaly,
-     R-3/R-8) or `missing-stage` (a defect in YOUR brief: you omitted `STAGE`).
+     R-3/R-8) or `missing-stage` (a defect in YOUR brief: you omitted `STAGE` or
+     named a stage the runner no longer has — `fork` is its only one).
    - **`forked`** → the set exists and nothing is relocked yet; go to step 2.
    - If `model_env` is not `unset`/`sonnet`, WARN the user before continuing
      (silent-Opus guard: an env override may have forced a non-Sonnet model).
@@ -85,7 +85,7 @@ flowchart TD
 --set`) before deciding anything. `<SETDIR>` is
      `<CANONICAL_ROOT>/.workforests/pn-workspace-update`.
 
-2. **Relock, then validate.**
+2. **Relock, then validate — both in THIS session, each as a background job.**
 
    **2a. Relock — in THIS session, as a background job (MUST).** Run, with the
    Bash tool's `run_in_background: true`:
@@ -167,29 +167,67 @@ flowchart TD
      only its own line separates them, so quote that line verbatim rather than
      paraphrasing it.
 
-   **2b. Validate — dispatch a FRESH runner with `STAGE = validate`.** The runner
-   from step 1 has finished; a new dispatch re-derives everything from disk, which
-   is what it is built to do. Same rules as step 1: Sonnet by frontmatter, no
-   model override, `CANONICAL_ROOT` and `BRANCH`, the caveats, and the brief MUST
-   NOT offer it `run_in_background` (restate that the option is withheld if the
-   brief restates the long-command rule). Handle the status:
-   - **`done`** → proceed to the main-session landing stages below.
-   - **`halt` / `validate`** (`validate-failed`) → surface the reason and STOP; do
-     NOT work around it. **Exception — the build outran the runner's ceiling.** If
-     `detail` says the `pn workspace build` exceeded the foreground ceiling ("did
-     not prove the set green"), that is validate UNPROVEN, not a broken build:
-     invoke the `validate-workforest` skill in THIS session instead, and run its
-     `pn workspace build` step as a background job (`run_in_background: true`),
-     awaiting the completion notification as in 2a. Treat its verdict as the
-     validate verdict. Any other `validate-failed` — a failing build, or a
-     `BLOCKING` doctor line — is a hard stop.
-   - If `model_env` is not `unset`/`sonnet`, WARN the user before continuing.
-   - Unlike `/pn-workspace-sync`, there is **NO** `sync-fetch` stage and therefore
-     none of its gates — not `rebase-conflict`, not `rebase-refused`, and not
-     `worktree-dirty`: `/pn-workspace-update` relocks rather than fetch+rebase, so
-     no runner ever rebases anything or emits any of them. The only gate is
-     `fork` / `resume-vs-discard` in step 1. A dirty member is still refused in
-     this flow, but by `pnwf update-relock`'s OWN pre-flight (step 2a).
+   **2b. Validate — in THIS session, with the build as a background job (MUST).**
+   Invoke the `validate-workforest` skill here, from inside the set (`cd <SETDIR>`)
+   — it is the single Facade for validating a set — and follow it with ONE
+   departure: run its `pn workspace build` step with the Bash tool's
+   `run_in_background: true`:
+
+   ```bash
+   cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace build
+   ```
+
+   The export is load-bearing: `pn` (unlike `pnwf`) honors an inherited
+   `PN_WORKSPACE_ROOT` over cwd, so without it the build runs against the
+   CANONICAL clones, never the set.
+
+   You MUST NOT run the build in the foreground and MUST NOT dispatch a runner for
+   any part of validate. After a whole-set relock every flake input has changed, so
+   this is a COLD build of the whole closure and it legitimately outruns the Bash
+   tool's 600000 ms foreground maximum. A runner-owned build is what bd `pg2-td9zo`
+   observed fail twice: at the ceiling the harness moved the build to the
+   background and the runner's turn ended, so it reported `validate-failed` ("did
+   not prove the set green") while the build ran on as an ORPHAN whose exit status
+   nobody could read, and the recovery then written here would have started a
+   SECOND build of the same set beside it. Your running time is not the runner's:
+   this session survives to receive the completion notification, so the build
+   simply completes — no halt, no orphan, no liveness scan, no second build.
+
+   Wait for the completion notification — it carries the build's TRUE exit
+   status; never infer success from a quiet log or a launcher exit code. If you
+   need an active wait, use Monitor with an until-loop, never a `sleep`-then-check
+   pair. Exactly ONE build runs per validate attempt.
+
+   Handle the outcome:
+   - **Exit 0** → run doctor in the foreground (it inspects, it does not build),
+     with the same `cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" &&` prefix, and
+     classify its findings as `validate-workforest` step 5 specifies, with
+     `BRANCH = pn-workspace-update`. Doctor's exit status is NOT the verdict: it
+     still exits `1` on drift this run itself caused (an in-set `flake-lock-fresh`
+     on a sibling this run is about to land, which the POST step converges), and
+     the skill's classifier is what separates that `EXEMPT` drift from a
+     `BLOCKING` finding. **No `BLOCKING` line** → validate is CLEAR: go to step 3,
+     carrying any `EXEMPT` lines into your report so the user sees what publish
+     still has to converge. **Any `BLOCKING` line** → STOP and report those lines
+     verbatim; do NOT work around them.
+   - **Non-zero exit** → the build FAILED, which is a finding, not an "unproven"
+     validate: STOP and report it with the verbatim tail of the build's output (the
+     output file the notification names), so the user sees the build's real error.
+     Do NOT run doctor and do NOT land anything.
+   - **The job ended with NO exit status** (killed, stopped, torn down) → validate
+     is UNPROVEN: neither failed nor clean, so nothing lands. STOP and report it as
+     unproven. Check for a survivor first, exactly as in 2a
+     (`lsof -a -d cwd +D <SETDIR>`; wait for any live process with Monitor and an
+     until-loop): you MUST NOT start a second build while one is live. Validate
+     mutates nothing, so there is no residue to probe, and once nothing is live,
+     re-running this step is safe.
+
+   Unlike `/pn-workspace-sync`, there is **NO** `sync-fetch` stage and therefore
+   none of its gates — not `rebase-conflict`, not `rebase-refused`, and not
+   `worktree-dirty`: `/pn-workspace-update` relocks rather than fetch+rebase, so
+   no runner ever rebases anything or emits any of them. The only gate is
+   `fork` / `resume-vs-discard` in step 1. A dirty member is still refused in
+   this flow, but by `pnwf update-relock`'s OWN pre-flight (step 2a).
 
 3. **`land-workforest`** — invoke the Skill in the main session (cwd persists
    here, so `integrate-branch` works as authored). It lands each repo in topo
@@ -222,17 +260,30 @@ flowchart TD
 
 ## Notes
 
-- **Runner vs. main session (bd `pg2-fy8wq`).** The `pnwf-update-runner` subagent
-  offloads only the two SHORT stages that bracket the relock — fork and validate,
-  each a separate `STAGE` dispatch. The relock (`pnwf update-relock --set`) runs in
-  THIS session as a background job, and so do land, cleanup, and publish. The split
+- **Runner vs. main session (bd `pg2-fy8wq`, bd `pg2-td9zo`).** The
+  `pnwf-update-runner` subagent offloads only the one SHORT stage that precedes the
+  relock: fork (`STAGE = fork`, its only stage). The relock
+  (`pnwf update-relock --set`) and the validate build (`pn workspace build`) run in
+  THIS session as background jobs, and so do land, cleanup, and publish. The split
   follows who can await what: a subagent cannot await its own background job across
   the end of its turn (only this session receives that notification), so every
   runner stage is foreground under the Bash tool's 600000 ms maximum, and a stage
-  that can legitimately outrun that maximum — the whole-set relock — cannot live in
-  the runner. Land, cleanup, and publish additionally stay here because they are
-  shell-state-sensitive (`integrate-branch` needs a persistent cwd + shell vars) and
-  irreversible; a subagent's Bash calls do not persist cwd/env between calls.
+  that can legitimately outrun that maximum — the whole-set relock, and the cold
+  build of the relocked set that follows it — cannot live in the runner. bd
+  `pg2-fy8wq` moved the relock; bd `pg2-td9zo` moved the build, after both observed
+  validate dispatches (one after a 51 min 46 s relock, one on a resumed set) halted
+  `validate-failed` at the ceiling and left the build running as an orphan. A step
+  that hits the ceiling cannot be recovered cleanly — the harness keeps it running
+  with an exit status no one can read — so the design keeps such steps out of any
+  session that has a ceiling to hit and cannot await a notification. Land, cleanup,
+  and publish additionally stay here because they are shell-state-sensitive
+  (`integrate-branch` needs a persistent cwd + shell vars) and irreversible; a
+  subagent's Bash calls do not persist cwd/env between calls.
+- **`/pn-workspace-sync` runs the same `pn workspace build` in its runner (bd
+  `pg2-td9zo`).** Its validate stage is exposed to the same ceiling but is cold only
+  when `origin` moved flake inputs, not by construction as here, so it was NOT
+  restructured with this change; the analysis, the interim handling and the trigger
+  for applying this same split there are recorded in `pnwf-runner` R2.
 - The spine (fork → relock → validate → land → cleanup) performs no remote
   writes on the `ff-merge-to-main` path; the POST step is the deliberate,
   invocation-authorized push. `pnwf update-relock` itself refuses if any member
@@ -264,5 +315,5 @@ flowchart TD
   git dir (`--private`), so they are a safe no-op for landing. See
   `docs/hooks.md`.
 - **Known limitation.** An ADR-0020 "silently transient" relock step can leave a
-  repo green while an update was skipped; this run reports `done` regardless
-  (inherited from `pn workspace update`).
+  repo green while an update was skipped; this run validates clean and lands
+  regardless (inherited from `pn workspace update`).

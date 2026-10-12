@@ -58,8 +58,9 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   tool's documented maximum). Treat it as a CEILING, not an estimate: Stage 3
   builds the whole assembled set, work this repo's own flake-check matrix budgets
   60 minutes for a SINGLE repo (`.github/workflows/ci.yml`,
-  `timeout-minutes: 60`), so it CAN outlast the ceiling. **R3**, not a larger
-  number, is what covers that case.
+  `timeout-minutes: 60`), so it CAN outlast the ceiling. **R3** guarantees a
+  status line comes back when it does, and a larger number is not available; what
+  R3 does NOT do is stop the build — see the Stage 3 judgment below.
 
   **Why Stage 2 stays in this runner while the update runner's relock does not
   (judged, bd `pg2-fy8wq`).** `/pn-workspace-update`'s `pnwf update-relock` was
@@ -74,9 +75,36 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   anomaly (a hung fetch, an auth prompt) that the `incomplete-sync` halt and its
   residue probe are the right response to, not a healthy job to be awaited. If
   `sync-fetch` is ever OBSERVED to outlast the ceiling while healthy, apply the
-  same split used in `/pn-workspace-update`. The exposure this runner DOES
-  share with the update runner is Stage 3's `pn workspace build`, which already
-  reports "did not prove the set green" rather than a false failure.
+  same split used in `/pn-workspace-update`.
+
+  **Stage 3 IS exposed to the same ceiling, and is judged but NOT restructured
+  here (bd `pg2-td9zo`).** This paragraph used to say the exposure this runner
+  shares with the update runner is Stage 3's `pn workspace build`, which "already
+  reports 'did not prove the set green' rather than a false failure". That proved
+  insufficient. `/pn-workspace-update` observed the same build under the same
+  ceiling halt twice (once after a 51 min 46 s relock, once on a resumed set): the
+  report was true, but the build was not stopped. At the ceiling the harness moves
+  a foreground command to the background, the runner's turn ends, and the build
+  keeps running as an ORPHAN whose exit status nobody can read, while the recovery
+  then documented would have started a SECOND build of the same set beside it. R3
+  makes a status line come back; it does not make a ceiling hit recoverable, here
+  or there.
+
+  What differs is how OFTEN the ceiling is reached, not whether. The update's
+  build is cold by construction (a relock changes every flake input, so every
+  validate pays for the whole closure); this runner's is cold only when `origin`
+  moved flake inputs (for example a merged pull request from the scheduled flake
+  updater, `.github/workflows/update-flakes-reusable.yml`, or a relock pushed from
+  another machine), and a `noop` run never builds at all. The update flow's fix —
+  the main session runs the validate build as a background job and the runner never
+  builds — is therefore the right shape here too, but it rewrites this runner's
+  return protocol (`done`) and `/pn-workspace-sync`'s `validate-failed` handling and
+  escape (E-1 to E-6), which an unobserved failure does not justify. Interim: the
+  command reports an unproven validate with the orphan named, so nobody starts a
+  second build beside it (`/pn-workspace-sync` step 2, `validate-failed`). Trigger:
+  if a sync validate is ever OBSERVED to hit the ceiling, apply the update flow's
+  split — Stage 3 leaves this runner, and the main session runs `validate-workforest`
+  with the build as a background job.
 
 - **R3** If a step does not finish inside its timeout, you MUST still end your
   response with the contracted strict-JSON status line of
@@ -455,7 +483,12 @@ cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" && pn workspace doctor
   `reason: "validate-failed"`, but `detail` MUST say the build exceeded the
   foreground ceiling. Word it as "did not prove the set green", NOT as a broken
   build: validate is unproven, not failed. Validate mutates nothing, so there is
-  no residue to probe.
+  no residue to probe. `detail` MUST also say the build is presumably STILL
+  RUNNING in `<SETDIR>`: the harness moved it to the background at the ceiling and
+  it does NOT die with your turn (observed under bd `pg2-td9zo`). Name the set
+  directory and, if the harness reported one, the build's output file; you MUST
+  NOT claim the build died, because the main session reads that claim as licence
+  to start a second build beside it.
 
 ### The one doctor exemption: a sibling THIS run will land (MUST)
 

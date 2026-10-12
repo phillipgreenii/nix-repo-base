@@ -150,6 +150,22 @@ flowchart TD
      rather than being a hard stop. Every other reason, including
      `canonical-anomaly`, is a hard stop: report it, do not touch the canonical
      clone.
+   - **`halt` / `validate` / `validate-failed` whose `detail` says the build "did
+     not prove the set green"** → the build hit the runner's `600000` ms foreground
+     ceiling, so validate is UNPROVEN: neither failed nor clean. STOP and report it
+     as unproven; nothing lands and nothing is cleaned up. The harness moved that
+     build to the background and it is presumably STILL RUNNING in `<SETDIR>` as an
+     orphan whose exit status no one can read (bd `pg2-td9zo`), so you MUST NOT
+     start a build of your own beside it, and you MUST tell the user that re-running
+     `/pn-workspace-sync` while it is live would start a SECOND concurrent build of
+     the same set: wait until `lsof -a -d cwd +D <SETDIR>` shows nothing, then
+     re-run (the set is resumed at the `resume-vs-discard` gate; if the orphan
+     finished, the re-run's build finds its outputs already in the store). The
+     escape below does NOT apply — it needs
+     `BLOCKING` `flake-lock-fresh` lines, and an unproven validate has none. This
+     is the known residual exposure of this stage; why it was not restructured with
+     `/pn-workspace-update`'s fix, and what would trigger doing so, is recorded in
+     `pnwf-runner` R2.
    - **`halt` / `sync-fetch` / `canonical-push-failed`** → THIS IS THE ROUTINE
      CASE, not an exception: a canonical clone sitting locally ahead of a moved
      `origin` — commits landed here but never pushed — is the expected starting
