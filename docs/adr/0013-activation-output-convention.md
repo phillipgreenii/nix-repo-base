@@ -155,9 +155,12 @@ the helpers once via a single `mkBefore` fragment (see Alternatives).
   per section in the assembled activate script. This is intentional but increases
   the script size slightly.
 - **Ordering caveat** — section ordering across modules is `mkAfter` +
-  import-order dependent. `launchd-health-check` calls `exit 1` on failure;
-  sections ordered after it are skipped on that failure. The trailing blank line
-  is a separator, not a guaranteed sentinel. This is pre-existing behavior.
+  import-order dependent. ~~`launchd-health-check` calls `exit 1` on failure;
+  sections ordered after it are skipped on that failure.~~ **Amended 2026-10-13**
+  (`phillipgreenii-nix-personal` ADR 0057): `launchd-health-check` no longer
+  exits on failure; it prints an `act_warn` summary and the sections after it
+  still run. Any other section that exits would still skip the ones after it.
+  The trailing blank line is a separator, not a guaranteed sentinel.
 
 ### Neutral
 
