@@ -89,10 +89,11 @@ until the directory is under 2 GiB. Ingest stops at 256 MiB per file (`nix.log.t
   (the observation week kept 3 of 7 days). Nothing records what a sweep removed.
 - **Spans can be fewer than log files.** A log file exists once CMD has started (setup failures
   remove it), but the run's spans and metrics leave in one bounded end-of-run flush
-  (`PG_NIX_LOG_FLUSH_TIMEOUT`, 2 s). If the collector refuses or fails that export (for example its
-  memory limiter answers 503), the OTLP exporter's first retry wait is longer than the budget, so the
-  whole batch, including `nix.invocation`, is dropped and the exit code is unaffected. The raw log is
-  then the only record of the run. `PG_NIX_LOG_DEBUG=1` prints the export error.
+  (`PG_NIX_LOG_FLUSH_TIMEOUT`, 2 s). The wrapper asks the exporters for a short retry (first wait
+  100 ms, total bounded by the flush budget), so one transient refusal (for example the collector's
+  memory limiter answering 503) is retried inside the budget. A refusal that outlasts the budget
+  still drops the whole batch, including `nix.invocation`, and the exit code is unaffected; the raw
+  log is then the only record of the run. `PG_NIX_LOG_DEBUG=1` prints the export error.
 
 Root-run logs in `/var/log/pg-nix-log-wrapped` (directory 0750, files 0600, owned by root) are read
 with `sudo`. Membership of the `admin` group is not enough on its own: the directory's group is

@@ -49,6 +49,10 @@ const (
 	SpanQueueSize = 16384
 	// DefaultFlushTimeout bounds the end-of-run export (W-9 e).
 	DefaultFlushTimeout = 2 * time.Second
+	// RetryInitialInterval is the first export-retry wait (otelsetup.WithRetry).
+	// The SDK default is 5 s, which a 2 s flush can never reach, so one
+	// transient collector 503 would drop the whole batch.
+	RetryInitialInterval = 100 * time.Millisecond
 	// drainFor bounds the tailer's final drain after CMD exits.
 	drainFor = 2 * time.Second
 )
@@ -299,7 +303,9 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 	}
 	tel, err := r.NewTelemetry(ctx, otelsetup.Config{
 		Endpoint: res.Endpoint, ServiceName: ServiceName, Version: r.Version,
-	}, otelsetup.WithSpanQueueSize(SpanQueueSize), otelsetup.WithTimeout(r.flushTimeout()))
+	}, otelsetup.WithSpanQueueSize(SpanQueueSize), otelsetup.WithTimeout(r.flushTimeout()),
+		// Retries stop at the flush budget (otelsetup clamps maxElapsed to it).
+		otelsetup.WithRetry(RetryInitialInterval, r.flushTimeout()))
 	if err != nil {
 		return fail(err)
 	}

@@ -73,6 +73,11 @@ type collector struct {
 	spans   []*tracepb.Span
 	traceRs []*tracepb.ResourceSpans
 	metrics []*metricspb.ResourceMetrics
+	// refuseTraces is how many leading /v1/traces POSTs are answered with
+	// HTTP 503 (the collector memory limiter's refusal) before accepting.
+	refuseTraces int
+	// tracePosts counts every /v1/traces POST, refused or accepted.
+	tracePosts int
 }
 
 func newCollector(t *testing.T) *collector {
@@ -90,6 +95,11 @@ func newCollector(t *testing.T) *collector {
 		defer c.mu.Unlock()
 		switch r.URL.Path {
 		case "/v1/traces":
+			c.tracePosts++
+			if c.tracePosts <= c.refuseTraces {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			req := &coltrace.ExportTraceServiceRequest{}
 			if proto.Unmarshal(raw, req) == nil {
 				for _, rs := range req.ResourceSpans {
@@ -505,6 +515,30 @@ func TestOTLPEndToEnd(t *testing.T) {
 		}
 	}
 	_ = home
+}
+
+// A single transient 503 from the collector (its memory limiter refuses data
+// in bursts) must not drop the span batch: the exporter retries inside the
+// flush budget, so the nix.invocation span still arrives.
+func TestTransient503OnTracesIsRetriedInsideTheFlushBudget(t *testing.T) {
+	col := newCollector(t)
+	col.mu.Lock()
+	col.refuseTraces = 1
+	col.mu.Unlock()
+	e, _ := env(t, fakecmd.Spec{Fixture: golden("failed-build-keep-going.jsonl"), Exit: 1}.Env(), "PG_NIX_LOG_FLUSH_TIMEOUT=2s")
+	res := runWrapper(t, e, "--otlp-endpoint", col.srv.URL, "fake-nix", "build")
+	if res.code != 1 || res.stderr != "" {
+		t.Fatalf("code=%d stderr=%q", res.code, res.stderr)
+	}
+	col.mu.Lock()
+	posts := col.tracePosts
+	col.mu.Unlock()
+	if posts < 2 {
+		t.Errorf("collector saw %d /v1/traces POST(s), want >= 2 (a retry after the 503)", posts)
+	}
+	if got := len(col.spansNamed("nix.invocation")); got != 1 {
+		t.Errorf("collector received %d nix.invocation spans, want 1", got)
+	}
 }
 
 func TestThreeHundredPlusActivitiesAllReachTheCollector(t *testing.T) {
