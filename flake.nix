@@ -1012,8 +1012,10 @@
               touch $out
             '';
 
-            # Regression guard for the audit-worktrees drain-claim guard (bead
-            # pg2-gdzr8). The skill once removed two LIVE drain worktrees because
+            # Regression guard for the audit-worktrees drain-claim guard (beads
+            # pg2-gdzr8, pg2-des38; pg2-des38 extended it from Step 3a to every
+            # wtdone route: sets in 2b, abandoned/vouched/stopped in 3c, and the
+            # Step 3d path audit table). The skill once removed two LIVE drain worktrees because
             # Step 3a read "branch tip is an ancestor of the primary" as "merged,
             # nothing is using it": a freshly isolated `drain/<bead-id>` worktree
             # has zero commits of its own (vacuously an ancestor) while its bead
@@ -1038,7 +1040,24 @@
                 'git rev-list --count <primary>..<branch>' \
                 'bd show <token> --json' \
                 'fail closed' \
-                '- MUST run the drain-claim guard (Step 3a) before dispatching `wtdone`'; do
+                '- MUST run the drain-claim guard (Step 3a) before dispatching `wtdone`' \
+                'SG{"Drain-claim guard (2b, set bead):' \
+                'SG -->|no, or lookup finds no bead| SCU["dispatch: cleanup-workforest"]' \
+                'RV -->|no| G3{"Drain-claim guard (3c):' \
+                'G3 -->|yes| LIVE' \
+                'G3 -->|no, or lookup finds no bead| C{"Classify"}' \
+                '0. **Drain-claim guard for a set (MUST, before anything in this step dispatches).**' \
+                '- **Drain-claim guard first (MUST, before any disposition below that mutates git state).**' \
+                'MUST NOT dispatch `wtdone`' \
+                'or `integrate-branch`, MUST NOT write or close any bead' \
+                'A `closed` bead is never claimed' \
+                'Re-run the drain-claim' \
+                '**3d. `wtdone` dispatch path audit (the complete list).**' \
+                '| 3c abandoned → `wtdone` ' \
+                '| 3c vouched → `integrate-branch` (FF-4 runs `wtdone` on `landed`) ' \
+                '| 2b set, `land-plan` empty → `cleanup-workforest` ' \
+                'no `wtdone` or `integrate-branch` dispatch exists on these routes' \
+                'Step 3d' ; do
                 grep -qF -- "$needle" "$f" || {
                   echo "$f: missing required text: $needle" >&2
                   exit 1
@@ -1050,6 +1069,16 @@
                 echo "$f: flowchart routes a merged candidate straight to wtdone, bypassing the drain-claim guard" >&2
                 exit 1
               fi
+
+              # Neither the unmerged classification nor the set fast path may feed
+              # an action dispatch without passing a guard node (bead pg2-des38):
+              # every `wtdone` route is audited in Step 3d.
+              for bypass in 'RV -->|no| C{' 'SLP -->|empty: fully landed| SCU'; do
+                if grep -qF -- "$bypass" "$f"; then
+                  echo "$f: flowchart bypasses a drain-claim guard node: $bypass" >&2
+                  exit 1
+                fi
+              done
 
               touch $out
             '';

@@ -52,9 +52,12 @@ action it takes is executed by a skill or tool that already implements that acti
 
 - MUST run the liveness check (Step 2a) before any research or action on a candidate that has a
   worktree. MUST NOT act on, or write a bead about, a candidate a blocking process (per Step 2a's allow-list) is anchored in.
-- MUST run the drain-claim guard (Step 3a) before dispatching `wtdone` for any candidate whose
-  branch is merged into the primary. MUST NOT remove a candidate whose correlated bead is
-  `in_progress` or has a non-empty assignee or lease ("claimed by live drain session"), and MUST
+- MUST run the drain-claim guard (Step 3a) before dispatching `wtdone` (or `integrate-branch`,
+  whose FF-4 runs `wtdone` on a successful land) for ANY candidate, not only a merged one: Step 2b
+  (sets), Step 3a (merged) and Step 3c (abandoned, vouched, stopped) each apply it, and Step 3d
+  lists every `wtdone` path with its guard or its reason it cannot hit a live drain worktree.
+  MUST NOT remove a candidate whose correlated bead is not `closed` and is `in_progress` or has a
+  non-empty assignee or lease ("claimed by live drain session"), and MUST
   NOT treat a branch with zero commits of its own ahead of the primary as merged while its bead is
   not `closed`: a freshly isolated drain worktree is vacuously an ancestor of the primary, and the
   Step 2a `lsof` probe cannot see a drain-pool session. If the bead lookup fails, MUST fail closed
@@ -102,7 +105,9 @@ flowchart TD
     A -->|yes: blocking process anchored| SKIP["Skip entirely, report"]
     A -->|no, or no worktree to check| SET{"Set-shaped?"}
     SET -->|yes| SLP{"pnwf land-plan\nnon-empty?"}
-    SLP -->|empty: fully landed| SCU["dispatch: cleanup-workforest"]
+    SLP -->|empty: fully landed| SG{"Drain-claim guard (2b, set bead):\nclaimed, or every member has zero own commits\nwhile bead not closed?"}
+    SG -->|yes| LIVE
+    SG -->|no, or lookup finds no bead| SCU["dispatch: cleanup-workforest"]
     SLP -->|non-empty| CLS
     SET -->|no| M{"Merged into primary?\n(merge-base --is-ancestor)"}
     M -->|yes| G{"Drain-claim guard (3a):\nbead in_progress or has assignee or lease,\nor zero own commits while bead not closed?"}
@@ -111,7 +116,9 @@ flowchart TD
     M -->|no| CLS["Bead correlation +\nexisting worktree-review check"]
     CLS --> RV{"Already\nworktree-review?"}
     RV -->|yes| PEND["Report: pending human review, skip"]
-    RV -->|no| C{"Classify"}
+    RV -->|no| G3{"Drain-claim guard (3c):\nbead claimed, or lookup failed?"}
+    G3 -->|yes| LIVE
+    G3 -->|no, or lookup finds no bead| C{"Classify"}
     C -->|"bead says abandoned"| RM2["dispatch: wtdone\n(worktree removed; unmerged branch\nrefused by design, left dangling)"]
     C -->|"open bead vouches for this work"| LB["dispatch: validate-workforest (sets) then\nland-workforest/cleanup-workforest, or\nintegrate-branch (standalone)"]
     C -->|"no usable bead"| BEAD["create/reopen a bead\ncapturing findings; leave candidate as-is"]
@@ -154,6 +161,17 @@ it, and does not attempt to close it.
 **2b. Set-shaped candidate — same four-way classification as a standalone branch, gated by a
 fast path.** Do not skip straight to landing.
 
+0. **Drain-claim guard for a set (MUST, before anything in this step dispatches).** Every route
+   below ends in `cleanup-workforest` (which tears each member down through `wtdone`) or in
+   `land-workforest` (whose per-repo FF-4 runs `wtdone`), and a freshly forked set for a claimed
+   drain bead is vacuously "fully landed" for the same reason a freshly isolated worktree is
+   vacuously merged: every member has zero commits of its own, and a drain-pool session's cwd is
+   the workspace root, so Step 2a's `lsof` probe cannot see it. Extract the bead-id token from the
+   set's branch name (Step 3b's token rule), run Step 3a's guard steps 1, 2 and 4 against it, and
+   run step 3 with "zero commits of its own" read as true of EVERY member's branch. A claimed or
+   not-yet-worked set MUST NOT be dispatched to any action subagent and MUST NOT cause any bead
+   write: report it under the same "claimed by live drain session / isolated, not yet worked"
+   line and move on.
 1. `pnwf land-plan <branch>`. **Empty** (every member already an ancestor of its primary, or its
    worktree already gone) → this set is fully landed with nothing left to do — dispatch an action
    subagent to run `cleanup-workforest` alone. **No approval, no bead needed** beyond closing one
@@ -190,9 +208,11 @@ _Drain-claim guard (MUST; run from inside the candidate's own repo, read-only)._
    that carries no array:
    `bd show <token> --json | jq -r '(if type=="object" and has("data") then .data else . end)[0]? | select(type=="object") | [.status, (.assignee // ""), (.lease_expires_at // "")] | @tsv'`
    (empty output = no such bead).
-2. If a bead resolves and its `status` is `in_progress`, OR its `assignee` or `lease_expires_at`
-   is non-empty (an expired lease still counts: only a drain session's own release clears it) →
-   the candidate is claimed. MUST NOT dispatch `wtdone`, and MUST NOT write or close any bead. Report
+2. If a bead resolves and its `status` is not `closed`, and its `status` is `in_progress` OR its
+   `assignee` or `lease_expires_at` is non-empty (an expired lease still counts: only a drain
+   session's own release clears it) → the candidate is claimed. A `closed` bead is never claimed:
+   `bd close` leaves the closing session's `assignee` on the row, so reading a bare non-empty
+   `assignee` on a closed bead as a claim would make step 5's `closed` branch unreachable. MUST NOT dispatch `wtdone`, and MUST NOT write or close any bead. Report
    "claimed by live drain session" with the bead id and assignee, then move on to the next
    candidate.
 3. If a bead resolves and its `status` is not `closed`, and the branch has ZERO commits of its own
@@ -211,7 +231,9 @@ _Drain-claim guard (MUST; run from inside the candidate's own repo, read-only)._
 
 Known limitation: `drain-one`'s own landing retirement runs `wtdone` before its bead is closed,
 but that path does not go through this skill, so this guard belongs here only. `wtdone` and
-`drain-one` are unchanged by it.
+`drain-one` are unchanged by it. Whether `wtdone` should grow a defence-in-depth
+`--require-unclaimed` flag is analysed in
+`docs/design/pg2-des38-wtdone-require-unclaimed.md` (recommendation: not now).
 
 **3b. Not merged — research (parallelizable across candidates, read-only, run from inside the
 candidate's own repo per the Safety contract's `bd`-cwd rule).**
@@ -229,6 +251,19 @@ candidate's own repo per the Safety contract's `bd`-cwd rule).**
   what a prior session said it was doing there.
 
 **3c. Classify from the research and act:**
+
+- **Drain-claim guard first (MUST, before any disposition below that mutates git state).** The
+  abandoned, vouched and `stopped` dispositions all end in `wtdone` (directly, or through
+  `integrate-branch`'s FF-4) and an unmerged `drain/<bead-id>` worktree with commits can still be
+  live: a bead can carry an abandoned-looking comment or an open "vouching" description while a
+  drain session holds its claim and works in that worktree, and the Step 2a `lsof` probe cannot
+  see a drain-pool session. So run Step 3a's guard steps 1, 2 and 4 against the bead 3b
+  correlated (the `bd show <id> --json` already read there carries `status`, `assignee` and
+  `lease_expires_at`; no second lookup is needed). A claimed bead → MUST NOT dispatch `wtdone`
+  or `integrate-branch`, MUST NOT write or close any bead; report "claimed by live drain
+  session" and move on. A failed or unparsable lookup fails closed. No bead at all, or a
+  `closed` bead, proceeds. Step 3a's "zero commits" step does not apply here: a 3c candidate is
+  unmerged, so it has commits of its own.
 
 - **Already `worktree-review`-labeled** → report "pending human review" and stop here. Do not
   re-classify, re-promote, or touch the worktree/branch (W-3/W-4).
@@ -249,7 +284,8 @@ candidate's own repo per the Safety contract's `bd`-cwd rule).**
   - `landed` / `pr-opened` / `pr-updated` → close or annotate the bead accordingly. **No
     approval.**
   - `stopped:<reason>`, or `integrate-branch` itself reaches an unresolvable "ask the user" (null
-    strategy) — treat both identically: never let the subagent block on a live prompt. Run
+    strategy) — treat both identically: never let the subagent block on a live prompt. Re-run the drain-claim
+    guard (claim state can change while `integrate-branch` runs), then run
     `wtdone <branch>` — its expected outcome here (worktree removed, unmerged branch refused, per
     3a above) is exactly what's wanted: the throwaway worktree is reclaimed and the branch's real
     work is preserved untouched. Refresh the _same_ bead with the concrete stop reason so a
@@ -265,6 +301,24 @@ candidate's own repo per the Safety contract's `bd`-cwd rule).**
   commits newer than that ruling) — apply `human`+`worktree-review` per `beads-lifecycle`
   W-1/W-2 (entry marker, priority-promotion record, in the same `bd update`). Leave the
   worktree/branch untouched. **This is the one disposition that asks a person.**
+
+**3d. `wtdone` dispatch path audit (the complete list).** Every route in this skill that can
+remove a worktree, and what protects a live drain worktree on it. A new route MUST be added here
+with a guard or a reason before it ships.
+
+| route                                                                | protection                                                                                         |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| 3a merged standalone worktree or dangling branch → `wtdone`          | drain-claim guard steps 1-5 (claim check plus zero-commit check)                                   |
+| 2b set, `land-plan` empty → `cleanup-workforest`                     | set variant of the guard (2b step 0), run before the fast path                                     |
+| 2b set, vouched → `land-workforest`/`cleanup-workforest`; abandoned  | the same 2b step 0 guard, run before either branch                                                 |
+| 3c abandoned → `wtdone`                                              | 3c guard steps 1, 2, 4 (closed bead proceeds; open and claimed skips)                              |
+| 3c vouched → `integrate-branch` (FF-4 runs `wtdone` on `landed`)     | 3c guard, before dispatch                                                                          |
+| 3c vouched, `stopped`/null strategy → `wtdone` on the throwaway tree | 3c guard, re-run immediately before this `wtdone`                                                  |
+| 3c already `worktree-review`, no usable bead, genuinely ambiguous    | no `wtdone` or `integrate-branch` dispatch exists on these routes; they only report, label or file |
+
+Residual gap, disclosed: a candidate with NO correlated bead has nothing for the guard to read.
+That is acceptable because a drain worktree is always created for a bead, so a live one always
+resolves to a bead; a no-bead candidate is, by construction, not a drain claim.
 
 ## Step 4 — Report
 
@@ -313,7 +367,7 @@ would make it unreachable outright, not just less discoverable.
 | liveness check (primary)                         | `lsof -a -d cwd +D <worktree-path> -F pcn`, then keep only allow-listed names (Step 2a)       |
 | liveness check (informational only)              | `pa-monitor status` / `info path:<worktree-path>` — exact-match cwd, not subdirectory-aware   |
 | set fast path                                    | `pnwf land-plan <branch>` (empty → already fully landed)                                      |
-| drain-claim guard (before `wtdone`)              | `bd show <token> --json` + `git rev-list --count <primary>..<branch>` (Step 3a)               |
+| drain-claim guard (before every `wtdone` route)  | `bd show <token> --json` + `git rev-list --count <primary>..<branch>` (Steps 2b, 3a, 3c, 3d)  |
 | remove a worktree and/or branch (uniform)        | `wtdone <branch> [--cc <canonical>]` — handles no-worktree case natively, never force-deletes |
 | land a standalone branch                         | invoke `integrate-branch:integrate-branch` (Skill tool)                                       |
 | validate + land + cleanup a set                  | invoke `validate-workforest`, then `land-workforest`, then `cleanup-workforest` (Skill tool)  |
