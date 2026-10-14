@@ -90,6 +90,38 @@ and reports a missing wrapper or a failing check as a warning (never an error); 
 system whose collector is unreachable, and `enabled = true` with no endpoint, are warnings too. It is
 silent when telemetry is off.
 
+## pn workspace apply: the apply log
+
+Every `pn workspace apply` (and the apply step of `upgrade`) that actually REBUILDS keeps a copy of
+everything it printed, so a post-apply check can read what the apply said instead of inferring it.
+Before this existed nothing retained the output: `events.jsonl` holds workspace-update events only,
+`nix-logs/*.jsonl` holds the nix wrapper's raw nix JSON (and for a `sudo darwin-rebuild` apply that
+is root-only, under `/var/log/pg-nix-log-wrapped`, and carries nix messages, not the activation
+script's own output), and `~/.local/share/pn-workspace/applied/` holds applied-state records.
+
+- **Location**: `${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/apply-<UTC start, yyyymmddThhmmssZ>-<pid>.log`
+  (mode 0644, outside the nix store), and `apply-logs/latest`, a symlink to the newest one. It is a
+  subdirectory so the Loki `pn/*.jsonl` glob never ingests it.
+- **When**: from the moment pn has decided to rebuild, for exit 0 and non-zero alike. An apply that
+  is skipped because nothing changed, and a failure before the rebuild (untrusted workspace, nix
+  daemon down) write no log, so they never evict a real one.
+- **Contents**: a header (`started_at`, `terminal`, `command`), the `applied refs` section (each
+  repo's `git rev-parse HEAD`, taken immediately before the build, i.e. the `applied_ref` the
+  applied-state record gets), then the combined stdout and stderr exactly as the terminal received
+  them, then a trailer: `ended_at`, `exit_status` (the apply command's exit code; `-1` = killed by a
+  signal, `none` = it never started), `result` (`success` or `failed`, and `error:` when failed).
+  A file with NO `--== pn apply end ==--` trailer is an apply that was killed before pn could finish
+  (SIGKILL, power loss): read it as incomplete, never as success.
+- **Retention**: the newest 30 logs are kept; opening a new log removes older ones (ordering by
+  file name, which embeds the start time). Only `apply-*.log` files are ever removed.
+- **Never in the way**: the terminal output is unchanged; the log is a tee. If the log cannot be
+  created pn prints one `warning: could not retain the apply log` line and applies anyway. A
+  grandchild that keeps the output pipe open after the command exits is bounded by the same
+  `WaitDelay` as before (pg2-gb5ng), so the log cannot make an apply hang.
+
+To verify "the apply output shows X": `grep -n X "${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/latest"`,
+after checking the trailer's `ended_at` and `exit_status` belong to the apply under test.
+
 ## pn workspace doctor
 
 `pn workspace doctor` audits a pn workspace against the build-equality invariant and (with `--fix`) repairs the safe drifts.

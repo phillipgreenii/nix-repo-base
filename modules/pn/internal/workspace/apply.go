@@ -112,6 +112,17 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		return nil
 	}
 
+	// From here on a real rebuild is happening: retain everything the operator
+	// sees in the apply log (bead pg2-xdvbj; see applylog.go). `out` is rebound to
+	// tee into it, so the terminal output is unchanged. A failure to open the log
+	// is reported and otherwise ignored: it must never fail or alter the apply.
+	alog, logErr := openApplyLog(terminal, append(append([]string{}, cmdArgs...), overrides...))
+	if logErr != nil {
+		fmt.Fprintf(out, "warning: could not retain the apply log: %v\n", logErr)
+	}
+	out = alog.tee(out)
+	defer func() { alog.finish(err) }()
+
 	oldProfile := readSystemProfile()
 	// Capture the git binary identity before the rebuild so we can tell,
 	// afterwards, whether this apply swapped in a new git binary.
@@ -128,17 +139,21 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	// (bead pg2-0782j).
 	preBuildHeads, err := ws.captureHeads(ctx, allDirs)
 	if err != nil {
+		alog.recordRefs(nil)
 		return err
 	}
+	alog.recordRefs(preBuildHeads)
 	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
-	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{
+	if _, runErr := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{
 		Dir:     terminalRepoDir,
 		Stdout:  out,
 		Stderr:  out,
 		WrapNix: true,
-	}); err != nil {
-		return fmt.Errorf("apply failed: %w", err)
+	}); runErr != nil {
+		alog.setExit(runErr)
+		return fmt.Errorf("apply failed: %w", runErr)
 	}
+	alog.setExit(nil)
 	newProfile := readSystemProfile()
 	if oldProfile != newProfile && newProfile != "" && commandExists("nvd") {
 		fmt.Fprintln(out, "  --== Package changes ==--  ")

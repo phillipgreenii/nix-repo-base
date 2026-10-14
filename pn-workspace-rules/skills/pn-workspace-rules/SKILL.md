@@ -234,6 +234,24 @@ pn workspace workforest prune              Prune stale git worktree admin entrie
 
 All subcommands accept `--terminal <name>` to override `workspace.terminal`.
 
+## Reading what an apply printed (post-apply verification)
+
+An agent MUST NOT run `pn workspace apply`, and the operator's terminal scrollback is not readable.
+Every apply that rebuilds retains its full combined output instead, readable without privilege:
+
+```bash
+# newest apply; check the trailer (ended_at, exit_status, result) before trusting a grep
+f="${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/latest"
+sed -n '/^--== pn apply end ==--$/,$p' "$f"
+grep -n 'the line the verify bead names' "$f"
+```
+
+Files are `apply-<UTC start>-<pid>.log`, the newest 30 are kept, and each carries `started_at`, the
+per-repo applied refs, the output, then `ended_at` / `exit_status` / `result`. A log with no
+`--== pn apply end ==--` trailer is an apply that was killed: incomplete, never success. A no-op
+apply (nothing changed) writes no log, so "no new log" means no rebuild happened. Full description:
+`modules/pn/README.md`, section "pn workspace apply: the apply log".
+
 ## `pn workspace update` / `upgrade` — worktree-isolated default, local-only
 
 `pn workspace update` (and the update phase of `upgrade`) **runs in worktree isolation by
