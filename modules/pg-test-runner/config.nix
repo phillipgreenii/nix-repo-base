@@ -84,11 +84,22 @@
   # suite is still killed. A timeout still reports as a failure (exit 10),
   # never as a pass. (900 by the df-survey/pn precedent; the bead left the
   # value to the orchestrator, so it is reversible.)
+  #
+  # packages/pg-router (phillipgreenii-nix-agent-support, bead pg2-o2owg): its
+  # `go test -race ./...` suite hit the 300s cap on two pre-land runs
+  # (pg2-9nfla: 301s at load average ~31/58/63; pg2-dm6de: internal/eventqueue
+  # alone took 188s at load average ~22-28, whose
+  # TestCompactLiveShapedReplayPerf compacts a 181,900-record log) with every
+  # package printing ok, and passed on a rerun at lower load. The tests are NOT
+  # skipped or weakened; 900s keeps the same ~3x margin as the entries above
+  # while a genuinely hung suite is still killed. (900 by the df-survey/pn
+  # precedent; the bead left the value operator-chosen, so it is reversible.)
   projectTimeouts = {
     "packages/claude-extended-tool-approver" = 900;
     "modules/daily-focus/df-survey" = 900;
     "modules/pn" = 900;
     "packages/pg-desk" = 900;
+    "packages/pg-router" = 900;
   };
   ignore = [
     ".git/"
