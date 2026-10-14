@@ -158,10 +158,13 @@ log-dir: /Users/phillipg/.local/state/pn/nix-logs (writable: yes)
 
 Every observed run keeps its raw nix JSONL at `<log-dir>/<utc-ts>-<pid>-<rand>.jsonl` (mode 0600).
 Non-root default: `$XDG_STATE_HOME/pn/nix-logs`, else `~/.local/state/pn/nix-logs`. Root:
-`/var/log/pg-nix-log-wrapped` (read with `sudo` or as an admin-group member). Each start sweeps its
-own directory only: files older than 7 days go first, then oldest-first until under 2 GiB. A file
-stops being ingested at 256 MiB (`nix.log.truncated`). A new file appearing in that directory right
-after a run is the quickest evidence the wrapper observed it.
+`/var/log/pg-nix-log-wrapped` (read with `sudo`; the files are 0600, so admin-group membership alone
+is not enough, and a non-root agent sees root runs only as Tempo spans). Each start sweeps its own
+directory only: files older than 7 days go first, then oldest-first until under 2 GiB, so a few
+oversized logs can push out history younger than 7 days. A file stops being ingested at 256 MiB
+(`nix.log.truncated`) but nix keeps writing it. A new file appearing in that directory right after a
+run is the quickest evidence the wrapper observed it. The reverse does not hold: a log file can have
+no span in Tempo, because a collector refusal at the end-of-run flush drops that run's whole batch.
 
 | Signal | Name                      | Notes                                                                                                                                                                                      |
 | ------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

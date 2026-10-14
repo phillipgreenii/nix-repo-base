@@ -139,8 +139,15 @@ misconfiguration.
   `json-log-path` shape fails it on a developer machine.
 - Builds appear in Tempo only when the invocation ends (held builds, plus the invocation span
   itself). Live per-activity visibility is not provided; it would need a different export model.
-- Root logs at `/var/log/pg-nix-log-wrapped` are readable only with sudo or as an admin-group
-  member.
+- Root logs at `/var/log/pg-nix-log-wrapped` are readable only with sudo (an admin-group member can
+  sudo; group membership alone grants nothing: the directory's group is `wheel` and the files are
+  0600). The mode is deliberate (epic `pg2-kqrrs` D6 and the Phase 7 pass bar "files 0600 inside a
+  root-owned 0750 directory"); `pg2-lur5p` item 4 reviewed it and kept it. A non-root observer sees
+  root runs only as spans in Tempo.
+- A run's spans and metrics leave in one bounded flush at the end. A collector refusal or failure at
+  that moment drops the whole batch, including `nix.invocation`, while the raw log file remains, so
+  spans can be fewer than log files (`pg2-lur5p` item 1). The wrapper cannot retry inside the 2 s
+  budget because the exporter's first retry wait is longer.
 
 ## Not verified here
 

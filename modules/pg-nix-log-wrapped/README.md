@@ -81,8 +81,23 @@ Every observed run keeps its raw JSONL at `<log-dir>/<utc-ts>-<pid>-<rand>.jsonl
 `--log-dir`. Each start sweeps **its own directory only**: files older than 7 days, then oldest first
 until the directory is under 2 GiB. Ingest stops at 256 MiB per file (`nix.log.truncated`).
 
-Root-run logs in `/var/log/pg-nix-log-wrapped` (0750) are read with `sudo` or as an admin-group
-member.
+- **The 256 MiB cap bounds ingestion, not the file (W-12).** nix keeps writing, so a log can be
+  larger (observed: 523 MB and 576 MB; 97.2% of the larger one was dropped `type 105` progress
+  lines). The size cap that bounds the directory is the 2 GiB sweep above.
+- **The sweep is oldest-first by mtime, so the 7-day window is a ceiling, not a floor.** A few
+  oversized logs reach 2 GiB and push out everything older, including logs younger than 7 days
+  (the observation week kept 3 of 7 days). Nothing records what a sweep removed.
+- **Spans can be fewer than log files.** A log file exists once CMD has started (setup failures
+  remove it), but the run's spans and metrics leave in one bounded end-of-run flush
+  (`PG_NIX_LOG_FLUSH_TIMEOUT`, 2 s). If the collector refuses or fails that export (for example its
+  memory limiter answers 503), the OTLP exporter's first retry wait is longer than the budget, so the
+  whole batch, including `nix.invocation`, is dropped and the exit code is unaffected. The raw log is
+  then the only record of the run. `PG_NIX_LOG_DEBUG=1` prints the export error.
+
+Root-run logs in `/var/log/pg-nix-log-wrapped` (directory 0750, files 0600, owned by root) are read
+with `sudo`. Membership of the `admin` group is not enough on its own: the directory's group is
+`wheel` and the files grant nothing to a group. A non-root observer sees root runs only as spans in
+Tempo (`nix.log.file` names the file).
 
 ## Layout
 
