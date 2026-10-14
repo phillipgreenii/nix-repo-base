@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
@@ -573,5 +576,84 @@ func TestApply_CapturesHeadBeforeBuild(t *testing.T) {
 		t.Errorf("`git rev-parse HEAD` for %s ran AFTER the build (call index %d vs build's index %d) — "+
 			"AppliedRef must be captured BEFORE the build runs (eval-time HEAD), not by re-reading HEAD "+
 			"once the build has already completed; calls:\n%+v", leafDir, headIdx, buildIdx, calls)
+	}
+}
+
+// hybridRunner sends one command (the apply script) to the REAL os/exec runner
+// and everything else (git, nix daemon probe) to a FakeRunner, so an apply-level
+// test can exercise real child-process semantics for the rebuild step only.
+type hybridRunner struct {
+	realName string
+	real     exec.Runner
+	fake     *exec.FakeRunner
+}
+
+func (h *hybridRunner) Run(ctx context.Context, name string, args []string, opts exec.RunOptions) (exec.Result, error) {
+	if name == h.realName {
+		return h.real.Run(ctx, name, args, opts)
+	}
+	return h.fake.Run(ctx, name, args, opts)
+}
+
+// applyWithLingeringGrandchild runs Apply with an apply command that is a REAL
+// script: it backgrounds a grandchild holding the inherited stdout for longer
+// than the (shortened) kill grace, then exits with `exitCode`.
+func applyWithLingeringGrandchild(t *testing.T, exitCode int) (*Workspace, string, error) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	trustWS(t, root)
+
+	script := filepath.Join(t.TempDir(), "fake-rebuild.sh")
+	body := fmt.Sprintf("#!/bin/sh\n(sleep 3) &\necho activated\nexit %d\n", exitCode)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	f, _ := applyTestRunner(t, root)
+	h := &hybridRunner{realName: script, real: exec.NewRealRunnerWithKillGrace(300 * time.Millisecond), fake: f}
+	w, err := Open(root, h)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	out := &bytes.Buffer{}
+	err = w.Apply(context.Background(), out, ApplyOptions{Force: true, ApplyCmd: script})
+	return w, out.String(), err
+}
+
+// pg2-gb5ng: an apply command that exits 0 while a descendant keeps its output
+// open past WaitDelay is a SUCCESSFUL apply: it warns, and markApplied still runs.
+func TestApply_ExitZeroWithLingeringGrandchildStillMarksApplied(t *testing.T) {
+	w, out, err := applyWithLingeringGrandchild(t, 0)
+	if err != nil {
+		t.Fatalf("Apply must succeed when the command exited 0, got: %v", err)
+	}
+	if !strings.Contains(out, "background process kept its output open") {
+		t.Errorf("apply output must carry the warning; got:\n%s", out)
+	}
+	st, ok, rerr := readAppliedState(w.appliedStateKeyPath("leaf"))
+	if rerr != nil || !ok {
+		t.Fatalf("markApplied did not run: applied-state ok=%v err=%v", ok, rerr)
+	}
+	if st.AppliedRef != "l" {
+		t.Errorf("AppliedRef = %q, want %q", st.AppliedRef, "l")
+	}
+}
+
+// A real non-zero exit with a lingering descendant still fails the apply and
+// records nothing.
+func TestApply_NonZeroExitWithLingeringGrandchildStillFails(t *testing.T) {
+	w, out, err := applyWithLingeringGrandchild(t, 3)
+	if err == nil || !strings.Contains(err.Error(), "apply failed") {
+		t.Fatalf("Apply must fail with 'apply failed', got: %v", err)
+	}
+	if strings.Contains(out, "treating the command as succeeded") {
+		t.Errorf("failure must not be reported as success:\n%s", out)
+	}
+	if _, ok, rerr := readAppliedState(w.appliedStateKeyPath("leaf")); rerr != nil || ok {
+		t.Errorf("applied-state must not be recorded for a failed apply: ok=%v err=%v", ok, rerr)
 	}
 }

@@ -3,6 +3,8 @@ package exec
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,5 +186,110 @@ func TestRealRunner_SIGTERMIgnoringChildKilledAfterWaitDelay(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("child should have received SIGTERM first: %v", err)
+	}
+}
+
+// runWithLingeringGrandchild runs `script` under sh with a SHORT killGrace so a backgrounded
+// grandchild that inherits stdout/stderr outlives WaitDelay without the test
+// sleeping the production 10s (pg2-gb5ng). These tests use REAL child processes.
+func runWithLingeringGrandchild(t *testing.T, script string) (Result, string, error) {
+	t.Helper()
+	old := killGrace
+	killGrace = 300 * time.Millisecond
+	t.Cleanup(func() { killGrace = old })
+	var live bytes.Buffer
+	res, err := NewRealRunner().Run(context.Background(), "sh", []string{"-c", script}, RunOptions{Stderr: &live})
+	return res, live.String(), err
+}
+
+// A command that exits 0 while a descendant keeps its stdout open past
+// killGrace is a SUCCESS, with a visible warning (pg2-gb5ng).
+func TestRealRunner_ExitZeroWithLingeringGrandchildIsSuccessWithWarning(t *testing.T) {
+	start := time.Now()
+	// The subshell inherits stdout and sleeps 3s; the parent exits 0 at once.
+	res, live, err := runWithLingeringGrandchild(t, `(sleep 3) & echo done; exit 0`)
+	if err != nil {
+		t.Fatalf("exit 0 with a lingering grandchild must succeed, got %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", res.ExitCode)
+	}
+	if !strings.Contains(string(res.Stdout), "done") {
+		t.Errorf("captured stdout lost: %q", res.Stdout)
+	}
+	if !strings.Contains(live, "warning:") || !strings.Contains(live, "background process kept its output open") {
+		t.Errorf("expected a visible warning on the live stderr sink, got %q", live)
+	}
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond || elapsed > 2500*time.Millisecond {
+		t.Errorf("returned in %v; expected to wait ~WaitDelay (300ms) and not for the grandchild's 3s", elapsed)
+	}
+}
+
+// A plain command (no lingering descendant) emits no warning at all.
+func TestRealRunner_NoWarningWithoutLingeringGrandchild(t *testing.T) {
+	_, live, err := runWithLingeringGrandchild(t, `echo done`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if live != "" {
+		t.Errorf("no warning expected for a clean exit, got %q", live)
+	}
+}
+
+// A REAL non-zero exit still fails even when a grandchild holds the pipe: the
+// ErrWaitDelay rule applies only to a successful exit.
+func TestRealRunner_NonZeroExitWithLingeringGrandchildStillFails(t *testing.T) {
+	res, live, err := runWithLingeringGrandchild(t, `(sleep 3) & echo oops >&2; exit 3`)
+	var ce *CommandError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *CommandError, got %v", err)
+	}
+	if res.ExitCode != 3 || ce.Result.ExitCode != 3 {
+		t.Errorf("ExitCode = %d / %d, want 3", res.ExitCode, ce.Result.ExitCode)
+	}
+	if strings.Contains(live, "treating the command as succeeded") {
+		t.Errorf("failure must not be reported as success: %q", live)
+	}
+}
+
+// A signal death with a lingering grandchild still fails.
+func TestRealRunner_SignalDeathWithLingeringGrandchildStillFails(t *testing.T) {
+	_, live, err := runWithLingeringGrandchild(t, `(sleep 3) & kill -9 $$`)
+	if err == nil {
+		t.Fatal("a SIGKILLed command must fail")
+	}
+	if strings.Contains(live, "treating the command as succeeded") {
+		t.Errorf("failure must not be reported as success: %q", live)
+	}
+}
+
+// A context cancel with a lingering grandchild still fails (cancellation is
+// not masked by the ErrWaitDelay rule), even if the child then exits 0 on SIGTERM.
+func TestRealRunner_CancelWithLingeringGrandchildStillFails(t *testing.T) {
+	old := killGrace
+	killGrace = 300 * time.Millisecond
+	t.Cleanup(func() { killGrace = old })
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	script := `trap 'exit 0' TERM; (sleep 3) & touch "$1"; while :; do sleep 0.05; done`
+	ctx, cancel := context.WithCancel(context.Background())
+	type out struct {
+		res Result
+		err error
+	}
+	done := make(chan out, 1)
+	go func() {
+		res, err := NewRealRunner().Run(ctx, "sh", []string{"-c", script, "sh", ready}, RunOptions{Stderr: io.Discard})
+		done <- out{res, err}
+	}()
+	waitForFile(t, ready)
+	cancel()
+	select {
+	case o := <-done:
+		if o.err == nil {
+			t.Error("a cancelled command must return an error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after cancel")
 	}
 }

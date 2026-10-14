@@ -82,8 +82,16 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
-// realRunner wraps os/exec.
-type realRunner struct{}
+// realRunner wraps os/exec. grace, when non-zero, overrides the package-level
+// killGrace for this runner (a test seam; production leaves it zero).
+type realRunner struct{ grace time.Duration }
+
+func (r *realRunner) killGrace() time.Duration {
+	if r.grace > 0 {
+		return r.grace
+	}
+	return killGrace
+}
 
 // NewRealRunner returns a Runner backed by os/exec, wrapped in the pn.exec
 // tracing decorator and, inside it, the TRACEPARENT environment decorator and
@@ -94,7 +102,20 @@ type realRunner struct{}
 // span, and hooks and update-locks.sh (RunOptions.PropagateTrace) get that
 // span as TRACEPARENT.
 func NewRealRunner() Runner {
-	return WithTracing(WithTraceEnv(WithNixWrapper(&realRunner{})))
+	return newRealRunner(0)
+}
+
+// NewRealRunnerWithKillGrace is NewRealRunner with a caller-chosen WaitDelay /
+// SIGTERM-to-SIGKILL grace instead of the production 10s. It exists so tests
+// in other packages can exercise the real os/exec path (a descendant holding
+// the output pipe open past the grace) without sleeping 10s. Production code
+// MUST use NewRealRunner.
+func NewRealRunnerWithKillGrace(d time.Duration) Runner {
+	return newRealRunner(d)
+}
+
+func newRealRunner(grace time.Duration) Runner {
+	return WithTracing(WithTraceEnv(WithNixWrapper(&realRunner{grace: grace})))
 }
 
 func (r *realRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) (Result, error) {
@@ -104,7 +125,8 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 	// it. The default (immediate SIGKILL) gives children no chance to exit
 	// cleanly.
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = killGrace
+	grace := r.killGrace()
+	cmd.WaitDelay = grace
 	if opts.Dir != "" {
 		cmd.Dir = opts.Dir
 	}
@@ -142,6 +164,22 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 		}
 	}
 	err := cmd.Run()
+	if waitDelayAfterSuccess(ctx, cmd, err) {
+		// The command itself exited 0, but a descendant it spawned (e.g. a
+		// backgrounded `timeout 30s launchctl kickstart -k`) still held the
+		// stdout/stderr pipe open when WaitDelay expired, so os/exec gave up
+		// waiting for I/O and returned ErrWaitDelay. That is not a command
+		// failure: treat it as success (pg2-gb5ng) but say so loudly, because
+		// the captured output may be missing whatever the descendant wrote
+		// after the pipes were closed.
+		warnTo := opts.Stderr
+		if warnTo == nil {
+			warnTo = os.Stderr
+		}
+		_, _ = fmt.Fprintf(warnTo, "warning: %s exited successfully, but a background process kept its output open for more than %s; "+
+			"treating the command as succeeded (captured output may be incomplete)\n", name, grace)
+		err = nil
+	}
 	res := Result{
 		Stdout: stdout.Bytes(),
 		Stderr: stderr.Bytes(),
@@ -160,6 +198,18 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 		return res, &CommandError{Name: name, Args: args, Result: res}
 	}
 	return res, nil
+}
+
+// waitDelayAfterSuccess reports whether err is os/exec's ErrWaitDelay for a
+// command that nonetheless exited successfully on its own: the process state
+// says success and the context was not cancelled. A non-zero exit, a signal
+// death, a SIGTERM/SIGKILL delivered by context cancel, and any other error
+// all return false and keep failing exactly as before.
+func waitDelayAfterSuccess(ctx context.Context, cmd *exec.Cmd, err error) bool {
+	return errors.Is(err, exec.ErrWaitDelay) &&
+		ctx.Err() == nil &&
+		cmd.ProcessState != nil &&
+		cmd.ProcessState.Success()
 }
 
 // CommandError is returned when a command exits non-zero.
