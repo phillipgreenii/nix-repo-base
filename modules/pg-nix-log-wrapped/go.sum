@@ -17,8 +17,8 @@ github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 h1:/Tnpcb2E0Pz/tN9s3bfEY2Q8ePC
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0/go.mod h1:zOBXOsUaBSjKgmH4OGzV1esUpR3oUSCPYVd2cUBjKYY=
 github.com/pelletier/go-toml/v2 v2.3.1 h1:MYEvvGnQjeNkRF1qUuGolNtNExTDwct51yp7olPtrEc=
 github.com/pelletier/go-toml/v2 v2.3.1/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
-github.com/phillipgreenii/x v0.0.0-20261001151509-f7717596dec9 h1:RQNfJVxj0y2GU5BGRqYoULPlXdJk3hg+uSF4ufP0sRM=
-github.com/phillipgreenii/x v0.0.0-20261001151509-f7717596dec9/go.mod h1:LqAYe6mzlGG8/2vBMyLjlzbfxKh6nL0KJzbQUASCGqw=
+github.com/phillipgreenii/x v0.0.0-20261015001944-67c57cce909e h1:GVQ7Mkp6YxfPTTnmeBDMV6wJOR4/pxQ2PAGxpqDQ2n4=
+github.com/phillipgreenii/x v0.0.0-20261015001944-67c57cce909e/go.mod h1:LqAYe6mzlGG8/2vBMyLjlzbfxKh6nL0KJzbQUASCGqw=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
