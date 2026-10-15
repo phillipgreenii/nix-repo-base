@@ -3,8 +3,9 @@
 #
 # Precedence:
 #   1. UL_LIB_DIR_OVERRIDE (highest — operator escape hatch)
-#   2. WORKSPACE_ROOT-relative sibling if the file exists AND
-#      UL_IGNORE_WORKSPACE_ROOT is unset
+#   2. WORKSPACE_ROOT-relative sibling (nix-repo-base/ or the legacy
+#      phillipg-nix-repo-base/ directory name, new name first) if the file
+#      exists AND UL_IGNORE_WORKSPACE_ROOT is unset
 #   3. UL_LIB_PACKAGE_PATH (injected at build time by mkBashScript's `config`)
 #
 # Consumers invoke this via:
@@ -21,7 +22,9 @@ Usage: determine-ul-lib-dir [-h|--help]
 Reads env vars in this precedence order and prints the chosen directory:
   UL_LIB_DIR_OVERRIDE             — absolute path; if set, used directly.
   WORKSPACE_ROOT (+ sibling file) — used if the sibling update-locks-lib.bash
-                                     exists AND UL_IGNORE_WORKSPACE_ROOT is unset.
+                                     exists under nix-repo-base/ or the legacy
+                                     phillipg-nix-repo-base/ (new name first)
+                                     AND UL_IGNORE_WORKSPACE_ROOT is unset.
   UL_LIB_PACKAGE_PATH             — baked-in nix-store fallback (always defined).
 
 Output is a single line on stdout containing the resolved directory.
@@ -46,11 +49,15 @@ if [[ -n ${UL_LIB_DIR_OVERRIDE:-} ]]; then
   exit 0
 fi
 
-if [[ -z ${UL_IGNORE_WORKSPACE_ROOT:-} &&
-  -n ${WORKSPACE_ROOT:-} &&
-  -f "${WORKSPACE_ROOT}/phillipg-nix-repo-base/lib/scripts/update-locks-lib.bash" ]]; then
-  echo "${WORKSPACE_ROOT}/phillipg-nix-repo-base/lib/scripts"
-  exit 0
+if [[ -z ${UL_IGNORE_WORKSPACE_ROOT:-} && -n ${WORKSPACE_ROOT:-} ]]; then
+  # Accept the new (nix-repo-base) or the old (phillipg-nix-repo-base)
+  # directory name; the new name wins when both exist.
+  for repo_dir in nix-repo-base phillipg-nix-repo-base; do
+    if [[ -f "${WORKSPACE_ROOT}/${repo_dir}/lib/scripts/update-locks-lib.bash" ]]; then
+      echo "${WORKSPACE_ROOT}/${repo_dir}/lib/scripts"
+      exit 0
+    fi
+  done
 fi
 
 echo "$UL_LIB_PACKAGE_PATH"
