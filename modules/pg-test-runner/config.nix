@@ -94,12 +94,24 @@
   # skipped or weakened; 900s keeps the same ~3x margin as the entries above
   # while a genuinely hung suite is still killed. (900 by the df-survey/pn
   # precedent; the bead left the value operator-chosen, so it is reversible.)
+  #
+  # packages/pg-connector (phillipgreenii-nix-agent-support, bead pg2-uqs4h): its
+  # `go test -race ./...` suite hit the 300s cap on five consecutive pre-land
+  # runs while landing pg2-z5fax.4.13 (301s and 493s caps at load average
+  # ~14/23/20, every printed package ok, no FAIL or panic in the log). Measured
+  # at load ~11-15: `go test` of internal/serve alone took 219s on plain main
+  # and 259s on the branch, before compilation and the other packages. The
+  # tests are NOT skipped or weakened; 900s keeps the same ~3x margin as the
+  # entries above while a genuinely hung suite is still killed. (900 by the
+  # df-survey/pn/pg-router precedent; the bead left the value operator-chosen,
+  # so it is reversible.)
   projectTimeouts = {
     "packages/claude-extended-tool-approver" = 900;
     "modules/daily-focus/df-survey" = 900;
     "modules/pn" = 900;
     "packages/pg-desk" = 900;
     "packages/pg-router" = 900;
+    "packages/pg-connector" = 900;
   };
   ignore = [
     ".git/"
