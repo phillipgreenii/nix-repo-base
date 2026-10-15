@@ -50,6 +50,14 @@ func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
 	cmd.Env = pnEnv(
 		"PATH="+bin+":"+os.Getenv("PATH"),
 		"HOME="+home,
+		// telemetry.toml is read from $XDG_CONFIG_HOME when set, which wins over
+		// $HOME/.config. A developer shell exports it, so without this override pn
+		// reads the real ~/.config/pn/telemetry.toml (e.g. enabled = false, which
+		// beats OTEL_EXPORTER_OTLP_ENDPOINT) and exports nothing.
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		// Clear the force-off switches a developer shell may export.
+		"OTEL_SDK_DISABLED=",
+		"PG_NIX_LOG_DISABLE=",
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+srv.URL,
 		"PN_WORKSPACE_ROOT="+root,
 	)
