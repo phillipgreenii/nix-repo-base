@@ -175,6 +175,63 @@
 #   write nothing. Full contract at the top of update-action-pins-lib.bash (bead pg2-ehu9q).
 #
 # -----------------------------------------------------------------
+# ul_brew_lock_update_step / ul_brew_lock_update
+# -----------------------------------------------------------------
+# ANCHOR: ul_brew_lock_update
+#   The shared Homebrew lock-refresh step (bead pg2-msa2h; design "Question 3:
+#   Update-Flow Integration" and ADR 0060 in nix-personal). A consumer whose repo
+#   declares Homebrew entries runs, after ul_setup:
+#
+#     export UL_BREW_LOCK_FILE="darwin/homebrew/brew.lock.json"      # lock to write
+#     export UL_BREW_DECLARED_FILE="darwin/homebrew/brew.declared.json"
+#     ul_brew_lock_update_step      # or: ul_brew_lock_update_step "<commit msg>"
+#
+#   The step runs `brew update` (CATALOG ONLY), then `brew-lock generate --lock
+#   $UL_BREW_LOCK_FILE --declared $UL_BREW_DECLARED_FILE`, which rewrites the lock
+#   from the local catalog with read-only `brew info --json=v2`. ul_run_step then
+#   commits the lock diff (plus the stamp) for review.
+#
+#   Consumer contract (this lib takes NO flake-input dependency on the repo that
+#   ships brew-lock; the declaring repo supplies everything through the env):
+#     UL_BREW_LOCK_FILE        REQUIRED. Lock file to (re)write, relative to the repo root
+#                              (the cwd after ul_setup) or absolute.
+#     UL_BREW_DECLARED_FILE    REQUIRED. JSON {"formulae": [...], "casks": [...]} naming
+#                              the declared entries (the brew-lock `--declared` format).
+#                              The declaring repo is responsible for producing it.
+#     UL_BREW_ALLOW_NO_CHECK   Optional, space-separated cask names passed as
+#                              `--allow-no-check NAME` (a cask whose catalog entry has no
+#                              checksum is otherwise refused). The operator's call per cask.
+#     UL_BREW_BIN              brew executable (default: brew, from PATH).
+#     UL_BREW_LOCK_BIN         brew-lock executable (default: brew-lock, from PATH).
+#   A missing UL_BREW_LOCK_FILE / UL_BREW_DECLARED_FILE is a consumer bug: the step
+#   fails (exit 2) instead of silently skipping.
+#
+#   SKIPS (ul_brew_lock_update_step returns 0, prints why, runs NOTHING, writes no
+#   stamp, makes no commit, counts toward "Skipped"):
+#     - UL_CI_MODE=true         (CI is Linux with no Homebrew; --ci sets it)
+#     - brew not found          (a host tool, not a nix dependency; ADR 0020)
+#     - brew-lock not found     (the generator is not on PATH on this machine)
+#   The skip decision is made in the calling shell, BEFORE ul_run_step, because a
+#   command run under ul_run_step executes in a subshell that cannot update the
+#   run counters, and because a skipped no-op must not consume the step's stamp.
+#
+#   NEVER installs or upgrades software: the only brew mutation is `brew update`.
+#
+#   ROLLBACK CAVEAT (residual risk R5, MUST stay documented here): `brew update`
+#   mutates machine-global state OUTSIDE git. If ul_run_step rolls the step back
+#   (git reset --hard after a failed `nix fmt` or commit, a failed brew-lock, an
+#   interrupt) the lock file reverts but the Homebrew catalog does NOT. The
+#   activation gate then sees catalog != lock and skips new installs and upgrades
+#   (fail closed) until the next successful run of this step re-locks the catalog.
+#   A rolled-back run is therefore safe but leaves installs frozen, not wrong.
+#
+#   RESIDUAL RISK FOR THE IT AUDIT (accepted, operator ruling OQ4 / ADR 0060 R1):
+#   `brew update` also updates HOMEBREW'S OWN CODE (its git checkout), which no lock
+#   file can pin. It is operator-initiated at update time, never at apply time. No
+#   other IT-audit / residual-risk list exists in this repo, so this entry is the
+#   record here; the IT-audit record MUST list it.
+#
+# -----------------------------------------------------------------
 # Exit codes used by step commands invoked under ul_run_step
 # -----------------------------------------------------------------
 # ANCHOR: ul-exit-codes
@@ -884,6 +941,60 @@ _ul_commit_stamp_only() {
     return 1
   fi
   return 0
+}
+
+# Print why the brew-lock-update step must be skipped, or nothing when it should
+# run. See ANCHOR ul_brew_lock_update.
+_ul_brew_lock_skip_reason() {
+  if [[ ${UL_CI_MODE:-false} == "true" ]]; then
+    echo "UL_CI_MODE is set (CI has no Homebrew)"
+  elif ! command -v "${UL_BREW_BIN:-brew}" >/dev/null 2>&1; then
+    echo "brew not found (${UL_BREW_BIN:-brew})"
+  elif ! command -v "${UL_BREW_LOCK_BIN:-brew-lock}" >/dev/null 2>&1; then
+    echo "brew-lock not found (${UL_BREW_LOCK_BIN:-brew-lock})"
+  fi
+}
+
+# The step command: catalog refresh, then lock regeneration. Run it through
+# ul_brew_lock_update_step (which owns the skip decision), not bare.
+# ANCHOR: ul_brew_lock_update. The ONLY brew call here is `brew update`.
+ul_brew_lock_update() {
+  local lock="${UL_BREW_LOCK_FILE:-}" declared="${UL_BREW_DECLARED_FILE:-}"
+  local brew_bin="${UL_BREW_BIN:-brew}" lock_bin="${UL_BREW_LOCK_BIN:-brew-lock}"
+  local name
+  local -a gen=()
+
+  if [[ -z $lock || -z $declared ]]; then
+    echo "error: ul_brew_lock_update needs UL_BREW_LOCK_FILE and UL_BREW_DECLARED_FILE" >&2
+    return 2
+  fi
+  if [[ ! -r $declared ]]; then
+    echo "error: UL_BREW_DECLARED_FILE is not readable: ${declared}" >&2
+    return 2
+  fi
+
+  gen=("$lock_bin" generate --brew "$brew_bin" --lock "$lock" --declared "$declared")
+  for name in ${UL_BREW_ALLOW_NO_CHECK:-}; do
+    gen+=(--allow-no-check "$name")
+  done
+
+  "$brew_bin" update
+  "${gen[@]}"
+}
+
+# Step wrapper: skip (return 0, no stamp, no commit) when brew-lock-update cannot or
+# must not run here, otherwise run it under ul_run_step. Optional $1 overrides the
+# commit message.
+ul_brew_lock_update_step() {
+  local msg="${1:-update-locks: refresh Homebrew lock}"
+  local reason
+  reason="$(_ul_brew_lock_skip_reason)"
+  if [[ -n $reason ]]; then
+    echo "==> brew-lock-update: skipped: ${reason}"
+    _UL_STEPS_SKIPPED=$((_UL_STEPS_SKIPPED + 1))
+    return 0
+  fi
+  ul_run_step "brew-lock-update" "$msg" ul_brew_lock_update
 }
 
 ul_finalize() {

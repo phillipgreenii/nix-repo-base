@@ -1779,3 +1779,206 @@ MOCK
   [[ $output == *WARNING* ]]
   [[ $output == *POST_CALL* ]]
 }
+
+# --- ul_brew_lock_update_step (bead pg2-msa2h) ---
+#
+# The Homebrew lock-refresh step. HERMETIC: the real brew is never touched. A fake
+# `brew` and a fake `brew-lock` live in MOCK_BIN (outside the repo, so `git clean`
+# never eats them); the fake brew accepts ONLY `update` and fails on anything else.
+
+_seed_brew_lock_env() {
+  BREW_LOG="$GFH_WORK/brew.log"
+  BREW_LOCK_LOG="$GFH_WORK/brew-lock.log"
+  : >"$BREW_LOG"
+  : >"$BREW_LOCK_LOG"
+  export BREW_LOG BREW_LOCK_LOG
+
+  cat >"$MOCK_BIN/brew" <<'MOCK'
+#!/usr/bin/env bash
+echo "$*" >>"$BREW_LOG"
+[[ $1 == update ]] || { echo "fake brew: refusing '$*' (only update is allowed)" >&2; exit 99; }
+exit 0
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/brew"
+  chmod +x "$MOCK_BIN/brew"
+
+  # fake brew-lock: logs its argv, writes UL_TEST_LOCK_CONTENT to the --lock path,
+  # then exits UL_TEST_BREW_LOCK_RC (default 0).
+  cat >"$MOCK_BIN/brew-lock" <<'MOCK'
+#!/usr/bin/env bash
+echo "$*" >>"$BREW_LOCK_LOG"
+lock=""
+while [[ $# -gt 0 ]]; do
+  [[ $1 == --lock ]] && lock=$2
+  shift
+done
+[[ -n $lock ]] && mkdir -p "$(dirname "$lock")" && printf '%s\n' "${UL_TEST_LOCK_CONTENT:-{\"schema\":1}}" >"$lock"
+exit "${UL_TEST_BREW_LOCK_RC:-0}"
+MOCK
+  _fix_mock_shebang "$MOCK_BIN/brew-lock"
+  chmod +x "$MOCK_BIN/brew-lock"
+
+  # The declaring repo's declared-entries file, committed so ul_setup's clean-tree
+  # gate passes.
+  echo '{"formulae":["homebrew/core/zstd"],"casks":["homebrew/cask/google-drive"]}' >"$TEST_DIR/brew.declared.json"
+  git add brew.declared.json
+  git commit -q -m "declare brew entries"
+
+  export UL_BREW_LOCK_FILE="darwin/homebrew/brew.lock.json"
+  export UL_BREW_DECLARED_FILE="brew.declared.json"
+}
+
+@test "ul_brew_lock_update_step skips without failing when brew is absent" {
+  _seed_brew_lock_env
+  export UL_BREW_BIN="definitely-not-a-real-brew"
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  local before
+  before=$(git rev-parse HEAD)
+
+  run ul_brew_lock_update_step
+  [ "$status" -eq 0 ]
+  [[ $output == *"brew-lock-update: skipped: brew not found"* ]]
+
+  ul_brew_lock_update_step >/dev/null
+  [ "$_UL_STEPS_SKIPPED" -eq 1 ]
+  [ "$_UL_STEPS_RAN" -eq 0 ]
+  [ "$_UL_STEPS_FAILED" -eq 0 ]
+  [ ! -s "$BREW_LOCK_LOG" ]
+  [ "$(git rev-parse HEAD)" = "$before" ]
+  [ ! -e "$TEST_DIR/darwin/homebrew/brew.lock.json" ]
+}
+
+@test "ul_brew_lock_update_step skips without failing when brew-lock is absent" {
+  _seed_brew_lock_env
+  export UL_BREW_LOCK_BIN="definitely-not-a-real-brew-lock"
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  local before
+  before=$(git rev-parse HEAD)
+
+  run ul_brew_lock_update_step
+  [ "$status" -eq 0 ]
+  [[ $output == *"brew-lock-update: skipped: brew-lock not found"* ]]
+  # The catalog is not touched when the lock cannot be regenerated anyway.
+  [ ! -s "$BREW_LOG" ]
+  [ "$(git rev-parse HEAD)" = "$before" ]
+}
+
+@test "ul_brew_lock_update_step skips without failing under UL_CI_MODE" {
+  _seed_brew_lock_env
+  export UL_CI_MODE=true
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  local before
+  before=$(git rev-parse HEAD)
+
+  run ul_brew_lock_update_step
+  [ "$status" -eq 0 ]
+  [[ $output == *"brew-lock-update: skipped: UL_CI_MODE is set"* ]]
+  # brew and brew-lock are both on PATH here: CI mode alone must keep them unused.
+  [ ! -s "$BREW_LOG" ]
+  [ ! -s "$BREW_LOCK_LOG" ]
+  [ "$(git rev-parse HEAD)" = "$before" ]
+  [ ! -e "$TEST_DIR/.update-locks/steps/brew-lock-update" ]
+}
+
+@test "ul_brew_lock_update_step refreshes the lock and commits the diff" {
+  _seed_brew_lock_env
+  export UL_BREW_ALLOW_NO_CHECK="google-drive swiftbar"
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  ul_brew_lock_update_step "update-locks: refresh Homebrew lock (test)"
+
+  [ "$_UL_STEPS_SUCCEEDED" -eq 1 ]
+  [ "$_UL_STEPS_FAILED" -eq 0 ]
+  [ "$(git log -1 --format=%s)" = "update-locks: refresh Homebrew lock (test)" ]
+  run git show --name-only --format= HEAD
+  [[ $output == *"darwin/homebrew/brew.lock.json"* ]]
+  [[ $output == *".update-locks/steps/brew-lock-update"* ]]
+  [ -z "$(git status --porcelain --untracked-files=normal)" ]
+  [ "$(git show HEAD:darwin/homebrew/brew.lock.json)" = '{"schema":1}' ]
+
+  # Catalog refresh happened first, and the generator got the declaring repo's files.
+  [ "$(cat "$BREW_LOG")" = "update" ]
+  local args
+  args=$(cat "$BREW_LOCK_LOG")
+  [[ $args == "generate --brew brew --lock darwin/homebrew/brew.lock.json --declared brew.declared.json --allow-no-check google-drive --allow-no-check swiftbar" ]]
+}
+
+@test "ul_brew_lock_update_step uses the default commit message" {
+  _seed_brew_lock_env
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  ul_brew_lock_update_step
+
+  [ "$(git log -1 --format=%s)" = "update-locks: refresh Homebrew lock" ]
+}
+
+@test "ul_brew_lock_update_step never installs or upgrades: only 'brew update' runs" {
+  _seed_brew_lock_env
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  ul_brew_lock_update_step
+
+  # Runtime: the fake brew fails any call but `update` (exit 99) and logs every call.
+  [ "$_UL_STEPS_FAILED" -eq 0 ]
+  [ "$(cat "$BREW_LOG")" = "update" ]
+
+  # Static: no install/upgrade verb appears anywhere in the step's code.
+  local body
+  body="$(declare -f ul_brew_lock_update _ul_brew_lock_skip_reason ul_brew_lock_update_step)"
+  [[ -n $body ]]
+  [[ ! $body =~ (^|[^[:alnum:]_-])(install|upgrade|reinstall|bundle|uninstall|cleanup)([^[:alnum:]_-]|$) ]]
+}
+
+@test "ul_brew_lock_update_step fails the step when the generator fails, rolls the lock back, and leaves the catalog refreshed" {
+  _seed_brew_lock_env
+  export UL_TEST_BREW_LOCK_RC=1
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+  local before
+  before=$(git rev-parse HEAD)
+
+  ul_brew_lock_update_step
+
+  [ "$_UL_STEPS_FAILED" -eq 1 ]
+  [ "${_UL_FAILED_STEPS[0]}" = "brew-lock-update" ]
+  [ "$(git rev-parse HEAD)" = "$before" ]
+  [ -z "$(git status --porcelain --untracked-files=normal)" ]
+  [ ! -e "$TEST_DIR/darwin/homebrew/brew.lock.json" ]
+  # The rolled-back step does NOT roll back brew's catalog (documented caveat).
+  [ "$(cat "$BREW_LOG")" = "update" ]
+}
+
+@test "ul_brew_lock_update_step fails the step when the consumer supplies no lock or declared file" {
+  _seed_brew_lock_env
+  unset UL_BREW_LOCK_FILE
+  source "$UL_LOCKS_LIB"
+  ul_setup "test-project" "$TEST_DIR"
+
+  run ul_brew_lock_update_step
+  [[ $output == *"needs UL_BREW_LOCK_FILE and UL_BREW_DECLARED_FILE"* ]]
+
+  ul_brew_lock_update_step >/dev/null 2>&1
+  [ "$_UL_STEPS_FAILED" -eq 1 ]
+  # Nothing was refreshed or generated.
+  [ ! -s "$BREW_LOG" ]
+  [ ! -s "$BREW_LOCK_LOG" ]
+}
+
+@test "the rolled-back-step caveat and the brew-self-update residual risk are documented next to the step" {
+  local doc
+  doc="$(sed -n '/^# ANCHOR: ul_brew_lock_update$/,/^# Exit codes used by step commands/p' "$UL_LOCKS_LIB")"
+  [[ -n $doc ]]
+  # R5: a rolled-back step does not roll back the machine-global catalog; fail closed.
+  [[ $doc == *"ROLLBACK CAVEAT"* ]]
+  [[ $doc == *"the Homebrew catalog does NOT"* ]]
+  [[ $doc == *"fail closed"* ]]
+  # R1 / OQ4: brew update also updates Homebrew's own code; listed for the IT audit.
+  [[ $doc == *"RESIDUAL RISK FOR THE IT AUDIT"* ]]
+  [[ $doc == *"HOMEBREW'S OWN CODE"* ]]
+}
