@@ -238,8 +238,8 @@ recovery then documented in `/pn-workspace-update` would have started a SECOND
 build of the same set beside it, and the main session ended up improvising a
 liveness scan and a `Monitor` on the orphan.
 
-The main session instead starts the build itself with `run_in_background: true`,
-so the completion notification carries its TRUE exit status and the build can
+The main session instead starts the build itself as a background job (an option
+this runner is never given), so the completion notification carries its TRUE exit status and the build can
 neither be cut at the ceiling nor outlive a turn that was waiting on it; it then
 runs doctor and classifies the findings. `validate-workforest` is the single owner
 of that classifier — this agent no longer carries a runner-side copy of it — and
