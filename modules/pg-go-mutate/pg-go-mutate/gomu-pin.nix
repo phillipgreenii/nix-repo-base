@@ -52,7 +52,7 @@
 let
   # THE pinned version. Recorded WITHOUT the tag's leading "v" — the assertions
   # below reject one, and explain why.
-  pin = "0.2.1";
+  pin = "0.3.0";
   # `lib` is not in scope: this file is imported with no arguments, by design, so
   # that both importers can read it without threading anything in. lib.assertMsg
   # is therefore spelled out with builtins.
@@ -68,7 +68,7 @@ in
 #     the version the ENGINE REPORTS (pgm_require_engine in
 #     ../../lib/pg-go-mutate-lib.bash), never from this expectation, so no
 #     reported field can ever equal "v0.3.0". The trap is baited: the tag this
-#     tracks is recorded as "v0.2.1" in the overlay's `_sources`, and the bump
+#     tracks is recorded as "v0.3.0" in the overlay's `_sources`, and the bump
 #     note above says to match the tag.
 #   * an EMPTY pin is worse than a wrong one. `${VAR-default}` yields the empty
 #     string, which the runtime check reads as "nothing is pinned" and returns
@@ -79,5 +79,5 @@ assert assertMsg (builtins.isString pin)
 assert assertMsg (pin != "")
   "the pin MUST NOT be empty. An empty PGM_PINNED_GOMU_VERSION makes the runtime E1 check skip itself, which silently reopens the unwrapped-package gap this file closes (spec E2).";
 assert assertMsg (builtins.substring 0 1 pin != "v")
-  ''the pin MUST NOT carry a leading "v" (got "${pin}"). The runtime E1 check strips "v" from the version the ENGINE reports, never from this expectation, so a v-prefixed pin passes the home-manager assertion and then aborts every run. Record 0.2.1, not v0.2.1 — the overlay's `sources.gomu` keeps the v-prefixed TAG.'';
+  ''the pin MUST NOT carry a leading "v" (got "${pin}"). The runtime E1 check strips "v" from the version the ENGINE reports, never from this expectation, so a v-prefixed pin passes the home-manager assertion and then aborts every run. Record 0.3.0, not v0.3.0 — the overlay's `sources.gomu` keeps the v-prefixed TAG.'';
 pin
