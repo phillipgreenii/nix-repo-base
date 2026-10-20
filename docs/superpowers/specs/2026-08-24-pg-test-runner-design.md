@@ -119,6 +119,12 @@ registering a label is a configuration change, never a code change.
   `PG_TEST_RUNNER_NICE_LEVEL` environment variables override the config per run (non-integer is
   exit `2`); a malformed config value is exit `13`. The cap is soft: a reclaim race can admit one
   extra run.
+- `projectConcurrency` (optional, pg2-nnf7z) — how many projects one run starts at the same time:
+  a positive integer, default `1` (serial). Above `1` the projects run in background subshells,
+  throttled to that many, each with its output buffered and replayed in discovery order after all
+  finished; the aggregate exit status is unchanged (`10` > `11` > `0`). `maxConcurrentRuns` still
+  caps real parallelism host-wide. `PG_TEST_RUNNER_PROJECT_CONCURRENCY` overrides it per run
+  (non-positive or non-integer is exit `2`); a malformed config value is exit `13`.
 - `ignore` — gitignore-style patterns matched against the path RELATIVE to the repo toplevel (or
   the scan root outside a repo), so a bare `node_modules/` prunes at ANY depth (support-apps
   carries a nested in-tree `node_modules/`). Applied in every mode. The defaults prune

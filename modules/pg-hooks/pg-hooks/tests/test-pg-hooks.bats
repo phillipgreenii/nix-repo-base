@@ -408,6 +408,55 @@ sub/../file.txt" ]
   grep -qx 'arg=--verbose' "$PGH_T_LOG"
 }
 
+@test "run --timings swaps prek's -q for -v and keeps the rest of the argv" {
+  _present
+  run --separate-stderr "$PGH_T_SUT" run pre-commit --timings
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args)" = "$(printf '%s\n' -v run -c "$(_common_dir)/pg-hooks/gen-1/bundle/prek-config.json" --hook-stage pre-commit)" ]
+  ! grep -qx 'arg=-q' "$PGH_T_LOG"
+}
+
+@test "run pre-land --timings is accepted and keeps the branch-diff range" {
+  _present
+  run --separate-stderr "$PGH_T_SUT" run pre-land --timings
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args)" = "$(printf '%s\n' -v run -c "$(_common_dir)/pg-hooks/gen-1/bundle/prek-config.json" --hook-stage pre-commit --from-ref main --to-ref HEAD)" ]
+}
+
+@test "PG_HOOKS_TIMINGS=1 makes run behave as --timings; any other value leaves -q" {
+  _present
+  PG_HOOKS_TIMINGS=1 run --separate-stderr "$PGH_T_SUT" run pre-commit
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args | head -n 1)" = "-v" ]
+  PG_HOOKS_TIMINGS=0 run --separate-stderr "$PGH_T_SUT" run pre-commit
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args | head -n 1)" = "-q" ]
+}
+
+# The REAL prek (not the argv-logging fake): -q hides a passing hook entirely,
+# --timings (prek -v) prints its Passed line and a "- duration:" line.
+@test "run against the real prek: silent by default, --timings prints each passing hook's duration" {
+  command -v prek >/dev/null 2>&1 || skip "prek is not on PATH"
+  _present
+  ln -sf "$(command -v prek)" "$PGH_T_BUNDLE/bin/prek"
+  cat >"$PGH_T_BUNDLE/prek-config.json" <<'JSON'
+{"repos":[{"repo":"local","hooks":[
+  {"id":"fast-hook","name":"fast hook","entry":"true","language":"system","pass_filenames":false,"always_run":true},
+  {"id":"other-hook","name":"other hook","entry":"true","language":"system","pass_filenames":false,"always_run":true}
+]}]}
+JSON
+  run --separate-stderr "$PGH_T_SUT" run pre-commit
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+
+  run --separate-stderr "$PGH_T_SUT" run pre-commit --timings
+  [ "$status" -eq 0 ]
+  [[ $output == *"fast hook"*"Passed"* ]]
+  [[ $output == *"other hook"*"Passed"* ]]
+  [ "$(grep -c -E '^- duration: [0-9.]+s$' <<<"$output")" -eq 2 ]
+}
+
 @test "run cds to the toplevel from a subdirectory" {
   _present
   mkdir -p sub/deeper

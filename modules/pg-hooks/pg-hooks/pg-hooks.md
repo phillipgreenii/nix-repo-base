@@ -29,6 +29,10 @@
 
 `pg-hooks run pre-commit {{path/to/file1 path/to/file2}}`
 
+- Also print each hook's duration, passing hooks included (to find the slow one):
+
+`pg-hooks run pre-land --timings`
+
 - Forward raw flags to prek:
 
 `pg-hooks run pre-commit -- {{--verbose}}`

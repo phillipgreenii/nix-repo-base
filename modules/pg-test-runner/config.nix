@@ -42,6 +42,15 @@
   maxConcurrentRuns = 2;
   slotWaitSeconds = 600;
   niceLevel = 10;
+  # projectConcurrency (pg2-nnf7z): how many projects ONE pg-test-runner run
+  # (one commit or pre-land hook run) starts at the same time. 1 = one after the
+  # other, the historical behaviour and the default: raising it is opt-in because
+  # only the owner of a repo knows its projects share no state (a port, a fixed
+  # path, a database). maxConcurrentRuns above still caps the real parallelism
+  # host-wide, so a value above it only queues. Output is buffered per project
+  # and replayed in order. Override per run with
+  # PG_TEST_RUNNER_PROJECT_CONCURRENCY.
+  projectConcurrency = 1;
   # Per-project cap overrides (pg2-x86sp): project path suffix -> seconds. A key
   # matches a project directory when it equals the path or is a trailing run of
   # its path components (no leading/trailing "/"); longest match wins. Every

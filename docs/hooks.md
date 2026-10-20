@@ -170,6 +170,15 @@ bundle exits 12. `explain` of an unknown stage exits 2.
 - `-q` is prek's global quiet flag. Verified on the pinned prek 0.3.11: it suppresses the per-hook
   "Passed" lines and the "Using config file" line on success, and still prints a failing hook's
   output in full. So a passing run is silent.
+- `--timings` (or `PG_HOOKS_TIMINGS=1` in the environment) swaps `-q` for prek's `-v`: every hook
+  that ran prints its `Passed`/`Failed` line followed by `- duration: <n>s`, so a slow gate can be
+  attributed to one hook without re-running each separately. It goes anywhere after the stage
+  (`pg-hooks run pre-land --timings`). It only changes what is printed, never which hooks run or the
+  exit status. The `run-unit-tests` hook's time is the sum of its projects; `pg-test-runner` prints
+  `[PASS] <project> (<lang>) <n>s` per project. Those projects run one after the other unless the
+  `pg-test-runner` config sets `projectConcurrency` above `1` (or
+  `PG_TEST_RUNNER_PROJECT_CONCURRENCY` is set); see
+  `modules/pg-test-runner/pg-test-runner/pg-test-runner.md`.
 
 `pg-hooks run pre-land [<ref>]` runs the `pre-commit` stage over the branch diff, with
 `--from-ref <primary> --to-ref <ref>`:

@@ -76,6 +76,22 @@ else is exit `2`) and `PG_TEST_RUNNER_LOCK_ROOT`. A malformed config value is ex
 }
 ```
 
+## Running several projects at once
+
+`projectConcurrency` (default `1`) is how many projects one pg-test-runner run starts at the same
+time. With `1` the projects run one after the other. With `N > 1`, up to `N` run concurrently, each
+with its output buffered and replayed in discovery order after all of them finished (so output
+never interleaves, and nothing prints until the whole run ends). The exit status is unchanged:
+`10` if any project failed, else `11` if a tool was missing, else `0`. The host-wide
+`maxConcurrentRuns` cap still applies, so a value above it only queues. Raise it only for a repo
+whose projects share no state (a port, a fixed path, a database). The environment variable
+`PG_TEST_RUNNER_PROJECT_CONCURRENCY` overrides the config for one run (a non-positive or
+non-integer value is exit `2`); a malformed config value is exit `13`.
+
+```json
+{ "projectConcurrency": 2 }
+```
+
 ## Exit codes
 
 | Code | Meaning                                                                |

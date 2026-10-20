@@ -83,6 +83,11 @@ ptr_validate_config() {
     ' "$path" >/dev/null 2>&1 ||
     ptr_die 13 "config maxConcurrentRuns/slotWaitSeconds must be non-negative integers and niceLevel an integer 0-19: $path"
 
+  # projectConcurrency (optional, bead pg2-nnf7z): how many projects ONE
+  # pg-test-runner process runs at the same time; a positive integer.
+  "$PTR_JQ" -e '(.projectConcurrency // 1) | type == "number" and . >= 1 and . == floor' "$path" >/dev/null 2>&1 ||
+    ptr_die 13 "config projectConcurrency must be a positive integer: $path"
+
   local known=(jobs labels label unitExclusion allLabels)
   local tokens
   tokens="$("$PTR_JQ" -r '
@@ -623,7 +628,8 @@ ptr_load_limits() {
   for pair in \
     "MAX_CONCURRENT_RUNS:PG_TEST_RUNNER_MAX_CONCURRENT_RUNS:maxConcurrentRuns:0" \
     "NICE_LEVEL:PG_TEST_RUNNER_NICE_LEVEL:niceLevel:0" \
-    "SLOT_WAIT_SECONDS:PG_TEST_RUNNER_SLOT_WAIT_SECONDS:slotWaitSeconds:600"; do
+    "SLOT_WAIT_SECONDS:PG_TEST_RUNNER_SLOT_WAIT_SECONDS:slotWaitSeconds:600" \
+    "PROJECT_CONCURRENCY:PG_TEST_RUNNER_PROJECT_CONCURRENCY:projectConcurrency:1"; do
     IFS=: read -r var env_name key default <<<"$pair"
     val="${!env_name:-}"
     if [[ -n $val ]]; then
@@ -633,6 +639,10 @@ ptr_load_limits() {
     fi
     printf -v "$var" '%s' "$val"
   done
+  # 0 projects at once makes no sense (the config check rejects it too); an
+  # environment override of 0 is a usage error rather than a silent hang.
+  ((10#$PROJECT_CONCURRENCY >= 1)) ||
+    ptr_die 2 "PG_TEST_RUNNER_PROJECT_CONCURRENCY must be a positive integer, got '$PROJECT_CONCURRENCY'"
 }
 
 # Prints the timeout cap (seconds) for project directory $1: the config's
@@ -817,6 +827,14 @@ ptr_execute_one() {
 # $1: labels csv, remaining args: "path\tlang" project entries. Runs every
 # project, prints one summary line each, and returns the aggregate exit code
 # per section 2.6's execution-phase precedence: 10 > 11 > 0.
+#
+# With PROJECT_CONCURRENCY > 1 (bead pg2-nnf7z) up to that many projects run at
+# the same time, each in a background subshell whose combined output goes to a
+# private file; the files are replayed in discovery order once every project
+# finished, so output never interleaves and the summary stays deterministic. The
+# host-wide slot cap (maxConcurrentRuns) still bounds the real parallelism: a
+# project beyond the cap just queues in ptr_slot_acquire. The default is 1
+# (serial), the historical behaviour.
 ptr_execute_projects() {
   local labels_csv="$1"
   shift
@@ -827,6 +845,58 @@ ptr_execute_projects() {
 
   local any_failed=0 any_tool_missing=0
   local entry path lang rc
+
+  local width=$((10#${PROJECT_CONCURRENCY:-1}))
+  local outdir=""
+  if ((width > 1 && ${#projects[@]} > 1)); then
+    if ! outdir="$(mktemp -d "${PG_TEST_RUNNER_TMP_ROOT:-/tmp}/pg-test-runner-out.XXXXXX" 2>/dev/null)"; then
+      outdir=""
+      ptr_err "warning: cannot create an output dir under ${PG_TEST_RUNNER_TMP_ROOT:-/tmp}; running projects one at a time"
+    fi
+  fi
+
+  if [[ -n $outdir ]]; then
+    local i=0 running=0 other_rc=0
+    for entry in "${projects[@]}"; do
+      while ((running >= width)); do
+        wait -n || true
+        running=$((running - 1))
+      done
+      path="${entry%%$'\t'*}"
+      lang="${entry#*$'\t'}"
+      (
+        # The EXIT trap records the status however the subshell ends: a plain
+        # return, a failing command under set -e, or ptr_die's `exit`.
+        trap 'echo $? >"$outdir/'"$i"'.rc"' EXIT
+        ptr_execute_one "$path" "$lang" "$labels_csv" >"$outdir/$i.out" 2>&1
+      ) &
+      running=$((running + 1))
+      i=$((i + 1))
+    done
+    wait || true
+    for ((i = 0; i < ${#projects[@]}; i++)); do
+      cat "$outdir/$i.out" 2>/dev/null || true
+      rc=$(cat "$outdir/$i.rc" 2>/dev/null) || rc=1
+      case "$rc" in
+      0) ;;
+      10) any_failed=1 ;;
+      11) any_tool_missing=1 ;;
+      *) ((other_rc != 0)) || other_rc=$rc ;;
+      esac
+    done
+    rm -rf "$outdir"
+    # An error other than a test failure (for example a bad config, which
+    # ptr_die reports with its own code) wins, as it does in the serial path
+    # where ptr_die exits the whole run on the spot.
+    ((other_rc == 0)) || return "$other_rc"
+    if [[ $any_failed == 1 ]]; then
+      return 10
+    elif [[ $any_tool_missing == 1 ]]; then
+      return 11
+    fi
+    return 0
+  fi
+
   for entry in "${projects[@]}"; do
     path="${entry%%$'\t'*}"
     lang="${entry#*$'\t'}"

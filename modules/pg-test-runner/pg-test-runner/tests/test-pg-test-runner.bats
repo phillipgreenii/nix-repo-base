@@ -524,6 +524,116 @@ _slots_repo() {
   done
 }
 
+# --- project concurrency (bead pg2-nnf7z) --------------------------------
+# One run may start several projects at the same time (projectConcurrency);
+# output is replayed in discovery order, the exit status keeps its precedence,
+# and the host-wide slot cap still bounds the real parallelism.
+
+_conc_config() {
+  # $1: extra top-level JSON members (with trailing comma)
+  cat >"$TEST_DIR/conc-config.json" <<JSON
+{
+  "version": 1,
+  "jobs": 1,
+  "timeoutSeconds": 30,
+  "maxConcurrentRuns": 0,
+  $1
+  "ignore": [".git/"],
+  "nonUnitLabels": [],
+  "languages": [
+    {
+      "name": "logger",
+      "markers": ["LOG.marker"],
+      "tools": ["bash"],
+      "run": {
+        "unit": ["bash", "-c", "n=\$(basename \"\$PWD\"); echo start-\$n >>\"\$LOG\"; sleep 1; echo end-\$n >>\"\$LOG\"; echo output-of-\$n; [ ! -e FAIL ]"],
+        "labels": ["true"],
+        "all": ["true"]
+      }
+    }
+  ]
+}
+JSON
+}
+
+# two projects (a, b) by default; a third (c) that fails when asked
+_conc_repo() {
+  local p
+  for p in a b c; do
+    mkdir -p "$TEST_DIR/crepo/packages/$p"
+    : >"$TEST_DIR/crepo/packages/$p/LOG.marker"
+  done
+  mkdir -p "$TEST_DIR/crepo/.git"
+  export LOG="$TEST_DIR/conc.log" PG_TEST_RUNNER_LOCK_ROOT="$TEST_DIR/conc-slot-root"
+  cd "$TEST_DIR/crepo" || return 1
+}
+
+@test "projectConcurrency defaults to one project at a time" {
+  _conc_config ''
+  _conc_repo
+  run "$SCRIPT" --config "$TEST_DIR/conc-config.json" --labels unit packages/a packages/b
+  [ "$status" -eq 0 ]
+  [ "$(tr '\n' ' ' <"$LOG")" = "start-a end-a start-b end-b " ]
+}
+
+@test "projectConcurrency=2 overlaps two projects and replays output in discovery order" {
+  _conc_config '"projectConcurrency": 2,'
+  _conc_repo
+  run "$SCRIPT" --config "$TEST_DIR/conc-config.json" --labels unit packages/a packages/b
+  [ "$status" -eq 0 ]
+  # both started before either ended
+  [ "$(sed -n '1,2p' "$LOG" | sed 's/-.*//' | tr '\n' ' ')" = "start start " ]
+  [ "$(sed -n '3,4p' "$LOG" | sed 's/-.*//' | tr '\n' ' ')" = "end end " ]
+  # the replayed output is one project after the other, in the order given
+  [ "$(grep -c . <<<"$output")" -eq 4 ]
+  [ "$(sed -n 1p <<<"$output")" = "output-of-a" ]
+  [[ "$(sed -n 2p <<<"$output")" == "[PASS] "*"packages/a (logger)"* ]]
+  [ "$(sed -n 3p <<<"$output")" = "output-of-b" ]
+  [[ "$(sed -n 4p <<<"$output")" == "[PASS] "*"packages/b (logger)"* ]]
+}
+
+@test "projectConcurrency=2: a failing project is exit 10 and the others still run to completion" {
+  _conc_config '"projectConcurrency": 2,'
+  _conc_repo
+  : >"$TEST_DIR/crepo/packages/a/FAIL"
+  run "$SCRIPT" --config "$TEST_DIR/conc-config.json" --labels unit packages/a packages/b packages/c
+  [ "$status" -eq 10 ]
+  [[ "$output" == *"[FAIL] "*"packages/a (logger)"* ]]
+  [[ "$output" == *"[PASS] "*"packages/b (logger)"* ]]
+  [[ "$output" == *"[PASS] "*"packages/c (logger)"* ]]
+  [ "$(grep -c '^end-' "$LOG")" -eq 3 ]
+}
+
+@test "maxConcurrentRuns=1 still serialises the projects of one run when projectConcurrency=2" {
+  _conc_config '"projectConcurrency": 2, "maxConcurrentRuns": 1, "slotWaitSeconds": 60,'
+  _conc_repo
+  run "$SCRIPT" --config "$TEST_DIR/conc-config.json" --labels unit packages/a packages/b
+  [ "$status" -eq 0 ]
+  [ "$(sed 's/-.*//' "$LOG" | tr '\n' ' ')" = "start end start end " ]
+}
+
+@test "PG_TEST_RUNNER_PROJECT_CONCURRENCY overrides the config; 0 is a usage error" {
+  _conc_config '"projectConcurrency": 2,'
+  _conc_repo
+  PG_TEST_RUNNER_PROJECT_CONCURRENCY=1 run "$SCRIPT" --config "$TEST_DIR/conc-config.json" --labels unit packages/a packages/b
+  [ "$status" -eq 0 ]
+  [ "$(sed 's/-.*//' "$LOG" | tr '\n' ' ')" = "start end start end " ]
+  PG_TEST_RUNNER_PROJECT_CONCURRENCY=0 run "$SCRIPT" --config "$TEST_DIR/conc-config.json" --labels unit packages/a
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"PG_TEST_RUNNER_PROJECT_CONCURRENCY"* ]]
+}
+
+@test "a malformed projectConcurrency is exit 13, not a silent fallback" {
+  _conc_repo
+  local bad
+  for bad in '"projectConcurrency": 0,' '"projectConcurrency": -1,' '"projectConcurrency": "2",' '"projectConcurrency": 1.5,'; do
+    _conc_config "$bad"
+    run "$SCRIPT" --config "$TEST_DIR/conc-config.json" --labels unit packages/a
+    [ "$status" -eq 13 ] || { echo "expected 13 for $bad, got $status: $output" >&2; return 1; }
+    [[ "$output" == *"projectConcurrency"* ]]
+  done
+}
+
 # NOTE on the PG_TEST_RUNNER_JQ_BIN/PG_TEST_RUNNER_TIMEOUT_BIN ordering bug
 # (bead pg2-jcqar): mkBashScript's config injection is an UNCONDITIONAL
 # (re)assignment inside the assembled script, so it is not actually

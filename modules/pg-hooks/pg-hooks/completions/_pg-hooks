@@ -14,7 +14,7 @@ args)
   case $words[1] in
   status) _arguments '--porcelain[machine-readable key=value output]' ;;
   explain) _arguments '1:stage:(${stages})' ;;
-  run) _arguments '1:stage:(${stages})' '--all-files[run on every tracked file]' '*:file:_files' ;;
+  run) _arguments '1:stage:(${stages})' '--all-files[run on every tracked file]' '--timings[also print each hook duration]''*:file:_files' ;;
   esac
   ;;
 esac

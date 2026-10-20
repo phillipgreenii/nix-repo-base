@@ -24,6 +24,9 @@ mkBashScript {
   ];
   testDeps = [
     pkgs.git
+    # the real prek, for the run --timings output test (the other run tests
+    # use an argv-logging stand-in)
+    pkgs.prek
     pkgs.coreutils
     pkgs.jq
     pkgs.gnugrep

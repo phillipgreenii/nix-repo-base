@@ -24,7 +24,7 @@ _pg_hooks() {
     if [[ $COMP_CWORD -eq 2 ]]; then
       mapfile -t COMPREPLY < <(compgen -W "$stages" -- "$cur")
     elif [[ $cur == -* ]]; then
-      mapfile -t COMPREPLY < <(compgen -W "--all-files --" -- "$cur")
+      mapfile -t COMPREPLY < <(compgen -W "--all-files --timings --" -- "$cur")
     elif [[ $prev != "--" ]]; then
       mapfile -t COMPREPLY < <(compgen -f -- "$cur")
     fi

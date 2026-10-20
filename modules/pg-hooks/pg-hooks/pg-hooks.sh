@@ -20,9 +20,11 @@ Commands:
   status [--porcelain]   Report the bundle state (exit code carries the state)
   list                   List the stages that have configured hooks
   explain <stage>        Show what a stage runs and which hooks it holds
-  run <stage> [files...|--all-files] [-- prek-args]
-                         Run a stage's hooks now (staged files by default)
-  run pre-land [<ref>]   Run the pre-commit hooks over the branch diff
+  run <stage> [--timings] [files...|--all-files] [-- prek-args]
+                         Run a stage's hooks now (staged files by default);
+                         --timings also prints each passing hook and its duration
+  run pre-land [--timings] [<ref>]
+                         Run the pre-commit hooks over the branch diff
   fix                    Apply the repo's fixers to the staged files and restage them
                          (also installed as: pre-commit-fix)
 
@@ -48,7 +50,8 @@ Exit codes:
 
 Environment:
   PG_HOOKS_PROGRESS_AFTER_S  print one progress line after N seconds (default 3; 0 disables)
-  XDG_STATE_HOME             fix appends timings to $XDG_STATE_HOME/pg-hooks/timings.jsonl
+  PG_HOOKS_TIMINGS           1 makes every run behave as run --timings
+  XDG_STATE_HOME            fix appends timings to $XDG_STATE_HOME/pg-hooks/timings.jsonl
                              (default ~/.local/state)
 HELP
 }
@@ -462,7 +465,10 @@ cmd_run() {
   shift
   is_known_stage "$stage" || die "run: unknown stage: $stage"
 
-  local all_files=0 ref="" arg
+  local all_files=0 ref="" arg timings=0
+  if [[ ${PG_HOOKS_TIMINGS:-} == 1 ]]; then
+    timings=1
+  fi
   local -a files=()
   local -a raw=()
   while [[ $# -gt 0 ]]; do
@@ -476,6 +482,7 @@ cmd_run() {
       break
       ;;
     --all-files) all_files=1 ;;
+    --timings) timings=1 ;;
     -*) die "run: unknown option: $arg (put raw prek flags after --)" ;;
     *)
       if [[ $stage == pre-land ]]; then
@@ -513,7 +520,14 @@ cmd_run() {
 
   local prek_stage=$stage
   local -a args
-  args=(-q run -c "$cfg")
+  # -q keeps a passing run silent. --timings swaps it for prek's -v, which
+  # prints every hook's "Passed" line with a "- duration:" line (verified on
+  # the pinned prek 0.3.11; -q hides both).
+  if ((timings)); then
+    args=(-v run -c "$cfg")
+  else
+    args=(-q run -c "$cfg")
+  fi
   if [[ $stage == pre-land ]]; then
     prek_stage=pre-commit
     ref=${ref:-HEAD}
