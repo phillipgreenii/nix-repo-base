@@ -89,3 +89,24 @@ never by comparing totals.
 | `12` | Target unhealthy: does not vet, or tests already fail on unmutated source.       |
 | `13` | Environment precondition failed: `go` or the pinned engine absent or mismatched. |
 | `14` | Target path is absent or not a directory.                                        |
+
+## Process containment
+
+The engine enforces `--timeout` per mutant, but a test that hangs can leave processes behind (a re-executed test binary, a child that called `setpgid`). `pg-go-mutate` therefore contains every run:
+
+- Each run uses a private working directory. The engine starts with `TMPDIR` and `PGM_RUN_WORKDIR` set to it, and every test binary is built beneath it, so the directory path appears in the environment or command line of every process the run starts. Those processes are the run's own; no concurrent run's can match.
+- Before the wrapper exits, it MUST kill every such process, including ones in their own process group and ones orphaned to pid 1. This happens on normal exit, on an error, and on `INT`, `TERM` and `HUP`. The exit status and the report are unchanged.
+- During the run, a watchdog reaps orphans as they appear, once per `PGM_WATCHDOG_INTERVAL` seconds (default 1).
+- The watchdog also bounds the run. If more than `PG_GO_MUTATE_MAX_PROCS` processes (default 256) are alive at once, the run is aborted: all its processes are killed and the wrapper exits 1 with a message naming the bound. `0` disables the bound. A non-numeric value is a usage error (exit 2).
+
+The bound counts the engine, the compilers, the test binaries and everything the tests spawn. A healthy run holds a few dozen; the incident this guards against (bead `pg2-a0trg`) reached about 5000. `ulimit -u` is deliberately not used: it limits the whole user, not one run, so a low value would starve unrelated processes.
+
+```mermaid
+flowchart LR
+  A["wrapper starts engine\nTMPDIR = private workdir"] --> B["watchdog tick:\nreap orphans, count"]
+  B -->|"count > bound"| C["kill run, exit 1"]
+  B -->|"engine still running"| B
+  B -->|"engine exits, or INT/TERM/HUP"| D["kill every process\nmatching the workdir"]
+  C --> D
+  D --> E["remove workdir, exit"]
+```

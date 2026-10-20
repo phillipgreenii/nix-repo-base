@@ -41,7 +41,49 @@ teardown() {
   if [ -n "${PGM_TEST_PID_LOG:-}" ] && [ -s "${PGM_TEST_PID_LOG}" ]; then
     kill -KILL "$(cat "$PGM_TEST_PID_LOG")" 2>/dev/null || true
   fi
+  # Process-containment tests (pg2-a0trg) start a few `sleep`s that are meant to
+  # be reaped by the code under test. If an assertion fails first they would
+  # outlive the test, so kill whatever still carries THIS test's private marker
+  # directory ($TEST_DIR/tmp/ -- unique per test, so no peer session's process can
+  # match) and whatever pids the stubs recorded (verified against their command
+  # line so a recycled pid is never touched).
+  pgm_test_reap_residue || true
   [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"
+}
+
+# Prints the pid and command of every live process whose command line OR
+# environment contains this test's marker directory, excluding this shell.
+# Deliberately independent of _pgm_run_pids: the assertions must not trust the
+# code under test to grade itself.
+pgm_test_residue() {
+  [ -n "${TEST_DIR:-}" ] || return 0
+  local snap line pid rec
+  snap="$(_pgm_ps_snapshot 2>/dev/null)" || return 0
+  while IFS= read -r line; do
+    pid="${line%% *}"
+    [ "$pid" = "$$" ] || [ "$pid" = "${BASHPID:-$$}" ] && continue
+    printf '%s\n' "$line"
+  done < <(grep -F -- "$TEST_DIR/tmp/" <<<"$snap" | sed 's/^ *//' | cut -c1-120 || true)
+  if [ -s "$TEST_DIR/pids" ]; then
+    while read -r pid rec; do
+      # shellcheck disable=SC2009  # ps is the point: confirming the pid still runs OUR sleep
+      ps -p "$pid" -o command= 2>/dev/null | grep -q "sleep $rec\$" && printf '%s sleep %s (recorded)\n' "$pid" "$rec"
+    done <"$TEST_DIR/pids"
+  fi
+  return 0
+}
+
+pgm_test_reap_residue() {
+  local pid
+  for pid in $(pgm_test_residue | awk '{print $1}'); do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+}
+
+# Skips when `ps` cannot list processes (e.g. a restrictive build sandbox),
+# because the containment code can then do nothing and nothing can be asserted.
+pgm_require_ps() {
+  [ -n "$(_pgm_ps_snapshot 2>/dev/null)" ] || skip "ps cannot list processes here"
 }
 
 # Builds a module OUTSIDE any git repo, per spec CL6 and T5.
@@ -916,4 +958,246 @@ EOF
   unset PGM_SEM_SLOT
   run pgm_sem_release
   [ "$status" -eq 0 ]
+}
+
+
+# ---------------------------------------------------------------------------
+# Process containment (bead pg2-a0trg).
+#
+# Every stub below starts AT MOST four `sleep`s, each with a duration unique to
+# its test and recorded in "$TEST_DIR/pids" so teardown can kill a survivor. All
+# runs use TMPDIR="$TEST_DIR/tmp", so the run's private workdir is
+# "$TEST_DIR/tmp/tmp.XXXX" and "$TEST_DIR/tmp/" identifies this test's processes
+# and no one else's. The wrapper runs in its own process (never in the bats
+# shell) so a failure cannot take the test runner with it.
+# ---------------------------------------------------------------------------
+
+# Writes the runner and prints its path. $1 = stub engine path.
+pgm_make_runner() {
+  local target
+  target="$(make_module "target-$(basename "$1")")"
+  add_passing_test "$target"
+  mkdir -p "$TEST_DIR/tmp"
+  cat >"$TEST_DIR/runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+# shellcheck disable=SC1090
+source "$LIB_PATH"
+export TMPDIR="$TEST_DIR/tmp"
+export PG_GO_MUTATE_GOMU="$1"
+pgm_run_engine "$target" 1 60 ""
+RUNNER
+  chmod +x "$TEST_DIR/runner"
+}
+
+# Common stub prologue: a minimal valid report writer.
+pgm_stub_report_fn='
+write_report() {
+  printf "{\"totalMutants\":1,\"killedMutants\":0,\"results\":[{\"mutant\":{\"id\":\"x\",\"filePath\":\"/x/a.go\",\"line\":1,\"column\":1,\"type\":\"t\",\"original\":\"a\",\"mutated\":\"b\",\"description\":\"d\"},\"status\":\"SURVIVED\"}],\"statistics\":{\"killed\":0,\"survived\":1,\"notViable\":0,\"timedOut\":0,\"errors\":0,\"mutationScore\":0}}" >mutation-report.json
+}
+'
+
+@test "pgm_validate_max_procs accepts unset, zero and digits, and rejects anything else" {
+  unset PG_GO_MUTATE_MAX_PROCS
+  run pgm_validate_max_procs
+  [ "$status" -eq 0 ]
+  PG_GO_MUTATE_MAX_PROCS=0 run pgm_validate_max_procs
+  [ "$status" -eq 0 ]
+  PG_GO_MUTATE_MAX_PROCS=300 run pgm_validate_max_procs
+  [ "$status" -eq 0 ]
+  PG_GO_MUTATE_MAX_PROCS=many run pgm_validate_max_procs
+  [ "$status" -eq 1 ]
+  PG_GO_MUTATE_MAX_PROCS=-1 run pgm_validate_max_procs
+  [ "$status" -eq 1 ]
+}
+
+@test "pgm_run_engine reaps what a timed-out test left behind, including a process in its own process group" {
+  pgm_require_ps
+  stub="$TEST_DIR/stub-leak"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$pgm_stub_report_fn"
+    cat <<'EOF'
+dir="$TMPDIR/go-build001/b001"
+mkdir -p "$dir"
+# The "test binary" of a mutant that hangs. A: a child that changed its own
+# process group (job control), found by its ENVIRONMENT only (its command line
+# is a bare `sleep`). B: a child whose environment was cleared, found by its
+# COMMAND LINE only (the script lives under the go-build dir, exactly like a
+# re-executed test binary); its own sleep child is found through it.
+cat >"$dir/child.test" <<'C'
+#!/usr/bin/env bash
+sleep 182 &
+echo "$! 182" >>"$PGM_TEST_PIDS"
+wait
+C
+cat >"$dir/leak.test" <<'T'
+#!/usr/bin/env bash
+set -m
+sleep 181 &
+echo "$! 181" >>"$TEST_DIR_PIDS"
+env -i PATH="$PATH" PGM_TEST_PIDS="$TEST_DIR_PIDS" "$BASH" "$TMPDIR/go-build001/b001/child.test" &
+exec sleep 183
+T
+chmod +x "$dir/leak.test"
+TEST_DIR_PIDS="$PGM_TEST_PIDS" "$dir/leak.test" &
+test_bin=$!
+sleep 1
+# The engine's own timeout handling: it kills the test binary and nothing else.
+kill -KILL "$test_bin"
+wait "$test_bin" 2>/dev/null || true
+# Both orphans MUST still be alive here, or the case proves nothing.
+while read -r pid rec; do
+  kill -0 "$pid" && echo "alive $rec" >>"$PGM_TEST_ALIVE"
+done <"$PGM_TEST_PIDS"
+write_report
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids" PGM_TEST_ALIVE="$TEST_DIR/alive"
+  # No mid-run orphan reaping: this case is about the END-of-run guarantee.
+  export PGM_WATCHDOG_INTERVAL=60
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 0 ]
+  # The wrapper still wrote and printed its report.
+  [ -s "$output" ]
+  jq -e '.totalMutants == 1' "$output" >/dev/null
+  rm -f -- "$output"
+
+  # The orphans really were alive and orphaned when the engine finished...
+  grep -q 'alive 181' "$PGM_TEST_ALIVE"
+  grep -q 'alive 182' "$PGM_TEST_ALIVE"
+  # ...and nothing carrying this run's marker survived the wrapper.
+  [ -z "$(pgm_test_residue)" ]
+  # The private workdir is gone too.
+  [ -z "$(find "$TEST_DIR/tmp" -mindepth 1 -maxdepth 1 -name 'tmp.*' 2>/dev/null)" ]
+}
+
+@test "pgm_run_engine leaves no live descendants when TERM'd mid-run" {
+  pgm_require_ps
+  stub="$TEST_DIR/stub-interrupt-tree"
+  {
+    printf '#!/usr/bin/env bash\n'
+    cat <<'EOF'
+set -m
+sleep 191 &
+echo "$! 191" >>"$PGM_TEST_PIDS"
+# Environment cleared and no marker in the command line: only the parent-pid
+# walk from the live engine can find this one.
+env -i "$(command -v sleep)" 192 &
+echo "$! 192" >>"$PGM_TEST_PIDS"
+echo "$$" >"$PGM_TEST_PID_LOG"
+exec sleep 193
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids" PGM_TEST_PID_LOG="$TEST_DIR/engine.pid"
+  export PGM_WATCHDOG_INTERVAL=60
+  pgm_make_runner "$stub"
+
+  "$TEST_DIR/runner" >"$TEST_DIR/runner.out" 2>&1 &
+  runner_pid=$!
+  for _ in $(seq 1 100); do
+    [ -s "$TEST_DIR/pids" ] && [ "$(wc -l <"$TEST_DIR/pids")" -ge 2 ] && [ -s "$PGM_TEST_PID_LOG" ] && break
+    sleep 0.1
+  done
+  [ "$(wc -l <"$TEST_DIR/pids")" -ge 2 ]
+  engine_pid="$(cat "$PGM_TEST_PID_LOG")"
+  # Preconditions: the engine and both children are alive before the signal.
+  kill -0 "$engine_pid"
+  while read -r pid _; do kill -0 "$pid"; done <"$TEST_DIR/pids"
+
+  kill -TERM "$runner_pid"
+  wait "$runner_pid" || true
+
+  run kill -0 "$engine_pid"
+  [ "$status" -ne 0 ]
+  [ -z "$(pgm_test_residue)" ]
+  [ -z "$(find "$TEST_DIR/tmp" -mindepth 1 -maxdepth 1 -name 'tmp.*' 2>/dev/null)" ]
+}
+
+@test "pgm_run_engine aborts and kills the whole run past PG_GO_MUTATE_MAX_PROCS" {
+  pgm_require_ps
+  stub="$TEST_DIR/stub-runaway"
+  {
+    printf '#!/usr/bin/env bash\n'
+    cat <<'EOF'
+# Four children plus the engine itself: five live processes against a bound of 3.
+for d in 201 202 203 204; do
+  sleep "$d" &
+  echo "$! $d" >>"$PGM_TEST_PIDS"
+done
+exec sleep 205
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids"
+  export PGM_WATCHDOG_INTERVAL=0.2 PG_GO_MUTATE_MAX_PROCS=3
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  # An aborted run fails like any run that produced no report, and says why.
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"exceeded 3 live processes"* ]]
+  [[ "$output" == *"PG_GO_MUTATE_MAX_PROCS"* ]]
+  [ -z "$(pgm_test_residue)" ]
+  [ -z "$(find "$TEST_DIR/tmp" -mindepth 1 -maxdepth 1 -name 'tmp.*' 2>/dev/null)" ]
+}
+
+@test "pgm_run_engine does not abort a run when the bound is disabled (PG_GO_MUTATE_MAX_PROCS=0)" {
+  pgm_require_ps
+  stub="$TEST_DIR/stub-unbounded"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$pgm_stub_report_fn"
+    cat <<'EOF'
+for d in 211 212 213; do
+  sleep "$d" &
+  echo "$! $d" >>"$PGM_TEST_PIDS"
+done
+sleep 1
+write_report
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids"
+  export PGM_WATCHDOG_INTERVAL=0.2 PG_GO_MUTATE_MAX_PROCS=0
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 0 ]
+  rm -f -- "$output"
+  [ -z "$(pgm_test_residue)" ]
+}
+
+@test "the watchdog reaps an orphaned process while the run is still live" {
+  pgm_require_ps
+  stub="$TEST_DIR/stub-orphan-midrun"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$pgm_stub_report_fn"
+    cat <<'EOF'
+# A subshell that exits at once orphans its job-controlled sleep to pid 1, which
+# is what a timed-out mutant's test binary does to its children.
+( set -m; sleep 221 & echo "$! 221" >>"$PGM_TEST_PIDS" )
+for _ in $(seq 1 100); do
+  pid="$(awk '{print $1}' "$PGM_TEST_PIDS")"
+  if ! kill -0 "$pid" 2>/dev/null; then echo reaped >"$PGM_TEST_MIDRUN"; break; fi
+  sleep 0.1
+done
+write_report
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids" PGM_TEST_MIDRUN="$TEST_DIR/midrun"
+  export PGM_WATCHDOG_INTERVAL=0.2
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 0 ]
+  rm -f -- "$output"
+  # Reaped by the watchdog BEFORE the engine finished, not by the final sweep.
+  [ -s "$TEST_DIR/midrun" ]
 }

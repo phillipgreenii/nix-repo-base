@@ -363,6 +363,145 @@ pgm_detect_tags() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Process containment (bead pg2-a0trg)
+#
+# gomu enforces --timeout per mutant but kills only the test binary it started:
+# whatever that binary spawned (a re-executed test child, a `sleep` that called
+# setpgid) is orphaned to pid 1 and outlives the run -- and a runaway mutant
+# once forked ~5000 test processes and exhausted the per-user process limit for
+# the whole machine. A process-group kill cannot reach a descendant that
+# changed its own group, and a parent-pid walk loses every orphan, so the run's
+# processes are identified by a MARKER instead. pgm_run_engine launches the
+# engine with TMPDIR (and PGM_RUN_WORKDIR) set to its private mktemp workdir,
+# which every descendant inherits in its ENVIRONMENT, and every go test binary
+# is built under "$workdir/go-build*/", so it also appears in the process's
+# COMMAND LINE. A process is this run's iff the workdir path appears, on a
+# path boundary, in either; no concurrent run's processes can match because
+# every run's workdir is unique. A parent-pid walk down from the live engine is
+# unioned in to catch descendants that cleared their own environment.
+# ---------------------------------------------------------------------------
+
+# The default bound on a run's live processes (engine, compilers, test
+# binaries and everything the tests spawn). Far above a healthy single-worker
+# run and far below the per-user limit that the pg2-a0trg incident exhausted.
+PGM_DEFAULT_MAX_PROCS=256
+
+# One system-wide "<pid> <ppid> <command line plus environment>" listing.
+# BSD/macOS ps spells "show the environment" -E; procps (Linux) spells it `e`.
+_pgm_ps_snapshot() {
+  case "$(uname -s)" in
+  Darwin) ps -axwwE -o pid=,ppid=,command= ;;
+  *) ps axewwo pid=,ppid=,command= ;;
+  esac
+}
+
+# Prints "<pid> <ppid>" for every live process that belongs to the run keyed on
+# workdir $1: a workdir-path match in its command line or environment, plus any
+# descendant (by parent pid) of a match or of the live engine pid $2 (0 = none;
+# MUST be 0 once the engine has been reaped, because its pid may be reused).
+# Never lists pid 1 or this shell. Prints nothing when `ps` is unusable.
+_pgm_run_pids() {
+  local wd="$1" root="${2:-0}" snap
+  snap="$(_pgm_ps_snapshot 2>/dev/null)" || return 0
+  [ -n "$snap" ] || return 0
+  awk -v wd="$wd" -v root="$root" -v self="$$ ${BASHPID:-$$}" '
+    # True when wd occurs in s followed by "/", a space or end of line, so a
+    # sibling directory sharing the prefix never matches.
+    function hit(s,   p, c) {
+      while ((p = index(s, wd)) > 0) {
+        c = substr(s, p + length(wd), 1)
+        if (c == "" || c == "/" || c == " ") return 1
+        s = substr(s, p + length(wd))
+      }
+      return 0
+    }
+    BEGIN {
+      n = split(self, sp, " ")
+      for (i = 1; i <= n; i++) skip[sp[i]] = 1
+      skip[1] = 1; skip[0] = 1
+    }
+    {
+      pid = $1; par[pid] = $2
+      rest = $0
+      sub(/^ *[0-9]+ +[0-9]+ ?/, "", rest)
+      if (hit(rest) || pid == root) mine[pid] = 1
+    }
+    END {
+      do {
+        grew = 0
+        for (p in par)
+          if (!(p in mine) && (par[p] in mine) && !(par[p] in skip)) { mine[p] = 1; grew = 1 }
+      } while (grew)
+      for (p in mine) if (!(p in skip)) print p, par[p]
+    }' <<<"$snap"
+}
+
+# Kills every process of the run keyed on workdir $1 (root engine pid $2, see
+# _pgm_run_pids), repeating until none is left so a runaway that keeps forking
+# or a descendant orphaned by the previous round cannot outlive it. SIGSTOP
+# first so a forking process stops multiplying before SIGKILL lands. Always
+# returns 0: this runs on error and interrupt paths and must never abort them.
+_pgm_reap_run() {
+  local wd="$1" root="${2:-0}" pids
+  for _ in $(seq 1 30); do
+    pids="$(_pgm_run_pids "$wd" "$root" | awk '{print $1}' | tr '\n' ' ')"
+    [ -n "${pids// /}" ] || return 0
+    # shellcheck disable=SC2086  # word splitting of the pid list is intended
+    kill -STOP $pids 2>/dev/null || true
+    # shellcheck disable=SC2086  # as above
+    kill -KILL $pids 2>/dev/null || true
+    # Only the first round may name the engine pid; later rounds search by
+    # marker alone so a recycled pid can never be mistaken for the engine.
+    root=0
+    sleep 0.1
+  done
+  return 0
+}
+
+# Background watchdog: every PGM_WATCHDOG_INTERVAL seconds (default 1) reaps
+# the run's ORPHANS (live processes re-parented to pid 1, i.e. what a timed-out
+# mutant left behind) so they cannot accumulate over a long run, then counts
+# what is still alive; past $3 processes it writes "$1/watchdog-tripped" and
+# terminates the whole run. Exits when the engine $2 does. $3 = 0 disables.
+_pgm_watchdog() {
+  local wd="$1" root="$2" max="$3" list n orphans nap=""
+  # The inter-tick nap runs in the background and is cut short by TERM, so
+  # stopping the watchdog never leaves a foreground `sleep` behind for up to a
+  # whole interval.
+  trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+  while kill -0 "$root" 2>/dev/null; do
+    list="$(_pgm_run_pids "$wd" "$root")"
+    orphans="$(awk '$2 == 1 && $1 != root {print $1}' root="$root" <<<"$list" | tr '\n' ' ')"
+    if [ -n "${orphans// /}" ]; then
+      # shellcheck disable=SC2086  # word splitting of the pid list is intended
+      kill -KILL $orphans 2>/dev/null || true
+      list="$(_pgm_run_pids "$wd" "$root")"
+    fi
+    n=0
+    [ -z "$list" ] || n="$(printf '%s\n' "$list" | wc -l | tr -d ' ')"
+    if [ "$max" -gt 0 ] 2>/dev/null && [ "$n" -gt "$max" ] 2>/dev/null; then
+      printf '%s\n' "$n" >"$wd/watchdog-tripped" 2>/dev/null || true
+      _pgm_reap_run "$wd" "$root"
+      return 0
+    fi
+    sleep "${PGM_WATCHDOG_INTERVAL:-1}" &
+    nap=$!
+    wait "$nap" || true
+  done
+  return 0
+}
+
+pgm_validate_max_procs() {
+  case "${PG_GO_MUTATE_MAX_PROCS:-$PGM_DEFAULT_MAX_PROCS}" in
+  '' | *[!0-9]*)
+    pgm_die "PG_GO_MUTATE_MAX_PROCS must be a non-negative integer (0 disables the bound), got '${PG_GO_MUTATE_MAX_PROCS}'"
+    return 1
+    ;;
+  esac
+  return 0
+}
+
 # Cleanup for pgm_run_engine. Called EXPLICITLY on every return path (success,
 # engine failure, missing report) rather than from an EXIT trap: the CLI (a
 # later task) installs its own `trap ... EXIT` to remove the report file it
@@ -379,9 +518,32 @@ _pgm_run_engine_cleanup() {
   # workdir that had just been deleted -- observed on this branch as a TERM'd
   # wrapper leaving live gomu/go-build children behind. `kill -0` keeps this a
   # no-op on the normal path, where `wait` has already reaped the engine.
-  if [ -n "${gomu_pid:-}" ] && kill -0 "$gomu_pid" 2>/dev/null; then
+  #
+  # The engine is not the only thing to stop: the watchdog goes first (so it
+  # cannot race the reaper), then EVERY process of this run -- the engine, its
+  # compilers, timed-out test binaries orphaned to pid 1 and anything they
+  # spawned, including processes that changed their own process group (bead
+  # pg2-a0trg) -- is found by the workdir marker and killed. The engine pid is
+  # only named while this shell still owns it (engine_gone=0): once `wait` has
+  # reaped it the number may belong to a stranger.
+  if [ -n "${watchdog_pid:-}" ]; then
+    kill -TERM "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    watchdog_pid=""
+  fi
+  if [ -n "${workdir:-}" ]; then
+    if [ "${engine_gone:-1}" -eq 0 ]; then
+      _pgm_reap_run "$workdir" "${gomu_pid:-0}"
+    else
+      _pgm_reap_run "$workdir" 0
+    fi
+  fi
+  if [ -n "${gomu_pid:-}" ] && [ "${engine_gone:-1}" -eq 0 ] && kill -0 "$gomu_pid" 2>/dev/null; then
     kill -TERM "$gomu_pid" 2>/dev/null || true
+  fi
+  if [ -n "${gomu_pid:-}" ] && [ "${engine_gone:-1}" -eq 0 ]; then
     wait "$gomu_pid" 2>/dev/null || true
+    engine_gone=1
   fi
 
   # Removing $workdir is also what removes this run's overlay dirs: the engine
@@ -437,9 +599,11 @@ pgm_run_engine() {
   # named local with the ARRAY `tags=()` declared in pgm_detect_tags above,
   # even though the two are unrelated locals in different functions.
   local target="$1" workers="$2" timeout="$3" build_tags="$4"
-  local workdir gomu_pid rc report d bin gomu_bin
+  local workdir gomu_pid rc report d bin gomu_bin watchdog_pid="" engine_gone=0 max_procs
   local -a main_bins=() pre_existing=()
   gomu_bin="$(pgm_gomu_bin)"
+  max_procs="${PG_GO_MUTATE_MAX_PROCS:-$PGM_DEFAULT_MAX_PROCS}"
+  pgm_validate_max_procs || return 1
   workdir="$(mktemp -d)" || {
     pgm_die "could not create a private working directory"
     return 1
@@ -501,11 +665,18 @@ pgm_run_engine() {
   (
     cd "$workdir" || exit 127
     export TMPDIR="$workdir"
+    # The containment marker (see "Process containment" above): inherited by
+    # every descendant even when a test overrides TMPDIR for its own children.
+    export PGM_RUN_WORKDIR="$workdir"
     exec "$gomu_bin" run \
       --incremental=false --fail-on-gate=false --output json \
       --workers "$workers" --timeout "$timeout" "$target" >"$workdir/engine.log" 2>&1
   ) &
   gomu_pid=$!
+  # Detached from our stdio: a lingering `sleep` of the watchdog must never
+  # hold open a pipe the caller is reading (e.g. a command substitution).
+  _pgm_watchdog "$workdir" "$gomu_pid" "$max_procs" </dev/null >/dev/null 2>&1 &
+  watchdog_pid=$!
   # `|| rc=$?`, not a bare `wait` followed by `rc=$?`: under the injected
   # errexit a bare `wait` returning non-zero exits the function outright,
   # skipping the cleanup below -- and it returns 128+signum precisely when an
@@ -513,7 +684,14 @@ pgm_run_engine() {
   # cleanup exists for.
   rc=0
   wait "$gomu_pid" || rc=$?
+  # Reaped (or reaped by an interrupt trap's cleanup, which has already run):
+  # from here the pid must not be named again.
+  engine_gone=1
 
+  if [ -f "$workdir/watchdog-tripped" ]; then
+    printf 'pg-go-mutate: aborted: the run exceeded %s live processes (%s seen); PG_GO_MUTATE_MAX_PROCS sets the bound, 0 disables it. All of its processes were killed.\n' \
+      "$max_procs" "$(cat "$workdir/watchdog-tripped" 2>/dev/null || true)" >&2
+  fi
   if [ ! -f "$workdir/mutation-report.json" ]; then
     printf 'pg-go-mutate: the engine produced no report (exit %s). Output:\n' "$rc" >&2
     # `|| true`: on the interrupted path the trap has already removed $workdir,

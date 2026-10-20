@@ -44,6 +44,16 @@ NOTES
 
   Cost is roughly (number of mutants) x (the package's test-suite runtime), so
   scope the run by passing a narrow PATH.
+
+PROCESS CONTAINMENT
+  Every process the engine's test runs start is identified by this run's private
+  working directory (in its environment or command line) and is killed before
+  the command exits -- on normal exit, on an error, and on INT/TERM/HUP --
+  including a process a timed-out test left behind in its own process group.
+  While the run is live, orphans of timed-out mutants are reaped as they appear,
+  and a run that holds more than 256 live processes is aborted (all of its
+  processes killed, exit 1) so one runaway mutant cannot exhaust the per-user
+  process limit. PG_GO_MUTATE_MAX_PROCS overrides that bound; 0 disables it.
 EOF
   # Printed OUTSIDE the quoted heredoc so the pinned version is the real baked
   # one. Disclosed in --help, not only in the design doc, because this is the
@@ -180,6 +190,7 @@ fi
 guard_target="$(cd "$guard_target" && pwd)"
 
 pgm_validate_flags "$workers" "$timeout" || exit 2
+pgm_validate_max_procs || exit 2
 
 # N-slot semaphore instead of a single exclusive lock (pg2-1qcro.3):
 # concurrency is now bounded by pg-go-mutate-tui's own `concurrency` setting

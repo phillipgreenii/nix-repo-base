@@ -102,6 +102,12 @@ teardown() {
     kill -KILL "$(cat "$TEST_DIR/.cli-pid")" 2>/dev/null || true
     wait "$(cat "$TEST_DIR/.cli-pid")" 2>/dev/null || true
   fi
+  # Process-containment tests (pg2-a0trg) start a few `sleep`s the wrapper is
+  # meant to reap. If an assertion fails first, kill whatever still carries THIS
+  # test's private marker directory ($TEST_DIR/tmp/ -- unique per test, so a
+  # peer's process can never match) and the recorded sleeps (verified by command
+  # line so a recycled pid is never touched).
+  pgm_test_reap_residue || true
   if [ -n "${TEST_DIR:-}" ]; then
     # A grandchild forked by either process just killed above (e.g. a `go`
     # compile/link tool already spawned before the kill landed) can still
@@ -117,6 +123,47 @@ teardown() {
     done
     [ -n "$ok" ] || rm -rf "$TEST_DIR"
   fi
+}
+
+# One system-wide "<pid> <ppid> <command line plus environment>" listing; the
+# same ps spelling the code under test uses, deliberately re-stated here so the
+# assertions do not depend on the code under test to grade itself.
+pgm_test_ps_snapshot() {
+  case "$(uname -s)" in
+  Darwin) ps -axwwE -o pid=,ppid=,command= ;;
+  *) ps axewwo pid=,ppid=,command= ;;
+  esac
+}
+
+# Prints every live process whose command line OR environment contains this
+# test's marker directory ($TEST_DIR/tmp/), excluding this shell, plus any
+# recorded sleep ("$TEST_DIR/pids": "<pid> <seconds>") that still runs.
+pgm_test_residue() {
+  [ -n "${TEST_DIR:-}" ] || return 0
+  local snap line pid rec
+  snap="$(pgm_test_ps_snapshot 2>/dev/null)" || return 0
+  while IFS= read -r line; do
+    pid="${line%% *}"
+    [ "$pid" = "$$" ] || [ "$pid" = "${BASHPID:-$$}" ] && continue
+    printf '%s\n' "$line"
+  done < <(grep -F -- "$TEST_DIR/tmp/" <<<"$snap" | sed 's/^ *//' | cut -c1-120 || true)
+  if [ -s "$TEST_DIR/pids" ]; then
+    while read -r pid rec; do
+      ps -p "$pid" -o command= 2>/dev/null | grep -q "sleep $rec\$" && printf '%s sleep %s (recorded)\n' "$pid" "$rec"
+    done <"$TEST_DIR/pids"
+  fi
+  return 0
+}
+
+pgm_test_reap_residue() {
+  local pid
+  for pid in $(pgm_test_residue | awk '{print $1}'); do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+}
+
+pgm_require_ps() {
+  [ -n "$(pgm_test_ps_snapshot 2>/dev/null)" ] || skip "ps cannot list processes here"
 }
 
 @test "--help exits 0 and documents every flag" {
@@ -1034,4 +1081,131 @@ STUB
   run "$SCRIPT" "$target"
   [ "$status" -eq 0 ]
   [ "$(cat "$TEST_DIR/gomaxprocs-seen")" = "1" ]
+}
+
+
+@test "--help documents the process bound and PG_GO_MUTATE_MAX_PROCS" {
+  run "$SCRIPT" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PG_GO_MUTATE_MAX_PROCS"* ]]
+  [[ "$output" == *"PROCESS CONTAINMENT"* ]]
+}
+
+@test "rejects a non-numeric PG_GO_MUTATE_MAX_PROCS with exit 2 before invoking the engine" {
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/must-not-run"
+  printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "$TEST_DIR" >"$PG_GO_MUTATE_GOMU"
+  chmod +x "$PG_GO_MUTATE_GOMU"
+  PG_GO_MUTATE_MAX_PROCS=lots run "$SCRIPT" "$TEST_DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"PG_GO_MUTATE_MAX_PROCS"* ]]
+  [ ! -e "$TEST_DIR/ran" ]
+}
+
+# Process containment (bead pg2-a0trg), CLI level: SIGTERM to the wrapper's own
+# pid must leave no live descendant, including one in its own process group.
+# Two sleeps at most; every run uses TMPDIR="$TEST_DIR/tmp" so the private
+# workdir is "$TEST_DIR/tmp/tmp.XXXX" and that prefix identifies only this test.
+@test "a TERM on the CLI's pid leaves no live descendants of the engine, even in another process group" {
+  pgm_require_ps
+  target="$(make_module clireap)"
+  mkdir -p "$TEST_DIR/tmp"
+  export PGM_TEST_PIDS="$TEST_DIR/pids" PGM_TEST_PID_LOG="$TEST_DIR/engine.pid"
+  export PGM_WATCHDOG_INTERVAL=60
+  stub="$TEST_DIR/stub-gomu-descendants"
+  cat >"$stub" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then
+  printf 'gomu version %s\n' "$PGM_TEST_PINNED_VERSION"
+  exit 0
+fi
+set -m
+sleep 241 &
+echo "$! 241" >>"$PGM_TEST_PIDS"
+env -i "$(command -v sleep)" 242 &
+echo "$! 242" >>"$PGM_TEST_PIDS"
+echo "$$" >"$PGM_TEST_PID_LOG"
+exec sleep 243
+EOF
+  chmod +x "$stub"
+  export PG_GO_MUTATE_GOMU="$stub"
+
+  TMPDIR="$TEST_DIR/tmp" "$SCRIPT" "$target" >"$TEST_DIR/cli.out" 2>&1 &
+  cli_pid=$!
+  printf '%s\n' "$cli_pid" >"$TEST_DIR/.cli-pid"
+  for _ in $(seq 1 1200); do
+    [ -s "$PGM_TEST_PID_LOG" ] && [ -s "$TEST_DIR/pids" ] && [ "$(wc -l <"$TEST_DIR/pids")" -ge 2 ] && break
+    sleep 0.1
+  done
+  [ "$(wc -l <"$TEST_DIR/pids")" -ge 2 ]
+  engine_pid="$(cat "$PGM_TEST_PID_LOG")"
+  # Preconditions: all three are alive before the signal, so the later absence is
+  # the wrapper's doing.
+  kill -0 "$engine_pid"
+  while read -r pid _; do kill -0 "$pid"; done <"$TEST_DIR/pids"
+
+  kill -TERM "$cli_pid"
+  wait "$cli_pid" || true
+
+  run kill -0 "$engine_pid"
+  [ "$status" -ne 0 ]
+  [ -z "$(pgm_test_residue)" ]
+  [ -z "$(find "$TEST_DIR/tmp" -mindepth 1 -maxdepth 1 -name 'tmp.*' 2>/dev/null)" ]
+}
+
+# The bead's reproduction, against the REAL engine: a mutant that makes the test
+# hang while holding a child in its own process group. Needs a real gomu of the
+# pinned version, so it skips where none is available (e.g. the nix check
+# sandbox); point PGM_TEST_REAL_GOMU at one to force it. The throwaway module has
+# one function and one test, and the run uses --timeout 3, so each mutant leaves
+# at most one test binary and one sleep behind (a handful of processes in all).
+@test "real engine: a timed-out mutant's test binary and its setpgid child are gone when the wrapper exits" {
+  pgm_require_ps
+  real="${PGM_TEST_REAL_GOMU:-$(command -v gomu || true)}"
+  [ -n "$real" ] && [ -x "$real" ] || skip "no real gomu available"
+  expected="${PG_GO_MUTATE_GOMU_VERSION:-${PGM_PINNED_GOMU_VERSION:-}}"
+  if [ -n "$expected" ] && ! "$real" version 2>&1 | grep -q "$expected"; then
+    skip "real gomu is not the pinned version $expected"
+  fi
+  target="$TEST_DIR/leakmod"
+  mkdir -p "$target" "$TEST_DIR/tmp"
+  printf 'module example.com/leak\n\ngo 1.22\n' >"$target/go.mod"
+  printf 'package leak\n\nfunc Add(a, b int) int { return a + b }\n' >"$target/leak.go"
+  cat >"$target/leak_test.go" <<'EOF'
+package leak
+
+import (
+	"os/exec"
+	"syscall"
+	"testing"
+)
+
+func TestAdd(t *testing.T) {
+	if Add(1, 2) == 3 {
+		return
+	}
+	// A mutant: start a child in its own process group, then hang forever.
+	c := exec.Command("sleep", "251")
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {}
+}
+EOF
+  export PG_GO_MUTATE_GOMU="$real"
+  export PG_GO_MUTATE_GOMU_VERSION="$expected"
+  export PGM_SEM_DIR="$TEST_DIR/sem"
+
+  TMPDIR="$TEST_DIR/tmp" run "$SCRIPT" --keep-report --timeout 3 "$target"
+  # Normal exit status, and the report was still written and printed.
+  [ "$status" -eq 0 ]
+  report="$(printf '%s\n' "$output" | sed -n 's/^pg-go-mutate: report kept at //p')"
+  [ -s "$report" ]
+  jq -e '.totalMutants >= 1' "$report" >/dev/null
+  rm -f -- "$report"
+
+  # Nothing carrying the run's workdir -- in its command line or environment --
+  # survived the wrapper, including the sleeps that called setpgid.
+  [ -z "$(pgm_test_residue)" ]
+  [ -z "$(find "$TEST_DIR/tmp" -mindepth 1 -maxdepth 1 -name 'tmp.*' 2>/dev/null)" ]
 }
