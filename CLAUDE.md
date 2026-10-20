@@ -80,6 +80,13 @@ Note: raw `buildGoModule` packages that do **not** go through these helpers (e.g
 repackages) keep their own `vendorHash` — this guidance is scoped to the `mkGoApp`/`mkGoBinary`
 family.
 
+### Go daemons
+
+A Go daemon that exposes the opt-in pprof endpoint follows the convention page
+[`docs/go-daemons.md`](docs/go-daemons.md) (module requirements, shared package, daemon
+requirements). Capturing and reading a profile, including the goroutine-dump warning, is the
+[`docs/go-daemon-profiling-runbook.md`](docs/go-daemon-profiling-runbook.md) runbook.
+
 ## Go tests (`pg-test-runner` labels)
 
 The test-kind label vocabulary and the `pg-test-runner` design (labels, selection semantics, exit
