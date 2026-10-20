@@ -17,5 +17,7 @@ mkBashLibrary {
   testDeps = [
     pkgs.go
     pkgs.jq
-  ];
+  ]
+  # `ps` for the process-containment tests; macOS provides /bin/ps itself.
+  ++ pkgs.lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.procps;
 }

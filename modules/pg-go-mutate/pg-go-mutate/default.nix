@@ -41,10 +41,15 @@ mkBashScript {
     # slot that is genuinely still held, defeating the whole point of the
     # semaphore.
     pkgs.gawk
-  ];
+  ]
+  # The process reaper (_pgm_run_pids in pg-go-mutate-lib.bash) lists processes
+  # with `ps`. macOS ships it at /bin/ps; on Linux it comes from procps, which
+  # the BSD-style `ps axewwo` spelling it uses requires.
+  ++ pkgs.lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.procps;
   batsJobs = 4;
   testDeps = [
     pkgs.go
     pkgs.jq
-  ];
+  ]
+  ++ pkgs.lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.procps;
 }
