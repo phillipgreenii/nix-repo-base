@@ -40,7 +40,15 @@ WRAPPER
 
   TEST_DIR="$(mktemp -d)"
   export TEST_DIR
-  unset PG_TEST_RUNNER_CONFIG PG_TEST_RUNNER_DEFAULT_CONFIG
+  # Hermetic against the caller's environment (bead pg2-27c6c): every
+  # PG_TEST_RUNNER_* knob the runner reads that these tests assume unset. The
+  # tests that exercise a knob set it explicitly. PG_TEST_RUNNER_JQ_BIN and
+  # PG_TEST_RUNNER_TIMEOUT_BIN are deliberately kept: they only point at tool
+  # binaries and are not behaviour knobs.
+  unset PG_TEST_RUNNER_CONFIG PG_TEST_RUNNER_DEFAULT_CONFIG \
+    PG_TEST_RUNNER_PROJECT_CONCURRENCY PG_TEST_RUNNER_MAX_CONCURRENT_RUNS \
+    PG_TEST_RUNNER_NICE_LEVEL PG_TEST_RUNNER_SLOT_WAIT_SECONDS \
+    PG_TEST_RUNNER_LOCK_ROOT PG_TEST_RUNNER_TMP_ROOT
 
   # A minimal, deterministic config using only go + bats (both available to
   # this check via testDeps) -- see pg-test-runner/default.nix. timeoutSeconds
@@ -574,6 +582,27 @@ _conc_repo() {
   run "$SCRIPT" --config "$TEST_DIR/conc-config.json" --labels unit packages/a packages/b
   [ "$status" -eq 0 ]
   [ "$(tr '\n' ' ' <"$LOG")" = "start-a end-a start-b end-b " ]
+}
+
+# Regression guard (bead pg2-27c6c): the suite must not depend on the caller's
+# PG_TEST_RUNNER_* environment. Re-run the two tests that assume the knobs are
+# unset in a nested bats with the knobs exported in the OUTER environment; the
+# anchored --filter keeps this guard test out of the nested run (no recursion).
+@test "the suite is hermetic against exported PG_TEST_RUNNER_* knobs" {
+  command -v bats >/dev/null || skip "bats not on PATH"
+  # a real directory: a nonexistent TMP_ROOT would make the runner silently fall
+  # back to serial projects and mask a leaked PROJECT_CONCURRENCY
+  mkdir -p "$TEST_DIR/leaked-tmp-root"
+  PG_TEST_RUNNER_PROJECT_CONCURRENCY=2 \
+    PG_TEST_RUNNER_MAX_CONCURRENT_RUNS=0 \
+    PG_TEST_RUNNER_NICE_LEVEL=7 \
+    PG_TEST_RUNNER_SLOT_WAIT_SECONDS=1 \
+    PG_TEST_RUNNER_LOCK_ROOT="$TEST_DIR/leaked-lock-root" \
+    PG_TEST_RUNNER_TMP_ROOT="$TEST_DIR/leaked-tmp-root" \
+    run bats --filter '^(projectConcurrency defaults to one project at a time|maxConcurrentRuns=1 serialises two separate pg-test-runner processes)$' "$BATS_TEST_FILENAME"
+  [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
+  [[ "$output" == *"projectConcurrency defaults to one project at a time"* ]]
+  [[ "$output" == *"maxConcurrentRuns=1 serialises two separate"* ]]
 }
 
 @test "projectConcurrency=2 overlaps two projects and replays output in discovery order" {
