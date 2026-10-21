@@ -43,6 +43,15 @@ and `pn-workspace-rules/` is a distinct project from `pn`/`pnwf`, not an alias o
 ADRs live in `docs/adr/` (`index.md` lists them). Read relevant ADRs before changing the area they
 cover; see `docs/adr/0000-use-architecture-decision-records.md` for the process.
 
+## Grafana alert severity
+
+Every Grafana alert rule defined in a workspace repo MUST carry a `severity` label that is one of
+`critical`, `error`, `warning`, `info`, and daemon "not running" alerts default to `error` with a
+per-daemon override. The standard (levels, delivery, daemon default and override) is the convention
+page [`docs/alert-severity.md`](docs/alert-severity.md), decided in ADR
+[0035](docs/adr/0035-grafana-alert-severity-standard.md). It does not cover the desk tool's
+attention severities.
+
 ## Go packages (`mkGoApp` / `mkGoBinary`)
 
 Go apps built through the `mkGoApp` / `mkGoBinary` helpers (`lib/go-builders.nix`) use the
