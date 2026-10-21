@@ -387,6 +387,13 @@ pgm_detect_tags() {
 # run and far below the per-user limit that the pg2-a0trg incident exhausted.
 PGM_DEFAULT_MAX_PROCS=256
 
+# The watchdog's cheap tick period in seconds (PGM_WATCHDOG_INTERVAL overrides)
+# and how many "fresh" orphan processes (counting the subtrees they fork) make
+# it run the expensive marker scan to confirm (PGM_WATCHDOG_ORPHAN_TRIGGER
+# overrides). See _pgm_watchdog.
+PGM_DEFAULT_WATCHDOG_INTERVAL=5
+PGM_DEFAULT_ORPHAN_TRIGGER=16
+
 # One system-wide "<pid> <ppid> <command line plus environment>" listing.
 # BSD/macOS ps spells "show the environment" -E; procps (Linux) spells it `e`.
 _pgm_ps_snapshot() {
@@ -459,36 +466,220 @@ _pgm_reap_run() {
   return 0
 }
 
-# Background watchdog: every PGM_WATCHDOG_INTERVAL seconds (default 1) reaps
-# the run's ORPHANS (live processes re-parented to pid 1, i.e. what a timed-out
-# mutant left behind) so they cannot accumulate over a long run, then counts
-# what is still alive; past $3 processes it writes "$1/watchdog-tripped" and
-# terminates the whole run. Exits when the engine $2 does. $3 = 0 disables.
+# Prints "<pid> <ppid>" for every live process: the CHEAP listing the watchdog
+# takes every tick (no command line, no environment, hence about 4x cheaper
+# than _pgm_ps_snapshot). BSD/macOS and procps spell it the same way apart from
+# the leading dash, matching _pgm_ps_snapshot. Prints nothing and returns 0 when
+# `ps` is unusable (a restrictive sandbox): the library runs under an injected
+# `set -euo pipefail`, so a failing `ps` that escaped here would kill the
+# watchdog subshell silently and with it the process bound.
+_pgm_ps_ids() {
+  case "$(uname -s)" in
+  Darwin) ps -ax -o pid=,ppid= 2>/dev/null || true ;;
+  *) ps ax -o pid=,ppid= 2>/dev/null || true ;;
+  esac
+  return 0
+}
+
+# PURE classifier for one cheap listing (no ps, no I/O besides stdin/stdout).
+# Reads "<pid> <ppid>" lines on stdin; $1 = engine pid (0 = none), $2 = the
+# baseline pid set (space separated). Prints four lines:
+#   tree=<n>        the engine pid (only when it is in the listing) plus all of
+#                   its descendants
+#   fresh_size=<n>  |fresh| plus every descendant subtree rooted at a fresh pid,
+#                   where "fresh" = a pid whose ppid is 1 that is in neither the
+#                   engine's tree nor the baseline. A timed-out test binary is
+#                   orphaned to pid 1 and then forks (the pg2-a0trg shape); its
+#                   children have a parent that is neither the tree nor pid 1,
+#                   so |fresh| alone is blind to them.
+#   fresh=<pids>    the fresh set (space separated)
+#   orphans=<pids>  EVERY pid whose ppid is 1 (the set a baseline is made of)
+# POSIX awk only: on darwin the BSD awk may precede nix gawk on PATH, so no
+# gensub/asort and no reliance on `for (p in a)` ordering (the closures below
+# iterate to a fixed point instead).
+_pgm_watch_classify() {
+  awk -v root="${1:-0}" -v base="${2:-}" '
+    BEGIN {
+      n = split(base, b, " ")
+      for (i = 1; i <= n; i++) inbase[b[i]] = 1
+    }
+    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { par[$1] = $2 }
+    END {
+      tc = 0
+      if (root + 0 > 1 && (root in par)) tree[root] = 1
+      do {
+        grew = 0
+        for (p in par)
+          if (!(p in tree) && (par[p] in tree)) { tree[p] = 1; grew = 1 }
+      } while (grew)
+      for (p in tree) tc++
+      fs = 0; fl = ""; ol = ""
+      for (p in par) {
+        if (par[p] + 0 != 1 || p + 0 <= 1) continue
+        ol = ol (ol == "" ? "" : " ") p
+        if (!(p in tree) && !(p in inbase)) { sub_[p] = 1; fl = fl (fl == "" ? "" : " ") p }
+      }
+      do {
+        grew = 0
+        for (p in par)
+          if (!(p in sub_) && !(p in tree) && (par[p] in sub_)) { sub_[p] = 1; grew = 1 }
+      } while (grew)
+      for (p in sub_) fs++
+      print "tree=" tc
+      print "fresh_size=" fs
+      print "fresh=" fl
+      print "orphans=" ol
+    }'
+}
+
+# PURE baseline maintenance. $1 = current baseline, $2 = the ppid-1 set of THIS
+# tick's listing, $3 = pids to ADOPT (the fresh pids not in the run, or empty on
+# a tick that did not CONFIRM), $4 = the CONFIRMed run's pids (adoption skips
+# them: they are real orphans, not unrelated launchd churn). Prints the next
+# baseline, space separated: (baseline plus adoptions) restricted to $2, so a
+# recycled pid can no longer hide a real orphan and the set stays bounded by the
+# live ppid-1 population.
+_pgm_watch_baseline_next() {
+  awk -v base="${1:-}" -v orph="${2:-}" -v adopt="${3:-}" -v run="${4:-}" '
+    BEGIN {
+      n = split(orph, o, " "); for (i = 1; i <= n; i++) inorph[o[i]] = 1
+      n = split(run, r, " "); for (i = 1; i <= n; i++) inrun[r[i]] = 1
+      out = ""
+      n = split(base, b, " ")
+      for (i = 1; i <= n; i++) emit(b[i])
+      n = split(adopt, a, " ")
+      for (i = 1; i <= n; i++) if (!(a[i] in inrun)) emit(a[i])
+      print out
+    }
+    function emit(p) {
+      if ((p in inorph) && !(p in seen)) { seen[p] = 1; out = out (out == "" ? "" : " ") p }
+    }'
+}
+
+# PURE. Reads "<pid> <ppid>" lines (the CONFIRMed run's pids) on stdin, $1 =
+# engine pid; prints the pids to kill mid-run: every member whose ppid is 1
+# (never the engine) plus every member descended from one of those orphans.
+_pgm_watch_orphan_victims() {
+  awk -v root="${1:-0}" '
+    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { par[$1] = $2 }
+    END {
+      for (p in par) if (par[p] + 0 == 1 && p != root && p + 0 > 1) v[p] = 1
+      do {
+        grew = 0
+        for (p in par)
+          if (!(p in v) && p != root && (par[p] in v)) { v[p] = 1; grew = 1 }
+      } while (grew)
+      for (p in v) print p
+    }'
+}
+
+# Background watchdog with two tiers. A CHEAP tick every PGM_WATCHDOG_INTERVAL
+# seconds (default 5) takes one ids-only listing (_pgm_ps_ids) and classifies it
+# (_pgm_watch_classify). Only when that looks suspicious does it run the
+# EXPENSIVE marker scan (_pgm_run_pids, `ps -axwwE`) to CONFIRM:
+#   * TREE CAP: the engine's own process tree larger than $3 aborts the run
+#     (writes "$1/watchdog-tripped", kills everything). The cheap path never
+#     caps on fresh_size: unrelated launchd-spawned subtrees must not abort a
+#     run; fresh_size only TRIGGERS.
+#   * TRIGGER: fresh_size >= PGM_WATCHDOG_ORPHAN_TRIGGER (default 16) runs the
+#     marker scan. The cap is evaluated on the run's process count BEFORE any
+#     kill (an all-orphans storm must be able to trip it), then the run's
+#     orphans and their subtrees are killed.
+# Baseline: the ppid-1 pids present at start (unrelated launchd children) never
+# count as fresh. After every CONFIRM the fresh pids that are not the run's are
+# adopted; every tick prunes the baseline to the pids still at ppid 1.
+# Exits when the engine $2 does. $3 = 0 disables the cap.
 _pgm_watchdog() {
-  local wd="$1" root="$2" max="$3" list n orphans nap=""
+  local wd="$1" root="$2" max="$3" nap="" interval trigger
+  local listing metrics k v tree fresh_size fresh orphans baseline run_list n victims adopt first=1
+  interval="${PGM_WATCHDOG_INTERVAL:-$PGM_DEFAULT_WATCHDOG_INTERVAL}"
+  trigger="${PGM_WATCHDOG_ORPHAN_TRIGGER:-$PGM_DEFAULT_ORPHAN_TRIGGER}"
   # The inter-tick nap runs in the background and is cut short by TERM, so
   # stopping the watchdog never leaves a foreground `sleep` behind for up to a
   # whole interval.
   trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+  # ONE listing at start: its ppid-1 set is the baseline, and the first tick
+  # reuses the same listing (one ps call, not two).
+  listing="$(_pgm_ps_ids)" || listing=""
+  baseline=""
+  metrics="$(_pgm_watch_classify 0 "" <<<"$listing")" || metrics=""
+  while IFS='=' read -r k v; do
+    [ "$k" != orphans ] || baseline="$v"
+  done <<<"$metrics"
+  # Checked immediately before the tree walk: the engine pid can be reused
+  # during a whole tick.
   while kill -0 "$root" 2>/dev/null; do
-    list="$(_pgm_run_pids "$wd" "$root")"
-    orphans="$(awk '$2 == 1 && $1 != root {print $1}' root="$root" <<<"$list" | tr '\n' ' ')"
-    if [ -n "${orphans// /}" ]; then
-      # shellcheck disable=SC2086  # word splitting of the pid list is intended
-      kill -KILL $orphans 2>/dev/null || true
-      list="$(_pgm_run_pids "$wd" "$root")"
+    if [ "$first" -eq 1 ]; then
+      first=0
+    else
+      listing="$(_pgm_ps_ids)" || listing=""
     fi
-    n=0
-    [ -z "$list" ] || n="$(printf '%s\n' "$list" | wc -l | tr -d ' ')"
-    if [ "$max" -gt 0 ] 2>/dev/null && [ "$n" -gt "$max" ] 2>/dev/null; then
-      printf '%s\n' "$n" >"$wd/watchdog-tripped" 2>/dev/null || true
+    tree=0 fresh_size=0 fresh="" orphans=""
+    metrics="$(_pgm_watch_classify "$root" "$baseline" <<<"$listing")" || metrics=""
+    while IFS='=' read -r k v; do
+      case "$k" in
+      tree) tree="$v" ;;
+      fresh_size) fresh_size="$v" ;;
+      fresh) fresh="$v" ;;
+      orphans) orphans="$v" ;;
+      esac
+    done <<<"$metrics"
+    adopt=""
+    run_list=""
+    if [ "$max" -gt 0 ] 2>/dev/null && [ "$tree" -gt "$max" ] 2>/dev/null; then
+      printf '%s\n' "$tree" >"$wd/watchdog-tripped" 2>/dev/null || true
       _pgm_reap_run "$wd" "$root"
       return 0
     fi
-    sleep "${PGM_WATCHDOG_INTERVAL:-1}" &
+    if [ "$fresh_size" -ge "$trigger" ] 2>/dev/null; then
+      # CONFIRM: the expensive marker scan, scoped to this run's workdir.
+      run_list="$(_pgm_run_pids "$wd" "$root")" || run_list=""
+      n=0
+      [ -z "$run_list" ] || n="$(printf '%s\n' "$run_list" | wc -l | tr -d ' ')"
+      if [ "$max" -gt 0 ] 2>/dev/null && [ "$n" -gt "$max" ] 2>/dev/null; then
+        printf '%s\n' "$n" >"$wd/watchdog-tripped" 2>/dev/null || true
+        _pgm_reap_run "$wd" "$root"
+        return 0
+      fi
+      victims="$(_pgm_watch_orphan_victims "$root" <<<"$run_list" | tr '\n' ' ')" || victims=""
+      if [ -n "${victims// /}" ]; then
+        # shellcheck disable=SC2086  # word splitting of the pid list is intended
+        kill -STOP $victims 2>/dev/null || true
+        # shellcheck disable=SC2086  # as above
+        kill -KILL $victims 2>/dev/null || true
+      fi
+      adopt="$fresh"
+      run_list="$(awk '{print $1}' <<<"$run_list" | tr '\n' ' ')" || run_list=""
+    fi
+    baseline="$(_pgm_watch_baseline_next "$baseline" "$orphans" "$adopt" "$run_list")" || baseline=""
+    sleep "$interval" &
     nap=$!
     wait "$nap" || true
   done
+  return 0
+}
+
+# Both watchdog knobs are validated like PG_GO_MUTATE_MAX_PROCS: a non-numeric
+# interval used to make `sleep` fail instantly and spin the loop, and a
+# non-numeric trigger made the `[ -ge ]` fail silently so CONFIRM never ran.
+# Set-but-empty is invalid too. Returns 1 naming the variable; the CLI maps that
+# to usage error exit 2.
+pgm_validate_watchdog_knobs() {
+  local v
+  if [ "${PGM_WATCHDOG_ORPHAN_TRIGGER+set}" = set ]; then
+    v="$PGM_WATCHDOG_ORPHAN_TRIGGER"
+    if ! [[ $v =~ ^[0-9]+$ ]] || ! [[ $v =~ [1-9] ]]; then
+      pgm_die "PGM_WATCHDOG_ORPHAN_TRIGGER must be a positive integer, got '$v'"
+      return 1
+    fi
+  fi
+  if [ "${PGM_WATCHDOG_INTERVAL+set}" = set ]; then
+    v="$PGM_WATCHDOG_INTERVAL"
+    if ! [[ $v =~ ^([0-9]+\.?[0-9]*|\.[0-9]+)$ ]] || ! [[ $v =~ [1-9] ]]; then
+      pgm_die "PGM_WATCHDOG_INTERVAL must be a positive number of seconds (integer or decimal), got '$v'"
+      return 1
+    fi
+  fi
   return 0
 }
 
@@ -604,6 +795,7 @@ pgm_run_engine() {
   gomu_bin="$(pgm_gomu_bin)"
   max_procs="${PG_GO_MUTATE_MAX_PROCS:-$PGM_DEFAULT_MAX_PROCS}"
   pgm_validate_max_procs || return 1
+  pgm_validate_watchdog_knobs || return 1
   workdir="$(mktemp -d)" || {
     pgm_die "could not create a private working directory"
     return 1

@@ -32,6 +32,13 @@ setup() {
   # out with "Directory not empty" (pg2-0uk00 -- the identical race this
   # library's sibling test-pg-go-mutate.bats already closes the same way).
   go telemetry off >/dev/null 2>&1 || true
+
+  # The process watchdog (pg2-0fmtv) takes one ids-only `ps` listing the moment
+  # an engine starts and then naps this long. Only the cases about mid-run
+  # watchdog behavior want a short interval, and they export their own (after
+  # this), so every other engine case does not pay a tick -- each of them starts
+  # its own watchdog, and bats runs them in parallel.
+  export PGM_WATCHDOG_INTERVAL=60
 }
 
 teardown() {
@@ -1192,7 +1199,9 @@ EOF
   } >"$stub"
   chmod +x "$stub"
   export PGM_TEST_PIDS="$TEST_DIR/pids" PGM_TEST_MIDRUN="$TEST_DIR/midrun"
-  export PGM_WATCHDOG_INTERVAL=0.2
+  # One orphan is below the default trigger (16), which deliberately leaves a
+  # lone leftover to the final reap (pg2-0fmtv), so this case lowers it to 1.
+  export PGM_WATCHDOG_INTERVAL=0.2 PGM_WATCHDOG_ORPHAN_TRIGGER=1
   pgm_make_runner "$stub"
 
   run "$TEST_DIR/runner"
@@ -1200,4 +1209,481 @@ EOF
   rm -f -- "$output"
   # Reaped by the watchdog BEFORE the engine finished, not by the final sweep.
   [ -s "$TEST_DIR/midrun" ]
+}
+
+# ---------------------------------------------------------------------------
+# Two-tier process watchdog (bead pg2-0fmtv): a CHEAP ids-only `ps` tick every
+# PGM_WATCHDOG_INTERVAL seconds, and the expensive `ps -axwwE` marker scan only
+# to CONFIRM when the cheap listing looks suspicious (fresh orphans, counting
+# the subtrees they fork, reaching PGM_WATCHDOG_ORPHAN_TRIGGER).
+#
+# [pure] cases feed canned listings to pure functions and never call ps, so
+# they run inside the nix sandbox with no skip. The live cases wrap `ps` in a
+# recording shim: the whole-run log is NOT usable (the final reap always runs
+# the expensive scan, and pgm_require_ps / teardown also call ps), so the stub
+# engine copies the log MID-RUN and the assertions read that copy.
+# ---------------------------------------------------------------------------
+
+# Prints the whitespace-separated tokens of $1 numerically sorted on one line.
+pgm_sorted() {
+  # shellcheck disable=SC2086  # word splitting of the pid list is intended
+  [ -z "${1// /}" ] || printf '%s\n' $1 | sort -n | tr '\n' ' ' | sed 's/ $//'
+}
+
+# Prints the value of metric $1 (tree, fresh_size, fresh, orphans) from the
+# _pgm_watch_classify output $2, token-sorted.
+pgm_metric() {
+  pgm_sorted "$(sed -n "s/^$1=//p" <<<"$2")"
+}
+
+# Installs a recording `ps` first on PATH. $1 = pass (log, then run the real ps)
+# or fail (log, then exit 1: an unusable ps). The shim logs with `printf`, a
+# builtin: no fork, so it adds nothing to the cost it measures. Call
+# pgm_require_ps BEFORE this so that probe is not logged at all.
+pgm_install_ps_shim() {
+  local real
+  real="$(command -v ps)"
+  mkdir -p "$TEST_DIR/shim"
+  export PGM_TEST_PS_LOG="$TEST_DIR/ps.log"
+  : >"$PGM_TEST_PS_LOG"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$*" >>"$PGM_TEST_PS_LOG"\n'
+    if [ "$1" = fail ]; then
+      printf 'exit 1\n'
+    else
+      printf 'exec "%s" "$@"\n' "$real"
+    fi
+  } >"$TEST_DIR/shim/ps"
+  chmod +x "$TEST_DIR/shim/ps"
+  PATH="$TEST_DIR/shim:$PATH"
+}
+
+# True (status 0) when the shim log $1 holds an EXPENSIVE call: one that asks for
+# the environment (-E on BSD/macOS, `e` on procps) or the command line.
+pgm_log_has_expensive_ps() {
+  grep -Eq 'command=|^-[a-zA-Z]*E' "$1"
+}
+
+# Number of cheap (ids-only) calls in the shim log $1.
+pgm_log_cheap_calls() {
+  grep -Ev 'command=|^-[a-zA-Z]*E' "$1" | grep -c 'ppid=' || true
+}
+
+# Stub-engine fragment. wait_reaped N: waits (bounded) until $PGM_TEST_PIDS
+# holds N recorded pids and every one of them is dead, then copies the shim log
+# to $PGM_TEST_PS_MID and touches $PGM_TEST_MIDRUN. If they never die the marker
+# is never written, so the case fails instead of hanging.
+pgm_stub_wait_reaped='
+wait_reaped() {
+  local want="$1" alive pid rest
+  for _ in $(seq 1 100); do
+    if [ -s "$PGM_TEST_PIDS" ] && [ "$(wc -l <"$PGM_TEST_PIDS")" -ge "$want" ]; then break; fi
+    sleep 0.1
+  done
+  for _ in $(seq 1 100); do
+    alive=0
+    while read -r pid rest; do kill -0 "$pid" 2>/dev/null && alive=1; done <"$PGM_TEST_PIDS"
+    if [ "$alive" -eq 0 ]; then
+      cp "$PGM_TEST_PS_LOG" "$PGM_TEST_PS_MID"
+      echo reaped >"$PGM_TEST_MIDRUN"
+      return 0
+    fi
+    sleep 0.1
+  done
+}
+'
+
+# 1. [pure] ----------------------------------------------------------------
+@test "the watchdog defaults are named constants and the watchdog uses them" {
+  [ "$PGM_DEFAULT_WATCHDOG_INTERVAL" = 5 ]
+  [ "$PGM_DEFAULT_ORPHAN_TRIGGER" = 16 ]
+  # Not vacuous: the function body must read both constants (and both knobs).
+  body="$(declare -f _pgm_watchdog)"
+  [[ "$body" == *PGM_DEFAULT_WATCHDOG_INTERVAL* ]]
+  [[ "$body" == *PGM_DEFAULT_ORPHAN_TRIGGER* ]]
+  [[ "$body" == *PGM_WATCHDOG_INTERVAL* ]]
+  [[ "$body" == *PGM_WATCHDOG_ORPHAN_TRIGGER* ]]
+}
+
+# 2. [pure] ----------------------------------------------------------------
+@test "_pgm_watch_classify sizes the engine tree: alone, with descendants, and absent" {
+  out="$(_pgm_watch_classify 100 "" <<<"100 50")"
+  [ "$(pgm_metric tree "$out")" = 1 ]
+
+  out="$(_pgm_watch_classify 100 "" <<<$'100 50\n101 100\n102 100\n103 101\n999 7')"
+  [ "$(pgm_metric tree "$out")" = 4 ]
+
+  # The engine is not in the listing (it exited): nothing is its tree, even a
+  # process that still names its pid as parent (the pid may be reused).
+  out="$(_pgm_watch_classify 100 "" <<<$'101 100\n999 7')"
+  [ "$(pgm_metric tree "$out")" = 0 ]
+
+  # No engine pid at all (0) must never seed the tree from a pid-0 row.
+  out="$(_pgm_watch_classify 0 "" <<<$'0 0\n1 0\n20 1')"
+  [ "$(pgm_metric tree "$out")" = 0 ]
+}
+
+@test "_pgm_watch_classify: fresh excludes the engine tree and the baseline" {
+  listing=$'100 1\n101 100\n200 1\n300 1\n400 50'
+  out="$(_pgm_watch_classify 100 "200" <<<"$listing")"
+  # 100 (the engine, here at ppid 1 to prove the exclusion) and 200 (baseline)
+  # are not fresh; 300 is. 400 is not an orphan at all.
+  [ "$(pgm_metric fresh "$out")" = 300 ]
+  [ "$(pgm_metric fresh_size "$out")" = 1 ]
+  # `orphans` is every ppid-1 pid, whatever its status.
+  [ "$(pgm_metric orphans "$out")" = "100 200 300" ]
+}
+
+@test "_pgm_watch_classify: fresh_size counts the subtree an orphan forked (the pg2-a0trg shape)" {
+  # One orphan (300) with 50 children whose parent is neither the engine tree
+  # nor pid 1: |fresh| is 1, fresh_size is 51.
+  listing="$(
+    printf '100 50\n300 1\n'
+    for i in $(seq 1 50); do printf '%s 300\n' $((1000 + i)); done
+  )"
+  out="$(_pgm_watch_classify 100 "" <<<"$listing")"
+  [ "$(pgm_metric fresh "$out")" = 300 ]
+  [ "$(pgm_metric fresh_size "$out")" = 51 ]
+  # A grandchild counts too.
+  out="$(_pgm_watch_classify 100 "" <<<$'100 50\n300 1\n301 300\n302 301')"
+  [ "$(pgm_metric fresh_size "$out")" = 3 ]
+}
+
+@test "_pgm_watch_classify: a baselined pid with its own children contributes nothing" {
+  listing="$(
+    printf '100 50\n200 1\n'
+    for i in $(seq 1 30); do printf '%s 200\n' $((2000 + i)); done
+  )"
+  out="$(_pgm_watch_classify 100 "200" <<<"$listing")"
+  [ "$(pgm_metric fresh_size "$out")" = 0 ]
+  [ -z "$(pgm_metric fresh "$out")" ]
+}
+
+@test "_pgm_watch_classify: an empty listing is all zeros" {
+  out="$(_pgm_watch_classify 100 "200" <<<"")"
+  [ "$(pgm_metric tree "$out")" = 0 ]
+  [ "$(pgm_metric fresh_size "$out")" = 0 ]
+  [ -z "$(pgm_metric fresh "$out")" ]
+  [ -z "$(pgm_metric orphans "$out")" ]
+}
+
+@test "_pgm_watch_orphan_victims picks the run's orphans and their subtrees, never the engine" {
+  # 100 = engine (child 101), 600 = orphan with child 601, 700 = orphan.
+  out="$(_pgm_watch_orphan_victims 100 <<<$'100 50\n101 100\n600 1\n601 600\n700 1' | sort -n | tr '\n' ' ')"
+  [ "$out" = "600 601 700 " ]
+}
+
+# 3. [pure] ----------------------------------------------------------------
+@test "baseline maintenance adopts unrelated fresh pids after a CONFIRM that also killed real orphans" {
+  # Tick: 600 is the run's real orphan (in the CONFIRM list), 700 is unrelated
+  # launchd churn. Both are fresh. After the CONFIRM the run's pid is gone and
+  # 700 is adopted, so it cannot re-trigger every tick.
+  listing=$'100 50\n600 1\n700 1\n200 1'
+  out="$(_pgm_watch_classify 100 "200" <<<"$listing")"
+  [ "$(pgm_metric fresh "$out")" = "600 700" ]
+  next="$(_pgm_watch_baseline_next "200" "$(sed -n 's/^orphans=//p' <<<"$out")" "$(sed -n 's/^fresh=//p' <<<"$out")" "100 600")"
+  [ "$(pgm_sorted "$next")" = "200 700" ]
+
+  # The next tick sees only the unrelated pid again and nothing is fresh.
+  out="$(_pgm_watch_classify 100 "$next" <<<$'100 50\n700 1\n200 1')"
+  [ "$(pgm_metric fresh_size "$out")" = 0 ]
+
+  # A tick that did not CONFIRM adopts nothing.
+  next="$(_pgm_watch_baseline_next "200" "200 700" "" "")"
+  [ "$(pgm_sorted "$next")" = "200" ]
+}
+
+@test "baseline maintenance prunes a pid that left the ppid-1 set, so a recycled pid cannot hide an orphan" {
+  # 250 was baselined, then left the ppid-1 set (it exited or was re-parented).
+  # Pruning drops it from the baseline...
+  next="$(_pgm_watch_baseline_next "200 250" "200" "" "")"
+  [ "$(pgm_sorted "$next")" = "200" ]
+  # ...so when the number reappears at ppid 1 as a NEW orphan it is fresh.
+  out="$(_pgm_watch_classify 100 "$next" <<<$'100 50\n200 1\n250 1')"
+  [ "$(pgm_metric fresh "$out")" = 250 ]
+  # Without pruning the stale entry would hide it (what pruning guards against).
+  out="$(_pgm_watch_classify 100 "200 250" <<<$'100 50\n200 1\n250 1')"
+  [ -z "$(pgm_metric fresh "$out")" ]
+}
+
+# 4. [pure] ----------------------------------------------------------------
+@test "pgm_validate_watchdog_knobs rejects a bad trigger or interval and names the variable" {
+  unset PGM_WATCHDOG_ORPHAN_TRIGGER PGM_WATCHDOG_INTERVAL
+  run pgm_validate_watchdog_knobs
+  [ "$status" -eq 0 ]
+  PGM_WATCHDOG_ORPHAN_TRIGGER=16 PGM_WATCHDOG_INTERVAL=0.25 run pgm_validate_watchdog_knobs
+  [ "$status" -eq 0 ]
+  PGM_WATCHDOG_INTERVAL=5 run pgm_validate_watchdog_knobs
+  [ "$status" -eq 0 ]
+
+  for bad in lots 0 00 -1 1.5 ""; do
+    PGM_WATCHDOG_ORPHAN_TRIGGER="$bad" run pgm_validate_watchdog_knobs
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"PGM_WATCHDOG_ORPHAN_TRIGGER"* ]]
+  done
+  for bad in soon 0 0.0 -2 1x ""; do
+    PGM_WATCHDOG_INTERVAL="$bad" run pgm_validate_watchdog_knobs
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"PGM_WATCHDOG_INTERVAL"* ]]
+  done
+}
+
+@test "pgm_run_engine refuses a bad watchdog knob before starting the engine" {
+  target="$(make_module badknob)"
+  add_passing_test "$target"
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/must-not-run"
+  printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "$TEST_DIR" >"$PG_GO_MUTATE_GOMU"
+  chmod +x "$PG_GO_MUTATE_GOMU"
+  PGM_WATCHDOG_INTERVAL=soon run pgm_run_engine "$target" 1 60 ""
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PGM_WATCHDOG_INTERVAL"* ]]
+  [ ! -e "$TEST_DIR/ran" ]
+}
+
+@test "the watchdog's cheap listing never asks for a command line or environment" {
+  # Static guard next to the live ones: _pgm_ps_ids is ids-only by construction.
+  body="$(declare -f _pgm_ps_ids)"
+  [[ "$body" == *"pid=,ppid="* ]]
+  [[ "$body" != *"command="* ]]
+  [[ "$body" != *"-axwwE"* ]]
+}
+
+# 5. live ------------------------------------------------------------------
+@test "a quiet run issues only ids-only ps calls mid-run (the cheap tick)" {
+  pgm_require_ps
+  pgm_install_ps_shim pass
+  stub="$TEST_DIR/stub-quiet"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$pgm_stub_report_fn"
+    cat <<'EOF'
+sleep 2.5
+cp "$PGM_TEST_PS_LOG" "$PGM_TEST_PS_MID"
+write_report
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PS_MID="$TEST_DIR/ps.mid"
+  # A trigger no quiet host reaches, so a parallel test that leaks a few
+  # orphans cannot cause a CONFIRM here.
+  export PGM_WATCHDOG_INTERVAL=0.2 PGM_WATCHDOG_ORPHAN_TRIGGER=1000
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 0 ]
+  rm -f -- "$output"
+
+  [ -s "$PGM_TEST_PS_MID" ]
+  [ "$(pgm_log_cheap_calls "$PGM_TEST_PS_MID")" -ge 3 ]
+  run pgm_log_has_expensive_ps "$PGM_TEST_PS_MID"
+  [ "$status" -ne 0 ]
+}
+
+# 6. live ------------------------------------------------------------------
+@test "orphans that were already there when the run started never trigger the marker scan" {
+  pgm_require_ps
+  : >"$TEST_DIR/pids"
+  # More detached orphans than the trigger, started BEFORE the run and outside
+  # its workdir: they are the baseline.
+  for i in $(seq 1 60); do
+    (
+      sleep $((500 + i)) >/dev/null 2>&1 3>&- &
+      echo "$! $((500 + i))" >>"$TEST_DIR/pids"
+    )
+  done
+  sleep 0.3
+  listing="$(_pgm_ps_ids)"
+  while read -r pid _; do
+    grep -Eq "^ *$pid +1\$" <<<"$listing"
+  done <"$TEST_DIR/pids"
+
+  pgm_install_ps_shim pass
+  stub="$TEST_DIR/stub-baseline"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$pgm_stub_report_fn"
+    cat <<'EOF'
+sleep 2.5
+cp "$PGM_TEST_PS_LOG" "$PGM_TEST_PS_MID"
+write_report
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PS_MID="$TEST_DIR/ps.mid"
+  # Trigger 45 against 60 pre-existing orphans: only the baseline keeps them quiet. The
+  # margins are wide on purpose: the other cases of this file leak a burst of
+  # orphans of their own while they run in parallel, and those look "fresh" to
+  # every watchdog on the host.
+  export PGM_WATCHDOG_INTERVAL=0.2 PGM_WATCHDOG_ORPHAN_TRIGGER=45
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 0 ]
+  rm -f -- "$output"
+
+  [ "$(pgm_log_cheap_calls "$PGM_TEST_PS_MID")" -ge 3 ]
+  run pgm_log_has_expensive_ps "$PGM_TEST_PS_MID"
+  [ "$status" -ne 0 ]
+}
+
+# 7. live ------------------------------------------------------------------
+@test "enough new orphans trigger the marker scan and the watchdog kills them mid-run" {
+  pgm_require_ps
+  pgm_install_ps_shim pass
+  stub="$TEST_DIR/stub-trigger"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$pgm_stub_report_fn"
+    printf '%s\n' "$pgm_stub_wait_reaped"
+    cat <<'EOF'
+# Six double-forked orphans; the engine's environment (TMPDIR, PGM_RUN_WORKDIR)
+# is the marker every one of them inherits.
+for i in 1 2 3 4 5 6; do
+  ( set -m; sleep $((450 + i)) & echo "$! $((450 + i))" >>"$PGM_TEST_PIDS" )
+done
+wait_reaped 6
+write_report
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids" PGM_TEST_MIDRUN="$TEST_DIR/midrun" PGM_TEST_PS_MID="$TEST_DIR/ps.mid"
+  # The trigger is lowered for speed in THIS case only.
+  export PGM_WATCHDOG_INTERVAL=0.2 PGM_WATCHDOG_ORPHAN_TRIGGER=4
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 0 ]
+  rm -f -- "$output"
+
+  # Reaped by the watchdog BEFORE the engine finished, not by the final sweep...
+  [ -s "$TEST_DIR/midrun" ]
+  # ...and the expensive scan is what did it.
+  pgm_log_has_expensive_ps "$PGM_TEST_PS_MID"
+  [ -z "$(pgm_test_residue)" ]
+}
+
+# 8. live ------------------------------------------------------------------
+@test "an orphan that forks a subtree is detected through fresh_size and reaped (the pg2-a0trg shape)" {
+  pgm_require_ps
+  pgm_install_ps_shim pass
+  stub="$TEST_DIR/stub-subtree"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$pgm_stub_report_fn"
+    printf '%s\n' "$pgm_stub_wait_reaped"
+    cat <<'EOF'
+# ONE orphan (a re-executed "test binary") that forks six children: |fresh| is
+# 1, fresh_size is 7, and the children's parent is neither the engine nor pid 1.
+( set -m; bash -c 'for i in 1 2 3 4 5 6; do sleep $((460 + i)) & echo "$! $((460 + i))" >>"$PGM_TEST_PIDS"; done; wait' & )
+wait_reaped 6
+write_report
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids" PGM_TEST_MIDRUN="$TEST_DIR/midrun" PGM_TEST_PS_MID="$TEST_DIR/ps.mid"
+  export PGM_WATCHDOG_INTERVAL=0.2 PGM_WATCHDOG_ORPHAN_TRIGGER=6
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 0 ]
+  rm -f -- "$output"
+
+  [ -s "$TEST_DIR/midrun" ]
+  pgm_log_has_expensive_ps "$PGM_TEST_PS_MID"
+  [ -z "$(pgm_test_residue)" ]
+}
+
+# 9. live ------------------------------------------------------------------
+@test "an all-orphans storm larger than the bound trips the cap on the pre-kill count" {
+  pgm_require_ps
+  stub="$TEST_DIR/stub-orphan-storm"
+  {
+    printf '#!/usr/bin/env bash\n'
+    cat <<'EOF'
+# Ten orphans against a bound of 6, while the engine's OWN tree stays small (at
+# most the engine, one subshell and its sleep): only the confirm step can see
+# them, and it must count them BEFORE it kills them (counting after the kill
+# leaves one process and never trips).
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  ( set -m; sleep $((470 + i)) & echo "$! $((470 + i))" >>"$PGM_TEST_PIDS" )
+done
+exec sleep 8
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids"
+  export PGM_WATCHDOG_INTERVAL=0.2 PG_GO_MUTATE_MAX_PROCS=6 PGM_WATCHDOG_ORPHAN_TRIGGER=8
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"exceeded 6 live processes"* ]]
+  [[ "$output" == *"PG_GO_MUTATE_MAX_PROCS"* ]]
+  [ -z "$(pgm_test_residue)" ]
+  [ -z "$(find "$TEST_DIR/tmp" -mindepth 1 -maxdepth 1 -name 'tmp.*' 2>/dev/null)" ]
+}
+
+# 11. live; deliberately NO pgm_require_ps: it must work where ps is unusable.
+@test "an unusable ps does not kill the watchdog: it keeps ticking, kills nothing, and the run completes" {
+  pgm_install_ps_shim fail
+  stub="$TEST_DIR/stub-ps-fails"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$pgm_stub_report_fn"
+    cat <<'EOF'
+sleep 0.8
+cp "$PGM_TEST_PS_LOG" "$PGM_TEST_PS_MID.1"
+sleep 1.5
+cp "$PGM_TEST_PS_LOG" "$PGM_TEST_PS_MID.2"
+write_report
+EOF
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PS_MID="$TEST_DIR/ps.mid"
+  export PGM_WATCHDOG_INTERVAL=0.2
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  # The engine was not killed and the report was harvested.
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"exceeded"* ]]
+  [ -s "$output" ]
+  jq -e '.totalMutants == 1' "$output" >/dev/null
+  rm -f -- "$output"
+
+  # The first failure was already logged by the first copy, and the log kept
+  # growing afterwards: the watchdog survived its own failing ps.
+  first="$(wc -l <"$PGM_TEST_PS_MID.1")"
+  second="$(wc -l <"$PGM_TEST_PS_MID.2")"
+  [ "$first" -ge 1 ]
+  [ "$second" -gt "$first" ]
+}
+
+# 9 (cheap path). The existing tree-storm case above passes through EITHER cap
+# path (a trigger from unrelated launchd churn would also confirm and count the
+# run), so this one pins the cheap tick alone: the trigger is unreachable and
+# the engine only lives long enough for a few ticks.
+@test "a tree storm trips the cap on the cheap tick alone, with no marker scan needed" {
+  pgm_require_ps
+  stub="$TEST_DIR/stub-tree-storm"
+  {
+    printf '#!/usr/bin/env bash\n'
+    cat <<'EOF2'
+for d in 481 482 483 484; do
+  sleep "$d" &
+  echo "$! $d" >>"$PGM_TEST_PIDS"
+done
+exec sleep 8
+EOF2
+  } >"$stub"
+  chmod +x "$stub"
+  export PGM_TEST_PIDS="$TEST_DIR/pids"
+  export PGM_WATCHDOG_INTERVAL=0.2 PG_GO_MUTATE_MAX_PROCS=3 PGM_WATCHDOG_ORPHAN_TRIGGER=100000
+  pgm_make_runner "$stub"
+
+  run "$TEST_DIR/runner"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"exceeded 3 live processes"* ]]
+  [ -z "$(pgm_test_residue)" ]
 }

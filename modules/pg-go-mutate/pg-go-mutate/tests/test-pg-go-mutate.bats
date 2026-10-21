@@ -79,6 +79,13 @@ WRAPPER
   # to what the negative cases' stubs report.
   PGM_TEST_PINNED_VERSION="${PGM_PINNED_GOMU_VERSION:-0.0.0-raw-source}"
   export PGM_TEST_PINNED_VERSION
+
+  # The process watchdog (pg2-0fmtv) takes one ids-only `ps` listing the moment
+  # an engine starts and then naps this long. Almost no case here is about
+  # mid-run orphan reaping, so a long nap keeps every CLI case from paying a
+  # tick (and every parallel bats job from running its own watchdog). A case
+  # that needs a short interval exports it itself, after this.
+  export PGM_WATCHDOG_INTERVAL=60
 }
 
 teardown() {
@@ -1089,6 +1096,40 @@ STUB
   [ "$status" -eq 0 ]
   [[ "$output" == *"PG_GO_MUTATE_MAX_PROCS"* ]]
   [[ "$output" == *"PROCESS CONTAINMENT"* ]]
+  # The two-tier watchdog (pg2-0fmtv): its knobs and the tick default.
+  [[ "$output" == *"PGM_WATCHDOG_ORPHAN_TRIGGER"* ]]
+  [[ "$output" == *"PGM_WATCHDOG_INTERVAL"* ]]
+  [[ "$output" == *"5 seconds"* ]]
+}
+
+# The behavior doc is the tldr page and the only prose a consumer reads about the
+# watchdog, so it MUST state the default tick and name the trigger variable.
+@test "the behavior doc names the 5 s watchdog default and PGM_WATCHDOG_ORPHAN_TRIGGER" {
+  doc="${SCRIPTS_DIR:-${BATS_TEST_DIRNAME}/..}/pg-go-mutate.md"
+  [ -s "$doc" ]
+  grep -q 'PGM_WATCHDOG_INTERVAL' "$doc"
+  grep -q 'default 5' "$doc"
+  grep -q 'PGM_WATCHDOG_ORPHAN_TRIGGER' "$doc"
+}
+
+# Bad watchdog knobs are a usage error before the engine ever starts (pg2-0fmtv):
+# a non-numeric interval used to spin the loop and a non-numeric trigger used to
+# make the confirm step never run. No `ps` involved, so this runs anywhere.
+@test "rejects a bad PGM_WATCHDOG_ORPHAN_TRIGGER or PGM_WATCHDOG_INTERVAL with exit 2 before invoking the engine" {
+  export PG_GO_MUTATE_GOMU="$TEST_DIR/must-not-run"
+  printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "$TEST_DIR" >"$PG_GO_MUTATE_GOMU"
+  chmod +x "$PG_GO_MUTATE_GOMU"
+  for bad in lots 0 -1 ""; do
+    PGM_WATCHDOG_ORPHAN_TRIGGER="$bad" run "$SCRIPT" "$TEST_DIR"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"PGM_WATCHDOG_ORPHAN_TRIGGER"* ]]
+  done
+  for bad in soon 0 0.0 -2 ""; do
+    PGM_WATCHDOG_INTERVAL="$bad" run "$SCRIPT" "$TEST_DIR"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"PGM_WATCHDOG_INTERVAL"* ]]
+  done
+  [ ! -e "$TEST_DIR/ran" ]
 }
 
 @test "rejects a non-numeric PG_GO_MUTATE_MAX_PROCS with exit 2 before invoking the engine" {

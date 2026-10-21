@@ -96,15 +96,29 @@ The engine enforces `--timeout` per mutant, but a test that hangs can leave proc
 
 - Each run uses a private working directory. The engine starts with `TMPDIR` and `PGM_RUN_WORKDIR` set to it, and every test binary is built beneath it, so the directory path appears in the environment or command line of every process the run starts. Those processes are the run's own; no concurrent run's can match.
 - Before the wrapper exits, it MUST kill every such process, including ones in their own process group and ones orphaned to pid 1. This happens on normal exit, on an error, and on `INT`, `TERM` and `HUP`. The exit status and the report are unchanged.
-- During the run, a watchdog reaps orphans as they appear, once per `PGM_WATCHDOG_INTERVAL` seconds (default 1).
-- The watchdog also bounds the run. If more than `PG_GO_MUTATE_MAX_PROCS` processes (default 256) are alive at once, the run is aborted: all its processes are killed and the wrapper exits 1 with a message naming the bound. `0` disables the bound. A non-numeric value is a usage error (exit 2).
+- During the run, a watchdog keeps the run bounded and its orphans reaped. It works in two tiers so that it stays cheap:
+  - **Cheap tick.** Every `PGM_WATCHDOG_INTERVAL` seconds (default 5) it takes one ids-only listing of every process (`ps -ax -o pid=,ppid=`, about 59 ms on a 900-process host, against about 237 ms for the full scan). From that listing alone it counts the engine's process tree, and the "fresh" orphans: processes re-parented to pid 1 that are neither in the engine's tree nor in the baseline of orphans that were already there when the run started. Fresh orphans that fork count with their whole subtree, because a timed-out test binary that is orphaned and then forks (the `pg2-a0trg` shape) has children whose parent is neither the tree nor pid 1.
+  - **Confirm.** Only when that count reaches `PGM_WATCHDOG_ORPHAN_TRIGGER` (default 16) does it run the expensive marker scan (`ps -axwwE`, the same scan the final kill uses) to find the run's own processes, and kills the run's orphans and what they spawned. Unrelated orphans that the scan shows are not the run's are added to the baseline, so they cannot trigger it again.
+- The watchdog also bounds the run. If the engine's process tree holds more than `PG_GO_MUTATE_MAX_PROCS` processes (default 256), or a confirm finds more than that many processes belonging to the run, the run is aborted: all its processes are killed and the wrapper exits 1 with a message naming the bound. The confirm counts BEFORE it kills anything, so a storm of orphans cannot hide from the bound by being reaped first. `0` disables the bound. A non-numeric value is a usage error (exit 2), as is a `PGM_WATCHDOG_INTERVAL` that is not a positive number or a `PGM_WATCHDOG_ORPHAN_TRIGGER` that is not a positive integer.
 
 The bound counts the engine, the compilers, the test binaries and everything the tests spawn. A healthy run holds a few dozen; the incident this guards against (bead `pg2-a0trg`) reached about 5000. `ulimit -u` is deliberately not used: it limits the whole user, not one run, so a low value would starve unrelated processes.
 
+Accepted limits of the cheap tier:
+
+- A few lone leftovers (fewer than the trigger) are not killed mid-run. They accumulate until the trigger is reached, or are killed by the final kill at exit.
+- A fork storm gets up to one tick (5 s by default) of head start. A faster bomb needs `ulimit -u`, which is deliberately not used.
+- The listing is not atomic: a child whose parent has just exited briefly shows as re-parented to pid 1 and counts as fresh. That is harmless below the trigger.
+- Concurrent runs can trigger each other's confirm, since their orphans look fresh to every watchdog. That is harmless, because the marker scan only matches this run's own workdir, but it is not free.
+- Where orphans are re-parented to a subreaper instead of pid 1 (a Linux systemd user session, some containers), the cheap tier cannot see them; the final kill still can.
+
 ```mermaid
 flowchart LR
-  A["wrapper starts engine\nTMPDIR = private workdir"] --> B["watchdog tick:\nreap orphans, count"]
-  B -->|"count > bound"| C["kill run, exit 1"]
+  A["wrapper starts engine\nTMPDIR = private workdir"] --> B["cheap tick every 5 s:\nids-only listing"]
+  B -->|"engine tree > bound"| C["kill run, exit 1"]
+  B -->|"fresh orphans >= trigger"| F["confirm: marker scan\n(cap counted before kill)"]
+  F -->|"run processes > bound"| C
+  F -->|"otherwise"| G["kill the run's orphans,\nadopt unrelated ones"]
+  G --> B
   B -->|"engine still running"| B
   B -->|"engine exits, or INT/TERM/HUP"| D["kill every process\nmatching the workdir"]
   C --> D
