@@ -52,6 +52,15 @@ page [`docs/alert-severity.md`](docs/alert-severity.md), decided in ADR
 [0035](docs/adr/0035-grafana-alert-severity-standard.md). It does not cover the desk tool's
 attention severities.
 
+## SwiftBar title width (`swiftbar-title-width`)
+
+Every SwiftBar menu-bar plugin in the workspace repos MUST offer a wide and a narrow (notch-safe,
+ideally one colour-coded glyph) title, switched by a dropdown Title row and persisted in a state
+file, and its title MUST show only the primary state. The convention (contract, setting file and
+flag, refresh rate, test checklist, open decisions) is the page
+[`docs/swiftbar-title-width.md`](docs/swiftbar-title-width.md), decided in ADR
+[0036](docs/adr/0036-swiftbar-plugins-offer-wide-and-narrow-titles.md).
+
 ## Go packages (`mkGoApp` / `mkGoBinary`)
 
 Go apps built through the `mkGoApp` / `mkGoBinary` helpers (`lib/go-builders.nix`) use the
