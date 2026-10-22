@@ -1038,6 +1038,16 @@
                 'G -->|yes| LIVE["Skip, report: claimed by live drain session' \
                 'G -->|no, or lookup finds no bead| Z{"Zero own commits' \
                 'Z -->|no| RM["dispatch: wtdone"]' \
+                'Z -->|yes| WC{' \
+                'or lookup failed?"}' \
+                'The dispatched action subagent MUST re-run guard items 1, 2 and 4' \
+                'commands before `wtdone`, in the same shell step as `wtdone`' \
+                'Only after the worktree is confirmed gone' \
+                "MUST NOT change the bead's status" \
+                'does NOT extend to sets' \
+                'both re-run by the dispatched subagent as the last commands before `wtdone`' \
+                'because `wtdone` stays bead-free by design' \
+                'non-closed bead never reaches item 5' \
                 'WC -->|no: dirty or no worktree| LIVE' \
                 'WC -->|yes| RC["dispatch: wtdone, then note the bead' \
                 'Reclaim (clean).' \
@@ -1074,6 +1084,18 @@
                   exit 1
                 }
               done
+
+              # The complete set of flowchart edges into the two wtdone dispatch
+              # nodes (RM, RC) must be exactly the guarded ones: a merged candidate
+              # reaches RM only through Z (zero own commits? no) and RC only
+              # through WC (worktree clean). Any added or rewired edge fails here.
+              edges=$(grep -E -- '-->[[:space:]]*(\|[^|]*\|)?[[:space:]]*(RM|RC)([[:space:]]|\[|$)' "$f" | sed 's/\[.*//; s/^[[:space:]]*//')
+              expected=$(printf '%s\n' 'Z -->|no| RM' 'WC -->|yes| RC')
+              if [ "$edges" != "$expected" ]; then
+                echo "$f: edges into the wtdone dispatch nodes RM/RC are not exactly the guarded pair; got:" >&2
+                echo "$edges" >&2
+                exit 1
+              fi
 
               # The merged check must never feed removal directly again.
               if grep -qF -- 'M -->|yes| RM' "$f"; then
