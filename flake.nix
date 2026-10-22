@@ -1025,7 +1025,10 @@
             # that must agree - the flowchart (a guard node between the merged
             # check and the `wtdone` dispatch), the Step 3a text, and the Safety
             # contract - all still carry the load-bearing wording, and that the
-            # flowchart no longer routes a merged candidate straight to removal.
+            # flowchart no longer routes a merged candidate straight to removal. Bead
+            # pg2-ptmoi (operator ruling 2026-10-22) added the clean-worktree reclaim:
+            # a zero-commit worktree of an UNCLAIMED bead is removed (and the bead
+            # noted) only past the claim guard AND a clean-tree check.
             audit-worktrees-drain-claim-guard = pkgs.runCommand "check-audit-worktrees-drain-claim-guard" { } ''
               set -euo pipefail
               f=${./pn-workspace-rules/skills/audit-worktrees/SKILL.md}
@@ -1033,7 +1036,15 @@
               for needle in \
                 'M -->|yes| G{"Drain-claim guard (3a):' \
                 'G -->|yes| LIVE["Skip, report: claimed by live drain session' \
-                'G -->|no, or lookup finds no bead| RM["dispatch: wtdone"]' \
+                'G -->|no, or lookup finds no bead| Z{"Zero own commits' \
+                'Z -->|no| RM["dispatch: wtdone"]' \
+                'WC -->|no: dirty or no worktree| LIVE' \
+                'WC -->|yes| RC["dispatch: wtdone, then note the bead' \
+                'Reclaim (clean).' \
+                'git -C <worktree-path> status --porcelain' \
+                'MUST NOT write the note when nothing was removed' \
+                'reclaimed (clean, no changes)' \
+                '| 3a zero-commit worktree, bead unclaimed → `wtdone`, then bead note ' \
                 '**3a. Merged check, then drain-claim guard.**' \
                 'MUST NOT dispatch `wtdone`, and MUST NOT write or close any bead.' \
                 'ZERO commits of its own' \
@@ -1073,7 +1084,7 @@
               # Neither the unmerged classification nor the set fast path may feed
               # an action dispatch without passing a guard node (bead pg2-des38):
               # every `wtdone` route is audited in Step 3d.
-              for bypass in 'RV -->|no| C{' 'SLP -->|empty: fully landed| SCU'; do
+              for bypass in 'RV -->|no| C{' 'SLP -->|empty: fully landed| SCU' 'G -->|no, or lookup finds no bead| RM'; do
                 if grep -qF -- "$bypass" "$f"; then
                   echo "$f: flowchart bypasses a drain-claim guard node: $bypass" >&2
                   exit 1
