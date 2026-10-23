@@ -14,10 +14,21 @@
 # tolerated. darwinConfigurations is not evaluated (flake check does not cover
 # it either).
 #
+# Sibling overrides (bead pg2-8uc2d): a repo whose flake.lock pins workspace
+# siblings that lag the local clones would fail on drift that a relock fixes
+# later. The tool therefore asks `pn workspace overrides <repo>` for the repo's
+# `--override-input <alias> git+file://<sibling clone>` arguments, the SAME set
+# pn workspace build/apply/flake-check inject, and passes them to every nix
+# eval. It derives no override itself. No push, no relock and no flake.lock write
+# is involved (--no-write-lock-file stays). When pn is absent, or the repo is not
+# a workspace member, one stderr note says so and the locked inputs are evaluated.
+#
 # The tool does NOT run prek or pg-hooks (`pg-hooks run pre-land` owns that).
-# It never cds into the repo: git runs with -C, and the commit is evaluated as a
-# pure `git+file://<abs path>?rev=<sha>` ref, so a dirty tree and untracked
-# files are ignored and a linked worktree works (shared object store).
+# It never cds into the repo for git or nix: git runs with -C, and the commit is
+# evaluated as a pure `git+file://<abs path>?rev=<sha>` ref, so a dirty tree and
+# untracked files are ignored and a linked worktree works (shared object store).
+# Only the pn lookup runs in a subshell inside the repo, because pn finds the
+# workspace root by walking up from the working directory (or PN_WORKSPACE_ROOT).
 #
 # stdout is exactly ONE word; everything else is stderr.
 # Exit codes: 0 ok or not-enabled, 10 eval-failed, 11 eval-inconclusive,
@@ -28,12 +39,19 @@ show_help() {
   cat <<'HELP'
 pre-land-eval: eval-only pre-land check of a flake at a commit
 
-Usage: pre-land-eval [--no-ifd] <repo-path> <ref>
+Usage: pre-land-eval [--no-ifd] [--no-overrides] <repo-path> <ref>
 
 Evaluates (does not build) the derivation paths of the flake's checks, packages
 and devShells for this machine's system at the commit <ref> of <repo-path>,
 as the pure flake ref git+file://<abs repo-path>?rev=<sha>. A dirty tree and
 untracked files are ignored; a linked worktree is fine.
+
+The repo's workspace siblings are pinned to their LOCAL clones with the
+--override-input arguments that `pn workspace overrides <repo-path>` prints
+(the set pn workspace build/apply/flake-check use), so siblings that lag in
+flake.lock do not fail the check and no push, relock or flake.lock write is
+needed. If pn is not on PATH, or <repo-path> is not a workspace repo, one note
+goes to stderr and the locked inputs are evaluated instead.
 
 The check is opt-in per clone: it runs only when
   git -C <repo-path> config --get pgii-integrate-branch.preLandEval
@@ -44,6 +62,8 @@ Options:
                  derivation is allowed by default, which makes the eval BUILD
                  the small IFD derivations (a store-write operation). With
                  --no-ifd an IFD error is classified eval-inconclusive.
+  --no-overrides Do not ask pn for sibling overrides: evaluate the locked
+                 inputs only (how the published lock resolves).
   -h, --help     Show this help message
   -v, --version  Show version information
 
@@ -75,11 +95,16 @@ die_usage() {
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY
 
 NO_IFD=0
+NO_OVERRIDES=0
 POS=()
 while (($# > 0)); do
   case "$1" in
   --no-ifd)
     NO_IFD=1
+    shift
+    ;;
+  --no-overrides)
+    NO_OVERRIDES=1
     shift
     ;;
   -h | --help)
@@ -159,6 +184,28 @@ APPLY='set: builtins.mapAttrs (n: v: v.drvPath or null) set'
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# Sibling overrides from pn: one argument per line (--override-input, alias,
+# git+file://<sibling>), repeated. The lookup runs in a subshell inside the repo
+# so pn finds the workspace root by walking up (PN_WORKSPACE_ROOT wins when set).
+# Any failure degrades to the locked inputs, with one note.
+if ((NO_OVERRIDES == 1)); then
+  say "sibling overrides disabled (--no-overrides); evaluating the locked inputs"
+elif ! command -v pn >/dev/null 2>&1; then
+  say "pn is not on PATH; evaluating the locked sibling inputs (no workspace overrides)"
+else
+  if (cd "$REPO_ABS" && pn workspace overrides "$REPO_ABS") >"$TMP/overrides.out" 2>"$TMP/overrides.err"; then
+    N_OVERRIDES=0
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      NIX_OPTS+=("$line")
+      if [[ $line == --override-input ]]; then N_OVERRIDES=$((N_OVERRIDES + 1)); fi
+    done <"$TMP/overrides.out"
+    say "pinned $N_OVERRIDES workspace sibling input(s) to their local clones (pn workspace overrides)"
+  else
+    say "pn workspace overrides failed for $REPO_ABS ($(head -n 1 "$TMP/overrides.err")); evaluating the locked sibling inputs"
+  fi
+fi
 
 IFD_RE="allow-import-from-derivation' is disabled"
 ABSENT_RE="^[[:space:]]*error: flake '.*' does not provide attribute "

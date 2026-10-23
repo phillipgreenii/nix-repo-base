@@ -662,3 +662,139 @@ SHIM
   [ "$status" -eq 10 ]
   [ "$output" = "eval-failed" ]
 }
+
+# ---------------------------------------------------------------------------
+# Sibling overrides from `pn workspace overrides` (bead pg2-8uc2d)
+#
+# These tests prove the PLUMBING with a pn shim: that the tool asks pn, appends
+# exactly what pn printed, derives nothing itself, and degrades to the locked
+# inputs with one note. That the override set really changes what nix evaluates
+# is proved against real nix and the real pn binary in
+# modules/pn/cmd/pn/pre_land_eval_realnix_test.go.
+
+# _pn_shim: put a pn shim on PATH. It records its argv and working directory and
+# prints $SHIM_DIR/pn.out (default: one sibling override), exiting $SHIM_DIR/pn.rc.
+_pn_shim() {
+  cat >"$SHIM_BIN/pn" <<SHIM
+#!/bin/sh
+printf '%s\n' "\$*" >>"$SHIM_DIR/pn-argv"
+pwd -P >>"$SHIM_DIR/pn-cwd"
+[ -f "$SHIM_DIR/pn.err" ] && cat "$SHIM_DIR/pn.err" >&2
+if [ -f "$SHIM_DIR/pn.out" ]; then
+  cat "$SHIM_DIR/pn.out"
+else
+  printf '%s\n' --override-input base git+file:///ws/nix-repo-base
+fi
+if [ -f "$SHIM_DIR/pn.rc" ]; then exit "\$(cat "$SHIM_DIR/pn.rc")"; fi
+exit 0
+SHIM
+  chmod +x "$SHIM_BIN/pn"
+}
+
+@test "overrides: the arguments pn prints are passed to every nix call, in order" {
+  _enable
+  _pn_shim
+  printf '%s\n' --override-input base git+file:///ws/base --override-input extra git+file:///ws/extra >"$SHIM_DIR/pn.out"
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+  [ "$(wc -l <"$SHIM_DIR/argv" | tr -d ' ')" = "3" ]
+  [ "$(grep -c -- '--override-input base git+file:///ws/base --override-input extra git+file:///ws/extra' "$SHIM_DIR/argv")" = "3" ]
+  [[ $stderr == *"pinned 2 workspace sibling input(s)"* ]]
+  [[ $stderr == *"reproduce: nix eval"*"--override-input base git+file:///ws/base"* ]]
+}
+
+@test "overrides: nothing but pn's output is added, and --no-write-lock-file stays" {
+  _enable
+  _pn_shim
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  local line
+  while IFS= read -r line; do
+    [[ $line == *"--no-write-lock-file"* ]]
+    [ "$(printf '%s\n' "$line" | grep -o -- '--override-input' | wc -l | tr -d ' ')" = "1" ]
+    [[ $line == *"--override-input base git+file:///ws/nix-repo-base"* ]]
+  done <"$SHIM_DIR/argv"
+}
+
+@test "overrides: pn is asked for the repo's absolute path, from inside the repo" {
+  _enable
+  _pn_shim
+  cd "$GFH_WORK"
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  [ "$(cat "$SHIM_DIR/pn-argv")" = "workspace overrides $(cd "$REPO" && pwd -P)" ]
+  [ "$(cat "$SHIM_DIR/pn-cwd")" = "$(cd "$REPO" && pwd -P)" ]
+  [ "$(wc -l <"$SHIM_DIR/pn-argv" | tr -d ' ')" = "1" ]
+}
+
+@test "overrides: a linked worktree is passed to pn by its own path" {
+  _enable
+  _pn_shim
+  command git -C "$REPO" worktree add -q -b wtbranch "$GFH_WORK/wt"
+  run --separate-stderr sut "$GFH_WORK/wt" HEAD
+  [ "$status" -eq 0 ]
+  [ "$(cat "$SHIM_DIR/pn-argv")" = "workspace overrides $(cd "$GFH_WORK/wt" && pwd -P)" ]
+}
+
+@test "overrides: a repo with no siblings (pn prints nothing) evaluates as before" {
+  _enable
+  _pn_shim
+  : >"$SHIM_DIR/pn.out"
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+  run ! grep -q -- '--override-input' "$SHIM_DIR/argv"
+  [[ $stderr == *"pinned 0 workspace sibling input(s)"* ]]
+}
+
+@test "overrides: pn failing (not a workspace member) falls back to the locked inputs with one note" {
+  _enable
+  _pn_shim
+  printf '%s\n' 'not a workspace repo of /ws' >"$SHIM_DIR/pn.err"
+  printf '2\n' >"$SHIM_DIR/pn.rc"
+  printf '%s\n' --override-input leaked git+file:///x >"$SHIM_DIR/pn.out"
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+  [ "$(printf '%s\n' "$stderr" | grep -c 'pn workspace overrides failed')" = "1" ]
+  [[ $stderr == *"not a workspace repo of /ws"* ]]
+  [ "$(wc -l <"$SHIM_DIR/argv" | tr -d ' ')" = "3" ]
+  run ! grep -q -- '--override-input' "$SHIM_DIR/argv"
+}
+
+@test "overrides: pn absent from PATH falls back to the locked inputs with one note" {
+  _enable
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+  [ "$(printf '%s\n' "$stderr" | grep -c 'pn is not on PATH')" = "1" ]
+  run ! grep -q -- '--override-input' "$SHIM_DIR/argv"
+}
+
+@test "overrides: --no-overrides never runs pn and evaluates the locked inputs" {
+  _enable
+  _pn_shim
+  run --separate-stderr sut --no-overrides "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+  [ ! -e "$SHIM_DIR/pn-argv" ]
+  run ! grep -q -- '--override-input' "$SHIM_DIR/argv"
+  [[ $stderr == *"--no-overrides"* ]]
+}
+
+@test "overrides: a not-enabled repo never runs pn" {
+  _pn_shim
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$output" = "not-enabled" ]
+  [ ! -e "$SHIM_DIR/pn-argv" ]
+}
+
+@test "overrides: an eval failure with overrides is still eval-failed, exit 10" {
+  _enable
+  _pn_shim
+  _fail checks 1 "$ERR_NO_OPTION"
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 10 ]
+  [ "$output" = "eval-failed" ]
+}

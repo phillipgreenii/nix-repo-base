@@ -15,6 +15,10 @@
 
 `pre-land-eval --no-ifd {{path/to/repo}} {{HEAD}}`
 
+- Evaluate the repo's locked sibling inputs only, without asking `pn workspace overrides` for the local clones (by default the workspace siblings are pinned to their local clones; no push or relock is needed):
+
+`pre-land-eval --no-overrides {{path/to/repo}} {{HEAD}}`
+
 - Opt a clone in (a repo without the key reports `not-enabled`, exit 0):
 
 `git -C {{path/to/repo}} config pgii-integrate-branch.preLandEval true`

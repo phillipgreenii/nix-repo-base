@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -72,6 +73,7 @@ Telemetry is optional: with no endpoint pn behaves exactly as without it. See
 	ws.AddCommand(workspaceUpgradeCmd(&terminalFlag))
 	ws.AddCommand(workspaceDiscoverCmd(&terminalFlag))
 	ws.AddCommand(workspaceInfoCmd(&terminalFlag))
+	ws.AddCommand(workspaceOverridesCmd())
 	ws.AddCommand(workspaceDoctorCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
 	ws.AddCommand(workspaceWorkforestCmd())
@@ -556,6 +558,57 @@ func workspaceInfoCmd(_ *string) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&infoJSON, "json", false, "JSON output")
 	return cmd
+}
+
+// workspaceOverridesCmd prints one repo's sibling override arguments, the exact
+// set build/apply/flake-check inject, so another tool that runs its own nix
+// command against that repo (pre-land-eval) never re-derives them. Read-only: it
+// runs no hooks and writes no lock, flake.lock or applied state.
+func workspaceOverridesCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "overrides <repo-or-path>",
+		Short: "Print a repo's --override-input arguments for its local workspace siblings",
+		Long: `Print the nix arguments that pin <repo>'s workspace siblings to their local clones.
+
+<repo-or-path> is a workspace repo key, or a path to the repo, a directory
+inside it, or one of its git worktrees. The output is the SAME set that
+'pn workspace build', 'apply' and 'flake-check' inject, one argument per line:
+
+  --override-input
+  <alias>
+  git+file://<absolute path of the sibling clone>
+
+repeated per sibling (sorted by alias). The repo is not overridden by itself,
+and a sibling whose clone is missing is left out. No output (exit 0) means the
+repo has no workspace siblings to override. Append the lines to a nix command to
+evaluate against the local siblings without pushing or relocking:
+
+  while IFS= read -r a; do args+=("$a"); done < <(pn workspace overrides nix-ziprecruiter)
+  nix eval --no-write-lock-file "${args[@]}" <flake-ref>#checks.<system>
+
+Nothing is written: no flake.lock, no pn-workspace.lock.json. Exit 2 when
+<repo-or-path> is not a workspace repo.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := openWorkspace()
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			_, ov, err := w.RepoOverrides(cmd.Context(), args[0])
+			if errors.Is(err, workspace.ErrNotWorkspaceRepo) {
+				return ExitCodeError{Code: 2, Msg: err.Error()}
+			}
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, a := range ov {
+				fmt.Fprintln(out, a)
+			}
+			return nil
+		},
+	}
 }
 
 func workspaceDoctorCmd(terminal *string) *cobra.Command {

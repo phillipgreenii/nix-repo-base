@@ -221,6 +221,7 @@ pn workspace push -u --remote <name>     Same, but override the remote for all r
 pn workspace status                      Per-repo working-tree summary
 pn workspace tree                        Print the workspace dependency DAG (terminal required)
 pn workspace nix -- <nix args>           Run nix with --override-input flags injected
+pn workspace overrides <repo-or-path>    Print that repo's --override-input arguments (one per line; read-only); what pre-land-eval consumes
 pn workspace discover                    List workspace repos and their paths
 pn workspace workforest add <branch>              Create a coordinated workforest set on <branch> (all repos)
 pn workspace workforest add <branch> <sha>        Same, starting from <commit-ish>

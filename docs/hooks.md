@@ -239,10 +239,11 @@ caught before landing. It is a standalone command in `modules/pg-hooks/pre-land-
 `pre-commit-fix`, and NOT a `pg-hooks` subcommand: it needs no hook bundle, and its exit codes are
 unrelated to the `pg-hooks` ones. It does NOT run prek or any hook; `pg-hooks run pre-land` keeps
 owning that. The eval part was deferred in design pg2-3i12x section 9 and un-deferred by the operator
-ruling on `pg2-pla9d.26` (2026-10-23); the work is bead `pg2-d2yka`.
+ruling on `pg2-pla9d.26` (2026-10-23); the work is bead `pg2-d2yka`. Workspace-sibling overrides
+through `pn workspace overrides` came with bead `pg2-8uc2d`.
 
 ```text
-pre-land-eval [--no-ifd] <repo-path> <ref>
+pre-land-eval [--no-ifd] [--no-overrides] <repo-path> <ref>
 ```
 
 | Stdout (exactly one line) | Exit | Meaning                                                         |
@@ -263,13 +264,31 @@ pre-land-eval [--no-ifd] <repo-path> <ref>
   branch, a sha, a short sha, a tag and `HEAD` all work) as the pure flake ref
   `git+file://<abs repo-path>?rev=<sha>`. A dirty tree and untracked files are ignored, and a linked
   worktree works because it shares the object store. A ref that does not resolve exits 2. The tool
-  never changes into the repo, and passes `--no-write-lock-file`, so locked inputs only.
+  runs git and nix with `-C`/absolute paths rather than changing into the repo, and passes
+  `--no-write-lock-file`, so `flake.lock` is never written.
 - **How.** For each of `checks`, `packages` and `devShells` it runs
-  `nix eval --json '<ref>#<set>.<system>' --apply 'set: builtins.mapAttrs (n: v: v.drvPath or null) set'`.
+  `nix eval --json <override args> '<ref>#<set>.<system>' --apply 'set: builtins.mapAttrs (n: v: v.drvPath or null) set'`.
   `<system>` comes from `uname` (arm64 to aarch64, Darwin to darwin), never from an impure
-  `builtins.currentSystem`. A set the flake does not provide is skipped. It is NOT
-  `nix flake check --no-build`: that runs read-only, so a source tree copied at eval time reads back
-  as `path '...' is not valid`.
+  `builtins.currentSystem`. A set the flake does not provide is skipped. The bare
+  `nix flake check --no-build` is deliberately NOT used (operator ruling, 2026-10-23, recorded on
+  `pg2-pla9d.26`): it runs read-only, so a source tree copied into the store at eval time reads back
+  as `path '...' is not valid`, and it does not apply workspace overrides. The overrides come from
+  `pn workspace`, as below.
+- **Sibling overrides (entry point `pn workspace overrides`).** A repo whose `flake.lock` pins
+  workspace siblings that lag the local clones would fail on drift that a relock fixes later. The
+  tool therefore runs `pn workspace overrides <abs repo-path>` (in a subshell inside the repo, so pn
+  finds the workspace root by walking up, or from `PN_WORKSPACE_ROOT`) and appends what it prints,
+  one argument per line, to every `nix eval`: `--override-input <alias> git+file://<abs path of the sibling clone>`
+  per sibling. That is the SAME set `pn workspace build`, `apply` and `flake-check` inject (the repo
+  is not overridden by itself and a sibling with no clone is left out); the tool derives no
+  override of its own. The overrides combine with the pure `git+file://<repo>?rev=<sha>` ref
+  unchanged: the commit under test is still the repo, only its sibling inputs are replaced. A
+  sibling override reads the sibling's working tree, so a dirty sibling clone is evaluated as it
+  is. Nothing is pushed, relocked or written: no `flake.lock`, no `pn-workspace.lock.json`. If `pn`
+  is not on `PATH`, or `<repo-path>` is not a workspace repo (`pn` exits 2), or `pn` fails for
+  another reason, ONE stderr note says so and the locked inputs are evaluated, which is also what
+  `--no-overrides` asks for. A worktree is accepted as `<repo-path>`; the siblings are the workspace
+  root's own clones.
 - **Classification.** nix exits 0 for every set: `ok`. Any other non-zero exit: `eval-failed`. A
   `flake.nix` input that is missing from `flake.lock` is fetched in memory, and a failure doing so is
   relayed as `eval-failed`.
@@ -280,20 +299,24 @@ pre-land-eval [--no-ifd] <repo-path> <ref>
   still `eval-failed`.
 - **Store writes.** Evaluation is a store-write operation: it writes `.drv` files and source copies
   to the store, and with IFD allowed it builds IFD derivations. It is not read-only.
-- **Runtime and callers.** Expect 1 to 2 minutes (about 8 to 35 seconds per set on a loaded
-  machine). Callers MUST run it through `bgrun` and `bgwait`. The tool runs nix through
+- **Runtime and callers.** Expect 1 to 2 minutes for a small flake (about 8 to 35 seconds per set on
+  a loaded machine) and about 4 minutes for `nix-ziprecruiter` (measured 2026-10-23: 191 s for
+  `checks`, 13 s for `packages`, 26 s for `devShells`). Callers MUST run it through `bgrun` and `bgwait`. The tool runs nix through
   `pg-nix-log-wrapped` when that command is on `PATH`, and directly, with one stderr note, when it is
   not.
 
 Deliberate gaps:
 
 - `darwinConfigurations` is NOT evaluated. `nix flake check` does not cover it either.
-- `nix-ziprecruiter` MUST NOT be enabled while it fails with locked-sibling drift (for example
-  `The option phillipgreenii.observability.dockerState does not exist`); a relock is an operator
-  step, so the check there would only report `eval-failed`.
 - Checks that need IFD (for example `test-claude-hook-router`, `launchd-hm-darwin`, `pg-pr-zr-sandbox`)
   are `eval-inconclusive` under `--no-ifd`, so a `--no-ifd` run can pass without having evaluated them.
-- Sibling inputs are never overridden: the check evaluates the locked inputs of the commit only.
+- Only workspace siblings are overridden. A third-party input still resolves from the repo's
+  `flake.lock`, and a repo outside the workspace (or `--no-overrides`) is evaluated against its
+  locked inputs only.
+- `nix-ziprecruiter` is enabled in `pn-workspace.toml` through the sibling overrides: its locked
+  siblings lag the local clones (`The option phillipgreenii.observability.dockerState does not
+exist` against the locked inputs), and with the overrides the check returns `ok`. `nix-overlay`
+  is not enabled.
 
 ## Messages
 
