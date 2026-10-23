@@ -87,7 +87,9 @@ Rules for this family:
   plus `modRoot = "<name>";`. `mkGoApp` then sets `pwd = src + "/<name>"` and `buildGoApplication`
   resolves the replace natively via a symlink (no vendoring, no hash).
 - **Package builds do not run tests.** `mkGoApp` / `mkGoBinary` default to `doCheck = false`
-  (operator ruling 2026-10-01, bead pg2-pla9d.2; ADR 0008 and ADR 0021 amendments), overriding
+  (operator ruling 2026-10-01, bead pg2-pla9d.2; ADR
+  [0037](docs/adr/0037-check-tiering-by-stage-package-builds-run-no-tests.md), which supersedes
+  ADR 0021; the ADR 0008 amendment is the implementation record), overriding
   gomod2nix's default of `true`. A green package build is NOT a test result. Every Go module with
   tests MUST have its own `goBuilders.mkGoTest` check (`checks.<system>.<name>-go-tests`, e.g.
   `pn-go-tests`, `pg-go-mutate-tui-go-tests`). Pass `doCheck = true` only for a package that

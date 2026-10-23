@@ -1,7 +1,7 @@
 # ADR-0021: `subPackages` scopes the gomod2nix check hook — gate tests with `mkGoTest`
 
 **Date:** 2026-07-15
-**Status:** Accepted
+**Status:** Superseded by [ADR-0037](0037-check-tiering-by-stage-package-builds-run-no-tests.md) (the rules are restated there; this text remains the record of the `subPackages` analysis)
 **Deciders:** phillipgreenii
 
 ## Context

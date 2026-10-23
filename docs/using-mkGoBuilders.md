@@ -116,9 +116,10 @@ with its own runtime guard in `main` (the `bin/pn` sentinel above), not in the f
 ### 4. Tests wired into `nix flake check` (via `mkGoTest`)
 
 The package build does **not** run your tests: `mkGoBinary` and `mkGoApp` default to
-`doCheck = false` (operator ruling 2026-10-01, bead pg2-pla9d.2; see the ADR
-[0008](adr/0008-adopt-gomod2nix-for-go-packages.md) and ADR
-[0021](adr/0021-subpackages-check-scoping-mkgotest.md) amendments). Before that date the gomod2nix
+`doCheck = false` (operator ruling 2026-10-01, bead pg2-pla9d.2; see ADR
+[0037](adr/0037-check-tiering-by-stage-package-builds-run-no-tests.md), which supersedes
+[0021](adr/0021-subpackages-check-scoping-mkgotest.md), and the ADR
+[0008](adr/0008-adopt-gomod2nix-for-go-packages.md) amendment). Before that date the gomod2nix
 check phase recompiled the module and ran `go test` on every package build, and under
 `subPackages` it only tested the pinned entrypoint. A green package build is therefore not a
 test result.
