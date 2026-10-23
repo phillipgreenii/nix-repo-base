@@ -15,8 +15,8 @@ import (
 
 // applyLogRun runs Apply with a REAL child process as the apply command (a shell
 // script body), git/nix probes faked. It returns the terminal output, Apply's
-// error, the apply-logs directory and how long Apply took.
-func applyLogRun(t *testing.T, scriptBody string, grace time.Duration) (out string, err error, logDir string, took time.Duration) {
+// the apply-logs directory, how long Apply took and Apply's error.
+func applyLogRun(t *testing.T, scriptBody string, grace time.Duration) (out, logDir string, took time.Duration, err error) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -39,7 +39,7 @@ func applyLogRun(t *testing.T, scriptBody string, grace time.Duration) (out stri
 	begin := time.Now()
 	err = w.Apply(context.Background(), buf, ApplyOptions{Force: true, ApplyCmd: script})
 	// trustWS re-points XDG_STATE_HOME, so resolve the directory only now.
-	return buf.String(), err, applyLogDir(), time.Since(begin)
+	return buf.String(), applyLogDir(), time.Since(begin), err
 }
 
 // onlyApplyLog returns the contents of the single apply-*.log in dir.
@@ -80,7 +80,7 @@ func logTrailer(t *testing.T, log string) string {
 }
 
 func TestApplyLog_RetainsOutputForExitZero(t *testing.T) {
-	out, err, dir, _ := applyLogRun(t, "echo to-stdout\necho to-stderr 1>&2\nexit 0\n", time.Second)
+	out, dir, _, err := applyLogRun(t, "echo to-stdout\necho to-stderr 1>&2\nexit 0\n", time.Second)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestApplyLog_RetainsOutputForExitZero(t *testing.T) {
 }
 
 func TestApplyLog_RetainsOutputForNonZeroExit(t *testing.T) {
-	_, err, dir, _ := applyLogRun(t, "echo before-failure\necho boom 1>&2\nexit 3\n", time.Second)
+	_, dir, _, err := applyLogRun(t, "echo before-failure\necho boom 1>&2\nexit 3\n", time.Second)
 	if err == nil || !strings.Contains(err.Error(), "apply failed") {
 		t.Fatalf("Apply must fail with 'apply failed', got: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestApplyLog_RetainsOutputForNonZeroExit(t *testing.T) {
 // grace must not lose lines: its output is in the log AND on the terminal.
 func TestApplyLog_GrandchildWithinGraceLosesNoLines(t *testing.T) {
 	body := "(sleep 0.2; echo late-line-from-grandchild) &\necho main-line\nexit 0\n"
-	out, err, dir, _ := applyLogRun(t, body, 5*time.Second)
+	out, dir, _, err := applyLogRun(t, body, 5*time.Second)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestApplyLog_GrandchildPastGraceDoesNotHang(t *testing.T) {
 	}{{"exit0", 0, "result: success"}, {"exit3", 3, "result: failed"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := fmt.Sprintf("(sleep 5) &\necho line-before-exit\nexit %d\n", tc.exit)
-			_, _, dir, took := applyLogRun(t, body, 300*time.Millisecond)
+			_, dir, took, _ := applyLogRun(t, body, 300*time.Millisecond)
 			if took > 4*time.Second {
 				t.Fatalf("Apply took %s: it waited for the lingering grandchild", took)
 			}
@@ -184,7 +184,7 @@ func TestApplyLog_GrandchildPastGraceDoesNotHang(t *testing.T) {
 }
 
 func TestApplyLog_LatestSymlinkPointsAtNewestLog(t *testing.T) {
-	_, err, dir, _ := applyLogRun(t, "echo hi\n", time.Second)
+	_, dir, _, err := applyLogRun(t, "echo hi\n", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestApplyLog_LatestSymlinkPointsAtNewestLog(t *testing.T) {
 }
 
 func TestApplyLog_LogDirOutsideNixStoreAndReadable(t *testing.T) {
-	_, err, dir, _ := applyLogRun(t, "echo hi\n", time.Second)
+	_, dir, _, err := applyLogRun(t, "echo hi\n", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
