@@ -233,87 +233,117 @@ A fixer MUST NOT be run from a git hook and MUST NOT be attached to a prek stage
 
 ## The eval-only pre-land check (`pre-land-eval`)
 
-`pre-land-eval` evaluates, without building, the derivation paths of a flake's `checks`, `packages`
-and `devShells` at one commit, so an evaluation error (a missing option, a `throw`, a bad import) is
-caught before landing. It is a standalone command in `modules/pg-hooks/pre-land-eval/`, a sibling of
-`pre-commit-fix`, and NOT a `pg-hooks` subcommand: it needs no hook bundle, and its exit codes are
-unrelated to the `pg-hooks` ones. It does NOT run prek or any hook; `pg-hooks run pre-land` keeps
-owning that. The eval part was deferred in design pg2-3i12x section 9 and un-deferred by the operator
-ruling on `pg2-pla9d.26` (2026-10-23); the work is bead `pg2-d2yka`. Workspace-sibling overrides
-through `pn workspace overrides` came with bead `pg2-8uc2d`.
+`pre-land-eval` is the land check for a repo that opted in: it evaluates, without building, the
+derivation paths of a flake's `checks`, `packages` and `devShells` at one commit, so an evaluation
+error (a missing option, a `throw`, a bad import) is caught before landing. It is a standalone
+command in `modules/pg-hooks/pre-land-eval/`, a sibling of `pre-commit-fix`, and NOT a `pg-hooks`
+subcommand: it needs no hook bundle, and its exit codes are unrelated to the `pg-hooks` ones. It
+does NOT run prek or any hook; `pg-hooks run pre-land` keeps owning that. The eval part was deferred
+in design pg2-3i12x section 9 and un-deferred by the operator ruling on `pg2-pla9d.26`
+(2026-10-23); the work is beads `pg2-d2yka` and `pg2-8uc2d`.
+
+**`pre-land-eval` is a thin caller of `pn workspace flake-check --no-build`.** The evaluation, the
+sibling overrides, the system and the experiment log all live in pn (one override derivation, in
+pn); `pre-land-eval` adds only the per-clone opt-in key and the one-word verdict with its exit
+codes. It runs, from inside the repo:
 
 ```text
-pre-land-eval [--no-ifd] [--no-overrides] <repo-path> <ref>
+pn workspace flake-check --no-build --caller ff-1c [--no-ifd] --rev <ref> <abs repo-path>
 ```
 
-| Stdout (exactly one line) | Exit | Meaning                                                         |
-| ------------------------- | ---- | --------------------------------------------------------------- |
-| `ok`                      | 0    | every evaluated set evaluated cleanly                           |
-| `not-enabled`             | 0    | the clone has not opted in (or the key is absent)               |
-| `eval-failed`             | 10   | nix reported an evaluation error                                |
-| `eval-inconclusive`       | 11   | only `--no-ifd` import-from-derivation errors, or no system     |
-| (nothing)                 | 2    | usage error, including a repo path or ref that does not resolve |
+```text
+pre-land-eval [--no-ifd] <repo-path> <ref>
+```
 
-- stderr carries the details: the first lines of nix's error, the command to reproduce and the
-  timings. No other exit code is produced.
+| Stdout (exactly one line) | Exit | Meaning                                                                                              |
+| ------------------------- | ---- | ---------------------------------------------------------------------------------------------------- |
+| `ok`                      | 0    | every evaluated set evaluated cleanly                                                                |
+| `not-enabled`             | 0    | the clone has not opted in (or the key is absent)                                                    |
+| `eval-failed`             | 10   | pn reported a failed evaluation                                                                      |
+| (nothing)                 | 2    | usage error: a repo path, ref or workspace repo that does not resolve, or pn failed to run           |
+| (nothing)                 | 127  | pn is not installed (`pn not installed on this machine; ask the operator to run pn workspace apply`) |
+
+- stderr carries pn's output: the command to reproduce, the timings and the first error of each
+  failed set. No other exit code is produced. There is no `eval-inconclusive` outcome and no retry
+  (operator ruling, 2026-10-23, `pg2-8uc2d`): a failure is a failure to fix before landing.
 - **Enablement is opt-in per clone.** The check runs only when
   `git -C <repo-path> config --get pgii-integrate-branch.preLandEval` prints exactly `true`. Any
   other value, and an absent key, prints `not-enabled` and exits 0; that is never an error. A repo is
-  opted in with `git -C <repo> config pgii-integrate-branch.preLandEval true`.
-- **What is evaluated.** The commit `<ref>` resolves to (`git rev-parse --verify`, which makes a
-  branch, a sha, a short sha, a tag and `HEAD` all work) as the pure flake ref
-  `git+file://<abs repo-path>?rev=<sha>`. A dirty tree and untracked files are ignored, and a linked
-  worktree works because it shares the object store. A ref that does not resolve exits 2. The tool
-  runs git and nix with `-C`/absolute paths rather than changing into the repo, and passes
-  `--no-write-lock-file`, so `flake.lock` is never written.
-- **How.** For each of `checks`, `packages` and `devShells` it runs
-  `nix eval --json <override args> '<ref>#<set>.<system>' --apply 'set: builtins.mapAttrs (n: v: v.drvPath or null) set'`.
-  `<system>` comes from `uname` (arm64 to aarch64, Darwin to darwin), never from an impure
-  `builtins.currentSystem`. A set the flake does not provide is skipped. The bare
-  `nix flake check --no-build` is deliberately NOT used (operator ruling, 2026-10-23, recorded on
-  `pg2-pla9d.26`): it runs read-only, so a source tree copied into the store at eval time reads back
-  as `path '...' is not valid`, and it does not apply workspace overrides. The overrides come from
-  `pn workspace`, as below.
-- **Sibling overrides (entry point `pn workspace overrides`).** A repo whose `flake.lock` pins
-  workspace siblings that lag the local clones would fail on drift that a relock fixes later. The
-  tool therefore runs `pn workspace overrides <abs repo-path>` (in a subshell inside the repo, so pn
-  finds the workspace root by walking up, or from `PN_WORKSPACE_ROOT`) and appends what it prints,
-  one argument per line, to every `nix eval`: `--override-input <alias> git+file://<abs path of the sibling clone>`
-  per sibling. That is the SAME set `pn workspace build`, `apply` and `flake-check` inject (the repo
-  is not overridden by itself and a sibling with no clone is left out); the tool derives no
-  override of its own. The overrides combine with the pure `git+file://<repo>?rev=<sha>` ref
-  unchanged: the commit under test is still the repo, only its sibling inputs are replaced. A
-  sibling override reads the sibling's working tree, so a dirty sibling clone is evaluated as it
-  is. Nothing is pushed, relocked or written: no `flake.lock`, no `pn-workspace.lock.json`. If `pn`
-  is not on `PATH`, or `<repo-path>` is not a workspace repo (`pn` exits 2), or `pn` fails for
-  another reason, ONE stderr note says so and the locked inputs are evaluated, which is also what
-  `--no-overrides` asks for. A worktree is accepted as `<repo-path>`; the siblings are the workspace
-  root's own clones.
-- **Classification.** nix exits 0 for every set: `ok`. Any other non-zero exit: `eval-failed`. A
-  `flake.nix` input that is missing from `flake.lock` is fetched in memory, and a failure doing so is
-  relayed as `eval-failed`.
-- **IFD.** Import from derivation is ALLOWED by default. The evaluation then BUILDS the small IFD
-  derivations (fixed source copies and fetches). With `--no-ifd` the tool passes
-  `--option allow-import-from-derivation false`; an error saying that option is disabled, with no
-  other error, is `eval-inconclusive` (exit 11, non-blocking), and a genuine error alongside it is
-  still `eval-failed`.
-- **Store writes.** Evaluation is a store-write operation: it writes `.drv` files and source copies
-  to the store, and with IFD allowed it builds IFD derivations. It is not read-only.
-- **Runtime and callers.** Expect 1 to 2 minutes for a small flake (about 8 to 35 seconds per set on
-  a loaded machine) and about 4 minutes for `nix-ziprecruiter` (measured 2026-10-23: 191 s for
-  `checks`, 13 s for `packages`, 26 s for `devShells`). Callers MUST run it through `bgrun` and `bgwait`. The tool runs nix through
-  `pg-nix-log-wrapped` when that command is on `PATH`, and directly, with one stderr note, when it is
-  not.
+  opted in with `git -C <repo> config pgii-integrate-branch.preLandEval true` (in `pn-workspace.toml`,
+  a `post-clone`/`post-update` hook for that repo).
+- **Runtime and callers.** Expect 1 to 3 minutes for a small flake, longer for `nix-ziprecruiter`
+  (measured 2026-10-23: 191 s for `checks`, 13 s for `packages`, 26 s for `devShells`). Callers MUST
+  run it through `bgrun` and `bgwait`.
+
+### `pn workspace flake-check --no-build`
+
+```text
+pn workspace flake-check [--no-build [--rev <rev>] [--caller manual|ff-1c] [--no-ifd]] [<repo-or-path>]
+```
+
+Without `--no-build` the command is what it always was: a full `nix flake check` per repo, with the
+local sibling overrides, which BUILDS the checks. With `--no-build` it is the land check:
+
+- **What it does.** For each repo in topological order (or the one selected), from that repo's
+  directory, for each of `checks`, `packages` and `devShells`:
+  `nix eval --extra-experimental-features 'nix-command flakes' --no-write-lock-file <override args> --json '<flake>#<set>.<system>' --apply 'set: builtins.mapAttrs (n: v: v.drvPath or null) set'`.
+  Nothing is built and `flake.lock` is never written. `<system>` comes from the Go runtime (arm64 to
+  aarch64, darwin to darwin), never from an impure `builtins.currentSystem`. A set the flake does not
+  provide (nix's `does not provide attribute` error and nothing else) is skipped. A repo failing does
+  not stop the others; the command exits 1 if any failed, with each repo's output.
+- **Why it is NOT nix's own `--no-build`.** `nix flake check --no-build` runs read-only, so any
+  source tree copied into the store during evaluation reads back as `path '...' is not valid` unless
+  the same copy is already in the store: the verdict depends on store warmth (measured 2026-10-23,
+  session f7a9ef3b: four repos passed on a warm store and `nix-personal` failed the same way with
+  and without overrides). `nix eval` realises nothing but is not read-only, so source copies and
+  import from derivation both work and the verdict does not depend on the store. Passing nix's flag
+  through is therefore NOT the implementation, and the flag's help text says so.
+- **Sibling overrides.** The overrides are the SAME set `pn workspace build`, `apply` and
+  `flake-check` inject, computed once in pn from the effective workspace lock:
+  `--override-input <alias> git+file://<absolute sibling clone>` per workspace dependency (the repo is
+  not overridden by itself, and a sibling whose clone is missing is left out). They read the
+  sibling's WORKING TREE, not its committed HEAD (operator ruling, 2026-10-23), so a sibling's
+  uncommitted edits can fail the check. A repo whose locked siblings lag the local clones therefore
+  gets a true answer with no push, no relock and no `flake.lock` write. No land step may call
+  `pn workspace update`, `upgrade` or `lock` to make this pass.
+- **Selecting one repo.** A positional `<repo-or-path>` is a workspace repo key, or a path to the
+  repo or to one of its git worktrees (inside the repo or kept elsewhere). A key evaluates the
+  canonical clone; a path evaluates THAT directory, which is how the land step checks its worktree
+  against the canonical siblings. `--rev <rev>` evaluates that commit of the selected repo as the
+  pure ref `git+file://<abs dir>?rev=<sha>` (an unresolvable rev exits 2; a dirty tree and untracked
+  files are ignored). Selection options are an error (exit 2) without `--no-build`, so the
+  no-flag behavior is unchanged.
+- **Failure semantics.** A failure is a real problem to fix before landing. There is no
+  `inconclusive` class, no retry and no classifier: an environmental failure (store database busy,
+  fetch failure, timeout) fails the check like an evaluation error, a sibling's uncommitted edits can
+  fail it, and a pass proves evaluation only (nothing is built or tested, one system, and
+  `darwinConfigurations` is not evaluated). A failure that is not a flake defect is reported on the
+  bead, not classified away. `--no-ifd` adds `--option allow-import-from-derivation false`, so a
+  needed import from derivation then fails.
+- **Exit codes.** 0 every repo evaluated, 1 a repo failed, 2 a bad invocation (unknown repo, an
+  unresolvable `--rev`, an unknown `--caller`, no workspace).
+- **Experiment log.** The land step is an experiment (operator ruling, 2026-10-23; review bead
+  `pg2-z1r54`). Every `--no-build` run appends ONE JSON line per evaluated repo to
+  `${XDG_STATE_HOME:-$HOME/.local/state}/pn/flake-check-no-build.jsonl`:
+  `ts` (UTC, RFC 3339), `repo`, `caller` (`ff-1c` or `manual`), `duration_s`, `outcome` (`ok` or
+  `failed`), `nix_exit` (0, or the exit code of the first failing set), `failed_sets` (the sets that
+  failed), `first_error` (the first `error:` line of nix's stderr, at most 300 characters, empty on
+  success). An unwritable state directory prints a warning and does not fail the check.
+- **Tests.** Go unit tests with a scripted runner pin the argument plumbing; real-nix tests in
+  `modules/pn/cmd/pn/flake_check_no_build_realnix_test.go` pin the behavior against a real nix and
+  real git (nothing is built, a source copy at eval time passes on a cold store twice with the same
+  verdict, the sibling-drift fixture fails without overrides and passes with them, the log line
+  shape). They skip inside a nix builder, where no daemon exists.
 
 Deliberate gaps:
 
 - `darwinConfigurations` is NOT evaluated. `nix flake check` does not cover it either.
-- Checks that need IFD (for example `test-claude-hook-router`, `launchd-hm-darwin`, `pg-pr-zr-sandbox`)
-  are `eval-inconclusive` under `--no-ifd`, so a `--no-ifd` run can pass without having evaluated them.
+- Checks that need import from derivation are evaluated through it by default (the evaluation then
+  builds the small IFD derivations: fixed source copies and fetches). Evaluation is a store-write
+  operation: it writes `.drv` files and source copies to the store.
 - Only workspace siblings are overridden. A third-party input still resolves from the repo's
-  `flake.lock`, and a repo outside the workspace (or `--no-overrides`) is evaluated against its
-  locked inputs only.
-- `nix-ziprecruiter` is enabled in `pn-workspace.toml` through the sibling overrides: its locked
+  `flake.lock`, and a repo outside the workspace is not checkable (exit 2).
+- `nix-ziprecruiter` is enabled in `pn-workspace.toml` (its `preLandEval` hook): its locked
   siblings lag the local clones (`The option phillipgreenii.observability.dockerState does not
 exist` against the locked inputs), and with the overrides the check returns `ok`. `nix-overlay`
   is not enabled.

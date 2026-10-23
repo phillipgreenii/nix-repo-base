@@ -203,7 +203,8 @@ pn workspace lock                        Derive and write pn-workspace.lock.json
 pn workspace build                       Build the current host's system config
 pn workspace apply                       Activate (USER ONLY)
 pn workspace pre-commit-check            Run pre-commit checks across all repos
-pn workspace flake-check                 Run `nix flake check` across all repos
+pn workspace flake-check                 Run `nix flake check` across all repos (builds the checks)
+pn workspace flake-check --no-build [<repo-or-path>]  The land check: evaluate drvPaths with sibling overrides, build nothing, no relock
 pn workspace doctor                      Audit workspace against build-equality invariant; optionally repair safe drifts
 pn workspace update                      Relock flake locks across all repos, worktree-isolated by default; LOCAL-ONLY, never pushes (terminal required)
 pn workspace update --in-place           Same, but directly on primary main (old behavior; required inside a workforest set)
@@ -221,7 +222,6 @@ pn workspace push -u --remote <name>     Same, but override the remote for all r
 pn workspace status                      Per-repo working-tree summary
 pn workspace tree                        Print the workspace dependency DAG (terminal required)
 pn workspace nix -- <nix args>           Run nix with --override-input flags injected
-pn workspace overrides <repo-or-path>    Print that repo's --override-input arguments (one per line; read-only); what pre-land-eval consumes
 pn workspace discover                    List workspace repos and their paths
 pn workspace workforest add <branch>              Create a coordinated workforest set on <branch> (all repos)
 pn workspace workforest add <branch> <sha>        Same, starting from <commit-ish>

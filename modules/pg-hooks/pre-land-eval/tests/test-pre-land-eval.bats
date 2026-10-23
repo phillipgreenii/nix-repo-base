@@ -3,16 +3,21 @@
 
 bats_require_minimum_version 1.5.0
 
-# pre-land-eval contract tests (bead pg2-d2yka; design pg2-3i12x section 9).
+# pre-land-eval contract tests (beads pg2-d2yka and pg2-8uc2d; design pg2-3i12x
+# section 9).
 #
-# A mkBashScript check sandbox has no nix daemon, so every test puts a `nix` SHIM
-# first on PATH. The shim records its argv, its working directory and the
-# environment it was run with, and replays stderr, stdout and an exit code per
-# attribute set (checks, packages, devShells) from files in $SHIM_DIR. The repo
-# under test is a REAL hermetic git fixture (git-fixture-harness), so the
-# enablement key, ref resolution, the dirty-tree and the linked-worktree
-# behaviour run against real git. PATH holds only the shims and symlinks to the
-# few tools the script needs, so a pg-nix-log-wrapped on the host cannot leak in.
+# pre-land-eval is a thin caller of `pn workspace flake-check --no-build`: the
+# drvPath evaluation, the sibling overrides and the experiment log live in pn and
+# are pinned by the Go tests there (including a real-nix test of this command line
+# against a real pn). What this file pins is the caller's own contract: the
+# per-clone opt-in key, the exact pn invocation, the one-word verdict with its
+# 0/10/2/127 exit codes, and that it carries no evaluation logic of its own.
+#
+# Every test puts a `pn` SHIM first on PATH. The shim records its argv and working
+# directory and replays stdout, stderr and an exit code from files in $SHIM_DIR.
+# The repo under test is a REAL hermetic git fixture (git-fixture-harness), so
+# the enablement key and the linked-worktree behaviour run against real git.
+# PATH holds only the shim and symlinks to the few tools the script needs.
 
 # shellcheck disable=SC2034  # PLE_* are read by the tests below
 setup() {
@@ -31,57 +36,36 @@ setup() {
 
   # The only real tools the script (and the shell wrapper around it) needs.
   local t p
-  for t in bash sh git grep sed head tail wc tr mktemp rm cat dirname basename pwd env mkdir uname; do
+  for t in bash sh git grep sed head tail wc tr mktemp rm cat dirname basename pwd env mkdir; do
     p="$(command -v "$t" 2>/dev/null || true)"
     [[ -n $p && -x $p ]] && ln -s "$p" "$MIN_BIN/$t"
   done
 
-  # nix shim: record, then replay by attribute set.
-  cat >"$SHIM_BIN/nix" <<SHIM
+  # pn shim: record, then replay stdout, stderr and the exit code.
+  cat >"$SHIM_BIN/pn" <<SHIM
 #!/bin/sh
-printf '%s\n' "\$*" >>"$SHIM_DIR/argv"
-pwd >>"$SHIM_DIR/cwd"
-attr=""
-for a in "\$@"; do
-  case \$a in *'#'*) attr=\$a ;; esac
-done
-set=\${attr#*#}
-set=\${set%%.*}
-[ -f "$SHIM_DIR/\$set.err" ] && cat "$SHIM_DIR/\$set.err" >&2
-if [ -f "$SHIM_DIR/\$set.out" ]; then
-  cat "$SHIM_DIR/\$set.out"
-else
-  printf '{"a":"/nix/store/aaaaaaaa-a.drv","b":"/nix/store/bbbbbbbb-b.drv"}\n'
-fi
-if [ -f "$SHIM_DIR/\$set.rc" ]; then exit "\$(cat "$SHIM_DIR/\$set.rc")"; fi
+for a in "\$@"; do printf '%s\n' "\$a"; done >>"$SHIM_DIR/argv"
+printf -- '--\n' >>"$SHIM_DIR/argv"
+pwd -P >>"$SHIM_DIR/cwd"
+env | grep -E '^GIT_(DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=' >>"$SHIM_DIR/git-env" || true
+[ -f "$SHIM_DIR/pn.out" ] && cat "$SHIM_DIR/pn.out"
+[ -f "$SHIM_DIR/pn.err" ] && cat "$SHIM_DIR/pn.err" >&2
+if [ -f "$SHIM_DIR/pn.rc" ]; then exit "\$(cat "$SHIM_DIR/pn.rc")"; fi
 exit 0
 SHIM
-  chmod +x "$SHIM_BIN/nix"
-
-  # uname shim: Darwin arm64 unless a test writes $SHIM_DIR/uname-s / uname-m.
-  cat >"$SHIM_BIN/uname" <<SHIM
-#!/bin/sh
-s=Darwin; m=arm64
-[ -f "$SHIM_DIR/uname-s" ] && s=\$(cat "$SHIM_DIR/uname-s")
-[ -f "$SHIM_DIR/uname-m" ] && m=\$(cat "$SHIM_DIR/uname-m")
-case "\$1" in
--s) echo "\$s" ;;
--m) echo "\$m" ;;
-*) echo "\$s \$m" ;;
-esac
-SHIM
-  chmod +x "$SHIM_BIN/uname"
-
+  chmod +x "$SHIM_BIN/pn"
 
   if [[ -n $PLE_SAVED_SUT ]]; then
     SUT="$PLE_SAVED_SUT"
+    SRC="${BATS_TEST_DIRNAME}/../pre-land-eval.sh"
   else
     # Raw source: the script has no library, so the builder's preamble is all it
     # is missing.
+    SRC="${BATS_TEST_DIRNAME}/../pre-land-eval.sh"
     SUT="$GFH_ROOT/pre-land-eval"
     {
       printf '#!/usr/bin/env bash\nset -euo pipefail\n'
-      cat "${BATS_TEST_DIRNAME}/../pre-land-eval.sh"
+      cat "$SRC"
     } >"$SUT"
     chmod +x "$SUT"
   fi
@@ -91,8 +75,8 @@ teardown() {
   gfh_teardown
 }
 
-# sut <args>: run the tool with a PATH of only the shims and the few real tools it
-# needs, so a pg-nix-log-wrapped on the host never leaks in.
+# sut <args>: run the tool with a PATH of only the shim and the few real tools it
+# needs.
 sut() {
   env PATH="$SHIM_BIN:$MIN_BIN" "$SUT" "$@"
 }
@@ -102,43 +86,15 @@ _enable() {
   command git -C "${1:-$REPO}" config pgii-integrate-branch.preLandEval true
 }
 
-_head() {
-  command git -C "$REPO" rev-parse HEAD
+# _pn_rc <rc>: make the pn shim exit with <rc>.
+_pn_rc() {
+  printf '%s\n' "$1" >"$SHIM_DIR/pn.rc"
 }
-
-# _fail <set> <rc> <stderr text>: make the shim fail for one attribute set.
-_fail() {
-  printf '%s\n' "$3" >"$SHIM_DIR/$1.err"
-  printf '%s\n' "$2" >"$SHIM_DIR/$1.rc"
-}
-
-# Captured stderr texts (nix 2.34 shapes).
-ERR_NO_OPTION="error:
-       … while evaluating the option \`system.build.toplevel':
-
-       … while evaluating the module system
-
-       error: The option \`phillipgreenii.observability.dockerState' does not exist. Definition values:
-       - In \`/nix/store/aaaa-source/modules/zm/default.nix':"
-
-ERR_IFD="error:
-       … while evaluating the attribute 'test-claude-hook-router'
-
-       error: cannot build '/nix/store/bbbb-claude-hook-router-marketplace-src.drv^out' during evaluation because the option 'allow-import-from-derivation' is disabled"
-
-ERR_THROW="error:
-       … while evaluating attribute 'bad'
-
-       … while calling the 'throw' builtin
-
-       error: boom"
-
-ERR_ABSENT="error: flake 'git+file:///tmp/x?rev=abc' does not provide attribute 'packages.aarch64-darwin.devShells.aarch64-darwin', 'legacyPackages.aarch64-darwin.devShells.aarch64-darwin' or 'devShells.aarch64-darwin'"
 
 # ---------------------------------------------------------------------------
 # Enablement
 
-@test "an absent key prints not-enabled, exits 0 and never runs nix" {
+@test "an absent key prints not-enabled, exits 0 and never runs pn" {
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
   [ "$output" = "not-enabled" ]
@@ -178,8 +134,15 @@ ERR_ABSENT="error: flake 'git+file:///tmp/x?rev=abc' does not provide attribute 
   [ "$output" = "not-enabled" ]
 }
 
+@test "not-enabled does not need pn to be installed" {
+  rm "$SHIM_BIN/pn"
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  [ "$output" = "not-enabled" ]
+}
+
 # ---------------------------------------------------------------------------
-# Usage and ref resolution
+# Usage
 
 @test "no arguments is a usage error" {
   run --separate-stderr sut
@@ -207,6 +170,14 @@ ERR_ABSENT="error: flake 'git+file:///tmp/x?rev=abc' does not provide attribute 
   [[ $stderr == *"unknown option: --bogus"* ]]
 }
 
+@test "--no-overrides is gone: the overrides are pn's, not the caller's" {
+  _enable
+  run --separate-stderr sut --no-overrides "$REPO" HEAD
+  [ "$status" -eq 2 ]
+  [[ $stderr == *"unknown option: --no-overrides"* ]]
+  [ ! -e "$SHIM_DIR/argv" ]
+}
+
 @test "a repo path that is not a directory is a usage error" {
   run --separate-stderr sut "$GFH_WORK/nowhere" HEAD
   [ "$status" -eq 2 ]
@@ -214,116 +185,79 @@ ERR_ABSENT="error: flake 'git+file:///tmp/x?rev=abc' does not provide attribute 
   [[ $stderr == *"not a directory"* ]]
 }
 
-@test "a ref that does not resolve is a usage error (enabled repo)" {
-  _enable
-  run --separate-stderr sut "$REPO" no-such-ref
-  [ "$status" -eq 2 ]
-  [ -z "$output" ]
-  [[ $stderr == *"ref does not resolve"* ]]
-  [ ! -e "$SHIM_DIR/argv" ]
-}
-
-@test "--help is answered locally with exit 0" {
+@test "--help is answered locally with exit 0, names the pn command, and runs nothing" {
   run --separate-stderr sut --help
   [ "$status" -eq 0 ]
   [[ $output == "pre-land-eval:"* ]]
+  [[ $output == *"pn workspace flake-check --no-build --caller ff-1c"* ]]
   [ ! -e "$SHIM_DIR/argv" ]
 }
 
-@test "a branch name, a full sha, a short sha and HEAD each evaluate the commit they name" {
+# ---------------------------------------------------------------------------
+# The pn invocation
+
+@test "it runs pn workspace flake-check --no-build as the ff-1c caller, with the ref and the absolute repo path" {
   _enable
-  local first second
-  first="$(_head)"
-  command git -C "$REPO" checkout -q -b feature
-  printf 'two\n' >"$REPO/two.txt"
-  command git -C "$REPO" add two.txt
-  command git -C "$REPO" commit -q -m two
-  second="$(_head)"
-  command git -C "$REPO" checkout -q main
-
-  run --separate-stderr sut "$REPO" feature
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  grep -q "?rev=$second#checks\." "$SHIM_DIR/argv"
-  run ! grep -q "?rev=$first" "$SHIM_DIR/argv"
-
-  rm -f "$SHIM_DIR/argv"
-  run --separate-stderr sut "$REPO" "$first"
-  [ "$output" = "ok" ]
-  grep -q "?rev=$first#checks\." "$SHIM_DIR/argv"
-
-  rm -f "$SHIM_DIR/argv"
-  run --separate-stderr sut "$REPO" "${first:0:9}"
-  [ "$output" = "ok" ]
-  grep -q "?rev=$first#checks\." "$SHIM_DIR/argv"
-
-  rm -f "$SHIM_DIR/argv"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$output" = "ok" ]
-  grep -q "?rev=$first#checks\." "$SHIM_DIR/argv"
-}
-
-@test "an annotated tag resolves to its commit" {
-  _enable
-  local sha
-  sha="$(_head)"
-  command git -C "$REPO" tag -a v1 -m v1
-  run --separate-stderr sut "$REPO" v1
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  grep -q "?rev=$sha#checks\." "$SHIM_DIR/argv"
-}
-
-@test "a dirty tree and untracked files are ignored: only the commit is evaluated" {
-  _enable
-  local sha
-  sha="$(_head)"
-  printf 'changed\n' >"$REPO/file.txt"
-  printf 'new\n' >"$REPO/untracked.txt"
-  local before
-  before="$(command git -C "$REPO" status --porcelain)"
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
-  grep -q "git+file://$(cd "$REPO" && pwd -P)?rev=$sha#" "$SHIM_DIR/argv"
-  # The tool never changes the tree it reads.
-  [ "$(command git -C "$REPO" status --porcelain)" = "$before" ]
-  [ "$(cat "$REPO/file.txt")" = "changed" ]
+  local want
+  want="$(printf '%s\n' workspace flake-check --no-build --caller ff-1c --rev HEAD "$(cd "$REPO" && pwd -P)" --)"
+  [ "$(cat "$SHIM_DIR/argv")" = "$want" ]
 }
 
-@test "nix is never run from inside the repo" {
+@test "pn runs from inside the repo, so it walks up to the workspace root" {
   _enable
   cd "$GFH_WORK"
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
-  run ! grep -q "$(cd "$REPO" && pwd -P)" "$SHIM_DIR/cwd"
+  [ "$(cat "$SHIM_DIR/cwd")" = "$(cd "$REPO" && pwd -P)" ]
 }
 
-@test "a linked worktree evaluates its own path and reads the shared enablement key" {
+@test "--no-ifd is forwarded to pn, before or after the positional arguments" {
+  _enable
+  run --separate-stderr sut --no-ifd "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  grep -qx -- '--no-ifd' "$SHIM_DIR/argv"
+  rm -f "$SHIM_DIR/argv"
+  run --separate-stderr sut "$REPO" HEAD --no-ifd
+  [ "$status" -eq 0 ]
+  grep -qx -- '--no-ifd' "$SHIM_DIR/argv"
+}
+
+@test "without --no-ifd, pn is not told about IFD" {
+  _enable
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 0 ]
+  run ! grep -q -- 'ifd' "$SHIM_DIR/argv"
+}
+
+@test "the ref is passed to pn verbatim: pn resolves it, not this tool" {
+  _enable
+  run --separate-stderr sut "$REPO" "refs/heads/main~0"
+  [ "$status" -eq 0 ]
+  grep -qx -- 'refs/heads/main~0' "$SHIM_DIR/argv"
+}
+
+@test "a linked worktree is passed to pn by its own path and reads the shared enablement key" {
   _enable
   command git -C "$REPO" worktree add -q -b wtbranch "$GFH_WORK/wt"
-  printf 'wt\n' >"$GFH_WORK/wt/wt.txt"
-  command git -C "$GFH_WORK/wt" add wt.txt
-  command git -C "$GFH_WORK/wt" commit -q -m wt
-  local sha
-  sha="$(command git -C "$GFH_WORK/wt" rev-parse HEAD)"
   run --separate-stderr sut "$GFH_WORK/wt" HEAD
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
-  grep -q "git+file://$(cd "$GFH_WORK/wt" && pwd -P)?rev=$sha#" "$SHIM_DIR/argv"
+  grep -qx -- "$(cd "$GFH_WORK/wt" && pwd -P)" "$SHIM_DIR/argv"
+  [ "$(cat "$SHIM_DIR/cwd")" = "$(cd "$GFH_WORK/wt" && pwd -P)" ]
 }
 
-@test "a leaked GIT_DIR does not redirect the tool to another repository" {
+@test "a leaked GIT_DIR does not redirect the tool or reach pn" {
   _enable
-  local sha
-  sha="$(_head)"
   GIT_DIR="$GFH_WORK/not-a-repo" run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
-  grep -q "?rev=$sha#" "$SHIM_DIR/argv"
+  [ ! -s "$SHIM_DIR/git-env" ]
 }
 
-@test "a repo path with a space and a hash is URL-encoded in the flake ref" {
+@test "a repo path with a space and a hash reaches pn as one argument" {
   mkdir -p "$GFH_WORK/odd dir#1"
   gfh_init_repo "$GFH_WORK/odd dir#1/r" test-pre-land-eval
   printf 'x\n' >"$GFH_WORK/odd dir#1/r/f"
@@ -332,469 +266,88 @@ ERR_ABSENT="error: flake 'git+file:///tmp/x?rev=abc' does not provide attribute 
   _enable "$GFH_WORK/odd dir#1/r"
   run --separate-stderr sut "$GFH_WORK/odd dir#1/r" HEAD
   [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  grep -q 'odd%20dir%231/r?rev=' "$SHIM_DIR/argv"
+  grep -qxF -- "$(cd "$GFH_WORK/odd dir#1/r" && pwd -P)" "$SHIM_DIR/argv"
 }
 
 # ---------------------------------------------------------------------------
-# What is evaluated
+# The verdict
 
-@test "checks, packages and devShells are each evaluated once for the system from uname" {
+@test "pn exit 0 prints exactly ok, and pn's own stdout goes to stderr" {
   _enable
+  printf 'pn says hello\n' >"$SHIM_DIR/pn.out"
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
-  [ "$(wc -l <"$SHIM_DIR/argv" | tr -d ' ')" = "3" ]
-  grep -q '#checks\.aarch64-darwin ' "$SHIM_DIR/argv"
-  grep -q '#packages\.aarch64-darwin ' "$SHIM_DIR/argv"
-  grep -q '#devShells\.aarch64-darwin ' "$SHIM_DIR/argv"
+  [[ $stderr == *"pn says hello"* ]]
 }
 
-@test "every nix call uses eval, --json, --no-write-lock-file and the drvPath apply expression" {
+@test "pn exit 1 (a failed check) is eval-failed, exit 10, with pn's output on stderr" {
   _enable
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  local line
-  while IFS= read -r line; do
-    [[ $line == *"eval "* ]]
-    [[ $line == *"--json"* ]]
-    [[ $line == *"--no-write-lock-file"* ]]
-    [[ $line == *"--apply set: builtins.mapAttrs (n: v: v.drvPath or null) set"* ]]
-    [[ $line != *"flake check"* ]]
-  done <"$SHIM_DIR/argv"
-}
-
-@test "IFD is allowed by default: no allow-import-from-derivation option is passed" {
-  _enable
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  run ! grep -q 'allow-import-from-derivation' "$SHIM_DIR/argv"
-}
-
-@test "--no-ifd passes allow-import-from-derivation false to every call" {
-  _enable
-  run --separate-stderr sut --no-ifd "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [ "$(grep -c -- '--option allow-import-from-derivation false' "$SHIM_DIR/argv")" = "3" ]
-}
-
-@test "--no-ifd is accepted after the positional arguments too" {
-  _enable
-  run --separate-stderr sut "$REPO" HEAD --no-ifd
-  [ "$status" -eq 0 ]
-  grep -q -- '--option allow-import-from-derivation false' "$SHIM_DIR/argv"
-}
-
-@test "x86_64 Linux derives x86_64-linux" {
-  _enable
-  printf 'Linux\n' >"$SHIM_DIR/uname-s"
-  printf 'x86_64\n' >"$SHIM_DIR/uname-m"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  grep -q '#checks\.x86_64-linux ' "$SHIM_DIR/argv"
-}
-
-@test "aarch64 Linux derives aarch64-linux" {
-  _enable
-  printf 'Linux\n' >"$SHIM_DIR/uname-s"
-  printf 'aarch64\n' >"$SHIM_DIR/uname-m"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  grep -q '#checks\.aarch64-linux ' "$SHIM_DIR/argv"
-}
-
-@test "a system it cannot name is eval-inconclusive and runs nothing" {
-  _enable
-  printf 'Plan9\n' >"$SHIM_DIR/uname-s"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 11 ]
-  [ "$output" = "eval-inconclusive" ]
-  [ ! -e "$SHIM_DIR/argv" ]
-}
-
-@test "the nix flake features are enabled on the command line" {
-  _enable
-  run --separate-stderr sut "$REPO" HEAD
-  grep -q -- "--extra-experimental-features nix-command flakes" "$SHIM_DIR/argv"
-}
-
-@test "stderr carries a reproduce command and timings" {
-  _enable
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [[ $stderr == *"reproduce: nix eval"* ]]
-  [[ $stderr == *"checks.aarch64-darwin: ok, 2 derivations evaluated ("*"s)"* ]]
-  [[ $stderr == *"total "*"s evaluating aarch64-darwin at "* ]]
-}
-
-# ---------------------------------------------------------------------------
-# Classification
-
-@test "success prints exactly ok" {
-  _enable
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [ "${#lines[@]}" -eq 1 ]
-}
-
-@test "an option that does not exist is eval-failed, exit 10, with nix's error on stderr" {
-  _enable
-  _fail checks 1 "$ERR_NO_OPTION"
+  _pn_rc 1
+  printf '  checks.aarch64-darwin: FAILED\n' >"$SHIM_DIR/pn.out"
+  printf 'error: The option `x.dockerState'"'"' does not exist.\n' >"$SHIM_DIR/pn.err"
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 10 ]
   [ "$output" = "eval-failed" ]
-  [[ $stderr == *"phillipgreenii.observability.dockerState"* ]]
-  [[ $stderr == *"eval failed in: checks"* ]]
+  [[ $stderr == *"checks.aarch64-darwin: FAILED"* ]]
+  [[ $stderr == *"dockerState"* ]]
 }
 
-@test "a throw in any set is eval-failed" {
+@test "pn exit 2 (unknown repo, unresolvable ref) is a usage error, exit 2, with no verdict word" {
   _enable
-  local set
-  for set in checks packages devShells; do
-    rm -f "$SHIM_DIR"/*.err "$SHIM_DIR"/*.rc
-    _fail "$set" 1 "$ERR_THROW"
-    run --separate-stderr sut "$REPO" HEAD
-    [ "$status" -eq 10 ]
-    [ "$output" = "eval-failed" ]
-  done
-}
-
-@test "all three sets are still evaluated after the first fails" {
-  _enable
-  _fail checks 1 "$ERR_THROW"
+  _pn_rc 2
+  printf 'ref does not resolve to a commit in /x: nope\n' >"$SHIM_DIR/pn.err"
   run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$(wc -l <"$SHIM_DIR/argv" | tr -d ' ')" = "3" ]
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ $stderr == *"ref does not resolve"* ]]
 }
 
-@test "the first lines of a long error are shown, not the whole of it" {
-  _enable
-  local big="error:"
-  local i
-  for i in $(seq 1 40); do big="$big
-       line $i of a long trace"; done
-  big="$big
-       error: the final message"
-  _fail checks 1 "$big"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [[ $stderr == *"line 1 of a long trace"* ]]
-  [[ $stderr != *"line 40 of a long trace"* ]]
-  # ... but the final message is repeated after the head.
-  [[ $stderr == *"the final error message(s):"*"error: the final message"* ]]
-}
-
-@test "a non-zero nix exit with no recognisable error is eval-failed" {
-  _enable
-  _fail packages 137 "Killed: 9"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
-}
-
-@test "a non-zero nix exit with empty stderr is eval-failed" {
-  _enable
-  printf '3\n' >"$SHIM_DIR/devShells.rc"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
-}
-
-@test "an IFD error without --no-ifd is a real failure: IFD is allowed, so it should not have happened" {
-  _enable
-  _fail checks 1 "$ERR_IFD"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
-}
-
-@test "--no-ifd classifies an IFD-only error as eval-inconclusive, exit 11" {
-  _enable
-  _fail checks 1 "$ERR_IFD"
-  run --separate-stderr sut --no-ifd "$REPO" HEAD
-  [ "$status" -eq 11 ]
-  [ "$output" = "eval-inconclusive" ]
-  [[ $stderr == *"allow-import-from-derivation"* ]]
-  [[ $stderr == *"inconclusive"* ]]
-}
-
-@test "--no-ifd with a genuine error alongside the IFD error in one stderr is eval-failed" {
-  _enable
-  _fail checks 1 "$ERR_IFD
-$ERR_NO_OPTION"
-  run --separate-stderr sut --no-ifd "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
-}
-
-@test "--no-ifd with an IFD error in one set and a genuine error in another is eval-failed" {
-  _enable
-  _fail checks 1 "$ERR_IFD"
-  _fail packages 1 "$ERR_THROW"
-  run --separate-stderr sut --no-ifd "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
-}
-
-@test "--no-ifd with IFD errors in several sets and nothing else is eval-inconclusive" {
-  _enable
-  _fail checks 1 "$ERR_IFD"
-  _fail packages 1 "$ERR_IFD"
-  run --separate-stderr sut --no-ifd "$REPO" HEAD
-  [ "$status" -eq 11 ]
-  [ "$output" = "eval-inconclusive" ]
-}
-
-@test "--no-ifd does not turn a genuine error into inconclusive" {
-  _enable
-  _fail checks 1 "$ERR_NO_OPTION"
-  run --separate-stderr sut --no-ifd "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
-}
-
-@test "a set the flake does not provide is tolerated" {
-  _enable
-  _fail devShells 1 "$ERR_ABSENT"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [[ $stderr == *"devShells.aarch64-darwin: not provided by the flake, skipped"* ]]
-}
-
-@test "a flake that provides none of the three sets is ok, and says nothing was evaluated" {
-  _enable
-  _fail checks 1 "$ERR_ABSENT"
-  _fail packages 1 "$ERR_ABSENT"
-  _fail devShells 1 "$ERR_ABSENT"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [[ $stderr == *"nothing was evaluated"* ]]
-}
-
-@test "a missing set next to a genuine failure is still eval-failed" {
-  _enable
-  _fail devShells 1 "$ERR_ABSENT"
-  _fail checks 1 "$ERR_THROW"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
-}
-
-@test "a does-not-provide-attribute message from inside a larger error is NOT tolerated" {
-  _enable
-  _fail checks 1 "error:
-       … while evaluating attribute 'x'
-
-       error: attribute 'foo' missing
-       error: flake 'git+file:///x' does not provide attribute 'bar'"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
-}
-
-@test "exactly one word reaches stdout on every outcome" {
-  _enable
-  local out
-  out="$(sut "$REPO" HEAD 2>/dev/null)"
-  [ "$out" = "ok" ]
-  _fail checks 1 "$ERR_THROW"
-  out="$(sut "$REPO" HEAD 2>/dev/null || true)"
-  [ "$out" = "eval-failed" ]
-  rm -f "$SHIM_DIR"/*.err "$SHIM_DIR"/*.rc
-  _fail checks 1 "$ERR_IFD"
-  out="$(sut --no-ifd "$REPO" HEAD 2>/dev/null || true)"
-  [ "$out" = "eval-inconclusive" ]
-}
-
-@test "any non-zero nix exit code maps to eval-failed, exit 10, never to the raw code" {
+@test "any other pn exit status means the check could not run: exit 2, no verdict word" {
   _enable
   local rc
-  for rc in 1 2 3 4 100 137; do
-    rm -f "$SHIM_DIR"/*.err "$SHIM_DIR"/*.rc
-    printf '%s\n' "$rc" >"$SHIM_DIR/checks.rc"
+  for rc in 3 127 130 143; do
+    _pn_rc "$rc"
     run --separate-stderr sut "$REPO" HEAD
-    [ "$status" -eq 10 ]
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ $stderr == *"exited $rc"* ]]
   done
 }
 
-# ---------------------------------------------------------------------------
-# pg-nix-log-wrapped
-
-@test "nix runs through pg-nix-log-wrapped when it is on PATH" {
+@test "there is no retry: pn runs exactly once, even on failure" {
   _enable
-  cat >"$SHIM_BIN/pg-nix-log-wrapped" <<SHIM
-#!/bin/sh
-printf '%s\n' "\$*" >>"$SHIM_DIR/wrapper-argv"
-exec "\$@"
-SHIM
-  chmod +x "$SHIM_BIN/pg-nix-log-wrapped"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [ "$(wc -l <"$SHIM_DIR/wrapper-argv" | tr -d ' ')" = "3" ]
-  [[ $(head -n 1 "$SHIM_DIR/wrapper-argv") == "nix "* ]]
-  [[ $stderr != *"running nix directly"* ]]
-  [[ $stderr == *"reproduce: pg-nix-log-wrapped nix eval"* ]]
-}
-
-@test "nix runs directly, with one stderr note, when pg-nix-log-wrapped is absent" {
-  _enable
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [ "$(printf '%s\n' "$stderr" | grep -c 'running nix directly')" = "1" ]
-  [ "$(wc -l <"$SHIM_DIR/argv" | tr -d ' ')" = "3" ]
-}
-
-@test "the wrapper's own failure exit is classified like nix's" {
-  _enable
-  cat >"$SHIM_BIN/pg-nix-log-wrapped" <<SHIM
-#!/bin/sh
-exec "\$@"
-SHIM
-  chmod +x "$SHIM_BIN/pg-nix-log-wrapped"
-  _fail checks 1 "$ERR_THROW"
+  _pn_rc 1
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
+  [ "$(grep -c '^workspace$' "$SHIM_DIR/argv")" -eq 1 ]
+}
+
+@test "there is no inconclusive outcome: no verdict word but ok, eval-failed or not-enabled is ever printed" {
+  _enable
+  local rc
+  for rc in 0 1 2 3 130; do
+    _pn_rc "$rc"
+    run --separate-stderr sut "$REPO" HEAD
+    case "$output" in ok | eval-failed | "") ;; *) false ;; esac
+  done
+}
+
+@test "pn not installed is exit 127 with the apply notice, and no verdict word" {
+  _enable
+  rm "$SHIM_BIN/pn"
+  run -127 --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 127 ]
+  [ -z "$output" ]
+  [[ $stderr == *"pn not installed on this machine; ask the operator to run pn workspace apply"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# Sibling overrides from `pn workspace overrides` (bead pg2-8uc2d)
-#
-# These tests prove the PLUMBING with a pn shim: that the tool asks pn, appends
-# exactly what pn printed, derives nothing itself, and degrades to the locked
-# inputs with one note. That the override set really changes what nix evaluates
-# is proved against real nix and the real pn binary in
-# modules/pn/cmd/pn/pre_land_eval_realnix_test.go.
+# No evaluation logic of its own (bead pg2-8uc2d: ONE override derivation, in pn)
 
-# _pn_shim: put a pn shim on PATH. It records its argv and working directory and
-# prints $SHIM_DIR/pn.out (default: one sibling override), exiting $SHIM_DIR/pn.rc.
-_pn_shim() {
-  cat >"$SHIM_BIN/pn" <<SHIM
-#!/bin/sh
-printf '%s\n' "\$*" >>"$SHIM_DIR/pn-argv"
-pwd -P >>"$SHIM_DIR/pn-cwd"
-[ -f "$SHIM_DIR/pn.err" ] && cat "$SHIM_DIR/pn.err" >&2
-if [ -f "$SHIM_DIR/pn.out" ]; then
-  cat "$SHIM_DIR/pn.out"
-else
-  printf '%s\n' --override-input base git+file:///ws/nix-repo-base
-fi
-if [ -f "$SHIM_DIR/pn.rc" ]; then exit "\$(cat "$SHIM_DIR/pn.rc")"; fi
-exit 0
-SHIM
-  chmod +x "$SHIM_BIN/pn"
-}
-
-@test "overrides: the arguments pn prints are passed to every nix call, in order" {
-  _enable
-  _pn_shim
-  printf '%s\n' --override-input base git+file:///ws/base --override-input extra git+file:///ws/extra >"$SHIM_DIR/pn.out"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [ "$(wc -l <"$SHIM_DIR/argv" | tr -d ' ')" = "3" ]
-  [ "$(grep -c -- '--override-input base git+file:///ws/base --override-input extra git+file:///ws/extra' "$SHIM_DIR/argv")" = "3" ]
-  [[ $stderr == *"pinned 2 workspace sibling input(s)"* ]]
-  [[ $stderr == *"reproduce: nix eval"*"--override-input base git+file:///ws/base"* ]]
-}
-
-@test "overrides: nothing but pn's output is added, and --no-write-lock-file stays" {
-  _enable
-  _pn_shim
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  local line
-  while IFS= read -r line; do
-    [[ $line == *"--no-write-lock-file"* ]]
-    [ "$(printf '%s\n' "$line" | grep -o -- '--override-input' | wc -l | tr -d ' ')" = "1" ]
-    [[ $line == *"--override-input base git+file:///ws/nix-repo-base"* ]]
-  done <"$SHIM_DIR/argv"
-}
-
-@test "overrides: pn is asked for the repo's absolute path, from inside the repo" {
-  _enable
-  _pn_shim
-  cd "$GFH_WORK"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$(cat "$SHIM_DIR/pn-argv")" = "workspace overrides $(cd "$REPO" && pwd -P)" ]
-  [ "$(cat "$SHIM_DIR/pn-cwd")" = "$(cd "$REPO" && pwd -P)" ]
-  [ "$(wc -l <"$SHIM_DIR/pn-argv" | tr -d ' ')" = "1" ]
-}
-
-@test "overrides: a linked worktree is passed to pn by its own path" {
-  _enable
-  _pn_shim
-  command git -C "$REPO" worktree add -q -b wtbranch "$GFH_WORK/wt"
-  run --separate-stderr sut "$GFH_WORK/wt" HEAD
-  [ "$status" -eq 0 ]
-  [ "$(cat "$SHIM_DIR/pn-argv")" = "workspace overrides $(cd "$GFH_WORK/wt" && pwd -P)" ]
-}
-
-@test "overrides: a repo with no siblings (pn prints nothing) evaluates as before" {
-  _enable
-  _pn_shim
-  : >"$SHIM_DIR/pn.out"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  run ! grep -q -- '--override-input' "$SHIM_DIR/argv"
-  [[ $stderr == *"pinned 0 workspace sibling input(s)"* ]]
-}
-
-@test "overrides: pn failing (not a workspace member) falls back to the locked inputs with one note" {
-  _enable
-  _pn_shim
-  printf '%s\n' 'not a workspace repo of /ws' >"$SHIM_DIR/pn.err"
-  printf '2\n' >"$SHIM_DIR/pn.rc"
-  printf '%s\n' --override-input leaked git+file:///x >"$SHIM_DIR/pn.out"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [ "$(printf '%s\n' "$stderr" | grep -c 'pn workspace overrides failed')" = "1" ]
-  [[ $stderr == *"not a workspace repo of /ws"* ]]
-  [ "$(wc -l <"$SHIM_DIR/argv" | tr -d ' ')" = "3" ]
-  run ! grep -q -- '--override-input' "$SHIM_DIR/argv"
-}
-
-@test "overrides: pn absent from PATH falls back to the locked inputs with one note" {
-  _enable
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [ "$(printf '%s\n' "$stderr" | grep -c 'pn is not on PATH')" = "1" ]
-  run ! grep -q -- '--override-input' "$SHIM_DIR/argv"
-}
-
-@test "overrides: --no-overrides never runs pn and evaluates the locked inputs" {
-  _enable
-  _pn_shim
-  run --separate-stderr sut --no-overrides "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "ok" ]
-  [ ! -e "$SHIM_DIR/pn-argv" ]
-  run ! grep -q -- '--override-input' "$SHIM_DIR/argv"
-  [[ $stderr == *"--no-overrides"* ]]
-}
-
-@test "overrides: a not-enabled repo never runs pn" {
-  _pn_shim
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$output" = "not-enabled" ]
-  [ ! -e "$SHIM_DIR/pn-argv" ]
-}
-
-@test "overrides: an eval failure with overrides is still eval-failed, exit 10" {
-  _enable
-  _pn_shim
-  _fail checks 1 "$ERR_NO_OPTION"
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
-  [ "$output" = "eval-failed" ]
+@test "the script runs no nix and derives no override or drvPath of its own" {
+  # Comments explain what pn does; only executable lines count.
+  local code
+  code="$(grep -v '^[[:space:]]*#' "$SRC" | sed -e '/^show_help()/,/^HELP$/d')"
+  run ! grep -E 'nix|override|drvPath|--apply|uname|pg-nix-log-wrapped|mapAttrs' <<<"$code"
 }

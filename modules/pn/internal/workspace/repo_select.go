@@ -13,32 +13,6 @@ import (
 // configured workspace repo, so a caller can tell "not a member" from a failure.
 var ErrNotWorkspaceRepo = errors.New("not a workspace repo")
 
-// RepoOverrides returns the `--override-input <alias> git+file://<abs sibling>`
-// arguments pn would inject for ONE workspace repo, as one argument per element,
-// plus the repo key they were computed for. It is the entry point behind
-// `pn workspace overrides`: a caller that runs its own nix command against a repo
-// (pre-land-eval, an ad-hoc `nix eval`) consumes the SAME override set that
-// `build`, `apply` and `flake-check` use, instead of re-deriving it.
-//
-// repoArg names the repo either by its workspace key or by a path (see
-// resolveRepoKey). The set is computed against the effective lock (the disk lock
-// when it covers the configured repos, otherwise one derived in memory), exactly
-// like the hook fan-out, so it is non-empty even before `pn workspace lock` ran.
-// The repo is excluded from its own set. A sibling whose clone is missing yields
-// no override, as for flake-check. Nothing is written: no flake.lock, no
-// pn-workspace.lock.json, no applied state.
-func (ws *Workspace) RepoOverrides(ctx context.Context, repoArg string) (key string, args []string, err error) {
-	key, err = ws.resolveRepoKey(ctx, repoArg)
-	if err != nil {
-		return "", nil, err
-	}
-	lk, _, err := ws.effectiveLock(ctx)
-	if err != nil {
-		return "", nil, fmt.Errorf("compute the workspace lock: %w", err)
-	}
-	return key, ws.overrideInputArgsForLock(lk, key, overrideOpts{ExcludeRepo: key}), nil
-}
-
 // resolveRepoKey maps repoArg to a configured repo key. In order:
 //
 //  1. repoArg is itself a repo key.

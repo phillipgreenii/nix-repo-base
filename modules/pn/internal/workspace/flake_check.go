@@ -13,6 +13,20 @@ import (
 // FlakeCheckOptions configures FlakeCheck.
 type FlakeCheckOptions struct {
 	Terminal string // overrides workspace.terminal for this invocation
+
+	// NoBuild selects the land check: evaluate the derivation paths of checks,
+	// packages and devShells instead of running `nix flake check` (see
+	// flake_check_nobuild.go). The fields below apply only with NoBuild.
+	NoBuild bool
+	// Repo limits the check to one repo, named by key or by a path to the repo or
+	// one of its worktrees. Empty means every repo, in topological order.
+	Repo string
+	// Rev evaluates that commit of Repo (a pure ref) instead of its working tree.
+	Rev string
+	// Caller labels the experiment log line: CallerManual (default) or CallerFF1c.
+	Caller string
+	// NoIFD passes `--option allow-import-from-derivation false` to nix.
+	NoIFD bool
 }
 
 // FlakeCheck runs `nix flake check` in every workspace repo, injecting
@@ -29,6 +43,12 @@ type FlakeCheckOptions struct {
 // FlakeCheck is a terminal-optional command: if no terminal is configured it
 // emits a warning to errOut and continues.
 func (ws *Workspace) FlakeCheck(ctx context.Context, out io.Writer, errOut io.Writer, opts FlakeCheckOptions) error {
+	if opts.NoBuild {
+		return ws.flakeCheckNoBuild(ctx, out, errOut, opts)
+	}
+	if opts.Repo != "" || opts.Rev != "" || opts.NoIFD || opts.Caller != "" {
+		return &UsageError{Msg: "--repo, --rev, --caller and --no-ifd apply only with --no-build"}
+	}
 	if opts.Terminal == "" && ws.config.Workspace.Terminal == "" {
 		fmt.Fprintln(errOut, terminalWarningMessage)
 	}

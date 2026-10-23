@@ -73,7 +73,6 @@ Telemetry is optional: with no endpoint pn behaves exactly as without it. See
 	ws.AddCommand(workspaceUpgradeCmd(&terminalFlag))
 	ws.AddCommand(workspaceDiscoverCmd(&terminalFlag))
 	ws.AddCommand(workspaceInfoCmd(&terminalFlag))
-	ws.AddCommand(workspaceOverridesCmd())
 	ws.AddCommand(workspaceDoctorCmd(&terminalFlag))
 	ws.AddCommand(workspaceNixCmd())
 	ws.AddCommand(workspaceWorkforestCmd())
@@ -241,22 +240,86 @@ func workspaceApplyCmd(terminal *string) *cobra.Command {
 }
 
 func workspaceFlakeCheckCmd(terminal *string) *cobra.Command {
-	return &cobra.Command{
-		Use:   "flake-check",
-		Short: "Run nix flake check on each workspace repo",
+	var noBuild, noIFD bool
+	var rev, caller string
+	cmd := &cobra.Command{
+		Use:   "flake-check [--no-build [<repo-or-path>]]",
+		Short: "Run nix flake check on each workspace repo (--no-build: the evaluation-only land check)",
+		Long: `Run nix flake check on each workspace repo, against its LOCAL workspace siblings.
+
+Every repo is checked in topological order with the --override-input arguments
+that pin its workspace siblings to their local clones (the working tree, not the
+committed HEAD), so no push and no relock is needed. A failure in one repo does
+not stop the others; the command exits non-zero if any repo failed.
+
+--no-build is the land check. It EVALUATES every repo and builds nothing:
+
+  nix eval --no-write-lock-file --json <flake>#<set>.<system> \
+    --apply 'set: builtins.mapAttrs (n: v: v.drvPath or null) set'
+
+for checks, packages and devShells for this machine's system, with the same
+sibling overrides, and never writes flake.lock. A set the flake does not provide
+is skipped. darwinConfigurations and other systems are not evaluated, and a pass
+proves evaluation only: nothing is built or tested.
+
+--no-build is NOT nix's own 'nix flake check --no-build'. nix runs that mode
+read-only, so a source tree copied into the store during evaluation reads back
+as "path '...' is not valid" unless the same copy is already there, and the
+verdict then depends on store warmth. The drvPath evaluation is not read-only,
+so source copies and import from derivation both work, and the verdict does not
+depend on the store.
+
+A failure is a failure: there is no retry and no inconclusive class. An
+environmental problem (store busy, fetch failure, timeout) fails the check like a
+real evaluation error does, and a sibling's uncommitted edits can fail it too.
+
+Select ONE repo with a positional <repo-or-path>: a workspace repo key, or a path
+to the repo or one of its git worktrees (a worktree path evaluates that worktree).
+--rev <rev> evaluates that commit of the selected repo as a pure git+file ref
+(untracked and uncommitted files are ignored) instead of its working tree.
+
+Every --no-build run appends one JSON line per evaluated repo to
+${XDG_STATE_HOME:-$HOME/.local/state}/pn/flake-check-no-build.jsonl (ts, repo,
+caller, duration_s, outcome, nix_exit, failed_sets, first_error). --caller
+labels the line: manual (default) or ff-1c. An unwritable state directory only
+prints a warning. Exit 2 means a bad invocation (unknown repo, unresolvable
+--rev), 1 means a check failed.
+
+Without --no-build the command is a plain 'nix flake check' per repo, which
+builds the checks.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts := workspace.FlakeCheckOptions{
+				Terminal: *terminal, NoBuild: noBuild, Rev: rev, Caller: caller, NoIFD: noIFD,
+			}
+			if len(args) == 1 {
+				opts.Repo = args[0]
+			}
 			w, err := openWorkspace()
 			if err != nil {
+				if noBuild {
+					return ExitCodeError{Code: 2, Msg: err.Error()}
+				}
 				return err
 			}
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 			return runWithHooks(ctx, w, "flake-check", func() error {
-				return w.FlakeCheck(ctx, out, errOut, workspace.FlakeCheckOptions{Terminal: *terminal})
+				err := w.FlakeCheck(ctx, out, errOut, opts)
+				var ue *workspace.UsageError
+				if errors.As(err, &ue) {
+					return ExitCodeError{Code: 2, Msg: ue.Msg}
+				}
+				return err
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&noBuild, "no-build", false, "evaluate the derivation paths of checks, packages and devShells and build nothing (the land check)")
+	cmd.Flags().StringVar(&rev, "rev", "", "with --no-build and one repo: evaluate this commit instead of the working tree")
+	cmd.Flags().StringVar(&caller, "caller", "", "with --no-build: who runs the check, for the experiment log (manual or ff-1c)")
+	cmd.Flags().BoolVar(&noIFD, "no-ifd", false, "with --no-build: pass --option allow-import-from-derivation false to nix")
+	return cmd
 }
 
 func workspacePreCommitCheckCmd(terminal *string) *cobra.Command {
@@ -558,57 +621,6 @@ func workspaceInfoCmd(_ *string) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&infoJSON, "json", false, "JSON output")
 	return cmd
-}
-
-// workspaceOverridesCmd prints one repo's sibling override arguments, the exact
-// set build/apply/flake-check inject, so another tool that runs its own nix
-// command against that repo (pre-land-eval) never re-derives them. Read-only: it
-// runs no hooks and writes no lock, flake.lock or applied state.
-func workspaceOverridesCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "overrides <repo-or-path>",
-		Short: "Print a repo's --override-input arguments for its local workspace siblings",
-		Long: `Print the nix arguments that pin <repo>'s workspace siblings to their local clones.
-
-<repo-or-path> is a workspace repo key, or a path to the repo, a directory
-inside it, or one of its git worktrees. The output is the SAME set that
-'pn workspace build', 'apply' and 'flake-check' inject, one argument per line:
-
-  --override-input
-  <alias>
-  git+file://<absolute path of the sibling clone>
-
-repeated per sibling (sorted by alias). The repo is not overridden by itself,
-and a sibling whose clone is missing is left out. No output (exit 0) means the
-repo has no workspace siblings to override. Append the lines to a nix command to
-evaluate against the local siblings without pushing or relocking:
-
-  while IFS= read -r a; do args+=("$a"); done < <(pn workspace overrides nix-ziprecruiter)
-  nix eval --no-write-lock-file "${args[@]}" <flake-ref>#checks.<system>
-
-Nothing is written: no flake.lock, no pn-workspace.lock.json. Exit 2 when
-<repo-or-path> is not a workspace repo.`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			w, err := openWorkspace()
-			if err != nil {
-				return err
-			}
-			defer w.Close()
-			_, ov, err := w.RepoOverrides(cmd.Context(), args[0])
-			if errors.Is(err, workspace.ErrNotWorkspaceRepo) {
-				return ExitCodeError{Code: 2, Msg: err.Error()}
-			}
-			if err != nil {
-				return err
-			}
-			out := cmd.OutOrStdout()
-			for _, a := range ov {
-				fmt.Fprintln(out, a)
-			}
-			return nil
-		},
-	}
 }
 
 func workspaceDoctorCmd(terminal *string) *cobra.Command {

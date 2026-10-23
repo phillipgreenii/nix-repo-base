@@ -122,25 +122,36 @@ script's own output), and `~/.local/share/pn-workspace/applied/` holds applied-s
 To verify "the apply output shows X": `grep -n X "${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/latest"`,
 after checking the trailer's `ended_at` and `exit_status` belong to the apply under test.
 
-## pn workspace overrides
+## pn workspace flake-check --no-build
 
-`pn workspace overrides <repo-or-path>` prints one repo's sibling override arguments, one argument per
-line, for a tool that runs its own nix command against that repo:
+`pn workspace flake-check` runs `nix flake check` in every workspace repo (topological order) with the
+sibling `--override-input` set, which builds the checks. `pn workspace flake-check --no-build` is the
+**land check**: it evaluates and builds nothing.
 
 ```text
---override-input
-<alias>
-git+file://<absolute path of the sibling clone>
+pn workspace flake-check --no-build [--rev <rev>] [--caller manual|ff-1c] [--no-ifd] [<repo-or-path>]
 ```
 
-repeated per sibling, sorted by alias. It is the single derivation `build`, `apply` and `flake-check`
-also use (the repo is not overridden by itself; a sibling whose clone is missing is left out), so a
-consumer such as `pre-land-eval` never re-derives it. `<repo-or-path>` is a workspace repo key, or a
-path to the repo, a directory inside it, or one of its git worktrees; anything else exits 2. It is
-read-only and runs no hooks: it writes no `flake.lock`, no `pn-workspace.lock.json` and no applied state,
-and needs no push or relock. No output with exit 0 means the repo has no workspace siblings. The workspace
-root is found as for every `pn workspace` verb (`PN_WORKSPACE_ROOT`, else the nearest ancestor of the
-working directory holding `pn-workspace.toml`). `docs/hooks.md` describes `pre-land-eval`, its consumer.
+For each repo (or the selected one) it runs, from the repo's directory,
+`nix eval --no-write-lock-file <override args> --json <flake>#<set>.<system> --apply 'set: builtins.mapAttrs (n: v: v.drvPath or null) set'`
+for `checks`, `packages` and `devShells`, so an evaluation error (a missing option, a throw, a bad
+import) fails the check while no derivation is built and `flake.lock` is never written. The override
+set is the one `build`, `apply` and the plain `flake-check` use, read from the siblings' working trees,
+so a repo whose locked siblings lag the local clones needs no push and no relock.
+
+It is **not** nix's own `nix flake check --no-build`: that mode runs read-only, so a source tree copied
+into the store during evaluation reads back as `path '...' is not valid` unless the same copy is
+already there, and the verdict depends on store warmth. The drvPath evaluation is not read-only, so it
+gives the same verdict on a cold and a warm store.
+
+`<repo-or-path>` selects one repo: a workspace repo key (the canonical clone), or a path to the repo or
+one of its git worktrees (that directory is evaluated, against the canonical siblings). `--rev <rev>`
+evaluates that commit of the selected repo instead of its working tree. A failure is a failure: no
+retry and no inconclusive class. Exit 0 all evaluated, 1 a repo failed, 2 a bad invocation. Every run
+appends one JSON line per repo to `${XDG_STATE_HOME:-$HOME/.local/state}/pn/flake-check-no-build.jsonl`
+(`ts`, `repo`, `caller`, `duration_s`, `outcome`, `nix_exit`, `failed_sets`, `first_error`); an unwritable
+state directory only warns. `docs/hooks.md` ("The eval-only pre-land check") has the full contract and
+describes `pre-land-eval`, the land step's caller of this command.
 
 ## pn workspace doctor
 
