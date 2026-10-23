@@ -377,6 +377,10 @@
             # wrapper: agents and tool approvers match commands by exact name).
             pre-commit-fix = pgHooksScripts.pre-commit-fix.script;
 
+            # pre-land-eval: the eval-only pre-land check (evaluates a repo's
+            # flake checks/packages/devShells at a commit; docs/hooks.md).
+            pre-land-eval = pgHooksScripts.pre-land-eval.script;
+
             # gogate: sequential Go validation gate (fmt/build/vet/test) with
             # fixed output truncation and a machine-readable PASS/FAIL verdict.
             gogate = gogateScripts.gogate.script;
@@ -2425,6 +2429,7 @@
             pg-test-runner
             pg-hooks
             pre-commit-fix
+            pre-land-eval
             gogate
             pg-git-check-identity
             ;

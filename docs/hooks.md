@@ -7,6 +7,7 @@ This page is the canonical reference for how git hooks work in the repos that co
 the only mechanism is [ADR 0032](adr/0032-per-clone-hook-bundle-replaces-generated-config-and-shim.md).
 
 Contents: [Overview](#overview), [Stages](#stages), [The `pg-hooks` command](#the-pg-hooks-command),
+[The eval-only pre-land check](#the-eval-only-pre-land-check-pre-land-eval),
 [Messages](#messages), [Exit codes](#exit-codes), [Bundle layout](#bundle-layout),
 [Staleness](#staleness), [Old config symlinks](#old-config-symlinks), [Configuration](#configuration),
 [Operator runbook](#operator-runbook), [Open follow-ups](#open-follow-ups).
@@ -229,6 +230,70 @@ checkout and restages only the files a fixer changed. It calls the fixer tools d
 - `fix` needs a bundle: with no bundle it exits 13, and with an invalid `fixers.json` it exits 12.
 
 A fixer MUST NOT be run from a git hook and MUST NOT be attached to a prek stage.
+
+## The eval-only pre-land check (`pre-land-eval`)
+
+`pre-land-eval` evaluates, without building, the derivation paths of a flake's `checks`, `packages`
+and `devShells` at one commit, so an evaluation error (a missing option, a `throw`, a bad import) is
+caught before landing. It is a standalone command in `modules/pg-hooks/pre-land-eval/`, a sibling of
+`pre-commit-fix`, and NOT a `pg-hooks` subcommand: it needs no hook bundle, and its exit codes are
+unrelated to the `pg-hooks` ones. It does NOT run prek or any hook; `pg-hooks run pre-land` keeps
+owning that. The eval part was deferred in design pg2-3i12x section 9 and un-deferred by the operator
+ruling on `pg2-pla9d.26` (2026-10-23); the work is bead `pg2-d2yka`.
+
+```text
+pre-land-eval [--no-ifd] <repo-path> <ref>
+```
+
+| Stdout (exactly one line) | Exit | Meaning                                                         |
+| ------------------------- | ---- | --------------------------------------------------------------- |
+| `ok`                      | 0    | every evaluated set evaluated cleanly                           |
+| `not-enabled`             | 0    | the clone has not opted in (or the key is absent)               |
+| `eval-failed`             | 10   | nix reported an evaluation error                                |
+| `eval-inconclusive`       | 11   | only `--no-ifd` import-from-derivation errors, or no system     |
+| (nothing)                 | 2    | usage error, including a repo path or ref that does not resolve |
+
+- stderr carries the details: the first lines of nix's error, the command to reproduce and the
+  timings. No other exit code is produced.
+- **Enablement is opt-in per clone.** The check runs only when
+  `git -C <repo-path> config --get pgii-integrate-branch.preLandEval` prints exactly `true`. Any
+  other value, and an absent key, prints `not-enabled` and exits 0; that is never an error. A repo is
+  opted in with `git -C <repo> config pgii-integrate-branch.preLandEval true`.
+- **What is evaluated.** The commit `<ref>` resolves to (`git rev-parse --verify`, which makes a
+  branch, a sha, a short sha, a tag and `HEAD` all work) as the pure flake ref
+  `git+file://<abs repo-path>?rev=<sha>`. A dirty tree and untracked files are ignored, and a linked
+  worktree works because it shares the object store. A ref that does not resolve exits 2. The tool
+  never changes into the repo, and passes `--no-write-lock-file`, so locked inputs only.
+- **How.** For each of `checks`, `packages` and `devShells` it runs
+  `nix eval --json '<ref>#<set>.<system>' --apply 'set: builtins.mapAttrs (n: v: v.drvPath or null) set'`.
+  `<system>` comes from `uname` (arm64 to aarch64, Darwin to darwin), never from an impure
+  `builtins.currentSystem`. A set the flake does not provide is skipped. It is NOT
+  `nix flake check --no-build`: that runs read-only, so a source tree copied at eval time reads back
+  as `path '...' is not valid`.
+- **Classification.** nix exits 0 for every set: `ok`. Any other non-zero exit: `eval-failed`. A
+  `flake.nix` input that is missing from `flake.lock` is fetched in memory, and a failure doing so is
+  relayed as `eval-failed`.
+- **IFD.** Import from derivation is ALLOWED by default. The evaluation then BUILDS the small IFD
+  derivations (fixed source copies and fetches). With `--no-ifd` the tool passes
+  `--option allow-import-from-derivation false`; an error saying that option is disabled, with no
+  other error, is `eval-inconclusive` (exit 11, non-blocking), and a genuine error alongside it is
+  still `eval-failed`.
+- **Store writes.** Evaluation is a store-write operation: it writes `.drv` files and source copies
+  to the store, and with IFD allowed it builds IFD derivations. It is not read-only.
+- **Runtime and callers.** Expect 1 to 2 minutes (about 8 to 35 seconds per set on a loaded
+  machine). Callers MUST run it through `bgrun` and `bgwait`. The tool runs nix through
+  `pg-nix-log-wrapped` when that command is on `PATH`, and directly, with one stderr note, when it is
+  not.
+
+Deliberate gaps:
+
+- `darwinConfigurations` is NOT evaluated. `nix flake check` does not cover it either.
+- `nix-ziprecruiter` MUST NOT be enabled while it fails with locked-sibling drift (for example
+  `The option phillipgreenii.observability.dockerState does not exist`); a relock is an operator
+  step, so the check there would only report `eval-failed`.
+- Checks that need IFD (for example `test-claude-hook-router`, `launchd-hm-darwin`, `pg-pr-zr-sandbox`)
+  are `eval-inconclusive` under `--no-ifd`, so a `--no-ifd` run can pass without having evaluated them.
+- Sibling inputs are never overridden: the check evaluates the locked inputs of the commit only.
 
 ## Messages
 
@@ -482,8 +547,8 @@ and its linked worktrees:
 
 These steps are for the operator. Agents MUST NOT run them.
 
-1. `pn workspace apply` puts `pg-hooks` and `pre-commit-fix` on PATH and ships the dispatcher.
-   Afterwards, `command -v pg-hooks` succeeds.
+1. `pn workspace apply` puts `pg-hooks`, `pre-commit-fix` and `pre-land-eval` on PATH and ships the
+   dispatcher. Afterwards, `command -v pg-hooks` and `command -v pre-land-eval` succeed.
 2. For a repo that has set `bundle.enable = true`, install in its canonical clone:
    `(cd <canonical> && nix run .#install-pre-commit-hooks)`, then `pg-hooks status` and one real commit.
 3. If `status` reports `unreachable`, remove the local `core.hooksPath` that bypasses the hooks

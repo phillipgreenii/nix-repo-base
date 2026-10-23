@@ -6,13 +6,14 @@
 #   pg-hooks-run   the bundle's stage runner (internal: not a PATH package)
 #   pg-hooks       the user-facing CLI (status, list, explain, run, fix)
 #   pre-commit-fix the second name for `pg-hooks fix` (tiny wrapper)
+#   pre-land-eval  the eval-only pre-land check (a standalone tool, not a pg-hooks subcommand)
 #   pg-hooks-install  the installer behind install-pre-commit-hooks (internal)
 #   pg-hooks-drift-guard  the drift guard behind the hook-drift-guard check (internal)
 #   libDir         a directory holding pg-hooks-lib.bash, for the bundle's lib/
 #   stubTemplate   stub.sh.in (@STAGE@ placeholder), rendered by the installer
 #   checks.test-pg-hooks-lib, checks.test-pg-hooks-run, checks.test-pg-hooks,
 #   checks.test-pg-hooks-install, checks.test-pre-commit-fix,
-#   checks.test-pg-hooks-drift-guard
+#   checks.test-pg-hooks-drift-guard, checks.test-pre-land-eval
 {
   pkgs,
   bashBuilders,
@@ -52,6 +53,13 @@ let
     pg-hooks = pg-hooks.script;
   };
 
+  # A sibling of pre-commit-fix, not a pg-hooks subcommand: the pg-hooks CLI
+  # needs a hook bundle and its exit codes (0/10/11/12/13) mean other things.
+  pre-land-eval = pkgs.callPackage ./pre-land-eval {
+    inherit (bashBuilders) mkBashScript;
+    inherit pkgs testSupport;
+  };
+
   pg-hooks-install = pkgs.callPackage ./pg-hooks-install {
     inherit (bashBuilders) mkBashScript;
     inherit pkgs pg-hooks-lib testSupport;
@@ -67,6 +75,7 @@ let
     pg-hooks-run
     pg-hooks
     pre-commit-fix
+    pre-land-eval
     pg-hooks-install
     pg-hooks-drift-guard
   ];
@@ -82,6 +91,7 @@ in
     pg-hooks-run
     pg-hooks
     pre-commit-fix
+    pre-land-eval
     pg-hooks-install
     pg-hooks-drift-guard
     libDir
@@ -98,6 +108,7 @@ in
     test-pg-hooks-run = pg-hooks-run.check;
     test-pg-hooks = pg-hooks.check;
     test-pre-commit-fix = pre-commit-fix.check;
+    test-pre-land-eval = pre-land-eval.check;
     test-pg-hooks-install = pg-hooks-install.check;
     test-pg-hooks-drift-guard = pg-hooks-drift-guard.check;
   };
