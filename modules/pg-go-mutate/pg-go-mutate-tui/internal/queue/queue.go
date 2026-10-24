@@ -33,6 +33,9 @@ type Queue struct {
 	low, high       int
 	retryBackoff    time.Duration
 	pending         []entry
+	outstanding     map[string]struct{} // files pending OR in flight, until Finish
+	finishSeq       uint64              // incremented by every Finish
+	finishedAt      map[string]uint64   // file -> finishSeq value at its last Finish
 	lastEmptyRefill time.Time
 	projectFilter   map[string]bool
 }
@@ -61,11 +64,16 @@ func (q *Queue) NeedsRefill() bool { return q.Depth() < q.low }
 // Refill computes each candidate package's REAL current content hash via
 // pkghash.Compute -- this is the only place that hash is captured for
 // queued work, and it is captured here, at refill/dispatch-preparation
-// time, not recomputed later (design §6.3). pkghash.Compute and l.NeedsRun
-// are called OUTSIDE the lock (they only touch the filesystem/ledger, not
-// q's own fields), and only the final append to q.pending is guarded --
-// this keeps the lock held for a bounded, short critical section rather
-// than for the whole (potentially slow, many-package) refill pass.
+// time, not recomputed later (design §6.3). The ledger is replayed once per
+// call, and pkghash.Compute and that replay run OUTSIDE the lock (they only
+// touch the filesystem/ledger, not q's own fields); only the per-file
+// outstanding check plus append is guarded -- this keeps the lock held for
+// a bounded, short critical section rather than for the whole (potentially
+// slow, many-package) refill pass.
+//
+// A file already pending or in flight (appended by an earlier Refill and not
+// yet released by Finish) is skipped, so a file is dispatched at most once
+// per entry however many refill ticks happen while it is queued or running.
 //
 // Packages are ranked by recency descending before their files are
 // appended, so more-recently-changed packages surface earlier in Pop
@@ -81,7 +89,21 @@ func (q *Queue) Refill(candidates []discover.Package, recency RecencyLookup, l *
 	})
 	q.mu.Lock()
 	filter := q.projectFilter
+	// Note the finish sequence BEFORE the ledger is replayed: a file whose
+	// Finish lands after this point may have its ledger record missing from
+	// the snapshot below (the worker appends, then finishes, while Replay is
+	// reading), so it must not be judged against that snapshot this round.
+	snapshotSeq := q.finishSeq
 	q.mu.Unlock()
+
+	// Replay the ledger ONCE per call and look files up in the map, rather
+	// than a full ledger read per candidate file. A Replay error is treated
+	// as "nothing recorded" (every file needs a run), the same safe direction
+	// ledger.NeedsRun takes.
+	records, err := l.Replay()
+	if err != nil {
+		records = nil
+	}
 
 	added := 0
 	for _, pkg := range sorted {
@@ -93,12 +115,27 @@ func (q *Queue) Refill(candidates []discover.Package, recency RecencyLookup, l *
 			return added, err
 		}
 		for _, f := range pkg.Files {
-			if l.NeedsRun(f, hash) {
-				q.mu.Lock()
+			if r, ok := records[f]; ok && r.PackageHash == hash {
+				continue // already analysed at this hash
+			}
+			q.mu.Lock()
+			// A file whose entry is pending or in flight is never queued
+			// again, even if its package hash has since changed: that
+			// self-heal (design §6.3) happens on the first Refill after
+			// Finish removes the file from the outstanding set.
+			_, busy := q.outstanding[f]
+			// Finished after the ledger snapshot was taken: the snapshot may
+			// predate its record, so leave it to the next Refill.
+			stale := q.finishedAt[f] > snapshotSeq
+			if !busy && !stale {
+				if q.outstanding == nil {
+					q.outstanding = make(map[string]struct{})
+				}
+				q.outstanding[f] = struct{}{}
 				q.pending = append(q.pending, entry{file: f, pkgHash: hash})
-				q.mu.Unlock()
 				added++
 			}
+			q.mu.Unlock()
 		}
 	}
 	q.mu.Lock()
@@ -120,6 +157,23 @@ func (q *Queue) Pop() (file, pkgHash string, ok bool) {
 	e := q.pending[0]
 	q.pending = q.pending[1:]
 	return e.file, e.pkgHash, true
+}
+
+// Finish tells the queue a worker is done with file: its entry is no longer
+// outstanding (pending or in flight), so a later Refill consults the ledger
+// for it again. A worker MUST call Finish after its ledger append (or after
+// a run that records nothing), never before -- otherwise a Refill in the gap
+// would see neither an outstanding entry nor a ledger record and re-queue
+// the file.
+func (q *Queue) Finish(file string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	delete(q.outstanding, file)
+	q.finishSeq++
+	if q.finishedAt == nil {
+		q.finishedAt = make(map[string]uint64)
+	}
+	q.finishedAt[file] = q.finishSeq
 }
 
 // SetProjectFilter restricts future Refill calls to only the given

@@ -115,6 +115,7 @@ func (p *Pool) Run(ctx context.Context, concurrency int) {
 				status, reportPath, err := p.run(file)
 				if errors.Is(err, ErrFatal) {
 					p.setFatal(err) // recorded on the Pool, NOT appended to the ledger as a per-file entry
+					p.q.Finish(file)
 					return
 				}
 				p.ledger.Append(ledger.Record{
@@ -123,6 +124,9 @@ func (p *Pool) Run(ctx context.Context, concurrency int) {
 					Status:      status,
 					ReportPath:  reportPath,
 				})
+				// Only AFTER the ledger append: until then the queue's
+				// outstanding set is what stops Refill re-queuing this file.
+				p.q.Finish(file)
 			}
 		}()
 	}

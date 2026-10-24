@@ -2,6 +2,9 @@ package worker
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -132,6 +135,88 @@ func TestFatalErrorAbortsTheWholePoolWithoutPerFileLedgerNoise(t *testing.T) {
 	// must be far smaller than the full 10-item queue, not "all but one".
 	if len(records) >= 9 {
 		t.Fatalf("expected the pool to stop promptly after the fatal result, got %d ledger records", len(records))
+	}
+}
+
+// TestRepeatedRefillsWhilePoolRunsDispatchEachFileExactlyOnce drives the pool
+// against a queue that is refilled over and over (as main.go's refillLoop
+// does every tick while depth is below the low watermark), with a slow stub
+// RunFunc so files are pending AND in flight during many refills.
+func TestRepeatedRefillsWhilePoolRunsDispatchEachFileExactlyOnce(t *testing.T) {
+	root := t.TempDir()
+	var pkgs []discover.Package
+	for i := 0; i < 3; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("pkg%d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var files []string
+		for j := 0; j < 4; j++ {
+			f := filepath.Join(dir, fmt.Sprintf("f%d.go", j))
+			if err := os.WriteFile(f, []byte(fmt.Sprintf("package p%d\n// %d\n", i, j)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			files = append(files, f)
+		}
+		pkgs = append(pkgs, discover.Package{PkgPath: dir, AbsPath: dir, Files: files})
+	}
+	total := 12
+
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	q := queue.NewQueue(1000, 1000, time.Minute) // low mark far above depth: always "needs refill"
+	recency := func(string) time.Time { return time.Now() }
+	if _, err := q.Refill(pkgs, recency, l); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	calls := map[string]int{}
+	run := func(file string) (string, string, error) {
+		mu.Lock()
+		calls[file]++
+		mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+		return "done", "", nil
+	}
+	p := New(q, l, run)
+
+	stop := make(chan struct{})
+	var refills sync.WaitGroup
+	refills.Add(1)
+	go func() {
+		defer refills.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := q.Refill(pkgs, recency, l); err != nil {
+				t.Errorf("Refill: %v", err)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p.Run(ctx, 3)
+	// Keep refilling briefly after the pool drained, so refills that land
+	// after every file is recorded are covered too.
+	time.Sleep(20 * time.Millisecond)
+	close(stop)
+	refills.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != total {
+		t.Fatalf("ran %d distinct files, want %d", len(calls), total)
+	}
+	for f, n := range calls {
+		if n != 1 {
+			t.Errorf("file %s ran %d times, want exactly once", f, n)
+		}
 	}
 }
 

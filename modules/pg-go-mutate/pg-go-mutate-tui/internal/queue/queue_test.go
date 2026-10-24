@@ -10,6 +10,7 @@ import (
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/discover"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/ledger"
+	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/pkghash"
 )
 
 func writePkg(t *testing.T, root, name, content string) discover.Package {
@@ -52,6 +53,7 @@ func TestRefillReQueuesAFileAfterItsPackageIsEdited(t *testing.T) {
 	q.Refill([]discover.Package{pkg}, func(string) time.Time { return time.Now() }, l)
 	file, hash, _ := q.Pop()
 	l.Append(ledger.Record{FilePath: file, PackageHash: hash, Status: "done"})
+	q.Finish(file) // the worker's post-append step
 
 	// No edit yet: a second refill must NOT re-add the file.
 	added, _ := q.Refill([]discover.Package{pkg}, func(string) time.Time { return time.Now() }, l)
@@ -151,4 +153,151 @@ func TestConcurrentRefillAndPopDoNotRace(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+func twoFilePkg(t *testing.T, root string) discover.Package {
+	t.Helper()
+	pkg := writePkg(t, root, "pkg", "package pkg\nfunc A() {}\n")
+	second := filepath.Join(pkg.AbsPath, "b.go")
+	if err := os.WriteFile(second, []byte("package pkg\nfunc B() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg.Files = append(pkg.Files, second)
+	return pkg
+}
+
+func now(string) time.Time { return time.Now() }
+
+func TestRefillTwiceWithoutPopQueuesEachFileOnce(t *testing.T) {
+	root := t.TempDir()
+	pkg := twoFilePkg(t, root)
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	q := NewQueue(10, 100, time.Minute)
+
+	first, err := q.Refill([]discover.Package{pkg}, now, l)
+	if err != nil || first != 2 {
+		t.Fatalf("first Refill = %d, %v; want 2, nil", first, err)
+	}
+	second, err := q.Refill([]discover.Package{pkg}, now, l)
+	if err != nil || second != 0 {
+		t.Fatalf("second Refill = %d, %v; want 0 (already pending), nil", second, err)
+	}
+	seen := map[string]int{}
+	for {
+		f, _, ok := q.Pop()
+		if !ok {
+			break
+		}
+		seen[f]++
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected both files popped, got %v", seen)
+	}
+	for f, n := range seen {
+		if n != 1 {
+			t.Fatalf("file %s popped %d times, want exactly once", f, n)
+		}
+	}
+}
+
+func TestRefillDoesNotRequeueAPoppedButUnfinishedFile(t *testing.T) {
+	root := t.TempDir()
+	pkg := writePkg(t, root, "pkg", "package pkg\nfunc A() {}\n")
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	q := NewQueue(10, 100, time.Minute)
+
+	q.Refill([]discover.Package{pkg}, now, l)
+	if _, _, ok := q.Pop(); !ok {
+		t.Fatal("expected one queued file")
+	}
+	// In flight: popped, no ledger record, not finished.
+	added, err := q.Refill([]discover.Package{pkg}, now, l)
+	if err != nil || added != 0 {
+		t.Fatalf("Refill of an in-flight file = %d, %v; want 0, nil", added, err)
+	}
+	if q.Depth() != 0 {
+		t.Fatalf("depth = %d, want 0", q.Depth())
+	}
+}
+
+func TestRefillDoesNotRequeueAFinishedFileRecordedAtTheSameHash(t *testing.T) {
+	root := t.TempDir()
+	pkg := writePkg(t, root, "pkg", "package pkg\nfunc A() {}\n")
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	q := NewQueue(10, 100, time.Minute)
+
+	q.Refill([]discover.Package{pkg}, now, l)
+	file, hash, _ := q.Pop()
+	l.Append(ledger.Record{FilePath: file, PackageHash: hash, Status: "done"})
+	q.Finish(file)
+
+	added, err := q.Refill([]discover.Package{pkg}, now, l)
+	if err != nil || added != 0 {
+		t.Fatalf("Refill after finish = %d, %v; want 0, nil", added, err)
+	}
+}
+
+func TestRefillRequeuesAFinishedFileWithNoLedgerRecord(t *testing.T) {
+	root := t.TempDir()
+	pkg := writePkg(t, root, "pkg", "package pkg\nfunc A() {}\n")
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	q := NewQueue(10, 100, time.Minute)
+
+	q.Refill([]discover.Package{pkg}, now, l)
+	file, _, _ := q.Pop()
+	q.Finish(file) // a run that recorded nothing: the ledger still says "needs run"
+
+	added, _ := q.Refill([]discover.Package{pkg}, now, l)
+	if added != 1 {
+		t.Fatalf("Refill after an unrecorded finish = %d, want 1", added)
+	}
+}
+
+func TestHashChangeWhileInFlightSelfHealsAfterFinish(t *testing.T) {
+	root := t.TempDir()
+	pkg := writePkg(t, root, "pkg", "package pkg\nfunc A() {}\n")
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	q := NewQueue(10, 100, time.Minute)
+
+	q.Refill([]discover.Package{pkg}, now, l)
+	file, oldHash, _ := q.Pop()
+
+	// The package is edited while the file is still running.
+	os.WriteFile(filepath.Join(pkg.AbsPath, "a.go"), []byte("package pkg\nfunc A() { /* edited */ }\n"), 0o644)
+	added, _ := q.Refill([]discover.Package{pkg}, now, l)
+	if added != 0 {
+		t.Fatalf("Refill while the old entry is outstanding = %d, want 0", added)
+	}
+
+	l.Append(ledger.Record{FilePath: file, PackageHash: oldHash, Status: "done"})
+	q.Finish(file)
+
+	added, _ = q.Refill([]discover.Package{pkg}, now, l)
+	if added != 1 {
+		t.Fatalf("Refill after finish with a changed hash = %d, want 1 (self-heal)", added)
+	}
+	_, newHash, ok := q.Pop()
+	if !ok || newHash == oldHash {
+		t.Fatalf("expected re-queue at a new hash, got ok=%v hash=%q (old %q)", ok, newHash, oldHash)
+	}
+}
+
+func TestRefillQueuesOnlyTheFilesTheLedgerLacks(t *testing.T) {
+	root := t.TempDir()
+	pkg := twoFilePkg(t, root)
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	hash, err := pkghash.Compute(pkg.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Append(ledger.Record{FilePath: pkg.Files[0], PackageHash: hash, Status: "done"})
+	q := NewQueue(10, 100, time.Minute)
+
+	added, err := q.Refill([]discover.Package{pkg}, now, l)
+	if err != nil || added != 1 {
+		t.Fatalf("Refill = %d, %v; want 1, nil", added, err)
+	}
+	if f, _, _ := q.Pop(); f != pkg.Files[1] {
+		t.Fatalf("queued %s, want %s", f, pkg.Files[1])
+	}
 }
