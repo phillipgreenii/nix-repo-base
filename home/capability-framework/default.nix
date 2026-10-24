@@ -37,9 +37,13 @@
 
     bundles.development.enable = lib.mkEnableOption ''
       this account as a repo-development target. Capabilities across all inputs
-      self-subscribe (`capabilities.<x>.enable = lib.mkDefault
-      config.phillipgreenii.bundles.development.enable`), so enabling this pulls in
-      the union of every input's development tooling. A new tool flows automatically
+      self-subscribe with `mkCapability { subscribesToDevelopment = true; }`, which
+      contributes `lib.mkIf config.phillipgreenii.bundles.development.enable {
+      capabilities.<x>.enable = lib.mkDefault true; }` (nothing when development is
+      off). A hand-written subscriber MUST use that form (or `enableFeatureIf`),
+      never a bare `mkDefault` of the development flag, which would emit `mkDefault
+      false` and crash evaluation against another bundle's `mkDefault true`. Enabling
+      this pulls in the union of every input's development tooling. A new tool flows automatically
       once its capability subscribes; any individual child stays vetoable with a
       bare `capabilities.<x>.enable = false`
     '';

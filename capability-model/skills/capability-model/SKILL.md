@@ -97,9 +97,14 @@ Bundles and subscriptions set `mkDefault true` **only**. This is load-bearing:
   wins over `mkDefault true`). Never veto with `mkForce false` unless you have a
   genuine double-`mkDefault` to break.
 - `bundles.development` is the **open inverted subscription**. A capability opts
-  IN with `subscribesToDevelopment = true`, which emits
-  `capabilities.<x>.enable = lib.mkDefault config.phillipgreenii.bundles.development.enable`.
-  A machine enables `bundles.development.enable = true` once and receives the
+  IN with `mkCapability { subscribesToDevelopment = true; }`, which contributes
+  `lib.mkIf config.phillipgreenii.bundles.development.enable { capabilities.<x>.enable = lib.mkDefault true; }`
+  and nothing at all when development is off. A hand-written subscriber (a
+  fragment that does not go through `mkCapability`) MUST use that same form (or
+  `enableFeatureIf`) and MUST NOT use a bare `mkDefault` of the development flag:
+  that would emit `mkDefault false` when development is off, which collides with
+  any other bundle's `mkDefault true` on the same capability and crashes
+  evaluation. A machine enables `bundles.development.enable = true` once and receives the
   union of every input's dev tooling; each child stays individually vetoable.
 
 ## 4. Where things live (single ownership)
