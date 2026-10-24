@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/config"
@@ -108,7 +109,7 @@ func newApp(opts appOptions) (*app, error) {
 
 	run := opts.StubRunFunc
 	if run == nil {
-		run = runViaPgGoMutate(m)
+		run = runViaPgGoMutate(m, filepath.Join(stateHome, "pg-go-mutate-tui", "reports"))
 	}
 	pool := worker.New(q, l, run)
 
@@ -128,7 +129,11 @@ func newApp(opts appOptions) (*app, error) {
 // file, recording BOTH metric families (design §12): command-execution
 // success/error is the process-level outcome; run-result is the diagnostic
 // status pg-go-mutate reports once it has run at all.
-func runViaPgGoMutate(m *metrics.Registry) worker.RunFunc {
+//
+// Each file's report is written under reportsDir (never next to the source:
+// the scanned tree is often a canonical clone that must stay clean), at the
+// path reportPathFor returns.
+func runViaPgGoMutate(m *metrics.Registry, reportsDir string) worker.RunFunc {
 	return func(file string) (string, string, error) {
 		start := time.Now()
 		cmd := exec.Command("pg-go-mutate", "--json", file)
@@ -152,12 +157,34 @@ func runViaPgGoMutate(m *metrics.Registry) worker.RunFunc {
 		}
 		status := classifyExitCode(exitCode)
 		m.RecordRunResult(status)
-		reportPath := file + ".report.json"
+		reportPath, pathErr := reportPathFor(reportsDir, file)
+		if pathErr != nil {
+			return status, "", pathErr
+		}
+		if mkErr := os.MkdirAll(filepath.Dir(reportPath), 0o755); mkErr != nil {
+			return status, "", mkErr
+		}
 		if writeErr := os.WriteFile(reportPath, out, 0o644); writeErr != nil {
 			return status, "", writeErr
 		}
 		return status, reportPath, nil
 	}
+}
+
+// reportPathFor maps a scanned source file to its report location,
+// <reportsDir>/<slug of the file's absolute directory>/<basename>.json
+// (design §11 "tree mirroring <project>/<package>/<file>.json"). The slug
+// uses pgm_slug's "/" -> "__" scheme (modules/pg-go-mutate/lib/
+// pg-go-mutate-lib.bash), so two projects whose packages share a relative
+// path (e.g. internal/cli/root.go) cannot collide: the slug carries the whole
+// absolute directory, project root included.
+func reportPathFor(reportsDir, file string) (string, error) {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return "", err
+	}
+	slug := strings.ReplaceAll(filepath.Dir(abs), "/", "__")
+	return filepath.Join(reportsDir, slug, filepath.Base(abs)+".json"), nil
 }
 
 // classifyExitCode maps pg-go-mutate's exit-code contract (design §5.1,
