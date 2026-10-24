@@ -204,6 +204,26 @@ func TestWorkspaceHelp_DocumentsTelemetryEnv(t *testing.T) {
 	}
 }
 
+// TestWorkspaceHelp_DoesNotAdvertiseOverridePaths (pg2-zh8zh): no command reads
+// PN_WORKSPACE_OVERRIDE_PATHS, so `pn workspace --help` MUST NOT present it as
+// a working variable. Any mention has to say it is not wired / has no effect.
+func TestWorkspaceHelp_DoesNotAdvertiseOverridePaths(t *testing.T) {
+	isolateTelemetryEnv(t)
+	out, _, err := run(t, "workspace", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "PN_WORKSPACE_OVERRIDE_PATHS") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if !strings.Contains(lower, "no effect") && !strings.Contains(lower, "not wired") {
+			t.Errorf("pn workspace --help presents PN_WORKSPACE_OVERRIDE_PATHS as functional: %q", line)
+		}
+	}
+}
+
 // TestWorkspaceUpdate_EventLogCarriesTraceID: when the root span recorded a
 // trace id, `pn workspace update` stamps it on run_start and run_end in
 // events.jsonl (stdout is untouched), and only those two kinds.

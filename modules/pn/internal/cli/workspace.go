@@ -40,7 +40,6 @@ pn-workspace.toml re-blocks until re-allowed. See ADR-0019.
 
 Environment variables:
   PN_WORKSPACE_ROOT          Override workspace root (path to dir with pn-workspace.toml)
-  PN_WORKSPACE_OVERRIDE_PATHS  Comma-separated name=path pairs to pin repo locations
   XDG_STATE_HOME             Override the apply-cache state parent dir (default ~/.local/state)
   NO_COLOR                   Disable ANSI colour codes in tree output
   OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP collector URL; telemetry is ON only when an endpoint

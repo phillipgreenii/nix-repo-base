@@ -1,6 +1,6 @@
 # Working with worktrees
 
-> **Three models exist.** The **ephemeral-update model** (the `update`/`upgrade` default) creates short-lived per-repo worktrees on throwaway branches for each run of `pn workspace update`, keeping the canonical clones free during the long relock. The **coordinated-set model** (`pn workspace workforest`) creates a full workspace of worktrees — every repo on a shared feature branch — and is the recommended approach for cross-repo feature work. The older **single-override model** (`--override-path` / `PN_WORKSPACE_OVERRIDE_PATHS`) patches one or more repo paths into an existing workspace run; it is still valid for single-repo overrides. All three are documented here.
+> **Three models exist.** The **ephemeral-update model** (the `update`/`upgrade` default) creates short-lived per-repo worktrees on throwaway branches for each run of `pn workspace update`, keeping the canonical clones free during the long relock. The **coordinated-set model** (`pn workspace workforest`) creates a full workspace of worktrees — every repo on a shared feature branch — and is the recommended approach for cross-repo feature work. The older **single-override model** (`--override-path` / `PN_WORKSPACE_OVERRIDE_PATHS`) is **not implemented** in the Go `pn` (no flag, no command reads the variable), so it has no effect; the last section explains what to do instead for a single-repo worktree. The first two are documented here.
 
 ## Per-repo ephemeral update worktrees (the `update` default)
 
@@ -227,63 +227,13 @@ For the full agent-rules treatment of coordinated workforests — including the 
 
 ---
 
-## Single-repo override model (`--override-path`)
+## Single-repo worktrees (no override surface)
 
-Agents commonly create git worktrees of workspace projects, either outside the workspace directory or under `<repo>/.git/worktrees/<name>`. To make `pn-workspace-*` commands operate on a worktree path instead of the original sibling directory, use `--override-path` (or the `PN_WORKSPACE_OVERRIDE_PATHS` env var).
+The Go `pn` has **no** single-repo override surface. The retired bash `pn-workspace-*` scripts (bead pg2-o09) accepted `--override-path` / `--root` and read `PN_WORKSPACE_OVERRIDE_PATHS`; the Go `pn` registers no `--override-path` or `--root` flag and no command reads that variable, so setting it has **no effect**. `pn workspace build`/`apply`/`info` run from inside a plain `git worktree` silently evaluate the repo's **canonical** clone, never the worktree, so such a run is not a valid pre-land gate.
 
-The override key is the workspace **directory name** (the basename of the project's path in `pn-workspace.lock`). It works for terminal and non-terminal projects identically.
+To validate a single repo's worktree, use one of the two paths that work:
 
-## Single override
+- **A coordinated workforest set** (`pn workspace workforest add`, see above), where every repo resolves to a set worktree on the same branch.
+- **Run `nix build` / `nix flake check` directly inside the worktree**, which never routes through `pn`'s repo-path resolution.
 
-CLI:
-
-```bash
-pn-workspace-build --override-path phillipg-nix-repo-base=$HOME/worktrees/repo-base-feature-foo
-```
-
-Env:
-
-```bash
-export PN_WORKSPACE_OVERRIDE_PATHS=phillipg-nix-repo-base=$HOME/worktrees/repo-base-feature-foo
-pn-workspace-build
-```
-
-## Multiple overrides
-
-CLI: repeat the flag.
-
-```bash
-pn-workspace-build \
-  --override-path my-other-repo=$HOME/worktrees/my-other-repo-feature-foo \
-  --override-path phillipgreenii-nix-personal=$HOME/worktrees/nix-personal-feature-foo
-```
-
-Env: comma-separated.
-
-```bash
-export PN_WORKSPACE_OVERRIDE_PATHS=my-other-repo=/path/p,phillipgreenii-nix-personal=/path/c
-```
-
-Flags win over env per key. Validation rejects unknown project names, missing directories, and paths without `flake.nix`.
-
-## Workspace root
-
-When running from inside a worktree, `pn-workspace-*` cannot walk up to find the workspace root. Pass `--root` (preferred) or set `PN_WORKSPACE_ROOT`:
-
-```bash
-pn-workspace-build --root ~/workspace --override-path repo-base=$PWD
-```
-
-```bash
-export PN_WORKSPACE_ROOT=~/workspace
-export PN_WORKSPACE_OVERRIDE_PATHS=repo-base=$PWD
-pn-workspace-build
-```
-
-The deprecated `--workspace` flag continues to work as an alias for `--root` and emits a deprecation notice on stderr.
-
-## Caveats
-
-- Status, update, push, and rebase operate on the swapped path. `git push` pushes the worktree's branch, `git mu` (rebase) rebases it, etc.
-- Overrides are transient. They never modify `pn-workspace.lock`.
-- Stale env entries pointing at deleted worktrees are caught at validation before nix runs.
+The full explanation and evidence are in [`CLAUDE.md`](../CLAUDE.md), section **pn workspace: building ONE repo from a worktree** (bead pg2-9ova0).
