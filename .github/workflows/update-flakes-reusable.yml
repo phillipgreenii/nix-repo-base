@@ -143,8 +143,8 @@ jobs:
             ```
 
             ### Verification
-            - Required CI checks run automatically on this PR.
-            - Auto-merge (if enabled for this repo) merges once required checks pass.
+            - main has no required status checks (deliberate workspace policy), so any CI run on this PR is for visibility only.
+            - Auto-merge (if enabled for this repo) does not wait for CI; review the changes before it merges.
             - Close this PR to abort if the updates should not be applied.
 
             ---
