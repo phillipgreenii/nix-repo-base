@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/config"
@@ -50,6 +51,46 @@ type app struct {
 	concurrency   int
 	lowWatermark  int
 	highWatermark int
+
+	// firstRefillDone is closed (once, via firstRefillOnce) after refillLoop
+	// finishes its first Refill attempt, whatever its outcome. runHeadless
+	// waits on it, bounded by firstRefillTimeout, instead of sleeping a fixed
+	// interval before starting the worker pool.
+	firstRefillDone    chan struct{}
+	firstRefillOnce    sync.Once
+	firstRefillTimeout time.Duration
+
+	// refillLoopFn replaces refillLoop in runHeadless; nil in production.
+	// It exists so a test can stand in a loop whose first Refill never
+	// finishes and exercise the bounded-wait path.
+	refillLoopFn func(ctx context.Context, root string)
+}
+
+// defaultFirstRefillTimeout bounds how long runHeadless waits for the first
+// Refill. It is an upper limit only: the wait ends the moment the first
+// Refill finishes, so an idle host never waits anywhere near this long.
+const defaultFirstRefillTimeout = 30 * time.Second
+
+// markFirstRefillDone signals that the first Refill attempt has finished.
+// Safe to call repeatedly; only the first call closes the channel.
+func (a *app) markFirstRefillDone() {
+	a.firstRefillOnce.Do(func() { close(a.firstRefillDone) })
+}
+
+// waitForFirstRefill blocks until the first Refill has finished, ctx is
+// cancelled, or timeout elapses, and reports whether the first Refill
+// finished. A Refill that never finishes therefore cannot hang the caller.
+func (a *app) waitForFirstRefill(ctx context.Context, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-a.firstRefillDone:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return false
+	}
 }
 
 // xdgConfigHome and xdgStateHome apply the same "${VAR:-default}" fallback
@@ -122,6 +163,9 @@ func newApp(opts appOptions) (*app, error) {
 		concurrency:   concurrency,
 		lowWatermark:  staticCfg.LowWatermark,
 		highWatermark: staticCfg.HighWatermark,
+
+		firstRefillDone:    make(chan struct{}),
+		firstRefillTimeout: defaultFirstRefillTimeout,
 	}, nil
 }
 
@@ -249,6 +293,12 @@ func (a *app) refillLoop(ctx context.Context, root string) {
 		}
 		return commits[0].Committer.When // %ct recency queue.RecencyLookup ranks by
 	}
+	// The first pass runs immediately and always signals firstRefillDone,
+	// even when it found nothing or discovery failed: a waiter learns "the
+	// first Refill attempt has finished", not "the queue is non-empty".
+	// Later passes follow the ticker.
+	a.refillOnce(root, recency)
+	a.markFirstRefillDone()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -257,28 +307,34 @@ func (a *app) refillLoop(ctx context.Context, root string) {
 			return
 		case <-ticker.C:
 		}
-		if !a.q.NeedsRefill() {
-			continue
-		}
-		if !a.q.RetryBackoffElapsed() {
-			continue
-		}
-		projects, err := discover.DiscoverProjects([]string{root})
+		a.refillOnce(root, recency)
+	}
+}
+
+// refillOnce is one refillLoop pass: refill when the queue is below the low
+// mark and the empty-refill backoff has elapsed.
+func (a *app) refillOnce(root string, recency queue.RecencyLookup) {
+	if !a.q.NeedsRefill() {
+		return
+	}
+	if !a.q.RetryBackoffElapsed() {
+		return
+	}
+	projects, err := discover.DiscoverProjects([]string{root})
+	if err != nil {
+		return
+	}
+	var candidates []discover.Package
+	for _, p := range projects {
+		pkgs, err := discover.DiscoverPackages(p)
 		if err != nil {
 			continue
 		}
-		var candidates []discover.Package
-		for _, p := range projects {
-			pkgs, err := discover.DiscoverPackages(p)
-			if err != nil {
-				continue
-			}
-			candidates = append(candidates, pkgs...)
-		}
-		added, err := a.q.Refill(candidates, recency, a.ledger)
-		if err != nil || added == 0 {
-			a.q.RecordEmptyRefill()
-		}
+		candidates = append(candidates, pkgs...)
+	}
+	added, err := a.q.Refill(candidates, recency, a.ledger)
+	if err != nil || added == 0 {
+		a.q.RecordEmptyRefill()
 	}
 }
 
@@ -287,10 +343,18 @@ func (a *app) refillLoop(ctx context.Context, root string) {
 // mode if one is ever wanted; the real interactive path (run) additionally
 // starts the bubbletea Program.
 func (a *app) runHeadless(ctx context.Context) {
-	go a.refillLoop(ctx, a.root)
-	// Give the refill loop one tick to populate the queue before the pool
-	// starts polling it, matching the ticker interval above.
-	time.Sleep(1100 * time.Millisecond)
+	loop := a.refillLoop
+	if a.refillLoopFn != nil {
+		loop = a.refillLoopFn
+	}
+	go loop(ctx, a.root)
+	// Start the pool only once the first Refill has finished, so workers do
+	// not Pop an empty queue and exit. The wait is bounded: a Refill that
+	// never finishes must not hang the headless run, so after the timeout
+	// the pool starts anyway (and exits on the empty queue, as before).
+	if !a.waitForFirstRefill(ctx, a.firstRefillTimeout) {
+		obslog.New().Warn("first refill did not finish; starting worker pool anyway", "timeout", a.firstRefillTimeout.String())
+	}
 	a.pool.Run(ctx, a.concurrency)
 	if err := a.pool.FatalErr(); err != nil {
 		obslog.New().Error("pool aborted on a fatal error", "error", err)
