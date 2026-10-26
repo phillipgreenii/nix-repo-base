@@ -260,9 +260,15 @@ implementation work. it is used to generate areas which need to be improved"; ea
 2026-10-20 and 2026-10-22). A run costs hours of host load, so an agent MUST NOT run `pg-go-mutate`
 or `pg-go-mutate-tui`, or ask for either in a brief, plan, packet, acceptance criterion or validation
 step, while implementing, fixing, reviewing or landing code, even scoped to one package. It runs only
-when the operator asks for an analysis of a named package, or inside a bead whose subject is mutation
-testing; the analysis's product is a triage bead of worklist rows, not a test change. A hand-applied
-mutant used as a negative control for a test being written is not mutation testing. Whole-package
+when the operator asks for an analysis of a named package, or while changing the mutation tooling
+itself; the analysis's product is a triage bead of worklist rows (titled
+`go-test-gaps triage: <pkgPath>`, amended rather than duplicated), not a test change. Closing the
+gaps it found is ordinary test-writing: that bead's acceptance criteria name each missed path and
+the test(s) that must exist, and nothing re-runs the tool (operator ruling, Phillip, 2026-10-26:
+"the problem is fixed when a test is written which covers a missed path"; the next analysis or
+sweep is the check). A hand-applied mutant used as a negative control for a test being written is
+not mutation testing, and neither is a tooling self-test that runs the real tool against a small
+synthetic fixture project (`nix-overlay`'s `gomu-engine-contract-tests` is one). Whole-package
 coverage is the background sweep's job (below), never a work item's.
 
 The target is a single `.go` file or a package directory (walked recursively) — a file target
