@@ -261,8 +261,11 @@ implementation work. it is used to generate areas which need to be improved"; ea
 or `pg-go-mutate-tui`, or ask for either in a brief, plan, packet, acceptance criterion or validation
 step, while implementing, fixing, reviewing or landing code, even scoped to one package. It runs only
 when the operator asks for an analysis of a named package, or while changing the mutation tooling
-itself; the analysis's product is a triage bead of worklist rows (titled
-`go-test-gaps triage: <pkgPath>`, amended rather than duplicated), not a test change. Closing the
+itself, where it MAY run only against a small synthetic fixture project (never a workspace
+package, and never to confirm a closed gap); the analysis's product is a triage bead of worklist
+rows (titled `go-test-gaps triage: <pkgPath>`), not a test change. The sweep below files that
+bead with a status tally only, so the operator-requested analysis AMENDS it with the rows instead
+of filing a second one, because gap-closing criteria need the missed paths. Closing the
 gaps it found is ordinary test-writing: that bead's acceptance criteria name each missed path and
 the test(s) that must exist, and nothing re-runs the tool (operator ruling, Phillip, 2026-10-26:
 "the problem is fixed when a test is written which covers a missed path"; the next analysis or
@@ -311,8 +314,8 @@ analysed at what package hash; that hash is captured once, when a file is select
 recomputed later. The ledger records STATUS only — `done`, `no-tests`, `failed`, … — and MUST NOT
 record a survivor count, a percentage, or any score; that prohibition is the family's, not the
 file format's, and binds beads, commit messages, and docs equally, because a worklist is
-actionable and a score is not. On finishing every file in a package it files (or amends) exactly
-ONE `P3` triage bead, labeled `go-test-gaps` plus the caller's repo label, carrying the file-status
+actionable and a score is not. On finishing every file in a package it files exactly
+ONE `P3` triage bead (it only creates; it never searches for or amends an existing one), labeled `go-test-gaps` plus the caller's repo label, carrying the file-status
 tally, and MUST NOT file an epic — an open epic never leaves `bd ready`. Its own `/metrics`
 endpoint (Prometheus, `127.0.0.1:9464`) and JSONL log likewise expose operational counters only,
 never a survivor/kill count. Neither `pg-go-mutate` nor `bd` MUST be added to CI, a pre-commit

@@ -20,10 +20,6 @@
 
 `pg-go-mutate --json ./internal/collect`
 
-- Widen parallelism on an idle machine (default is 1; above 1, per-mutant verdicts are not reproducible against the same source):
-
-`pg-go-mutate --workers {{4}} ./internal/collect`
-
 - Raise the per-mutant test timeout for a slow suite (does NOT bound the compile phase):
 
 `pg-go-mutate --timeout {{180}} ./internal/collect`
@@ -65,12 +61,12 @@ Each surviving mutant is an assertion your tests do not make.
 ```
 
 Counts move by a mutant or two between runs on identical source — including which mutants are
-viable — so verify a fix by re-running and checking that **that specific mutant** is now killed,
-never by comparing totals.
+viable — so judge each entry on its own and never compare totals between runs.
 
-- Each entry is a **file**, a **line**, the mutation, and the operator that produced it. Write an
-  assertion that would fail under that mutation, then re-run and confirm that specific mutant —
-  matched on `file:line:type` — is now killed.
+- Each entry is a **file**, a **line**, the mutation, and the operator that produced it. Each is a
+  lead to a missed path: the fix is a test that covers that path, not a second run. Do not re-run to
+  confirm the gap is closed; the next analysis is the check. This tool is run on purpose, by the
+  operator, one package at a time, never as part of implementing a change.
 - `survived 208 (202 actionable, 6 no-op)` reconciles the summary with the first line: the raw
   bucket counts every survivor so the five statuses sum to the mutant total, while **no-op** mutants
   (where the mutated code is identical to the original, so no assertion can ever kill them) are

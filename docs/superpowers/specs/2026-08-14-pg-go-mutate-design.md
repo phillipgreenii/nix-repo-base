@@ -471,17 +471,26 @@ phillipgreenii.pg-go-mutate.enable = true;
   `claude-marketplace/pg-go-mutate/.claude-plugin/plugin.json` (`name`,
   `description`, `version`, `defaultEnabled`) and a new entry in the `plugins`
   array of `claude-marketplace/.claude-plugin/marketplace.json`.
-- **A2** The skill MUST trigger on intent to write, review, or strengthen Go
-  tests — not on the phrase "mutation testing", which an agent unaware of the
-  tool would never say.
+- **A2** SUPERSEDED 2026-10-26 (operator ruling, Phillip, verbatim: "typical
+  development flows must not invoke mutation tests. mutation tests are
+  something done outside of standard implementation flows"). The skill MUST
+  trigger ONLY when the operator explicitly asks for a mutation or test-gap
+  analysis of a named package (or when changing the mutation tooling itself),
+  never on intent to write, review, or strengthen Go tests. The original
+  requirement (trigger on that intent) is withdrawn.
 - **A3** The skill MUST state that a surviving mutant is a **missing assertion**,
   not a bug in production code.
-- **A4** The verification loop MUST be **per-mutant, not count-based**: after
-  adding an assertion, re-run and confirm that the specific mutant, matched on
-  `file:line:type`, is now `KILLED`. A count comparison is unsound here — the
-  run-to-run variance is ±1 mutant, so a one-mutant "improvement" is
-  indistinguishable from noise. This is the one place **N1**/**N2** do not
-  protect the design.
+- **A4** SUPERSEDED 2026-10-26 (operator ruling, Phillip, verbatim: "i don't
+  think we need to re-run the mutation tests at all. ... the problem is fixed
+  when a test is written which covers a missed path. as long as the acceptance
+  criteria includes the path and test(s) which should exist, i think that is
+  sufficent to fixing the problem. a mutation test would run on this
+  app/package later and it shouldn't find the same issue twice."). There is no
+  verification re-run: a gap-closing bead names each missed path and the
+  test(s) that must exist, and a later analysis is the check. The original
+  per-mutant re-run loop is withdrawn. The reasoning that a count comparison is
+  unsound (run-to-run variance is ±1 mutant) still holds for reading any
+  worklist: judge each entry on its own.
 - **A5** The skill MUST carry the build-tag caveat and the `--tags` remedy.
 - **A6** The skill MUST name the cost model (`mutants × suite runtime`) and state
   that `--timeout` does not bound the compile phase, so an agent does not launch
