@@ -1,7 +1,10 @@
 # pg-go-mutate — Go mutation-testing diagnostic
 
 - **Date:** 2026-08-14
-- **Status:** Draft rev 2 (rev 1 critiqued by two independent reviewers; all findings folded in)
+- **Status:** Draft rev 2 (rev 1 critiqued by two independent reviewers; all findings folded in).
+  §10 **A2** and **A4** were superseded by operator rulings on 2026-10-26 and are marked in place.
+  Later implementation deviations (for example the forced single worker that replaced **C4**'s
+  default of 2) are NOT tracked here; the tool's own `pg-go-mutate.md` and `--help` are current.
 - **Homes:** wrapper + feature module in `phillipg-nix-repo-base`; `gomu` pin in
   `phillipgreenii-nix-overlay`; agent skill in `phillipgreenii-nix-agent-support`
 
@@ -475,9 +478,11 @@ phillipgreenii.pg-go-mutate.enable = true;
   development flows must not invoke mutation tests. mutation tests are
   something done outside of standard implementation flows"). The skill MUST
   trigger ONLY when the operator explicitly asks for a mutation or test-gap
-  analysis of a named package (or when changing the mutation tooling itself),
-  never on intent to write, review, or strengthen Go tests. The original
-  requirement (trigger on that intent) is withdrawn.
+  analysis of a named package, never on intent to write, review, or strengthen
+  Go tests. Work on the mutation tooling itself MAY run the real tool, but only
+  against a small synthetic fixture project, never a workspace package and
+  never to confirm a closed gap; such a tooling self-test is not mutation
+  testing. The original requirement (trigger on that intent) is withdrawn.
 - **A3** The skill MUST state that a surviving mutant is a **missing assertion**,
   not a bug in production code.
 - **A4** SUPERSEDED 2026-10-26 (operator ruling, Phillip, verbatim: "i don't
@@ -540,7 +545,7 @@ phillipgreenii.pg-go-mutate.enable = true;
 | Pin defeated by an ambient `gomu` on PATH                                                              | Medium   | **W9** store-path injection plus the **E1** version assertion, which **E2**/**W15** extend to the unwrapped package via a build-time pin — the direct-install path has no store-path binding, so the assertion is all it has.                                                                                                                                                          |
 | A `replace` directive pointing at a nix-materialized path                                              | Medium   | The build guard. Live today: `pg-pr-zr`.                                                                                                                                                                                                                                                                                                                                               |
 | No `--tags` upstream                                                                                   | Low      | Fixed via `GOFLAGS` (**W11**), not merely warned about.                                                                                                                                                                                                                                                                                                                                |
-| Worklist instability run-to-run (±1 mutant, including viability)                                       | Low      | Per-mutant verification (**A4**) rather than count comparison.                                                                                                                                                                                                                                                                                                                         |
+| Worklist instability run-to-run (±1 mutant, including viability)                                       | Low      | Judge each worklist row on its own, never by comparing counts; there is no re-run (**A4** superseded 2026-10-26).                                                                                                                                                                                                                                                                      |
 | ~7.2% of mutants non-viable on modules that build                                                      | Low      | Inherent; no configuration avoids it. Accepted. Rev 1 claimed ~21%, which was an artifact of including the build-broken `pg-pr-zr`.                                                                                                                                                                                                                                                    |
 | Cost makes a module uncompletable                                                                      | Medium   | Scope-by-path is the only mode (**C7**), and **A6** puts the cost model in front of agents.                                                                                                                                                                                                                                                                                            |
 | A gomu bump lands on one side only — `sources.gomu` without the pin, or the pin without `sources.gomu` | Medium   | **W16** records the coordinated-bump obligation in the overlay section, where a bumper reads it, rather than only beside the pin. The **W15** eval assertion makes the mismatch an EVAL failure with a named message instead of a runtime abort reaching only a direct installer, and the pin's own shape assertions reject the v-prefixed tag a bumper is most likely to copy across. |

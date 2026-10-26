@@ -260,19 +260,21 @@ implementation work. it is used to generate areas which need to be improved"; ea
 2026-10-20 and 2026-10-22). A run costs hours of host load, so an agent MUST NOT run `pg-go-mutate`
 or `pg-go-mutate-tui`, or ask for either in a brief, plan, packet, acceptance criterion or validation
 step, while implementing, fixing, reviewing or landing code, even scoped to one package. It runs only
-when the operator asks for an analysis of a named package, or while changing the mutation tooling
-itself, where it MAY run only against a small synthetic fixture project (never a workspace
-package, and never to confirm a closed gap); the analysis's product is a triage bead of worklist
-rows (titled `go-test-gaps triage: <pkgPath>`), not a test change. The sweep below files that
-bead with a status tally only, so the operator-requested analysis AMENDS it with the rows instead
-of filing a second one, because gap-closing criteria need the missed paths. Closing the
-gaps it found is ordinary test-writing: that bead's acceptance criteria name each missed path and
-the test(s) that must exist, and nothing re-runs the tool (operator ruling, Phillip, 2026-10-26:
+when the operator starts it: an analysis of a named package, or a `pg-go-mutate-tui` sweep (below).
+Its product is one `P3` triage bead per package, titled `go-test-gaps triage: <pkgPath>`, that names
+the package and carries the run's results (the worklist rows, or the report paths when the rows are
+too large for a bead body), not a test change. An agent then works that bead: it analyzes the
+recorded results, MUST NOT re-run the tool, files one new bead per fix whose acceptance criteria name
+each missed path and the test(s) that must exist (linked `discovered-from` to the triage bead, never
+a blocking edge), and closes the triage bead with a reason that lists those beads, or says why no
+fix is needed (operator ruling, Phillip, 2026-10-26, recorded verbatim on `pg2-tkm9g0`). Closing a
+gap is ordinary test-writing, and nothing re-runs the tool (operator ruling, Phillip, 2026-10-26:
 "the problem is fixed when a test is written which covers a missed path"; the next analysis or
-sweep is the check). A hand-applied mutant used as a negative control for a test being written is
-not mutation testing, and neither is a tooling self-test that runs the real tool against a small
-synthetic fixture project (`nix-overlay`'s `gomu-engine-contract-tests` is one). Whole-package
-coverage is the background sweep's job (below), never a work item's.
+sweep is the check). Work on the mutation tooling itself MAY run the real tool, but only against a
+small synthetic fixture project, never a workspace package and never to confirm a closed gap; such
+a tooling self-test is not mutation testing (`nix-overlay`'s `gomu-engine-contract-tests` is one),
+and neither is a hand-applied mutant used as a negative control for a test being written.
+Whole-package coverage is the sweep's job (below), never a work item's.
 
 The target is a single `.go` file or a package directory (walked recursively) — a file target
 guards its containing package. A GUARD failure identifies itself, so a caller can tell "this
@@ -302,7 +304,9 @@ Schema and rationale for both, plus the ledger below: ADR
 `pg-go-mutate-tui` is the sole orchestrator for unattended and multi-file mutation sweeps — an
 interactive, file-granular, resumable Go TUI (project/file discovery, a durable ledger with
 replay/resume, a dynamic work queue, a concurrent worker pool, popups for the queue/history/beads).
-It resolves `pg-go-mutate` and `bd` from `PATH`, and neither MUST be added as a nixpkgs
+It starts only when the operator launches it (`pg-go-mutate-tui --root <dir>`); no launchd job,
+timer or hook starts it, and none SHOULD be added without an operator ruling (Phillip, 2026-10-26:
+not ready for it to run full time). It resolves `pg-go-mutate` and `bd` from `PATH`, and they MUST NOT be added as a nixpkgs
 `runtimeDep`: `runtimeDeps` are appended with `--suffix`, so listing them could not displace the
 machine's wrapper but WOULD supply a silent fallback to an unwrapped `pg-go-mutate` (no engine pin,
 no version assertion) or an unmanaged `bd` (losing `BEADS_DOLT_AUTO_START=0`, so it can spawn a
@@ -314,11 +318,14 @@ analysed at what package hash; that hash is captured once, when a file is select
 recomputed later. The ledger records STATUS only — `done`, `no-tests`, `failed`, … — and MUST NOT
 record a survivor count, a percentage, or any score; that prohibition is the family's, not the
 file format's, and binds beads, commit messages, and docs equally, because a worklist is
-actionable and a score is not. On finishing every file in a package it files exactly
-ONE `P3` triage bead (it only creates; it never searches for or amends an existing one), labeled `go-test-gaps` plus the caller's repo label, carrying the file-status
-tally, and MUST NOT file an epic — an open epic never leaves `bd ready`. Its own `/metrics`
+actionable and a score is not. By design (§10 of the design below) it files the package's `P3`
+triage bead once every file in that package has a recorded status, labeled `go-test-gaps` plus the
+repo's canonical label, and MUST NOT file an epic — an open epic never leaves `bd ready`. That
+filing is NOT wired yet: `internal/beads` `FileTriageBead` has no caller, and its body is a
+file-status tally without the run's results; `pg2-tkm9g0` wires it and makes the bead carry the
+results the triage agent needs. Until then a sweep files no bead. Its own `/metrics`
 endpoint (Prometheus, `127.0.0.1:9464`) and JSONL log likewise expose operational counters only,
-never a survivor/kill count. Neither `pg-go-mutate` nor `bd` MUST be added to CI, a pre-commit
+never a survivor/kill count. `pg-go-mutate` and `bd` MUST NOT be added to CI, a pre-commit
 hook, or any `checks.*` derivation that performs a mutation run — a sweep costs hours and gates
 nothing. Design: `docs/superpowers/specs/2026-08-25-pg-go-mutate-tui-design.md`.
 

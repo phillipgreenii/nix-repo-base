@@ -4,8 +4,8 @@ _arguments -s \
   '--tags[comma-separated build tags to enable]:tags:' \
   '--json[emit the machine-readable worklist]' \
   '--timeout[per-mutant test timeout in seconds]:seconds:' \
-  '--workers[parallel workers]:count:' \
+  '--workers[ignored; every run uses one worker (kept for compatibility)]:count:' \
   '--keep-report[do not delete the harvested engine report; print its path]' \
   '(-h --help)'{-h,--help}'[show help]' \
   '(-v --version)'{-v,--version}'[show version information]' \
-  '1:target:_directories'
+  '1:target:_files -g "*.go(-.)"'

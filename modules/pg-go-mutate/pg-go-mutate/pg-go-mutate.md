@@ -12,6 +12,10 @@
 
 `pg-go-mutate ./internal/collect`
 
+- Analyze a single file (its package's tests still run against it):
+
+`pg-go-mutate ./internal/collect/collect.go`
+
 - Include tests behind build tags:
 
 `pg-go-mutate --tags {{contract,smoke}} ./internal/collect`
@@ -84,7 +88,7 @@ viable — so judge each entry on its own and never compare totals between runs.
 | `11` | Target not enumerable (not a Go module, or the module does not load).            |
 | `12` | Target unhealthy: does not vet, or tests already fail on unmutated source.       |
 | `13` | Environment precondition failed: `go` or the pinned engine absent or mismatched. |
-| `14` | Target path is absent or not a directory.                                        |
+| `14` | Target path is absent, or neither a directory nor a `.go` file.                  |
 
 ## Process containment
 

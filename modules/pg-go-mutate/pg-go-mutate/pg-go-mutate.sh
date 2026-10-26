@@ -16,9 +16,10 @@ pg-go-mutate — report which assertions a Go package's tests are missing.
 USAGE
   pg-go-mutate [PATH] [options]
 
-  PATH   A directory, walked RECURSIVELY so nested packages are included.
-         Defaults to the current directory. Go package patterns such as ./...
-         are NOT accepted, and single-file targets are not supported.
+  PATH   A directory, walked RECURSIVELY so nested packages are included,
+         or a single .go file, which mutates only that file (its health guard
+         still runs on the containing package). Defaults to the current
+         directory. Go package patterns such as ./... are NOT accepted.
 
 OPTIONS
   --tags <list>     Comma-separated build tags to enable, e.g. contract,smoke.
