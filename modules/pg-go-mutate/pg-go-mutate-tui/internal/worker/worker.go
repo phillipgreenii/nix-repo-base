@@ -23,6 +23,15 @@ import (
 // sweep's own pre-existing fatal-abort handling for the same exit code).
 var ErrFatal = errors.New("pg-go-mutate-tui: fatal environment precondition failure")
 
+// ErrRetry is the sentinel a RunFunc returns when the file was never analysed
+// for a TRANSIENT reason -- pg-go-mutate exit 3 (every concurrency-semaphore
+// slot stayed busy for the whole wait). Unlike ErrFatal it does not stop the
+// pool, and unlike any other outcome it is NOT appended to the ledger: a
+// record with the current package hash would suppress the file until the
+// package is edited (ledger.NeedsRun), so the file is left un-recorded for a
+// later refill to queue again (design §7).
+var ErrRetry = errors.New("pg-go-mutate-tui: transient failure, retry later")
+
 // RunFunc analyses one file and reports its outcome. Production code
 // (Task 16) wires this to exec.Command("pg-go-mutate", "--json", file);
 // tests inject a fake, keeping this package free of any subprocess
@@ -81,9 +90,10 @@ func (p *Pool) isFatal() bool { return p.FatalErr() != nil }
 
 // Run spawns concurrency worker goroutines, each looping: check ctx done /
 // fatal / paused, pop a file+hash from the queue, invoke RunFunc, on
-// ErrFatal set the pool's fatal state and stop (no ledger write), otherwise
-// append a ledger record with the hash passed through unchanged. Run blocks
-// until every worker goroutine has stopped -- the queue emptied, ctx was
+// ErrFatal set the pool's fatal state and stop (no ledger write), on ErrRetry
+// release the file without a ledger write and keep going, otherwise append a
+// ledger record with the hash passed through unchanged. Run blocks until
+// every worker goroutine has stopped -- the queue emptied, ctx was
 // cancelled, or a sibling worker observed ErrFatal.
 func (p *Pool) Run(ctx context.Context, concurrency int) {
 	var wg sync.WaitGroup
@@ -117,6 +127,12 @@ func (p *Pool) Run(ctx context.Context, concurrency int) {
 					p.setFatal(err) // recorded on the Pool, NOT appended to the ledger as a per-file entry
 					p.q.Finish(file)
 					return
+				}
+				if errors.Is(err, ErrRetry) {
+					// Nothing to record: release the file so a later Refill
+					// consults the ledger, finds no record, and queues it again.
+					p.q.Finish(file)
+					continue
 				}
 				p.ledger.Append(ledger.Record{
 					FilePath:    file,

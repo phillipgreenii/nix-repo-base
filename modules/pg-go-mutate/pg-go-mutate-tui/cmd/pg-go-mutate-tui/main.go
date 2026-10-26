@@ -157,6 +157,13 @@ func runViaPgGoMutate(m *metrics.Registry, reportsDir string) worker.RunFunc {
 		}
 		status := classifyExitCode(exitCode)
 		m.RecordRunResult(status)
+		if status == statusRetry {
+			// Exit 3: every concurrency-semaphore slot stayed busy for the
+			// whole wait -- the file was never analysed, so there is no
+			// result or report to record. Leaving it un-recorded keeps it
+			// eligible for a later refill (design §7).
+			return "", "", worker.ErrRetry
+		}
 		reportPath, pathErr := reportPathFor(reportsDir, file)
 		if pathErr != nil {
 			return status, "", pathErr
@@ -187,14 +194,22 @@ func reportPathFor(reportsDir, file string) (string, error) {
 	return filepath.Join(reportsDir, slug, filepath.Base(abs)+".json"), nil
 }
 
+// statusRetry is classifyExitCode's result for a run that never started
+// (pg-go-mutate exit 3) and so has no ledger status; runViaPgGoMutate turns
+// it into worker.ErrRetry instead of recording it.
+const statusRetry = "retry"
+
 // classifyExitCode maps pg-go-mutate's exit-code contract (design §5.1,
 // unchanged from ADR-0026's original 0/1/2/10-14 allocation) to the
-// ledger's status vocabulary (design §6.2). Exit 13 is handled BEFORE this
-// function is called (see above) -- it never reaches here.
+// ledger's status vocabulary (design §6.2), plus statusRetry for exit 3
+// (not a ledger status). Exit 13 is handled BEFORE this function is called
+// (see above) -- it never reaches here.
 func classifyExitCode(code int) string {
 	switch code {
 	case 0:
 		return "done"
+	case 3:
+		return statusRetry
 	case 10:
 		return "no-tests"
 	case 11:

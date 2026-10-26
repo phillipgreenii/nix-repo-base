@@ -170,3 +170,27 @@ func TestReportPathForDistinguishesProjects(t *testing.T) {
 		t.Errorf("report path = %q, want %q", a, want)
 	}
 }
+
+// TestClassifyExitCode pins the exit-code to status mapping (design §6.2).
+// Exit 3 (semaphore busy) maps to statusRetry, which runViaPgGoMutate turns
+// into worker.ErrRetry so no ledger record is written (pg2-4agz9); an
+// unlisted code such as 1 stays "failed".
+func TestClassifyExitCode(t *testing.T) {
+	tests := []struct {
+		code int
+		want string
+	}{
+		{0, "done"},
+		{3, statusRetry},
+		{10, "no-tests"},
+		{11, "not-enumerable"},
+		{12, "unhealthy"},
+		{14, "vanished"},
+		{1, "failed"},
+	}
+	for _, tt := range tests {
+		if got := classifyExitCode(tt.code); got != tt.want {
+			t.Errorf("classifyExitCode(%d) = %q, want %q", tt.code, got, tt.want)
+		}
+	}
+}

@@ -245,3 +245,75 @@ func TestDispatchedLedgerRecordCarriesTheHashPopReturnedUnchanged(t *testing.T) 
 	}
 	_ = wantHash // exact equality checked in Task 8's own Refill tests; here we only need a record to exist
 }
+
+// TestRetryOutcomeLeavesFileUnrecordedAndKeepsDispatching pins pg2-4agz9: a
+// RunFunc that returns ErrRetry (pg-go-mutate exit 3, semaphore busy) must
+// leave NO ledger record for that file, must not stop the pool, and must
+// release the file from the queue's outstanding set so the next Refill
+// queues it again without any package edit.
+func TestRetryOutcomeLeavesFileUnrecordedAndKeepsDispatching(t *testing.T) {
+	root := t.TempDir()
+	var files []string
+	for j := 0; j < 3; j++ {
+		f := filepath.Join(root, fmt.Sprintf("f%d.go", j))
+		if err := os.WriteFile(f, []byte(fmt.Sprintf("package p\n// %d\n", j)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	pkgs := []discover.Package{{PkgPath: root, AbsPath: root, Files: files}}
+	recency := func(string) time.Time { return time.Now() }
+	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
+	q := queue.NewQueue(1000, 1000, time.Minute)
+	if _, err := q.Refill(pkgs, recency, l); err != nil {
+		t.Fatal(err)
+	}
+
+	retried := files[0]
+	var mu sync.Mutex
+	calls := map[string]int{}
+	run := func(file string) (string, string, error) {
+		mu.Lock()
+		calls[file]++
+		mu.Unlock()
+		if file == retried {
+			return "", "", ErrRetry
+		}
+		return "done", "", nil
+	}
+	p := New(q, l, run)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Run(ctx, 1)
+
+	if p.FatalErr() != nil {
+		t.Fatalf("ErrRetry must not be fatal, got %v", p.FatalErr())
+	}
+	if len(calls) != len(files) {
+		t.Fatalf("pool stopped dispatching after the retry: ran %d of %d files", len(calls), len(files))
+	}
+	records, err := l.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != len(files)-1 {
+		t.Fatalf("got %d ledger records, want %d (every file except the retried one)", len(records), len(files)-1)
+	}
+	for _, r := range records {
+		if r.FilePath == retried {
+			t.Fatalf("retried file must have no ledger record, got %+v", r)
+		}
+	}
+	// Released from the outstanding set and unrecorded: Refill queues exactly
+	// the retried file again, and nothing else.
+	added, err := q.Refill(pkgs, recency, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added != 1 {
+		t.Fatalf("Refill added %d files, want 1 (the retried file)", added)
+	}
+	if got, _, ok := q.Pop(); !ok || got != retried {
+		t.Fatalf("re-queued file = %q (ok=%v), want %q", got, ok, retried)
+	}
+}
