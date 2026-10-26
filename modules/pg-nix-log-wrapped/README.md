@@ -53,15 +53,16 @@ logs to `/var/log/pg-nix-log-wrapped`.
 
 ## Escape hatches
 
-| Control                       | Effect                                                                      |
-| ----------------------------- | --------------------------------------------------------------------------- |
-| `PG_NIX_LOG_DISABLE=1`        | exec CMD unmodified                                                         |
-| `OTEL_SDK_DISABLED=true`      | exec CMD unmodified                                                         |
-| no endpoint resolved          | exec CMD unmodified                                                         |
-| `PG_NIX_LOG_DEBUG=1`          | print why the wrapper failed open (and OTel export errors) to stderr        |
-| `PG_NIX_LOG_FLUSH_TIMEOUT=2s` | bound on the end-of-run export; a dead collector never costs more           |
-| `--check`                     | print endpoint, reachability, log-dir writability; exit 0 only when healthy |
-| `--min-substitute-span=250ms` | shortest substitution that still gets a span (they are always counted)      |
+| Control                                 | Effect                                                                      |
+| --------------------------------------- | --------------------------------------------------------------------------- |
+| `PG_NIX_LOG_DISABLE=1`                  | exec CMD unmodified                                                         |
+| `OTEL_SDK_DISABLED=true`                | exec CMD unmodified                                                         |
+| no endpoint resolved                    | exec CMD unmodified                                                         |
+| `PG_NIX_LOG_DEBUG=1`                    | print why the wrapper failed open (and OTel export errors) to stderr        |
+| `PG_NIX_LOG_FLUSH_TIMEOUT=2s`           | bound on the end-of-run export; a dead collector never costs more           |
+| `--check`                               | print endpoint, reachability, log-dir writability; exit 0 only when healthy |
+| `--min-substitute-span=250ms`           | shortest substitution that still gets a span (they are always counted)      |
+| `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` | turn the unmatched `--override-input` guard off (below)                     |
 
 ## Guarantees
 
@@ -70,9 +71,39 @@ logs to `/var/log/pg-nix-log-wrapped`.
   stdout and stderr are inherited and never copied.
 - **Exit status.** CMD's exit code, or `128+n` when it dies of signal `n` (137 for SIGKILL). A missing
   CMD gives 127 with Go's `exec: "x": executable file not found in $PATH`; a non-executable one 126.
+- **Unmatched `--override-input` fails the run (exit 3).** See the next section; this is the only
+  case where the wrapper's exit status differs from CMD's.
 - **Signals.** SIGTERM and SIGHUP are forwarded once. SIGINT is never forwarded: a terminal Ctrl-C
   reaches CMD through the shared process group.
 - **No blocking.** Export is asynchronous with a 16384-span queue; a dead collector drops data.
+
+## Unmatched `--override-input` guard
+
+nix only **warns** when `--override-input NAME URL` names an input the flake does not have
+(`the flag '--override-input NAME URL' does not match any input`, and `input 'X' has an override for
+a non-existent input 'NAME'`). It then builds against the **locked** input and exits 0, so a wrongly
+named override silently validates the wrong code. **Override names are the flake input names
+(`phillipgreenii-*`), not repo directory names.** `pn workspace` derives them from the workspace lock
+itself; the risk is a hand-built nix command.
+
+The wrapper guards against it (bead `pg2-jvzmgf`, option (a) of the three considered: a `pn`
+subcommand validating names would not cover hand-built runs, and documentation alone does not catch
+the mistake). It reads the same `json-log-path` stream it already tails (no stderr capture, so nix's
+tty behaviour is unchanged) and, when CMD carries `--override-input` before any `--`:
+
+- if nix finished with status 0 **and** logged either warning above, the wrapper prints the warning
+  text (naming the override) and a hint to stderr and exits **3** (`app.ExitUnmatchedOverride`);
+- a run that fails on its own keeps CMD's exit code; a run with a valid override, or with no
+  `--override-input` at all, is untouched, so existing callers see no exit-code change;
+- the guard works with telemetry off too: a run carrying `--override-input` with no endpoint (or a
+  failed telemetry setup) is observed without export instead of `exec`'d. Runs without the flag keep
+  the plain `exec` fail-open, and `PG_NIX_LOG_DISABLE=1` / `OTEL_SDK_DISABLED=true` stay pure
+  passthrough, guard included;
+- `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` restores the old exit 0.
+
+Tests: `internal/app/overrideguard_test.go` (fake nix) and
+`cmd/pg-nix-log-wrapped/override_guard_realnix_test.go` (real `nix`, hermetic local path flake,
+`--offline`).
 
 ## Raw logs
 
@@ -118,7 +149,8 @@ Tempo (`nix.log.file` names the file).
 
 `go test -race ./...` from this directory, or `nix build .#checks.<system>.pg-nix-log-wrapped-go-tests`.
 No test uses a real network or a real OTel stack. One canary builds a unique derivation through the
-wrapper with the real `nix` and asserts a `nix.build` span; it skips when `nix` is absent or when
-running inside a nix builder. `internal/nixlog/testdata` is a copy of `docs/adr/0028-fixtures`; a
+wrapper with the real `nix` and asserts a `nix.build` span, and the override-guard test drives a
+real `nix eval` over a local path-flake fixture; both skip when `nix` is absent or when running
+inside a nix builder. `internal/nixlog/testdata` is a copy of `docs/adr/0028-fixtures`; a
 test fails if they drift (refresh with `cp docs/adr/0028-fixtures/*.jsonl
 modules/pg-nix-log-wrapped/internal/nixlog/testdata/`).

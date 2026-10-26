@@ -7,7 +7,9 @@
 // the nixlog state machine, whose finished activities the recorder (Adapter)
 // turns into spans and delta metrics. Every failure before CMD starts falls
 // back to exec'ing CMD unmodified and silently (W-2), so telemetry can never
-// change what a command does.
+// change what a command does. The one deliberate exception is the unmatched
+// --override-input guard (overrideguard.go): a would-be exit 0 becomes
+// ExitUnmatchedOverride when nix only warned that an override matched no input.
 package app
 
 import (
@@ -202,16 +204,28 @@ func Run(d Deps) int {
 		return passthrough(why)
 	}
 	res := config.Resolve(config.Inputs{Opts: opts, Getenv: r.getenv, Euid: d.Euid, Home: d.Home, ReadFile: d.ReadFile})
+	// A run carrying --override-input is still observed (without export) when
+	// telemetry is off, so the unmatched-override guard can see nix's warning.
+	// Every other run keeps the exact passthrough it always had.
+	guarded := func(why string) int {
+		if newOverrideGuard(opts.Cmd, r.getenv) != nil {
+			if s, err := r.setupGuardOnly(opts, cmdPath); err == nil {
+				r.debugf("telemetry off (%s); observing for the override guard only", why)
+				return s.run()
+			}
+		}
+		return passthrough(why)
+	}
 	if res.Endpoint == "" {
 		if res.Off != "" {
-			return passthrough(res.Off)
+			return guarded(res.Off)
 		}
-		return passthrough("no OTLP endpoint resolved")
+		return guarded("no OTLP endpoint resolved")
 	}
 
 	s, err := r.setup(opts, res, cmdPath)
 	if err != nil {
-		return passthrough(err.Error())
+		return guarded(err.Error())
 	}
 	return s.run()
 }
@@ -241,6 +255,7 @@ type session struct {
 	rec     *recorder.Recorder
 	proc    *nixlog.Processor
 	tail    *tailer.Tailer
+	guard   *overrideGuard // nil unless CMD carries --override-input
 	start   time.Time
 }
 
@@ -323,11 +338,18 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 		return fail(err)
 	}
 	proc := nixlog.NewProcessor(rec, nixlog.Options{MinSubstituteSpan: opts.MinSubstituteSpan})
+	var handler tailer.Handler = proc
+	guard := newOverrideGuard(opts.Cmd, r.getenv)
+	if guard != nil {
+		guard.next = proc
+		handler = guard
+	}
 	return &session{
 		r: r, opts: opts, cmdPath: cmdPath,
 		env:     ChildEnv(r.Environ, logPath),
 		logFile: f, logPath: logPath, tel: tel, inv: inv, rec: rec, proc: proc,
-		tail:  tailer.New(f, proc, r.Now, r.LogSizeCap),
+		tail:  tailer.New(f, handler, r.Now, r.LogSizeCap),
+		guard: guard,
 		start: start,
 	}, nil
 }
@@ -401,6 +423,11 @@ func (s *session) run() int {
 	code := exitCode(cmd.ProcessState, werr)
 	close(stop) // (b) drain the file to EOF
 	<-done
+	// Unmatched-override guard: only a would-be exit 0 is converted.
+	if code == 0 && len(s.guard.unmatched()) > 0 {
+		s.guard.report(r.Stderr)
+		code = ExitUnmatchedOverride
+	}
 	s.finish(code)
 	return code
 }

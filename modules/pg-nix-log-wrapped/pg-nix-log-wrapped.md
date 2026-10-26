@@ -19,6 +19,10 @@
 
 `PG_NIX_LOG_DISABLE=1 pg-nix-log-wrapped nix build {{.#package}}`
 
+- Fail (exit 3) instead of silently using the locked input when an override names no flake input (use the flake input name, `phillipgreenii-*`, not the repo directory; `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` turns this off):
+
+`pg-nix-log-wrapped nix build {{.#package}} --override-input {{phillipgreenii-nix-base}} {{git+file:///path/to/repo}}`
+
 - Explain why the wrapper silently ran a command unobserved:
 
 `PG_NIX_LOG_DEBUG=1 pg-nix-log-wrapped nix build {{.#package}}`
