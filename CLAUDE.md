@@ -249,9 +249,21 @@ python builders (matching Go), so it surfaces in `nvd` / the darwin "Package cha
 
 `pg-go-mutate` reports which assertions a Go package's tests are missing. Every surviving mutant is
 an assertion the tests do not make. It is a diagnostic, not a gate: it always exits 0 on a completed
-analysis however many mutants survived, records nothing, and tracks no score over time. Use it when
-strengthening tests; see the `go-test-gaps` skill for the workflow. Design:
-`docs/superpowers/specs/2026-08-14-pg-go-mutate-design.md`.
+analysis however many mutants survived, records nothing, and tracks no score over time. See the
+`go-test-gaps` skill for the workflow. Design: `docs/superpowers/specs/2026-08-14-pg-go-mutate-design.md`.
+
+**It is NOT part of any implementation flow** (operator ruling, Phillip, 2026-10-26, verbatim:
+"typical development flows must not invoke mutation tests. mutation tests are something done outside
+of standard implementation flows. ie, i may decide to run mutation tests on an app, one package at a
+time to generate beads for improvements. each use of mutation tests should be intentional outside of
+implementation work. it is used to generate areas which need to be improved"; earlier rulings
+2026-10-20 and 2026-10-22). A run costs hours of host load, so an agent MUST NOT run `pg-go-mutate`
+or `pg-go-mutate-tui`, or ask for either in a brief, plan, packet, acceptance criterion or validation
+step, while implementing, fixing, reviewing or landing code, even scoped to one package. It runs only
+when the operator asks for an analysis of a named package, or inside a bead whose subject is mutation
+testing; the analysis's product is a triage bead of worklist rows, not a test change. A hand-applied
+mutant used as a negative control for a test being written is not mutation testing. Whole-package
+coverage is the background sweep's job (below), never a work item's.
 
 The target is a single `.go` file or a package directory (walked recursively) — a file target
 guards its containing package. A GUARD failure identifies itself, so a caller can tell "this
