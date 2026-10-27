@@ -179,7 +179,10 @@ bundle exits 12. `explain` of an unknown stage exits 2.
   `[PASS] <project> (<lang>) <n>s` per project. Those projects run one after the other unless the
   `pg-test-runner` config sets `projectConcurrency` above `1` (or
   `PG_TEST_RUNNER_PROJECT_CONCURRENCY` is set); see
-  `modules/pg-test-runner/pg-test-runner/pg-test-runner.md`.
+  `modules/pg-test-runner/pg-test-runner/pg-test-runner.md`. A Go project whose staged files are
+  all non-test-inputs (docs, YAML, README; no `*.go`, `go.mod`/`go.sum`, `testdata/` or
+  `//go:embed` target) is skipped with a `[SKIP] <project> (go) ... suite not run` line instead of
+  running its suite; `projectExtraPaths` declares extra counted paths (same page).
 
 `pg-hooks run pre-land [<ref>]` runs the `pre-commit` stage over the branch diff, with
 `--from-ref <primary> --to-ref <ref>`:

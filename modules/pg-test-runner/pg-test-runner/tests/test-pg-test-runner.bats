@@ -675,3 +675,323 @@ _conc_repo() {
 # mkBashScript's OWN shellcheck pass on the assembled artifact -- SC2034
 # fires on exactly this shape, and did during development -- so no
 # additional bats test is needed here.
+
+# --- --files: skip a project whose changed files are no test input (pg2-41fzsf) --
+# The `gosuite` language below mirrors the shipped go language's `inputs` rules
+# (modules/pg-test-runner/config.nix) but its "suite" only drops a marker file,
+# so a test can tell "ran" from "skipped" without compiling Go. Everything else
+# is the REAL runner, config validation and --files resolution included.
+
+_skip_config() {
+  # $1: projectExtraPaths JSON value ("" = key absent)
+  local extra=""
+  [[ -n ${1:-} ]] && extra="\"projectExtraPaths\": $1,"
+  cat >"$TEST_DIR/skip-config.json" <<JSON
+{
+  "version": 1,
+  "jobs": 1,
+  "timeoutSeconds": 60,
+  $extra
+  "ignore": [".git/", "fixtures/", "testdata/"],
+  "nonUnitLabels": [],
+  "languages": [
+    {
+      "name": "gosuite",
+      "markers": ["go.mod"],
+      "tools": ["bash"],
+      "inputs": {
+        "names": ["*.go", "go.mod", "go.sum", "go.work", "go.work.sum"],
+        "dirs": ["testdata", "vendor"],
+        "goEmbed": true
+      },
+      "run": {
+        "unit": ["bash", "-c", "touch ran.marker"],
+        "labels": ["bash", "-c", "touch ran.marker"],
+        "all": ["bash", "-c", "touch ran.marker"]
+      }
+    },
+    {
+      "name": "plainsuite",
+      "markers": ["PLAIN.marker"],
+      "tools": ["bash"],
+      "run": {
+        "unit": ["bash", "-c", "touch ran.marker"],
+        "labels": ["bash", "-c", "touch ran.marker"],
+        "all": ["bash", "-c", "touch ran.marker"]
+      }
+    }
+  ]
+}
+JSON
+}
+
+_skip_repo() {
+  # A repo with one Go project at proj/ holding source, docs and assets.
+  mkdir -p "$TEST_DIR/srepo/.git" "$TEST_DIR/srepo/proj/internal/x/testdata" \
+    "$TEST_DIR/srepo/proj/docs" "$TEST_DIR/srepo/proj/assets"
+  _go_mod "$TEST_DIR/srepo/proj"
+  : >"$TEST_DIR/srepo/proj/README.md"
+  : >"$TEST_DIR/srepo/proj/docs/rules.yaml"
+  : >"$TEST_DIR/srepo/proj/assets/tpl.txt"
+  : >"$TEST_DIR/srepo/proj/internal/x/testdata/case.json"
+}
+
+# $@: changed files (repo-relative). Runs the real runner in --files mode.
+_skip_run() {
+  cd "$TEST_DIR/srepo" || return 1
+  rm -f proj/ran.marker
+  run "$SCRIPT" --config "$TEST_DIR/skip-config.json" --labels unit --files "$@"
+  echo "$output"
+}
+
+_assert_skipped() {
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[SKIP] $TEST_DIR/srepo/proj (gosuite)"* ]]
+  [[ "$output" == *"suite not run"* ]]
+  [[ "$output" != *"[PASS]"* ]]
+  [ ! -e "$TEST_DIR/srepo/proj/ran.marker" ]
+}
+
+_assert_ran() {
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] $TEST_DIR/srepo/proj (gosuite)"* ]]
+  [[ "$output" != *"suite not run"* ]]
+  [ -e "$TEST_DIR/srepo/proj/ran.marker" ]
+}
+
+@test "--files: only non-Go files under a Go project skip its suite and say so" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/README.md proj/docs/rules.yaml
+  _assert_skipped
+  [[ "$output" == *"none of the 2 changed file(s)"* ]]
+}
+
+@test "--files: the skip is one line per skipped project" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/README.md proj/docs/rules.yaml proj/assets/tpl.txt
+  _assert_skipped
+  [ "$(grep -c '\[SKIP\]' <<<"$output")" -eq 1 ]
+}
+
+@test "--files: a .go source file still runs the suite" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/fixture_test.go
+  _assert_ran
+}
+
+@test "--files: a non-test .go file still runs the suite" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/internal/x/impl.go
+  _assert_ran
+}
+
+@test "--files: go.mod still runs the suite" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/go.mod
+  _assert_ran
+}
+
+@test "--files: go.sum still runs the suite" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/go.sum
+  _assert_ran
+}
+
+@test "--files: one Go file among non-Go files runs the suite and prints no skip" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/README.md proj/docs/rules.yaml proj/fixture_test.go
+  _assert_ran
+}
+
+@test "--files: a deleted Go file (path only, not on disk) still runs the suite" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/internal/x/gone.go
+  _assert_ran
+}
+
+@test "--files: a file under testdata/ counts although testdata/ is an ignored directory" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/internal/x/testdata/case.json
+  _assert_ran
+}
+
+@test "--files: a declared projectExtraPaths entry counts, an undeclared sibling does not" {
+  _skip_config '{"proj": ["assets"]}'
+  _skip_repo
+  _skip_run proj/assets/tpl.txt
+  _assert_ran
+  _skip_run proj/docs/rules.yaml
+  _assert_skipped
+}
+
+@test "--files: projectExtraPaths matches a trailing run of the project path and supports globs" {
+  _skip_config '{"srepo/proj": ["docs/*.yaml"]}'
+  _skip_repo
+  _skip_run proj/docs/rules.yaml
+  _assert_ran
+  _skip_run proj/README.md
+  _assert_skipped
+}
+
+@test "--files: without projectExtraPaths the same asset skips" {
+  _skip_config ""
+  _skip_repo
+  _skip_run proj/assets/tpl.txt
+  _assert_skipped
+}
+
+_embed_source() {
+  # $1: the //go:embed directive line(s) to write into proj/embed.go
+  {
+    printf 'package fixture\n\nimport "embed"\n\n'
+    printf '%s\n' "$1"
+    printf 'var assets embed.FS\n'
+  } >"$TEST_DIR/srepo/proj/embed.go"
+}
+
+@test "--files: a file named by a //go:embed glob counts; one it does not name does not" {
+  _skip_config ""
+  _skip_repo
+  _embed_source '//go:embed assets/*.txt'
+  _skip_run proj/assets/tpl.txt
+  _assert_ran
+  _skip_run proj/docs/rules.yaml
+  _assert_skipped
+}
+
+@test "--files: a //go:embed directory covers every file below it" {
+  _skip_config ""
+  _skip_repo
+  mkdir -p "$TEST_DIR/srepo/proj/assets/deep"
+  : >"$TEST_DIR/srepo/proj/assets/deep/more.bin"
+  _embed_source '//go:embed all:assets'
+  _skip_run proj/assets/deep/more.bin
+  _assert_ran
+}
+
+@test "--files: quoted //go:embed patterns (with a space) and several patterns per line parse" {
+  _skip_config ""
+  _skip_repo
+  _embed_source '//go:embed "docs/my file.txt" `assets/raw.txt` README.md'
+  _skip_run "proj/docs/my file.txt"
+  _assert_ran
+  _skip_run proj/assets/raw.txt
+  _assert_ran
+  _skip_run proj/README.md
+  _assert_ran
+  _skip_run proj/docs/rules.yaml
+  _assert_skipped
+}
+
+@test "--files: a //go:embed in a subpackage is relative to that package's directory" {
+  _skip_config ""
+  _skip_repo
+  mkdir -p "$TEST_DIR/srepo/proj/internal/x/tpl"
+  : >"$TEST_DIR/srepo/proj/internal/x/tpl/a.tmpl"
+  {
+    printf 'package x\n\nimport "embed"\n\n//go:embed tpl\nvar tpl embed.FS\n'
+  } >"$TEST_DIR/srepo/proj/internal/x/embed.go"
+  _skip_run proj/internal/x/tpl/a.tmpl
+  _assert_ran
+  # the same relative name at the project root is NOT what the directive names
+  mkdir -p "$TEST_DIR/srepo/proj/tpl"
+  : >"$TEST_DIR/srepo/proj/tpl/a.tmpl"
+  _skip_run proj/tpl/a.tmpl
+  _assert_skipped
+}
+
+@test "--files: an //go:embed directive it cannot parse makes every file count (run when in doubt)" {
+  _skip_config ""
+  _skip_repo
+  _embed_source '//go:embed "unterminated'
+  _skip_run proj/README.md
+  _assert_ran
+}
+
+@test "--files: a bare //go:embed with no pattern is unparseable, so the suite runs" {
+  _skip_config ""
+  _skip_repo
+  _embed_source '//go:embed'
+  _skip_run proj/README.md
+  _assert_ran
+}
+
+@test "--files: one project skipped and another run in the same invocation" {
+  _skip_config ""
+  _skip_repo
+  mkdir -p "$TEST_DIR/srepo/other"
+  _go_mod "$TEST_DIR/srepo/other"
+  cd "$TEST_DIR/srepo" || return 1
+  rm -f proj/ran.marker other/ran.marker
+  run "$SCRIPT" --config "$TEST_DIR/skip-config.json" --labels unit --files proj/README.md other/fixture_test.go
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[SKIP] $TEST_DIR/srepo/proj (gosuite)"* ]]
+  [[ "$output" == *"[PASS] $TEST_DIR/srepo/other (gosuite)"* ]]
+  [ ! -e proj/ran.marker ]
+  [ -e other/ran.marker ]
+}
+
+@test "--files: a language without inputs rules runs on any changed file" {
+  _skip_config ""
+  mkdir -p "$TEST_DIR/srepo/.git" "$TEST_DIR/srepo/plain"
+  : >"$TEST_DIR/srepo/plain/PLAIN.marker"
+  : >"$TEST_DIR/srepo/plain/README.md"
+  cd "$TEST_DIR/srepo" || return 1
+  run "$SCRIPT" --config "$TEST_DIR/skip-config.json" --labels unit --files plain/README.md
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] $TEST_DIR/srepo/plain (plainsuite)"* ]]
+  [ -e plain/ran.marker ]
+}
+
+@test "path and --all modes never skip, whatever the changed files are" {
+  _skip_config ""
+  _skip_repo
+  cd "$TEST_DIR/srepo" || return 1
+  run "$SCRIPT" --config "$TEST_DIR/skip-config.json" --labels unit proj
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] $TEST_DIR/srepo/proj (gosuite)"* ]]
+  rm -f proj/ran.marker
+  run "$SCRIPT" --config "$TEST_DIR/skip-config.json" --labels unit --all
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] $TEST_DIR/srepo/proj (gosuite)"* ]]
+  [[ "$output" != *"suite not run"* ]]
+}
+
+@test "malformed projectExtraPaths or inputs is exit 13, not a silent fallback" {
+  _skip_repo
+  cd "$TEST_DIR/srepo" || return 1
+  local bad
+  for bad in '{"proj": "assets"}' '{"proj": [""]}' '{"proj": ["/abs"]}' '{"proj": [1]}' '{"/proj": ["a"]}' '["a"]'; do
+    _skip_config "$bad"
+    run "$SCRIPT" --config "$TEST_DIR/skip-config.json" --labels unit --files proj/README.md
+    [ "$status" -eq 13 ] || { echo "expected 13 for $bad, got $status: $output" >&2; return 1; }
+    [[ "$output" == *"projectExtraPaths"* ]]
+  done
+  _skip_config ""
+  for bad in '"names": "*.go"' '"dirs": ["a/b"]' '"goEmbed": "yes"' '"names": [""]'; do
+    jq --argjson i "{$bad}" '.languages[0].inputs = $i' "$TEST_DIR/skip-config.json" >"$TEST_DIR/bad.json"
+    run "$SCRIPT" --config "$TEST_DIR/bad.json" --labels unit --files proj/README.md
+    [ "$status" -eq 13 ] || { echo "expected 13 for inputs $bad, got $status: $output" >&2; return 1; }
+    [[ "$output" == *"inputs"* ]]
+  done
+}
+
+@test "the shipped go language config carries the inputs rules and an empty projectExtraPaths" {
+  local cfg="$BATS_TEST_DIRNAME/../../config.nix" json
+  [ -f "$cfg" ] || skip "config.nix not beside the sources (nix sandbox layout)"
+  command -v nix-instantiate >/dev/null 2>&1 || skip "nix-instantiate unavailable"
+  json="$(nix-instantiate --eval --strict --json "$cfg")"
+  jq -e '.languages[] | select(.name == "go") | .inputs | (.names | index("*.go")) != null and (.names | index("go.mod")) != null and (.names | index("go.sum")) != null and (.dirs | index("testdata")) != null and .goEmbed == true' <<<"$json"
+  jq -e '.projectExtraPaths == {}' <<<"$json"
+}

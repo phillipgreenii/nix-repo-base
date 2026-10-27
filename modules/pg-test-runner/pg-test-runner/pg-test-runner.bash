@@ -72,6 +72,31 @@ ptr_validate_config() {
     ' "$path" >/dev/null 2>&1 ||
     ptr_die 13 "config projectTimeouts must map project path suffixes (no leading/trailing '/') to positive integer seconds: $path"
 
+  # projectExtraPaths (optional, bead pg2-41fzsf): object of <project path
+  # suffix> -> array of non-empty glob patterns relative to the project root
+  # (no leading '/'). Extra paths count as test inputs in --files mode.
+  "$PTR_JQ" -e '
+      (.projectExtraPaths // {}) as $o |
+      ($o | type) == "object" and
+      all($o | to_entries[]; (.key | test("^[^/].*[^/]$|^[^/]$")) and
+        (.value | type) == "array" and
+        all(.value[]; type == "string" and length > 0 and (startswith("/") | not)))
+    ' "$path" >/dev/null 2>&1 ||
+    ptr_die 13 "config projectExtraPaths must map project path suffixes (no leading/trailing '/') to arrays of non-empty relative glob patterns: $path"
+
+  # languages[].inputs (optional, bead pg2-41fzsf): which changed files make
+  # --files mode run a project. names: basename globs; dirs: directory names
+  # (single path components); goEmbed: also count files named by a //go:embed
+  # directive. A language without `inputs` runs on ANY changed file.
+  "$PTR_JQ" -e '
+      all(.languages[]?; (.inputs // {}) as $i |
+        ($i | type) == "object" and
+        (($i.names // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
+        (($i.dirs // []) | type == "array" and all(.[]; type == "string" and length > 0 and (contains("/") | not))) and
+        (($i.goEmbed // false) | type == "boolean"))
+    ' "$path" >/dev/null 2>&1 ||
+    ptr_die 13 "config languages[].inputs must be an object with names/dirs string arrays (dirs without '/') and a boolean goEmbed: $path"
+
   # Run limits (optional, bead pg2-r9ly8): maxConcurrentRuns and
   # slotWaitSeconds are non-negative integers, niceLevel an integer 0..19. A
   # malformed value must fail loudly, never silently disable the policy.
@@ -364,6 +389,10 @@ ptr_downward_scan() {
 # status (section 2.6).
 # ---------------------------------------------------------------------------
 
+# --files mode prints "path<TAB>lang<TAB>flag" per (changed file, project) pair,
+# flag 1 when that file counts as a test input of the project and 0 when it does
+# not (bead pg2-41fzsf). ptr_run keeps the projects with at least one flag-1 file
+# and reports the others as skipped.
 ptr_resolve_files_mode() {
   local toplevel
   toplevel="$(ptr_find_toplevel "$PWD")" || true
@@ -371,11 +400,207 @@ ptr_resolve_files_mode() {
     ptr_die 2 "--files requires running inside a repository (no .git ancestor found from $PWD)"
   fi
 
-  local f dir
+  # Caches shared with the ptr_* helpers below through dynamic scope.
+  local -A PTR_INPUTS_CACHE=() PTR_EXTRA_CACHE=() PTR_EMBED_CACHE=()
+  local f abs dir matches line mpath mlang flag
   for f in "$@"; do
-    dir="$(dirname "$(ptr_abspath "$f")")"
-    ptr_upward_resolve "$dir" "$toplevel" 1 "$toplevel" || true
+    abs="$(ptr_abspath "$f")"
+    dir="$(dirname "$abs")"
+    matches="$(ptr_upward_resolve "$dir" "$toplevel" 1 "$toplevel")" || true
+    [[ -z $matches ]] && continue
+    while IFS= read -r line; do
+      [[ -z $line ]] && continue
+      mpath="${line%%$'\t'*}"
+      mlang="${line#*$'\t'}"
+      if ptr_file_counts "$abs" "$mpath" "$mlang"; then flag=1; else flag=0; fi
+      printf '%s\t%s\t%s\n' "$mpath" "$mlang" "$flag"
+    done <<<"$matches"
   done
+}
+
+# The language's `inputs` rules, one per line ("N:<glob>", "D:<dir>", "E:1"),
+# cached per language in PTR_INPUTS_CACHE. Prints nothing for a language with no
+# `inputs` (every file counts).
+ptr_inputs_rules() {
+  local lang="$1"
+  if [[ -z ${PTR_INPUTS_CACHE["$lang"]+x} ]]; then
+    local lang_json
+    lang_json="$(ptr_lang_json "$lang")" || lang_json='{}'
+    PTR_INPUTS_CACHE["$lang"]="$("$PTR_JQ" -r '
+      if .inputs == null then empty else
+        ((.inputs.names // [])[] | "N:" + .),
+        ((.inputs.dirs // [])[] | "D:" + .),
+        (if .inputs.goEmbed == true then "E:1" else empty end),
+        "X:1"
+      end' <<<"$lang_json")"
+  fi
+  printf '%s' "${PTR_INPUTS_CACHE["$lang"]}"
+}
+
+# Prints the config's projectExtraPaths patterns that apply to project $1 (a key
+# equals the path or is a trailing run of its components; every matching key
+# contributes), one per line.
+ptr_extra_paths_for() {
+  local path="$1"
+  if [[ -z ${PTR_EXTRA_CACHE["$path"]+x} ]]; then
+    PTR_EXTRA_CACHE["$path"]="$("$PTR_JQ" -r --arg p "$path" '
+      (.projectExtraPaths // {}) | to_entries[]
+      | select(.key as $k | $p == $k or ($p | endswith("/" + $k)))
+      | .value[]' "$PTR_CONFIG")"
+  fi
+  printf '%s' "${PTR_EXTRA_CACHE["$path"]}"
+}
+
+# $1: a path relative to some directory, $2: a glob. Succeeds when the path, or
+# any leading directory of it, matches the glob (so a pattern naming a directory
+# covers everything below it). `*` also crosses `/` here: over-matching only
+# makes the runner run a suite it could have skipped, never the reverse.
+ptr_path_under_glob() {
+  local rel="$1" pat="$2" prefix="" part
+  pat="${pat%/}"
+  local -a parts
+  IFS='/' read -ra parts <<<"$rel"
+  for part in "${parts[@]}"; do
+    [[ -z $part ]] && continue
+    if [[ -z $prefix ]]; then prefix="$part"; else prefix="$prefix/$part"; fi
+    # shellcheck disable=SC2053  # the unquoted right-hand side IS the glob
+    [[ $prefix == $pat ]] && return 0
+  done
+  return 1
+}
+
+# Scans the project's Go files for //go:embed directives and caches the result in
+# PTR_EMBED_CACHE[$1] as "<go file dir>\t<pattern>" lines, or the single word
+# UNPARSEABLE when a directive cannot be read with certainty (the caller then
+# treats every file as a test input: when in doubt, run the suite).
+ptr_scan_embeds() {
+  local project="$1"
+  [[ -n ${PTR_EMBED_CACHE["$project"]+x} ]] && return 0
+  local embeds="" grc=0 gofile text rest tok pat bad=0 any
+  # A temp file, not a command substitution: the output holds NUL separators
+  # (--null), which a substitution would drop.
+  local hits_file
+  if ! hits_file="$(mktemp "${PG_TEST_RUNNER_TMP_ROOT:-/tmp}/pg-test-runner-embeds.XXXXXX" 2>/dev/null)"; then
+    PTR_EMBED_CACHE["$project"]="UNPARSEABLE"
+    return 0
+  fi
+  grep -rEH --null --include='*.go' \
+    --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.worktrees --exclude-dir=.direnv \
+    '^[[:space:]]*//go:embed([[:space:]]|$)' "$project" >"$hits_file" 2>/dev/null || grc=$?
+  if ((grc > 1)); then
+    rm -f "$hits_file"
+    PTR_EMBED_CACHE["$project"]="UNPARSEABLE"
+    return 0
+  fi
+  while IFS= read -r -d '' gofile && IFS= read -r text; do
+    rest="${text#*//go:embed}"
+    any=0
+    while :; do
+      rest="${rest#"${rest%%[![:space:]]*}"}"
+      [[ -z $rest ]] && break
+      case "$rest" in
+      \"*)
+        rest="${rest#\"}"
+        if [[ $rest != *\"* ]]; then
+          bad=1
+          break
+        fi
+        tok="${rest%%\"*}"
+        rest="${rest#*\"}"
+        [[ $tok == *\\* ]] && {
+          bad=1
+          break
+        }
+        ;;
+      \`*)
+        rest="${rest#\`}"
+        if [[ $rest != *\`* ]]; then
+          bad=1
+          break
+        fi
+        tok="${rest%%\`*}"
+        rest="${rest#*\`}"
+        ;;
+      *)
+        tok="${rest%%[[:space:]]*}"
+        rest="${rest#"$tok"}"
+        ;;
+      esac
+      pat="${tok#all:}"
+      if [[ -z $pat || $pat == /* || $pat == *..* ]]; then
+        bad=1
+        break
+      fi
+      embeds+="$(dirname "$gofile")"$'\t'"$pat"$'\n'
+      any=1
+    done
+    if ((bad == 1 || any == 0)); then
+      rm -f "$hits_file"
+      PTR_EMBED_CACHE["$project"]="UNPARSEABLE"
+      return 0
+    fi
+  done <"$hits_file"
+  rm -f "$hits_file"
+  PTR_EMBED_CACHE["$project"]="$embeds"
+}
+
+# $1: absolute changed file, $2: project directory, $3: language. Succeeds when the
+# file counts as a test input of the project (so the suite must run). A language
+# without `inputs` counts every file. Otherwise a file counts when its basename
+# matches `inputs.names`, a directory component of it is in `inputs.dirs`, it
+# matches the project's projectExtraPaths, or (with `inputs.goEmbed`) a
+# //go:embed directive in the project names it. A file the rules cannot place
+# (outside the project, unreadable embed directive) counts: when in doubt, run.
+ptr_file_counts() {
+  local file="$1" project="$2" lang="$3"
+  local rules
+  rules="$(ptr_inputs_rules "$lang")"
+  [[ -z $rules ]] && return 0
+
+  local rel
+  rel="$(ptr_relpath "$project" "$file")"
+  [[ $rel == "$file" ]] && return 0
+  local base="${rel##*/}" reldir="" rule kind val embed=0
+  [[ $rel == */* ]] && reldir="${rel%/*}"
+  local -a comps=()
+  IFS='/' read -ra comps <<<"$reldir"
+  local c
+  while IFS= read -r rule; do
+    kind="${rule%%:*}"
+    val="${rule#*:}"
+    case "$kind" in
+    N)
+      # shellcheck disable=SC2053  # the unquoted right-hand side IS the glob
+      [[ $base == $val ]] && return 0
+      ;;
+    D)
+      for c in "${comps[@]}"; do
+        [[ $c == "$val" ]] && return 0
+      done
+      ;;
+    E) embed=1 ;;
+    esac
+  done <<<"$rules"
+
+  local pat
+  while IFS= read -r pat; do
+    [[ -z $pat ]] && continue
+    ptr_path_under_glob "$rel" "$pat" && return 0
+  done <<<"$(ptr_extra_paths_for "$project")"
+
+  if ((embed == 1)); then
+    ptr_scan_embeds "$project"
+    local scanned="${PTR_EMBED_CACHE["$project"]}"
+    [[ $scanned == "UNPARSEABLE" ]] && return 0
+    local gdir epat sub
+    while IFS=$'\t' read -r gdir epat; do
+      [[ -z $gdir ]] && continue
+      [[ $file == "$gdir"/* ]] || continue
+      sub="${file#"$gdir"/}"
+      ptr_path_under_glob "$sub" "$epat" && return 0
+    done <<<"$scanned"
+  fi
+  return 1
 }
 
 ptr_resolve_paths_mode() {
@@ -961,13 +1186,46 @@ ptr_run() {
   local -a projects
   projects=()
   local line
-  while IFS= read -r line; do
-    [[ -z $line ]] && continue
-    if [[ -z ${seen["$line"]:-} ]]; then
-      seen["$line"]=1
-      projects+=("$line")
-    fi
-  done <<<"$raw"
+  if [[ $mode == "files" ]]; then
+    # Lines are "path<TAB>lang<TAB>flag" (see ptr_resolve_files_mode). A project
+    # runs when at least one changed file counts as a test input; otherwise it is
+    # skipped, and one line says so (bead pg2-41fzsf).
+    local -A counted nfiles
+    local -a order
+    counted=()
+    nfiles=()
+    order=()
+    local key flag
+    while IFS= read -r line; do
+      [[ -z $line ]] && continue
+      key="${line%$'\t'*}"
+      flag="${line##*$'\t'}"
+      if [[ -z ${seen["$key"]:-} ]]; then
+        seen["$key"]=1
+        order+=("$key")
+        counted["$key"]=0
+        nfiles["$key"]=0
+      fi
+      nfiles["$key"]=$((nfiles["$key"] + 1))
+      [[ $flag == 1 ]] && counted["$key"]=1
+    done <<<"$raw"
+    for key in "${order[@]}"; do
+      if [[ ${counted["$key"]} == 1 ]]; then
+        projects+=("$key")
+      else
+        printf '[SKIP] %s (%s) none of the %s changed file(s) under it is a test input (source, module file, testdata, embedded or declared extra path); suite not run\n' \
+          "${key%%$'\t'*}" "${key#*$'\t'}" "${nfiles["$key"]}"
+      fi
+    done
+  else
+    while IFS= read -r line; do
+      [[ -z $line ]] && continue
+      if [[ -z ${seen["$line"]:-} ]]; then
+        seen["$line"]=1
+        projects+=("$line")
+      fi
+    done <<<"$raw"
+  fi
 
   local final_rc=0
   ptr_execute_projects "$labels_csv" "${projects[@]}" && final_rc=0 || final_rc=$?

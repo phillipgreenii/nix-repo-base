@@ -206,6 +206,9 @@ Resolution modes:
   nearest marker wins. Deleted files map by path string. A file matching no project contributes
   NOTHING, deliberately: there is no downward fallback in this mode, or a commit touching only an
   unowned root-level file (README, `flake.nix`) would run every project in the repo.
+  A language MAY declare `inputs` rules (bead pg2-41fzsf): a resolved project then runs only when
+  a changed file under it is a test input, else it is skipped with a `[SKIP]` line; see
+  `modules/pg-test-runner/pg-test-runner/pg-test-runner.md`.
 - **Path arguments (ad hoc; default `cwd`):** a FILE argument resolves via its containing
   directory. Starting AT that directory, check it for markers, then walk UP — stopping when a
   marker is found, otherwise at the repo toplevel when inside a repo, or at the filesystem root

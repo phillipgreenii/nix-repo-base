@@ -122,6 +122,13 @@
     "packages/pg-router" = 900;
     "packages/pg-connector" = 900;
   };
+  # Per-project extra test inputs (pg2-41fzsf): project path suffix -> globs,
+  # relative to the project root, of files that make --files mode (the commit
+  # hook) run that project's suite although they are not source/module/testdata
+  # files. A key matches like projectTimeouts. Use it for a file a test reads
+  # that no `go:embed` names (a fixture outside testdata/, a golden file read by
+  # path). `*` crosses `/`; a pattern naming a directory covers everything below.
+  projectExtraPaths = { };
   ignore = [
     ".git/"
     ".worktrees/"
@@ -144,6 +151,41 @@
       name = "go";
       markers = [ "go.mod" ];
       tools = [ "go" ];
+      # Which changed files make --files mode (the commit hook) run a Go
+      # project's suite (pg2-41fzsf): any other changed file under the project
+      # (docs, YAML, README, grafana rules) skips it with a [SKIP] line. Sources
+      # incl. cgo/asm inputs, module files, testdata/ and vendor/ trees, and the
+      # files a `//go:embed` directive names. A file the rules cannot place, or
+      # an unreadable embed directive, runs the suite. --all and path modes never
+      # skip.
+      inputs = {
+        names = [
+          "*.go"
+          "go.mod"
+          "go.sum"
+          "go.work"
+          "go.work.sum"
+          "*.s"
+          "*.S"
+          "*.c"
+          "*.h"
+          "*.cc"
+          "*.cpp"
+          "*.cxx"
+          "*.hh"
+          "*.hpp"
+          "*.m"
+          "*.f"
+          "*.syso"
+          "*.swig"
+          "*.swigcxx"
+        ];
+        dirs = [
+          "testdata"
+          "vendor"
+        ];
+        goEmbed = true;
+      };
       run = {
         unit = [
           "go"

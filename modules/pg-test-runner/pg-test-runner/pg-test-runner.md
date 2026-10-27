@@ -92,6 +92,52 @@ non-integer value is exit `2`); a malformed config value is exit `13`.
 { "projectConcurrency": 2 }
 ```
 
+## Which changed files run a project's suite (`--files` mode)
+
+In `--files` mode (the `run-unit-tests` commit hook) a project is not run just because some changed
+file lives under it. A language MAY carry an `inputs` block in the config; for such a language the
+project's suite runs only when at least one changed file under it is a test input, and otherwise the
+project is skipped with one line per skipped project:
+
+```text
+[SKIP] /repo/packages/pg-connector (go) none of the 2 changed file(s) under it is a test input (source, module file, testdata, embedded or declared extra path); suite not run
+```
+
+A language WITHOUT `inputs` (python, js, bats in the shipped config) runs on any changed file, as
+before. Path arguments and `--all` never skip.
+
+For the shipped `go` language a changed file is a test input when ANY of these holds:
+
+- its basename matches `inputs.names`: `*.go` (so `_test.go` too), `go.mod`, `go.sum`, `go.work`,
+  `go.work.sum`, and cgo/assembly sources (`*.c`, `*.h`, `*.s`, `*.cc`, `*.cpp`, ...);
+- a directory component of its path is in `inputs.dirs` (`testdata`, `vendor`), even though
+  `testdata/` is an `ignore` entry for project discovery;
+- it matches a `projectExtraPaths` entry for the project (below);
+- `inputs.goEmbed` is true and a `//go:embed` directive in a Go file of the project names it. The
+  runner scans the project's `*.go` files (working tree) for directives, reads quoted (`"..."`,
+  backquoted) and bare patterns and the `all:` prefix, and resolves each pattern relative to the
+  directory of the file that holds it; a pattern naming a directory covers everything below it. A
+  directive it cannot read with certainty (unterminated quote, no pattern, a backslash escape, an
+  absolute or `..` pattern, or a grep failure) makes EVERY changed file count for that project.
+
+When in doubt the suite runs. A changed file that does not match any rule, but that a test reads by
+path (a golden file outside `testdata/`, a YAML fixture), is NOT detected: declare it in
+`projectExtraPaths`, a map from a project path suffix (same matching as `projectTimeouts`, every
+matching key contributes) to non-empty glob patterns relative to the project root. `*` also matches
+`/`, and a pattern naming a directory covers everything below it:
+
+```json
+{
+  "projectExtraPaths": {
+    "packages/pg-connector": ["grafana/*.yaml", "contracts"]
+  }
+}
+```
+
+A malformed `projectExtraPaths` or `languages[].inputs` is exit `13`. The shipped default registry
+is `modules/pg-test-runner/config.nix` (its `projectExtraPaths` is empty; add entries there or in a
+machine-customised `phillipgreenii.pg-test-runner.config`).
+
 ## Exit codes
 
 | Code | Meaning                                                                |

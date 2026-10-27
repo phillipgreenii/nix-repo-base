@@ -23,7 +23,11 @@ OPTIONS
   --files <file>...
                    prek mode: resolve each staged file to its owning project
                    (nearest ancestor marker, upward walk only) and run those.
-                   A file matching no project contributes nothing.
+                   A file matching no project contributes nothing. For a
+                   language with config `inputs` rules (go), a project none of
+                   whose changed files is a test input (Go source, go.mod/
+                   go.sum, testdata, //go:embed target or a projectExtraPaths
+                   entry) is skipped with a "[SKIP] ... suite not run" line.
   --all            Every project under the repo toplevel (downward scan).
   <path>...        Ad hoc mode (default: cwd). Each path resolves per the
                    upward-then-downward-fallback algorithm in section 2.3 of
