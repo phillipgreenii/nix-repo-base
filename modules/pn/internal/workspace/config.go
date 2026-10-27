@@ -39,6 +39,11 @@ type WorkspaceSection struct {
 	// WorkforestsDir is where `pn workspace workforest` creates sets. Relative paths are
 	// resolved against the workspace root. Defaults to ".workforests" when empty.
 	WorkforestsDir string `toml:"workforests_dir,omitempty"`
+	// WarnBuilds is the build-plan size above which build/apply print one
+	// warning line (bead pg2-sdbhh4.10). Unset means defaultWarnBuilds (300); 0
+	// disables the warning; negative is rejected at parse time. The warning
+	// never stops the run.
+	WarnBuilds *int `toml:"warn_builds,omitempty"`
 }
 
 // Remote is one named git remote that publishes a workspace repo.
@@ -123,6 +128,15 @@ func (c *WorkspaceConfig) ApplyCommandTemplate() (string, error) {
 		return "", fmt.Errorf("workspace.apply_command is not set in pn-workspace.toml")
 	}
 	return c.Workspace.ApplyCommand, nil
+}
+
+// WarnBuildsThreshold returns the effective workspace.warn_builds: the
+// configured value, or the default 300 when unset. 0 means the warning is off.
+func (c *WorkspaceConfig) WarnBuildsThreshold() int {
+	if c != nil && c.Workspace.WarnBuilds != nil {
+		return *c.Workspace.WarnBuilds
+	}
+	return defaultWarnBuilds
 }
 
 const defaultWorkforestsDir = ".workforests"
@@ -212,6 +226,9 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 	// Validate workspace.id if set.
 	if cfg.Workspace.Id != "" && !workspaceIDRe.MatchString(cfg.Workspace.Id) {
 		return nil, fmt.Errorf("workspace.id %q must be a slug: lowercase letters, digits, dashes", cfg.Workspace.Id)
+	}
+	if wb := cfg.Workspace.WarnBuilds; wb != nil && *wb < 0 {
+		return nil, fmt.Errorf("workspace.warn_builds %d must be >= 0 (0 disables the warning)", *wb)
 	}
 	// Apply repo defaults + validate each repo.
 	for name, r := range cfg.Repos {

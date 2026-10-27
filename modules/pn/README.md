@@ -117,6 +117,48 @@ After the prelude the verbs differ, deliberately:
 Build's command template has no required `#{hostname}`; when `build_command` includes `{hostname}` it
 addresses the same flake output as apply. Neither verb changes how the workspace root is resolved.
 
+## Build-plan size: telemetry and the large-plan warning
+
+While `pn workspace build` or `apply` runs its nix command, pn watches the output for nix's own plan
+message (`these N derivations will be built:` / `this derivation will be built:` and
+`these M paths will be fetched (X MiB download, Y MiB unpacked):`, with or without ANSI colors, split
+across writes in any way). Both verbs share one implementation (`Workspace.runPlanned`,
+`internal/workspace/plan.go`). The tap passes the child's bytes through unchanged, so the terminal and
+the apply log are byte-identical to before; nothing in pn stops, signals or cancels the command
+because of plan size (operator ruling, Phillip, 2026-10-26: monitor first, decide on an abort later
+from the data; bead `pg2-sdbhh4.21`).
+
+- **Span attributes** on the `pn.repo` span of the run: `pn.plan.build` (derivations to build),
+  `pn.plan.fetch` (paths to fetch) and, when the fetch message carries a size, `pn.plan.download_mib`.
+  A run that reached the build step but whose nix printed no plan records 0 builds and 0 fetches. If a
+  run prints several plan messages their counts add up.
+- **Metric** `pn.plan.builds`: a histogram (unit `{derivation}`), one observation per build or apply
+  run that reached the build step (0 when no plan was printed), labelled only by `pn.verb`
+  (`build` or `apply`). Its bucket boundaries (0, 25, 50, 100, 200, 300, 400, 600, 1000, 2000) are in
+  the shared catalog (`x/otelsetup/metrics.go`, `PlanBuildsBuckets`) so that 400, the alert point, is an
+  exact edge; a Prometheus bucket is `le`-inclusive, so a plan of exactly 400 counts in `le="400"`.
+- **Known limit**: pn's delta metrics undercount (pn runs were 67.6% of the Tempo count in
+  `docs/reviews/2026-10-14-pn-nix-telemetry-observation-findings.md`), so the metric can miss a run.
+  The `pn.repo` span attributes in Tempo are the complete record; trend and alert on the metric, count
+  runs from Tempo.
+- **Warning**: when the run's plan has MORE than `workspace.warn_builds` derivations (default 300), pn
+  prints ONE line, once per run, at the first line boundary after the plan block ends:
+  `pn: WARNING: nix plans to build N derivations and fetch M paths (X MiB download) ... First 10: ...`.
+  It also says how to proceed (Ctrl-C to stop; `--cores N` on the nix command for a one-off cap) and that
+  pn does not stop the run. At or below the threshold nothing extra is printed. The warning is added to
+  the terminal output and the apply log; it never changes the exit code.
+
+`workspace.warn_builds` (in `pn-workspace.toml`):
+
+```toml
+[workspace]
+warn_builds = 300 # derivations; unset = 300, 0 = never warn, negative = error at config load
+```
+
+It is validated when the config is parsed (a negative or non-integer value is an error naming the key)
+and survives pn's own rewrites of the file. It only controls the warning: the metric and span attributes
+are always recorded.
+
 ## pn workspace apply: the apply log
 
 Every `pn workspace apply` (and the apply step of `upgrade`) that actually REBUILDS keeps a copy of

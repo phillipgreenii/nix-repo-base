@@ -54,6 +54,7 @@ const (
 	SpanRepo              = "pn.repo"
 	SpanExec              = "pn.exec"
 	MetricCommandDuration = "pn.command.duration"
+	MetricPlanBuilds      = "pn.plan.builds"
 )
 
 // Attribute keys.
@@ -66,12 +67,19 @@ const (
 	AttrExecutable = "process.executable.name"
 	StatusOK       = "ok"
 	StatusError    = "error"
+
+	// Build-plan attributes on the pn.repo span (bead pg2-sdbhh4.10); names are
+	// aligned with the wrapper's nix.plan.build / nix.plan.fetch.
+	AttrPlanBuild       = "pn.plan.build"
+	AttrPlanFetch       = "pn.plan.fetch"
+	AttrPlanDownloadMiB = "pn.plan.download_mib"
 )
 
 // Telemetry is the process-wide telemetry handle.
 type Telemetry struct {
 	tracer          trace.Tracer
 	commandDuration metric.Float64Histogram
+	planBuilds      metric.Int64Histogram
 	enabled         bool
 
 	shutdown func(context.Context) error
@@ -99,6 +107,7 @@ func New(ctx context.Context, version, endpoint string, opts ...otelsetup.Option
 	t := &Telemetry{enabled: ot.Enabled(), timeout: ShutdownTimeout}
 	t.tracer = ot.Tracer
 	t.commandDuration = mustHistogram(ot.Meter)
+	t.planBuilds = mustPlanBuilds(ot.Meter)
 	t.shutdown = ot.Shutdown
 	return t, nil
 }
@@ -108,6 +117,7 @@ func Disabled() *Telemetry {
 	return &Telemetry{
 		tracer:          tracenoop.NewTracerProvider().Tracer(ServiceName),
 		commandDuration: mustHistogram(metricnoop.NewMeterProvider().Meter(ServiceName)),
+		planBuilds:      mustPlanBuilds(metricnoop.NewMeterProvider().Meter(ServiceName)),
 	}
 }
 
@@ -117,6 +127,7 @@ func NewWithProviders(tracer trace.Tracer, meter metric.Meter, shutdown func(con
 	return &Telemetry{
 		tracer:          tracer,
 		commandDuration: mustHistogram(meter),
+		planBuilds:      mustPlanBuilds(meter),
 		enabled:         true,
 		shutdown:        shutdown,
 		timeout:         ShutdownTimeout,
@@ -134,6 +145,52 @@ func mustHistogram(m metric.Meter) metric.Float64Histogram {
 		h, _ = metricnoop.NewMeterProvider().Meter(ServiceName).Float64Histogram(MetricCommandDuration)
 	}
 	return h
+}
+
+// mustPlanBuilds creates the pn.plan.builds histogram. Its explicit boundaries
+// come from the shared catalog (otelsetup.PlanBuildsBuckets), so 400 is an exact
+// edge; as an advisory they also apply to a meter provider with no otelsetup
+// View (in-memory test readers), while otelsetup's own View applies the same
+// catalog entry in production.
+func mustPlanBuilds(m metric.Meter) metric.Int64Histogram {
+	h, err := m.Int64Histogram(
+		MetricPlanBuilds,
+		metric.WithUnit("{derivation}"),
+		metric.WithDescription("Derivations in the nix build plan of one pn build/apply run, by verb."),
+		metric.WithExplicitBucketBoundaries(otelsetup.PlanBuildsBuckets...),
+	)
+	if err != nil {
+		h, _ = metricnoop.NewMeterProvider().Meter(ServiceName).Int64Histogram(MetricPlanBuilds)
+	}
+	return h
+}
+
+// Plan is the size of the nix build plan one build/apply run printed.
+type Plan struct {
+	// Builds and Fetches are the derivations to build and paths to fetch (0 when
+	// nix printed no such plan).
+	Builds  int
+	Fetches int
+	// DownloadMiB is the fetch download size, valid when HasDownload.
+	DownloadMiB float64
+	HasDownload bool
+}
+
+// RecordPlan records one run's plan: pn.plan.build / pn.plan.fetch (and
+// pn.plan.download_mib when the fetch message carried a size) on the span in ctx
+// (the pn.repo span), and ONE pn.plan.builds observation labelled with verb
+// (build or apply) only. Call it once per run that reached the build step.
+func RecordPlan(ctx context.Context, verb string, p Plan) {
+	attrs := []attribute.KeyValue{
+		attribute.Int(AttrPlanBuild, p.Builds),
+		attribute.Int(AttrPlanFetch, p.Fetches),
+	}
+	if p.HasDownload {
+		attrs = append(attrs, attribute.Float64(AttrPlanDownloadMiB, p.DownloadMiB))
+	}
+	trace.SpanFromContext(ctx).SetAttributes(attrs...)
+	From(ctx).planBuilds.Record(context.WithoutCancel(ctx), int64(p.Builds),
+		metric.WithAttributes(attribute.String(AttrVerb, verb)))
 }
 
 // Enabled reports whether telemetry is exporting.

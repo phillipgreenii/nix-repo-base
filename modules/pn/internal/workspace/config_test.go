@@ -740,3 +740,60 @@ func TestEnforceKeys_PreservesFoundation(t *testing.T) {
 		t.Error("EnforceKeys dropped repos.x.foundation")
 	}
 }
+
+// workspace.warn_builds (bead pg2-sdbhh4.10): unset is the default 300, an
+// explicit value is honored, 0 disables the warning, negative fails at parse
+// time, and a value survives pn's own rewrite of the file.
+func TestParseConfig_WarnBuilds(t *testing.T) {
+	const repos = "\n[repos.a]\nurl = \"github:o/a\"\n"
+	cases := []struct {
+		name    string
+		toml    string
+		want    int
+		wantErr string
+	}{
+		{"unset defaults to 300", "[workspace]\n" + repos, 300, ""},
+		{"explicit", "[workspace]\nwarn_builds = 150\n" + repos, 150, ""},
+		{"zero disables", "[workspace]\nwarn_builds = 0\n" + repos, 0, ""},
+		{"negative rejected", "[workspace]\nwarn_builds = -1\n" + repos, 0, "warn_builds"},
+		{"wrong type rejected", "[workspace]\nwarn_builds = \"many\"\n" + repos, 0, "WarnBuilds"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfig([]byte(tc.toml))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want it to mention %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.WarnBuildsThreshold(); got != tc.want {
+				t.Fatalf("WarnBuildsThreshold = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWarnBuilds_SurvivesRewrite(t *testing.T) {
+	for _, v := range []string{"0", "250"} {
+		p := filepath.Join(t.TempDir(), "pn-workspace.toml")
+		src := "[workspace]\nid = \"x\"\nwarn_builds = " + v + "\n\n[repos.a]\nurl = \"github:o/a\"\n"
+		if err := os.WriteFile(p, []byte(src), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := ParseConfig([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeConfigTOMLAtomicMode(p, cfg, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(p)
+		if !strings.Contains(string(data), "warn_builds = "+v) {
+			t.Fatalf("warn_builds = %s lost on rewrite:\n%s", v, data)
+		}
+	}
+}

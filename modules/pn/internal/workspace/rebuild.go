@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 )
 
@@ -111,6 +112,31 @@ type rebuildVerb interface {
 	commandTemplate(ws *Workspace, opts rebuildOptions) (string, error)
 	// run executes everything after the shared prelude.
 	run(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) error
+}
+
+// runPlanned runs the verb's nix command with its output tapped for the build
+// plan (plan.go), then records the plan in OTel (RecordPlan, once per run that
+// reached the build step, 0 builds when nix printed no plan). The tap passes
+// the child's bytes through unchanged and nothing here stops or signals the
+// child. out is what the operator sees (for apply: the terminal tee'd into the
+// apply log), so the optional warning reaches both.
+func (ws *Workspace) runPlanned(ctx context.Context, out io.Writer, verb string, p *rebuildPlan) error {
+	tap := newPlanTap(out, ws.config.WarnBuildsThreshold())
+	_, err := ws.runner.Run(ctx, p.cmdArgs[0], p.fullArgs(), exec.RunOptions{
+		Dir:     p.terminalRepoDir,
+		Stdout:  tap,
+		Stderr:  tap,
+		WrapNix: true,
+	})
+	tap.finish()
+	st := tap.stats()
+	telemetry.RecordPlan(ctx, verb, telemetry.Plan{
+		Builds:      st.Builds,
+		Fetches:     st.Fetches,
+		DownloadMiB: st.DownloadMiB,
+		HasDownload: st.HasDownload,
+	})
+	return err
 }
 
 // rebuild is the Template Method: the shared prelude, then the verb's run.

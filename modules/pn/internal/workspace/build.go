@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
@@ -68,7 +67,7 @@ func (buildVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	ws.recordStep("build", false, stepReportApplyDecision)
 	ws.reportApplyDecision(ctx, out, p.opts.OverridePaths)
 	ws.recordStep("build", false, stepRunCommand)
-	if _, err := ws.runner.Run(ctx, p.cmdArgs[0], p.fullArgs(), exec.RunOptions{Dir: p.terminalRepoDir, Stdout: out, Stderr: out, WrapNix: true}); err != nil {
+	if err := ws.runPlanned(ctx, out, "build", p); err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
 	fmt.Fprintln(out, "Build successful. To apply, run: pn workspace apply")

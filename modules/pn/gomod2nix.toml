@@ -34,8 +34,8 @@ schema = 3
     hash = 'sha256-5H8+UOtPOs+Yc+8oVT/3bugCCdbq3jFMH6eOW8dadyg='
 
   [mod.'github.com/phillipgreenii/x']
-    version = 'v0.0.0-20261006150807-f5289669c748'
-    hash = 'sha256-Uk6PWVcIAn8fUKfJ+SpIB6yW6GP2KAmAopTXSKfRltE='
+    version = 'v0.0.0-20261027072244-982f7edfdcbb'
+    hash = 'sha256-g3Doq1u3SEUCc2QHe6/fSla18ZtzmlkU4wTrw1CwLBg='
 
   [mod.'github.com/spf13/cobra']
     version = 'v1.10.2'

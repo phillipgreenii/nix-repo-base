@@ -103,12 +103,7 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	}
 	alog.recordRefs(preBuildHeads)
 	ws.recordStep("apply", false, stepRunCommand)
-	if _, runErr := ws.runner.Run(ctx, p.cmdArgs[0], p.fullArgs(), exec.RunOptions{
-		Dir:     terminalRepoDir,
-		Stdout:  out,
-		Stderr:  out,
-		WrapNix: true,
-	}); runErr != nil {
+	if runErr := ws.runPlanned(ctx, out, "apply", p); runErr != nil {
 		alog.setExit(runErr)
 		return fmt.Errorf("apply failed: %w", runErr)
 	}

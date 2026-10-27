@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/phillipgreenii/x/otelsetup"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -332,5 +334,62 @@ func TestCollectorHung_ShutdownBounded(t *testing.T) {
 	_ = tel.Shutdown(context.Background())
 	if d := time.Since(start); d > telemetry.ShutdownTimeout+2*time.Second {
 		t.Errorf("Shutdown took %v with a hung collector, want <= ~%v", d, telemetry.ShutdownTimeout)
+	}
+}
+
+// pn.plan.builds carries the catalog's boundaries (400 an exact edge), is
+// labelled by verb only and works on the no-op Telemetry.
+func TestRecordPlan_HistogramAndSpanAttributes(t *testing.T) {
+	tel, rec := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	ctx, end := telemetry.StartRepo(ctx, "terminal")
+	telemetry.RecordPlan(ctx, "apply", telemetry.Plan{Builds: 423, Fetches: 5, DownloadMiB: 2.5, HasDownload: true})
+	end(nil)
+
+	spans := rec.ByName(telemetry.SpanRepo)
+	if len(spans) != 1 {
+		t.Fatalf("spans = %d", len(spans))
+	}
+	got := map[string]any{}
+	for _, a := range spans[0].Attributes() {
+		got[string(a.Key)] = a.Value.AsInterface()
+	}
+	if got["pn.plan.build"] != int64(423) || got["pn.plan.fetch"] != int64(5) || got["pn.plan.download_mib"] != 2.5 {
+		t.Errorf("attributes = %v", got)
+	}
+
+	var h metricdata.Histogram[int64]
+	for _, sm := range rec.Metrics(t).ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == telemetry.MetricPlanBuilds {
+				h = m.Data.(metricdata.Histogram[int64])
+			}
+		}
+	}
+	if len(h.DataPoints) != 1 || h.DataPoints[0].Sum != 423 || h.DataPoints[0].Attributes.Len() != 1 {
+		t.Fatalf("histogram = %+v", h.DataPoints)
+	}
+	if !slices.Contains(h.DataPoints[0].Bounds, 400.0) {
+		t.Errorf("bounds %v lack 400", h.DataPoints[0].Bounds)
+	}
+
+	// No-op Telemetry and a context without a span must not panic.
+	telemetry.RecordPlan(context.Background(), "build", telemetry.Plan{})
+}
+
+// Every metric pn creates MUST be in the shared catalog (the dashboard lint
+// checks PromQL names against it), and pn.plan.builds carries its boundaries
+// there.
+func TestMetricNamesAreInTheSharedCatalog(t *testing.T) {
+	for _, name := range []string{telemetry.MetricCommandDuration, telemetry.MetricPlanBuilds} {
+		i := slices.IndexFunc(otelsetup.Metrics, func(m otelsetup.MetricSpec) bool { return m.Name == name })
+		if i < 0 {
+			t.Errorf("%s is not in otelsetup.Metrics", name)
+		}
+	}
+	for _, m := range otelsetup.Metrics {
+		if m.Name == telemetry.MetricPlanBuilds && !slices.Contains(m.Buckets, 400.0) {
+			t.Errorf("catalog buckets for %s = %v, want an exact 400 edge", m.Name, m.Buckets)
+		}
 	}
 }
