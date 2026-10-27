@@ -243,7 +243,7 @@ func SweepWith(dir string, now time.Time, maxAge time.Duration, capBytes int64, 
 	for _, e := range entries {
 		n := e.Name()
 		isRaw := strings.HasSuffix(n, rawSuffix)
-		if !(isRaw || strings.HasSuffix(n, suffix)) || !e.Type().IsRegular() {
+		if (!isRaw && !strings.HasSuffix(n, suffix)) || !e.Type().IsRegular() {
 			continue
 		}
 		fi, err := e.Info()

@@ -144,6 +144,6 @@ func noopTelemetry(context.Context, otelsetup.Config, ...otelsetup.Option) (Tele
 // --override-input. Any error means the caller fails open as before.
 func (r *runner) setupGuardOnly(opts config.Options, cmdPath string) (*session, error) {
 	rr := *r
-	rr.Deps.NewTelemetry = noopTelemetry
+	rr.NewTelemetry = noopTelemetry
 	return rr.setup(opts, config.Resolved{Endpoint: "guard-only"}, cmdPath)
 }
