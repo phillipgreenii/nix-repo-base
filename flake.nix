@@ -1662,9 +1662,25 @@
             # re-execute the test binary as the wrapper and as a fake nix, and
             # the real-nix canary skips itself inside a nix builder
             # (NIX_BUILD_TOP) and wherever nix is absent.
+            #
+            # Its source is widened (Pattern B: lib.fileset rooted at ./modules,
+            # modRoot = the module) to carry ONE file of pn's: the golden argv pn
+            # produces for the user build step (bead pg2-sdbhh4.9). The wrapper's
+            # contract test (cmd/pg-nix-log-wrapped/contract_test.go) feeds it to
+            # config.ParseArgs and to the real wrapper binary, and pn's
+            # exec/wrap_test.go asserts its generated argv equals the same file, so
+            # neither side can drift alone. The test FAILS, never skips, when the
+            # file is missing from this source.
             pg-nix-log-wrapped-go-tests = goBuilders.mkGoTest {
               pname = "pg-nix-log-wrapped";
-              src = ./modules/pg-nix-log-wrapped;
+              src = lib.fileset.toSource {
+                root = ./modules;
+                fileset = lib.fileset.unions [
+                  ./modules/pg-nix-log-wrapped
+                  ./modules/pn/internal/exec/testdata/wrapper-user-build-argv.golden
+                ];
+              };
+              modRoot = "pg-nix-log-wrapped";
               gomod2nixToml = ./modules/pg-nix-log-wrapped/gomod2nix.toml;
             };
 

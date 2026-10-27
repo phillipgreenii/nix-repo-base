@@ -167,6 +167,11 @@ misconfiguration.
   0600). The mode is deliberate (epic `pg2-kqrrs` D6 and the Phase 7 pass bar "files 0600 inside a
   root-owned 0750 directory"); `pg2-lur5p` item 4 reviewed it and kept it. A non-root observer sees
   root runs only as spans in Tempo.
+- Note 2026-10-27 (ADR 0038, `pg2-sdbhh4.9`): "root logs" now means a legacy `sudo darwin-rebuild
+switch` apply or an apply that fell back to it. With `[workspace].activate_command` set, apply's
+  nix run is the user build, wrapped as a user wrapper, so its JSONL is in
+  `${XDG_STATE_HOME:-$HOME/.local/state}/pn/nix-logs` and `/var/log/pg-nix-log-wrapped` gets no file
+  for that apply; a non-root observer then reads it directly.
 - A run's spans and metrics leave in one bounded flush at the end. A collector refusal or failure at
   that moment drops the whole batch, including `nix.invocation`, while the retained log file remains, so
   spans can be fewer than log files (`pg2-lur5p` item 1). The wrapper cannot retry inside the 2 s

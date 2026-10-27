@@ -58,6 +58,14 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 		t.Fatalf("buildScrubbedEnv: create ullib: %v", err)
 	}
 
+	// The fake store S42 validates against must be spelled the way the scenario's
+	// setup.sh ($PWD, physical) spells it: on macOS t.TempDir is under the
+	// /var -> /private/var symlink.
+	physRoot := wsRoot
+	if p, err := filepath.EvalSymlinks(wsRoot); err == nil {
+		physRoot = p
+	}
+
 	// Override map: keys to override or set.
 	overrides := map[string]string{
 		"HOME":                tempHome,
@@ -77,6 +85,9 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 		"UL_LIB_DIR":          ulLib,
 		"PG_NIX_LOG_DISABLE":  "",
 		"PN_TRACE_HINT":       "",
+		// Read only by a pn built with -tags smokeseams (scenario S42); ignored by
+		// every other binary.
+		"PN_SMOKE_STORE_DIR": filepath.Join(physRoot, "store"),
 	}
 
 	// Build a new env slice from os.Environ(), replacing overridden keys.

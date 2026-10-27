@@ -34,6 +34,9 @@ type Workspace struct {
 	// runnable (exec.ResolveTool). nil in tests, where the runner is a fake and
 	// no real binary is needed; production sets it via EnableToolResolution.
 	resolveTool func(name string) (map[string]string, error)
+	// asUserSeams overrides the filesystem facts apply's build-as-user flow
+	// consults (apply_asuser.go). nil in production; set only in tests.
+	asUserSeams *asUserSeams
 }
 
 // Open loads the workspace rooted at dir. Reads pn-workspace.toml (required)

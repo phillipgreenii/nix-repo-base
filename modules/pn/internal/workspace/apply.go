@@ -58,7 +58,13 @@ func (applyVerb) commandTemplate(ws *Workspace, opts rebuildOptions) (string, er
 	if opts.Cmd != "" {
 		return opts.Cmd, nil
 	}
-	return ws.config.ApplyCommandTemplate()
+	tmpl, err := ws.config.ApplyCommandTemplate()
+	if err != nil && ws.config.ActivateCommandTemplate() != "" {
+		// The build-as-user flow (activate_command) needs no apply_command unless
+		// it has to fall back; extendPlan reports the missing fallback if it does.
+		return ws.config.BuildCommandTemplate(), nil
+	}
+	return tmpl, err
 }
 
 func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) (err error) {
@@ -81,7 +87,11 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	// tee into it, so the terminal output is unchanged. A failure to open the log
 	// is reported and otherwise ignored: it must never fail or alter the apply.
 	ws.recordStep("apply", false, stepApplyLog)
-	alog, logErr := openApplyLog(terminal, append(append([]string{}, p.cmdArgs...), p.overrideArgs...))
+	var extraHeader []string
+	if p.asUser != nil {
+		extraHeader = p.asUser.describeSteps(p)
+	}
+	alog, logErr := openApplyLogWith(terminal, append(append([]string{}, p.cmdArgs...), p.overrideArgs...), extraHeader)
 	if logErr != nil {
 		fmt.Fprintf(out, "warning: could not retain the apply log: %v\n", logErr)
 	}
@@ -110,11 +120,18 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	}
 	alog.recordRefs(preBuildHeads)
 	ws.recordStep("apply", false, stepRunCommand)
-	if runErr := ws.runPlanned(ctx, out, "apply", p); runErr != nil {
-		alog.setExit(runErr)
-		return fmt.Errorf("apply failed: %w", runErr)
+	if p.asUser != nil {
+		// Build-as-user flow (activate_command set, preflight passed): apply_asuser.go.
+		if err := ws.applyAsUser(ctx, out, alog, p); err != nil {
+			return err
+		}
+	} else {
+		if runErr := ws.runPlanned(ctx, out, "apply", p); runErr != nil {
+			alog.setExit(runErr)
+			return fmt.Errorf("apply failed: %w", runErr)
+		}
+		alog.setExit(nil)
 	}
-	alog.setExit(nil)
 	ws.recordStep("apply", false, stepPostSteps)
 	newProfile := readSystemProfile()
 	if oldProfile != newProfile && newProfile != "" && commandExists("nvd") {

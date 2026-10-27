@@ -483,3 +483,55 @@ func TestWrap_ArgvByteForByteWithRealProcesses(t *testing.T) {
 		t.Errorf("stdout differs: %q vs %q", plainOut.String(), wrappedOut.String())
 	}
 }
+
+// wrapperArgvGolden is the argv pn hands the wrapper for the USER build step of
+// apply (and of build), one argument per line, with the three run-specific values
+// replaced by {traceparent}, {otlp-endpoint} and {log-dir}. The wrapper module's
+// contract test (modules/pg-nix-log-wrapped/cmd/pg-nix-log-wrapped/contract_test.go)
+// reads THE SAME FILE, feeds it to config.ParseArgs and to the real wrapper
+// binary, so a change to either side that breaks the other fails a test
+// (bead pg2-sdbhh4.9). The two Go modules cannot import each other, so the file
+// is the contract.
+const wrapperArgvGolden = "testdata/wrapper-user-build-argv.golden"
+
+func TestWrap_UserBuildArgvMatchesTheWrapperContractGolden(t *testing.T) {
+	e := newWrapEnv(t, "/wrapper/pg-nix-log-wrapped")
+	args := []string{"build", "--flake", "/x/leaf#host", "--override-input", "dep-input", "git+file:///x/dep"}
+	if _, err := e.r.Run(e.ctx, "darwin-rebuild", args, RunOptions{WrapNix: true, Dir: "/run-dir"}); err != nil {
+		t.Fatal(err)
+	}
+	c := e.only(t)
+	tp := traceparentOf(t, c.Args)
+	var lines []string
+	for i := 0; i < len(c.Args); i++ {
+		lines = append(lines, c.Args[i])
+		switch c.Args[i] {
+		case "--traceparent":
+			i++
+			if c.Args[i] != tp {
+				t.Fatalf("unexpected traceparent %q", c.Args[i])
+			}
+			lines = append(lines, "{traceparent}")
+		case "--otlp-endpoint":
+			i++
+			if c.Args[i] != testEndpoint {
+				t.Fatalf("unexpected endpoint %q", c.Args[i])
+			}
+			lines = append(lines, "{otlp-endpoint}")
+		case "--log-dir":
+			i++
+			if c.Args[i] != "/state/pn/nix-logs" {
+				t.Fatalf("unexpected log dir %q", c.Args[i])
+			}
+			lines = append(lines, "{log-dir}")
+		}
+	}
+	got := strings.Join(lines, "\n") + "\n"
+	want, err := os.ReadFile(wrapperArgvGolden)
+	if err != nil {
+		t.Fatalf("read the shared golden: %v", err)
+	}
+	if got != string(want) {
+		t.Errorf("the user build's wrapper argv no longer matches %s byte for byte (the wrapper module's contract test reads that file):\n--- got\n%s--- want\n%s", wrapperArgvGolden, got, want)
+	}
+}

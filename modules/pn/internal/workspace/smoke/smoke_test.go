@@ -506,6 +506,14 @@ func TestSmoke_S40_NixWrapperTelemetryOff(t *testing.T) {
 	runScenario(t, "s40-nix-wrapper-telemetry-off")
 }
 
+// TestSmoke_S42_BuildAsUserApply: with activate_command set, apply builds as the
+// invoking user in a private run dir and runs only the two root steps (set the
+// system profile, activate) through sudo (pg2-sdbhh4.9, ADR 0038). Stand-ins for
+// darwin-rebuild and sudo; nothing real is built, activated or run as root.
+func TestSmoke_S42_BuildAsUserApply(t *testing.T) {
+	runScenario(t, "s42-build-as-user-apply")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -729,6 +737,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertUnwrappedBuild(t, "S39", wsRoot)
 	case "s40-nix-wrapper-telemetry-off":
 		assertUnwrappedBuild(t, "S40", wsRoot)
+	case "s42-build-as-user-apply":
+		assertS42BuildAsUserApply(t, wsRoot, env)
 	}
 }
 

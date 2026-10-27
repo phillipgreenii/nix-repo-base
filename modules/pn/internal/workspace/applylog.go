@@ -77,11 +77,22 @@ type applyLog struct {
 	path     string
 	exit     string // exit_status line value; "none" until the command ran
 	finished bool
+	// steps is true for the build-as-user flow, whose trailer also records
+	// failed_step. The legacy single-command flow never writes that line, so its
+	// log stays exactly as it was.
+	steps      bool
+	failedStep string
 }
 
 // openApplyLog creates the log, writes its header, repoints `latest` and prunes
 // old logs. On any failure it returns (nil, err); the caller warns and carries on.
 func openApplyLog(terminal string, cmdline []string) (*applyLog, error) {
+	return openApplyLogWith(terminal, cmdline, nil)
+}
+
+// openApplyLogWith is openApplyLog with extra header lines (`key: value`)
+// written after `command:`: the later steps of a multi-step apply.
+func openApplyLogWith(terminal string, cmdline []string, extra []string) (*applyLog, error) {
 	dir := applyLogDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -96,6 +107,9 @@ func openApplyLog(terminal string, cmdline []string) (*applyLog, error) {
 	l := &applyLog{f: f, path: path, exit: "none"}
 	l.writef("%s\nstarted_at: %s\nterminal: %s\ncommand: %s\n",
 		applyLogHeader, start.Format(time.RFC3339), terminal, strings.Join(cmdline, " "))
+	for _, line := range extra {
+		l.writef("%s\n", line)
+	}
 	repointLatest(dir, name)
 	pruneApplyLogs(dir, applyLogKeep, name)
 	return l, nil
@@ -169,6 +183,45 @@ func (l *applyLog) setExit(err error) {
 	// Otherwise the command never ran (could not start): stays "none".
 }
 
+// useSteps switches the log to the build-as-user flow's trailer, which adds
+// failed_step (none until a step fails).
+func (l *applyLog) useSteps() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.steps = true
+	l.failedStep = failedStepNone
+}
+
+// fail records the step that failed and, when err is (or wraps) a subprocess
+// failure, its exit status (-1 for a signal). A step that is not a process
+// (read-result) passes a nil err and leaves exit_status as it was.
+func (l *applyLog) fail(step string, err error) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.failedStep = step
+	l.mu.Unlock()
+	if err != nil {
+		l.setExit(err)
+	}
+}
+
+// failExit is fail for a step that ran a process and failed by judgement of its
+// output (the probe): exit_status is that process's exit code.
+func (l *applyLog) failExit(step string, code int) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.failedStep = step
+	l.exit = fmt.Sprint(code)
+}
+
 // finish writes the trailer and closes the file. runErr is Apply's final error.
 func (l *applyLog) finish(runErr error) {
 	if l == nil {
@@ -186,8 +239,12 @@ func (l *applyLog) finish(runErr error) {
 	}
 	var b strings.Builder
 	// Start the trailer on its own line even if the output lacked a final newline.
-	fmt.Fprintf(&b, "\n%s\nended_at: %s\nexit_status: %s\nresult: %s\n",
-		applyLogTrailer, applyLogNow().UTC().Format(time.RFC3339), l.exit, result)
+	fmt.Fprintf(&b, "\n%s\nended_at: %s\nexit_status: %s\n",
+		applyLogTrailer, applyLogNow().UTC().Format(time.RFC3339), l.exit)
+	if l.steps {
+		fmt.Fprintf(&b, "failed_step: %s\n", l.failedStep)
+	}
+	fmt.Fprintf(&b, "result: %s\n", result)
 	if runErr != nil {
 		fmt.Fprintf(&b, "error: %s\n", strings.ReplaceAll(runErr.Error(), "\n", " "))
 	}

@@ -92,7 +92,10 @@ func buildPNBinary(t *testing.T, moduleRoot string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 120000000000) // 2 minutes
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "go", "build",
+	// -tags smokeseams adds asuser_smokeseams.go, which lets scenario S42 point
+	// apply's build-as-user flow at a fake store (PN_SMOKE_STORE_DIR); no shipped
+	// binary has it.
+	cmd := exec.CommandContext(ctx, "go", "build", "-tags", "smokeseams",
 		"-ldflags", "-X main.Version=smoke-test",
 		"-o", binPath, "./cmd/pn")
 	cmd.Dir = moduleRoot

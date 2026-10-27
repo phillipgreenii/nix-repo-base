@@ -1,0 +1,14 @@
+--traceparent
+{traceparent}
+--otlp-endpoint
+{otlp-endpoint}
+--log-dir
+{log-dir}
+--
+darwin-rebuild
+build
+--flake
+/x/leaf#host
+--override-input
+dep-input
+git+file:///x/dep

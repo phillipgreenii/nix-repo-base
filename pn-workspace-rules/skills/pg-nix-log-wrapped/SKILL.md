@@ -107,6 +107,9 @@ telemetry on or off. It can still be absent on a machine that has not yet applie
 
 ### Under `sudo`
 
+- A `pn workspace apply` with `[workspace].activate_command` set (ADR 0038) does NOT run the wrapper
+  under sudo: its build is a user run, logged to your own `nix-logs` directory. The root rules below
+  apply to the legacy `sudo darwin-rebuild switch` apply and to its fallback.
 - Agents MUST NOT use `sudo` (global rule), and `darwin-rebuild switch` is operator-only. This
   section is for the operator or for `pn`, which handles it.
 - `sudo` drops the environment. A root wrapper therefore reads **flags only**: no

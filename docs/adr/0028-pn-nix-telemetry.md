@@ -180,6 +180,13 @@ inherited environment (item 4), so the same signal path applies; the root case i
 >   verified above). Apply's `sudo darwin-rebuild switch` therefore keeps the old limitation (a
 >   pn-initiated stop reaches `sudo`, which relays it to its command); the build-as-user apply
 >   design (`pg2-sdbhh4.9`) moves the build out of the root step, where this fix covers it.
+> - Note 2026-10-27 (ADR 0038, `pg2-sdbhh4.9`): with `[workspace].activate_command` set, apply's
+>   build is a user command with its own process group, and only the two short root steps
+>   (`sudo env -i ... nix-env ... --set`, `sudo <out>/sw/bin/darwin-rebuild activate`) stay in pn's
+>   group; they run to completion on a pn-initiated cancel. The old limitation above remains true
+>   for the legacy `sudo darwin-rebuild switch` flow and the fallback. ADR 0038 supersedes any
+>   statement here that an apply's nix run is a root wrapper run: in the new flow it is a user
+>   wrapper run whose JSONL is in the user's `nix-logs` directory.
 > - The Phase 7 verification in "Consequences" (pn's cancel of a real apply leaves no nix or
 >   darwin-rebuild process) covered the root apply path, not this one.
 

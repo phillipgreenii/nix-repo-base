@@ -51,6 +51,16 @@ const (
 	stepMarkApplied         = "mark_applied"
 )
 
+// Steps of apply's build-as-user flow (pg2-sdbhh4.9, ADR 0038), recorded after
+// stepRunCommand (which there is the user build). Verb-specific, never part of
+// the parity contract.
+const (
+	stepReadResult = "read_result" // read and validate the build's ./result
+	stepProbe      = "probe"       // <out>/sw/bin/darwin-rebuild --help
+	stepSetProfile = "set_profile" // sudo ... nix-env -p <system profile> --set <out>
+	stepActivate   = "activate"    // sudo <out>/sw/bin/darwin-rebuild activate
+)
+
 // stepRecorder observes the ordered steps a verb runs. shared is true for a step
 // of the common prelude and false for a verb-specific step. It is nil in
 // production and set only by tests (Workspace.stepRecorder).
@@ -139,6 +149,12 @@ type rebuildPlan struct {
 	// toolEnv is the RunOptions.Env overlay for the command's Run (the system
 	// profile appended to PATH when PATH lacked the tool), or nil.
 	toolEnv map[string]string
+	// vars are the template variables the command was expanded with, kept so a
+	// verb can expand a second template (apply's activate_command).
+	vars templateVars
+	// asUser is non-nil when apply runs the build-as-user flow (apply_asuser.go):
+	// cmdArgs is then the user build, not apply_command.
+	asUser *asUserPlan
 }
 
 // fullArgs is the command's arguments after the program name, with the override
@@ -158,6 +174,20 @@ type rebuildVerb interface {
 	run(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) error
 }
 
+// planExtender is an optional capability of a verb: it may adjust the plan the
+// shared prelude resolved, right after template substitution and before the
+// dry-run gate (apply uses it to select the build-as-user flow; build does not
+// implement it).
+type planExtender interface {
+	extendPlan(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) error
+}
+
+// dryRunExtender is an optional capability of a verb: extra lines printed after
+// the command in a --show-nix-commands dry run.
+type dryRunExtender interface {
+	dryRunLines(p *rebuildPlan) []string
+}
+
 // runPlanned runs the verb's nix command with its output tapped for the build
 // plan (plan.go), then records the plan in OTel (RecordPlan, once per run that
 // reached the build step, 0 builds when nix printed no plan). The tap passes
@@ -166,16 +196,25 @@ type rebuildVerb interface {
 // process group it leads, see ownGroup below. out is what the operator sees (for apply: the terminal tee'd into the
 // apply log), so the optional warning reaches both.
 func (ws *Workspace) runPlanned(ctx context.Context, out io.Writer, verb string, p *rebuildPlan) error {
+	return ws.runPlannedIn(ctx, out, verb, p, p.terminalRepoDir, true)
+}
+
+// runPlannedIn is runPlanned with an explicit working directory (apply's
+// build-as-user flow runs the build in its private per-run directory) and an
+// option to skip RecordPlan (the legacy fallback run after a user build, which
+// already recorded the plan once).
+func (ws *Workspace) runPlannedIn(ctx context.Context, out io.Writer, verb string, p *rebuildPlan, dir string, recordPlan bool) error {
 	tap := newPlanTap(out, ws.config.WarnBuildsThreshold())
-	// ownGroup: a user-run command (build; NOT apply's `sudo darwin-rebuild
-	// switch` until build-as-user apply lands, pg2-sdbhh4.9) runs as its own process group so
-	// a pn-initiated stop reaches every descendant, e.g. darwin-rebuild's
-	// `nix build | jq` (pg2-sdbhh4.20). A sudo child stays in pn's group: sudo
-	// reads the password from the terminal, which a background group cannot
-	// (SIGTTIN), and a non-root pn cannot signal root children anyway.
+	// ownGroup: a user-run command (build, and apply's build-as-user build; NOT
+	// apply's `sudo darwin-rebuild switch` legacy/fallback command, and never the
+	// two root steps of the build-as-user flow, pg2-sdbhh4.9) runs as its own
+	// process group so a pn-initiated stop reaches every descendant, e.g.
+	// darwin-rebuild's `nix build | jq` (pg2-sdbhh4.20). A sudo child stays in
+	// pn's group: sudo reads the password from the terminal, which a background
+	// group cannot (SIGTTIN), and a non-root pn cannot signal root children anyway.
 	ownGroup := p.cmdArgs[0] != "sudo"
 	_, err := ws.runner.Run(ctx, p.cmdArgs[0], p.fullArgs(), exec.RunOptions{
-		Dir:             p.terminalRepoDir,
+		Dir:             dir,
 		Stdout:          tap,
 		Stderr:          tap,
 		WrapNix:         true,
@@ -183,13 +222,15 @@ func (ws *Workspace) runPlanned(ctx context.Context, out io.Writer, verb string,
 		OwnProcessGroup: ownGroup,
 	})
 	tap.finish()
-	st := tap.stats()
-	telemetry.RecordPlan(ctx, verb, telemetry.Plan{
-		Builds:      st.Builds,
-		Fetches:     st.Fetches,
-		DownloadMiB: st.DownloadMiB,
-		HasDownload: st.HasDownload,
-	})
+	if recordPlan {
+		st := tap.stats()
+		telemetry.RecordPlan(ctx, verb, telemetry.Plan{
+			Builds:      st.Builds,
+			Fetches:     st.Fetches,
+			DownloadMiB: st.DownloadMiB,
+			HasDownload: st.HasDownload,
+		})
+	}
 	return err
 }
 
@@ -240,17 +281,19 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 	if builder == "" {
 		builder = defaultBuilder()
 	}
-	cmdArgs, err := substituteCommand(tmpl, templateVars{
+	vars := templateVars{
 		TerminalRepoDir:    terminalRepoDir,
 		TerminalNixDir:     terminalNixDir,
 		TerminalNixRelPath: nixRel,
 		Hostname:           ws.hostname(),
 		Builder:            builder,
-	})
+	}
+	cmdArgs, err := substituteCommand(tmpl, vars)
 	if err != nil {
 		return err
 	}
 	plan := &rebuildPlan{
+		vars:              vars,
 		opts:              opts,
 		terminal:          terminal,
 		terminalRepoDir:   terminalRepoDir,
@@ -258,6 +301,15 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 		resolvedOverrides: resolvedOverrides,
 		overrideArgs:      overrideInputArgs(resolvedOverrides),
 		cmdArgs:           cmdArgs,
+	}
+
+	// A verb may adjust the plan (apply: select the build-as-user flow, which
+	// swaps cmdArgs for the user build). Everything after this point (dry run,
+	// tool resolution) therefore sees the command that will actually run first.
+	if ex, ok := v.(planExtender); ok {
+		if err := ex.extendPlan(ctx, ws, out, plan); err != nil {
+			return err
+		}
 	}
 
 	telemetry.RecordRebuildContext(ctx, telemetry.RebuildContext{
@@ -270,7 +322,12 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 
 	step(stepDryRunGate)
 	if opts.ShowNixCommandsOnly {
-		fmt.Fprintln(out, strings.Join(append(append([]string{}, cmdArgs...), plan.overrideArgs...), " "))
+		fmt.Fprintln(out, strings.Join(append(append([]string{}, plan.cmdArgs...), plan.overrideArgs...), " "))
+		if ex, ok := v.(dryRunExtender); ok {
+			for _, l := range ex.dryRunLines(plan) {
+				fmt.Fprintln(out, l)
+			}
+		}
 		return nil
 	}
 
@@ -278,7 +335,7 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 	// missing darwin-rebuild fails at once with nothing else done (bead
 	// pg2-sdbhh4.12).
 	step(stepResolveTool)
-	toolEnv, err := ws.resolveCommandTool(ctx, cmdArgs)
+	toolEnv, err := ws.resolveCommandTool(ctx, plan.cmdArgs)
 	if err != nil {
 		return err
 	}
