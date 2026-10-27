@@ -68,20 +68,51 @@ func (buildVerb) commandTemplate(ws *Workspace, opts rebuildOptions) (string, er
 	return ws.config.BuildCommandTemplate(), nil
 }
 
-func (buildVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) error {
+func (buildVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) (err error) {
 	fmt.Fprintf(out, "  --== %s: building flake ==--  \n", p.terminal)
 	ws.recordStep("build", false, stepReportApplyDecision)
-	ws.reportApplyDecision(ctx, out, p.opts.OverridePaths)
-	ws.recordStep("build", false, stepRunCommand)
-	if err := ws.runPlanned(ctx, out, "build", p); err != nil {
-		return fmt.Errorf("build failed: %w", err)
+	reason, gateErr := ws.evalApplyDecision(ctx, p.opts.OverridePaths)
+
+	// From here on the build output is retained in the build log, like apply's
+	// (bead pg2-sdbhh4.14; see applylog.go). `out` is rebound to tee into it, so the
+	// terminal output is unchanged, and a failure to open the log is reported and
+	// otherwise ignored: it must never fail or alter the build. The `apply would:`
+	// line below is the first thing retained.
+	headerReason := string(reason)
+	if gateErr != nil {
+		headerReason = ""
 	}
+	blog, logErr := openRunLog(runLogOpts{
+		Verb:     "build",
+		Terminal: p.terminal,
+		Cmdline:  append(append([]string{}, p.cmdArgs...), p.overrideArgs...),
+		Begin:    p.begin,
+		TraceID:  telemetry.TraceIDFromContext(ctx),
+		Reason:   headerReason,
+	})
+	if logErr != nil {
+		fmt.Fprintf(out, "warning: could not retain the build log: %v\n", logErr)
+	}
+	p.alog = blog
+	out = blog.tee(out)
+	defer func() { blog.finish(err) }()
+	blog.recordRefs(nil)
+
+	fmt.Fprintln(out, applyDecisionLine(reason, gateErr))
+	ws.recordStep("build", false, stepRunCommand)
+	blog.phase(phaseBuild)
+	if runErr := ws.runPlanned(ctx, out, "build", p); runErr != nil {
+		blog.setExit(runErr)
+		return fmt.Errorf("build failed: %w", runErr)
+	}
+	blog.setExit(nil)
 	fmt.Fprintln(out, "Build successful. To apply, run: pn workspace apply")
 	return nil
 }
 
-// reportApplyDecision evaluates apply's skip gate (needsRebuild) READ-ONLY and
-// prints what `pn workspace apply` would do right now:
+// evalApplyDecision evaluates apply's skip gate (needsRebuild) READ-ONLY and
+// records the verdict in OTel; the caller prints what `pn workspace apply` would
+// do right now (applyDecisionLine):
 //
 //	apply would: skip (unchanged)
 //	apply would: rebuild (<forced|dirty|head_changed|no_record>)
@@ -91,12 +122,12 @@ func (buildVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 // failure (an unreadable store, a failing git) is reported as `apply would: fail
 // (...)` — that is what apply would do (it fails closed) — and does not fail the
 // build. force is never set: an operator's `apply --force` is not knowable here.
-func (ws *Workspace) reportApplyDecision(ctx context.Context, out io.Writer, overridePaths map[string]string) {
+func (ws *Workspace) evalApplyDecision(ctx context.Context, overridePaths map[string]string) (rebuildReason, error) {
 	reason, err := ws.needsRebuild(ctx, ws.allRepoDirs(overridePaths), false)
 	if err == nil {
 		telemetry.RecordApplyDecision(ctx, reason.rebuild(), string(reason))
 	}
-	fmt.Fprintln(out, applyDecisionLine(reason, err))
+	return reason, err
 }
 
 // applyDecisionLine renders the gate's verdict as the `apply would: ...` line.

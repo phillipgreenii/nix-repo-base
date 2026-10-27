@@ -155,6 +155,11 @@ type rebuildPlan struct {
 	// asUser is non-nil when apply runs the build-as-user flow (apply_asuser.go):
 	// cmdArgs is then the user build, not apply_command.
 	asUser *asUserPlan
+	// begin is when the verb started (the run log's prelude phase starts here).
+	begin time.Time
+	// alog is the verb's retained run log once it is open (nil before, or when it
+	// could not be created); runPlannedIn records the build plan into it.
+	alog *applyLog
 }
 
 // fullArgs is the command's arguments after the program name, with the override
@@ -224,6 +229,7 @@ func (ws *Workspace) runPlannedIn(ctx context.Context, out io.Writer, verb strin
 	tap.finish()
 	if recordPlan {
 		st := tap.stats()
+		p.alog.recordPlan(st)
 		telemetry.RecordPlan(ctx, verb, telemetry.Plan{
 			Builds:      st.Builds,
 			Fetches:     st.Fetches,
@@ -242,6 +248,7 @@ func (ws *Workspace) runPlannedIn(ctx context.Context, out io.Writer, verb strin
 // lock (rebuildlock.go), checkWsidUnique, checkNixDaemon.
 func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, opts rebuildOptions) (err error) {
 	verb := v.name()
+	begin := applyLogNow()
 	step := func(s string) { ws.recordStep(verb, true, s) }
 
 	step(stepRequireTerminal)
@@ -301,6 +308,7 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 		resolvedOverrides: resolvedOverrides,
 		overrideArgs:      overrideInputArgs(resolvedOverrides),
 		cmdArgs:           cmdArgs,
+		begin:             begin,
 	}
 
 	// A verb may adjust the plan (apply: select the build-as-user flow, which

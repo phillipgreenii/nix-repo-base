@@ -109,7 +109,7 @@ After the prelude the verbs differ, deliberately:
   differs from the recorded applied ref) or `no_record` (no applied-state record). `forced` is the
   fourth rebuild reason and only `apply --force` produces it. If the gate itself fails (an unreadable
   record, a failing `git`) the line reads `apply would: fail (<error>)`, which is what apply would
-  do, and the build still runs. Build NEVER skips and NEVER writes applied state.
+  do, and the build still runs. Build NEVER skips and NEVER writes applied state. Its output is retained in a build log like apply's (see "the apply log" below).
 - **apply** runs the skip gate for real (skipping when nothing changed), opens the apply log, captures
   each repo's HEAD, runs the apply command (or, with `activate_command` set, the build-as-user flow
   below), diffs the system profile with nvd, restarts a stale fsmonitor daemon, and records the
@@ -287,39 +287,60 @@ argv: the attributes are observations only.
 
 ## pn workspace apply: the apply log
 
-Every `pn workspace apply` (and the apply step of `upgrade`) that actually REBUILDS keeps a copy of
-everything it printed, so a post-apply check can read what the apply said instead of inferring it.
+Every `pn workspace apply` (and the apply step of `upgrade`) that actually REBUILDS, and every
+`pn workspace build`, keeps a copy of everything it printed, so a post-apply check can read what the apply said instead of inferring it.
 Before this existed nothing retained the output: `events.jsonl` holds workspace-update events only,
 `nix-logs/*.jsonl` holds the nix wrapper's raw nix JSON (for a build-as-user apply, the user build's,
 in your own `nix-logs` directory; for a legacy `sudo darwin-rebuild switch` apply or a fallback that
 is root-only, under `/var/log/pg-nix-log-wrapped`; either way it carries nix messages, not the
 activation script's own output), and `~/.local/share/pn-workspace/applied/` holds applied-state records.
 
-- **Location**: `${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/apply-<UTC start, yyyymmddThhmmssZ>-<pid>.log`
-  (mode 0644, outside the nix store), and `apply-logs/latest`, a symlink to the newest one. It is a
-  subdirectory so the Loki `pn/*.jsonl` glob never ingests it.
+- **Location**: `${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/<verb>-<UTC start, yyyymmddThhmmssZ>-<pid>.log`
+  with `<verb>` `apply` or `build` (mode 0644, outside the nix store). `apply-logs/latest` is a symlink
+  to the newest APPLY log (it never moves for a build) and `apply-logs/latest-build` to the newest
+  build log. The directory is a subdirectory so the Loki `pn/*.jsonl` glob never ingests it.
 - **When**: from the moment pn has decided to rebuild, for exit 0 and non-zero alike. An apply that
-  is skipped because nothing changed, and a failure before the rebuild (untrusted workspace, nix
-  daemon down) write no log, so they never evict a real one.
-- **Contents**: a header (`started_at`, `terminal`, `command`), the `applied refs` section (each
-  repo's `git rev-parse HEAD`, taken immediately before the build, i.e. the `applied_ref` the
-  applied-state record gets), then the combined stdout and stderr exactly as the terminal received
-  them, then a trailer: `ended_at`, `exit_status` (the apply command's exit code; `-1` = killed by a
-  signal, `none` = it never started), `failed_step` (build-as-user apply only: `build`, `read-result`,
-  `probe`, `set-profile`, `activate` or `none`; the header then also lists the set-profile, activate
-  and fallback commands, with `<out>` for the out path), `result` (`success` or `failed`, and `error:`
-  when failed).
-  A file with NO `--== pn apply end ==--` trailer is an apply that was killed before pn could finish
-  (SIGKILL, power loss): read it as incomplete, never as success.
-- **Retention**: the newest 30 logs are kept; opening a new log removes older ones (ordering by
-  file name, which embeds the start time). Only `apply-*.log` files are ever removed.
+  is skipped because nothing changed, a `--show-nix-commands` dry run, and a failure before the
+  rebuild (untrusted workspace, nix daemon down) write no log, so they never evict a real one. A
+  `pn workspace build` always builds, so it always writes one (bead pg2-sdbhh4.14; before it a 29,037 s
+  failed build left no human-readable record). Both verbs retain through the same code path
+  (`Workspace.rebuild`).
+- **Contents**: a header (`started_at`, `terminal`, `command`, then `log_format: 2`, `trace_id` (the
+  `pn.repo` span's trace, `none` with telemetry off), `rebuild_reason` (`forced`, `dirty`,
+  `head_changed`, `no_record`, `unchanged` or `unknown`; for build the read-only "apply would"
+  verdict), `max_jobs` and `cores` (read from `/etc/nix/nix.conf` only, as a bare token such as `3` or
+  `auto`, `unknown` when absent: no subprocess, and nothing else from the file because the log is
+  world-readable)); for the build-as-user apply, the set-profile, activate and fallback commands
+  (`<out>` for the out path); for apply, the `applied refs` section (each repo's `git rev-parse HEAD`,
+  taken immediately before the build, i.e. the `applied_ref` the applied-state record gets); then the
+  combined stdout and stderr exactly as the terminal received them (for build, starting at the
+  `apply would:` line); then a trailer: `ended_at`, `exit_status` (the command's exit code; `143` and
+  `130` for a signalled wrapper exit, `-1` = killed directly by a signal, `none` = it never started),
+  `failed_step` (build-as-user apply only: `build`, `read-result`, `probe`, `set-profile`, `activate`
+  or `none`), `result` (`success` or `failed`, and `error:` when failed), then the phase times
+  `prelude_seconds`, `build_seconds`, `activate_seconds` (apply only: set-profile plus activate,
+  including the wait for sudo; a legacy single-command apply folds this into `build_seconds`) and
+  `post_steps_seconds` (apply only: nvd diff, fsmonitor restart, markApplied), and
+  `plan: builds=N fetches=M [download_mib=X]` when the build step ran. Phase times and the plan live
+  in the trailer ONLY, never in the output section, whose contract is verbatim terminal output; a
+  phase the run never reached has no line. Post-HOOK time is not a phase: hooks run after the trailer
+  is written, and show only as `pn.hook` spans in the trace.
+  A file with NO `--== pn apply end ==--` (build: `--== pn build end ==--`) trailer is a run that was
+  killed before pn could finish (SIGKILL, power loss): read it as incomplete, never as success.
+- **Format version**: `log_format: 2` in the header. A log without that line is version 1 and keeps
+  every key it had; the version-2 keys (`trace_id`, `rebuild_reason`, `max_jobs`, `cores`, the phase
+  lines, `plan`) are absent from it, so a reader treats a missing key as unknown.
+- **Retention**: the newest 30 logs PER VERB are kept; opening a new log removes that verb's older
+  ones (ordering by file name, which embeds the start time), so builds never evict apply logs or the
+  reverse. Only `apply-*.log` and `build-*.log` files are ever removed.
 - **Never in the way**: the terminal output is unchanged; the log is a tee. If the log cannot be
-  created pn prints one `warning: could not retain the apply log` line and applies anyway. A
-  grandchild that keeps the output pipe open after the command exits is bounded by the same
-  `WaitDelay` as before (pg2-gb5ng), so the log cannot make an apply hang.
+  created pn prints one `warning: could not retain the apply log` (build: `build log`) line and
+  carries on. A grandchild that keeps the output pipe open after the command exits is bounded by the
+  same `WaitDelay` as before (pg2-gb5ng), so the log cannot make a run hang.
 
-To verify "the apply output shows X": `grep -n X "${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/latest"`,
-after checking the trailer's `ended_at` and `exit_status` belong to the apply under test.
+To verify "the apply output shows X": `grep -n X "${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/latest"`
+(a build: `latest-build`), after checking the trailer's `ended_at` and `exit_status` belong to the run
+under test.
 
 ## pn workspace flake-check --no-build
 

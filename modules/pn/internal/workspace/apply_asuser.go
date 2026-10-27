@@ -442,6 +442,7 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 	// root steps through the process group, as it does with `switch`. These steps
 	// stay in pn's own group (OwnProcessGroup is never set): sudo reads the
 	// password from the terminal, which a background group cannot (SIGTTIN).
+	alog.phase(phaseActivate)
 	fmt.Fprintln(out, "apply: waiting for sudo (set the system profile, then activate)")
 	rootCtx := context.WithoutCancel(ctx)
 
@@ -494,6 +495,7 @@ func (ws *Workspace) applyFallback(ctx context.Context, out io.Writer, alog *app
 	}
 	fmt.Fprintf(out, "apply: %s (%s); falling back to: %s (root re-evaluates)\n",
 		what, reason, strings.Join(p.asUser.fallbackArgs, " "))
+	alog.phase(phaseActivate) // the root re-evaluation and switch replace set-profile and activate
 	fp := *p
 	fp.cmdArgs = p.asUser.fallbackArgs
 	fp.asUser = nil

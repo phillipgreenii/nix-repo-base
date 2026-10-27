@@ -91,10 +91,19 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	if p.asUser != nil {
 		extraHeader = p.asUser.describeSteps(p)
 	}
-	alog, logErr := openApplyLogWith(terminal, append(append([]string{}, p.cmdArgs...), p.overrideArgs...), extraHeader)
+	alog, logErr := openRunLog(runLogOpts{
+		Verb:     "apply",
+		Terminal: terminal,
+		Cmdline:  append(append([]string{}, p.cmdArgs...), p.overrideArgs...),
+		Extra:    extraHeader,
+		Begin:    p.begin,
+		TraceID:  telemetry.TraceIDFromContext(ctx),
+		Reason:   string(reason),
+	})
 	if logErr != nil {
 		fmt.Fprintf(out, "warning: could not retain the apply log: %v\n", logErr)
 	}
+	p.alog = alog
 	out = alog.tee(out)
 	defer func() { alog.finish(err) }()
 
@@ -120,6 +129,7 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	}
 	alog.recordRefs(preBuildHeads)
 	ws.recordStep("apply", false, stepRunCommand)
+	alog.phase(phaseBuild)
 	if p.asUser != nil {
 		// Build-as-user flow (activate_command set, preflight passed): apply_asuser.go.
 		if err := ws.applyAsUser(ctx, out, alog, p); err != nil {
@@ -133,6 +143,7 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 		alog.setExit(nil)
 	}
 	ws.recordStep("apply", false, stepPostSteps)
+	alog.phase(phasePostSteps)
 	newProfile := readSystemProfile()
 	if oldProfile != newProfile && newProfile != "" && commandExists("nvd") {
 		fmt.Fprintln(out, "  --== Package changes ==--  ")

@@ -418,6 +418,13 @@ func TestAsUser_ApplyLogRecordsAllStepsAndNoFailure(t *testing.T) {
 	if got := trailerValue(t, log, "result"); got != "success" {
 		t.Errorf("result = %q", got)
 	}
+	// The build-as-user flow runs set-profile plus activate: the one flow with an
+	// activate phase (pg2-sdbhh4.14).
+	for _, k := range []string{"prelude_seconds", "build_seconds", "activate_seconds", "post_steps_seconds"} {
+		if got := trailerValue(t, log, k); got == "<absent>" {
+			t.Errorf("trailer lacks %s:\n%s", k, log)
+		}
+	}
 }
 
 // With activate_command unset the legacy trailer has no failed_step line.
@@ -428,6 +435,9 @@ func TestAsUser_LegacyApplyLogHasNoFailedStep(t *testing.T) {
 	}
 	if got := trailerValue(t, e.applyLogText(t), "failed_step"); got != "<absent>" {
 		t.Errorf("legacy trailer carries failed_step = %q", got)
+	}
+	if got := trailerValue(t, e.applyLogText(t), "activate_seconds"); got != "<absent>" {
+		t.Errorf("the legacy single-command flow has no activate phase, got %q", got)
 	}
 	for _, c := range e.f.significant() {
 		if c.Name == "darwin-rebuild" {

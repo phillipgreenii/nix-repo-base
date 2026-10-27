@@ -369,6 +369,18 @@ func (v *VerbSpan) TraceID() string {
 	return sc.TraceID().String()
 }
 
+// TraceIDFromContext returns the trace id of the span in ctx (the pn.repo span
+// inside a build or apply run) as 32 lowercase hex characters, or "" when ctx
+// carries no valid span (telemetry off). The run log's header records it so a
+// retained log can be matched to its trace.
+func TraceIDFromContext(ctx context.Context) string {
+	sc := trace.SpanFromContext(ctx).SpanContext()
+	if !sc.TraceID().IsValid() {
+		return ""
+	}
+	return sc.TraceID().String()
+}
+
 // End finishes the root span exactly once: it records the exit code, marks
 // the span Error (with error.type) when exitCode != 0, and records
 // pn.command.duration with verb and status dimensions. A nil VerbSpan is a

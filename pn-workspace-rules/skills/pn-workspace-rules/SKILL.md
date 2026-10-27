@@ -239,23 +239,47 @@ pn workspace workforest prune              Prune stale git worktree admin entrie
 
 All subcommands accept `--terminal <name>` to override `workspace.terminal`.
 
-## Reading what an apply printed (post-apply verification)
+## Reading what an apply or build printed (post-apply verification)
 
 An agent MUST NOT run `pn workspace apply`, and the operator's terminal scrollback is not readable.
-Every apply that rebuilds retains its full combined output instead, readable without privilege:
+Every apply that rebuilds, and every `pn workspace build`, retains its full combined output instead,
+readable without privilege:
 
 ```bash
 # newest apply; check the trailer (ended_at, exit_status, result) before trusting a grep
 f="${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/latest"
 sed -n '/^--== pn apply end ==--$/,$p' "$f"
 grep -n 'the line the verify bead names' "$f"
+
+# newest build: the same directory, `latest-build`, and a `pn build` marker
+b="${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/latest-build"
+sed -n '/^--== pn build end ==--$/,$p' "$b"
 ```
 
-Files are `apply-<UTC start>-<pid>.log`, the newest 30 are kept, and each carries `started_at`, the
-per-repo applied refs, the output, then `ended_at` / `exit_status` / `result`. A log with no
-`--== pn apply end ==--` trailer is an apply that was killed: incomplete, never success. A no-op
-apply (nothing changed) writes no log, so "no new log" means no rebuild happened. Full description:
-`modules/pn/README.md`, section "pn workspace apply: the apply log".
+Files are `apply-<UTC start>-<pid>.log` and `build-<UTC start>-<pid>.log`; `latest` is ALWAYS the
+newest apply log (builds never move it) and `latest-build` the newest build log. The newest 30 of
+EACH verb are kept, so a burst of builds never evicts apply logs. Each carries a header (`started_at`,
+`terminal`, `command`, `log_format`, `trace_id`, `rebuild_reason`, `max_jobs`, `cores`), the per-repo
+applied refs (apply only), the output, then a trailer: `ended_at` / `exit_status` / `result`, then
+the phase times and plan below. A log with no `--== pn apply end ==--` (or `--== pn build end ==--`)
+trailer is a run that was killed: incomplete, never success. A no-op apply (nothing changed) writes
+no log, so "no new log" means no rebuild happened.
+
+Format version: a header line `log_format: 2` marks the current format. A log WITHOUT that line is
+version 1 (written before pg2-sdbhh4.14) and keeps every key it had (`started_at`, `terminal`,
+`command`, `exit_status`, `result`, ...); the version-2 keys are simply absent, so a reader MUST treat
+a missing key as unknown rather than as an error.
+
+Trailer phase times, in seconds, one `key: value` line each, never inside the output section:
+`prelude_seconds` (start of the verb until the nix build command started: skip gate, lock wait, ref
+capture), `build_seconds` (the nix build; a legacy single-command apply reports its whole command
+here), `activate_seconds` (apply only, build-as-user flow: set-profile plus activate, including the
+wait for sudo), `post_steps_seconds` (apply only: nvd diff, fsmonitor restart, markApplied). A phase
+the run never reached has no line. `plan: builds=N fetches=M download_mib=X` records the plan nix
+printed. Post-HOOK time is NOT in the trailer (hooks run after the trailer is written): read it from
+the `pn.hook` spans (`pn.hook.when`, `pn.hook.name`) in the trace named by `trace_id`.
+
+Full description: `modules/pn/README.md`, section "pn workspace apply: the apply log".
 
 ## `pn workspace update` / `upgrade` — worktree-isolated default, local-only
 

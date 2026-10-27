@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry/telemetrytest"
 )
 
 // applyLogRun runs Apply with a REAL child process as the apply command (a shell
@@ -340,7 +342,7 @@ func TestApplyLog_PruneNeverRemovesProtected(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	pruneApplyLogs(dir, 1, "apply-1.log")
+	pruneRunLogs(dir, applyLogPrefix, 1, "apply-1.log")
 	left, _ := filepath.Glob(filepath.Join(dir, "apply-*.log"))
 	if len(left) != 2 { // apply-3 (newest kept) + apply-1 (protected)
 		t.Errorf("want newest + protected to survive, got %v", left)
@@ -367,5 +369,423 @@ func TestApplyLog_UnfinishedLogHasNoTrailer(t *testing.T) {
 	b, _ = os.ReadFile(l.path)
 	if !strings.Contains(string(b), "result: failed") || !strings.Contains(string(b), "exit_status: none") {
 		t.Errorf("finish(err) before the command ran must read failed / none:\n%s", b)
+	}
+}
+
+// --- run logs shared by build and apply (bead pg2-sdbhh4.14) ---
+
+// stubNixConf points the header's nix.conf read at a temp file with body.
+func stubNixConf(t *testing.T, body string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "nix.conf")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := nixConfPath
+	nixConfPath = path
+	t.Cleanup(func() { nixConfPath = old })
+}
+
+// stepClock makes applyLogNow advance by one second per call, so every phase
+// gets a positive, deterministic-in-shape elapsed time.
+func stepClock(t *testing.T) {
+	t.Helper()
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var n int
+	applyLogNow = func() time.Time { n++; return base.Add(time.Duration(n) * time.Second) }
+	t.Cleanup(func() { applyLogNow = time.Now })
+}
+
+// logFile reads the log a `latest*` link points at.
+func logFile(t *testing.T, link string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(applyLogDir(), link))
+	if err != nil {
+		t.Fatalf("read %s: %v", link, err)
+	}
+	return string(b)
+}
+
+// logKey is the value of the first `key: value` line in text, or "<absent>".
+func logKey(text, key string) string {
+	for _, l := range strings.Split(text, "\n") {
+		if v, ok := strings.CutPrefix(l, key+": "); ok {
+			return v
+		}
+	}
+	return "<absent>"
+}
+
+// A build retains its output like apply: a build-*.log, the latest-build link,
+// the header context, the plan and phase lines in the trailer only, and the
+// output section byte-identical to what the terminal received.
+func TestBuildLog_RetainedWithContextAndPhases(t *testing.T) {
+	stubNixConf(t, "# comment\nmax-jobs = 3\ncores = 1\nsubstituters = https://secret.example.invalid\n")
+	stepClock(t)
+	env := newPlanVerbEnv(t, "")
+	env.runner.chunks = smallPlanChunks()
+	tel, _ := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	out, err := env.run(ctx, "build")
+	if err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	dir := applyLogDir()
+	if m, _ := filepath.Glob(filepath.Join(dir, "build-*.log")); len(m) != 1 {
+		t.Fatalf("want one build log, got %v", m)
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "apply-*.log")); len(m) != 0 {
+		t.Fatalf("a build must not write an apply log: %v", m)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "latest")); err == nil {
+		t.Error("a build must not repoint `latest` (the latest APPLY log)")
+	}
+	log := logFile(t, "latest-build")
+	if !strings.HasPrefix(log, buildLogHeader+"\n") {
+		t.Errorf("build log header marker wrong:\n%s", log)
+	}
+	header, _, _ := strings.Cut(log, applyLogOutput)
+	if got := logKey(header, "trace_id"); len(got) != 32 {
+		t.Errorf("trace_id = %q, want 32 hex chars", got)
+	}
+	for key, want := range map[string]string{
+		"log_format": "2", "rebuild_reason": "no_record", "max_jobs": "3", "cores": "1", "terminal": "leaf",
+	} {
+		if got := logKey(header, key); got != want {
+			t.Errorf("header %s = %q, want %q", key, got, want)
+		}
+	}
+	if strings.Contains(log, "secret.example.invalid") || strings.Contains(log, "substituters") {
+		t.Errorf("nix.conf text beyond max-jobs/cores leaked into a world-readable log:\n%s", log)
+	}
+	// Output section: byte-identical to what the writer (the terminal) received,
+	// minus the banner printed before the log opened.
+	body := logOutputSection2(t, log, buildLogTrailer)
+	if !strings.HasPrefix(body, "apply would: ") || !strings.Contains(body, strings.Join(env.runner.chunks, "")) {
+		t.Errorf("output section lacks the apply-would line or the child's bytes:\n%q", body)
+	}
+	if !strings.HasSuffix(out, body+"\n") && !strings.HasSuffix(out, body) {
+		t.Errorf("output section is not a suffix of the terminal output.\nterminal:\n%q\nlog:\n%q", out, body)
+	}
+	tr := strings.SplitN(log, buildLogTrailer+"\n", 2)[1]
+	for _, k := range []string{"prelude_seconds", "build_seconds"} {
+		if v := logKey(tr, k); v == "<absent>" || v == "0.0" {
+			t.Errorf("trailer %s = %q", k, v)
+		}
+	}
+	for _, k := range []string{"activate_seconds", "post_steps_seconds"} {
+		if logKey(tr, k) != "<absent>" {
+			t.Errorf("a build has no %s phase:\n%s", k, tr)
+		}
+	}
+	if got := logKey(tr, "plan"); got != "builds=24 fetches=3 download_mib=1.5" {
+		t.Errorf("plan = %q", got)
+	}
+	for _, k := range []string{"prelude_seconds", "build_seconds", "plan:"} {
+		if strings.Contains(body, k) {
+			t.Errorf("trailer-only key %q appeared in the output section", k)
+		}
+	}
+	if logKey(tr, "exit_status") != "0" || logKey(tr, "result") != "success" {
+		t.Errorf("trailer:\n%s", tr)
+	}
+}
+
+// logOutputSection2 is logOutputSection for either verb's trailer marker.
+func logOutputSection2(t *testing.T, log, trailer string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(log, applyLogOutput+"\n")
+	if !ok {
+		t.Fatalf("no output marker:\n%s", log)
+	}
+	body, _, ok := strings.Cut(rest, "\n"+trailer+"\n")
+	if !ok {
+		t.Fatalf("no trailer %q:\n%s", trailer, log)
+	}
+	return body
+}
+
+// A failed build is retained with its exit status and the plan it printed.
+func TestBuildLog_FailedBuildRetainsOutputAndExit(t *testing.T) {
+	env := newPlanVerbEnv(t, "")
+	env.runner.chunks = []string{"building 'x'\n", "error: boom\n"}
+	env.runner.runErr = &exec.CommandError{Result: exec.Result{ExitCode: 7}}
+	if _, err := env.run(context.Background(), "build"); err == nil {
+		t.Fatal("want a failed build")
+	}
+	log := logFile(t, "latest-build")
+	if !strings.Contains(logOutputSection2(t, log, buildLogTrailer), "error: boom") {
+		t.Errorf("failed build output not retained:\n%s", log)
+	}
+	tr := strings.SplitN(log, buildLogTrailer+"\n", 2)[1]
+	if logKey(tr, "exit_status") != "7" || logKey(tr, "result") != "failed" {
+		t.Errorf("trailer:\n%s", tr)
+	}
+}
+
+// An apply log (legacy single-command flow) carries the same header context and
+// prelude, build and post_steps phases, but no activate phase; `latest` is the
+// apply log and `latest-build` stays absent.
+func TestApplyLog_HeaderContextAndPhases(t *testing.T) {
+	stubNixConf(t, "max-jobs = auto\nbuild-cores = 8\n")
+	stepClock(t)
+	env := newPlanVerbEnv(t, "")
+	env.runner.chunks = smallPlanChunks()
+	tel, _ := telemetrytest.New()
+	if out, err := env.run(telemetry.WithTelemetry(context.Background(), tel), "apply"); err != nil {
+		t.Fatalf("apply: %v\n%s", err, out)
+	}
+	log := logFile(t, "latest")
+	header, _, _ := strings.Cut(log, applyLogOutput)
+	for key, want := range map[string]string{"log_format": "2", "rebuild_reason": "forced", "max_jobs": "auto", "cores": "8"} {
+		if got := logKey(header, key); got != want {
+			t.Errorf("header %s = %q, want %q", key, got, want)
+		}
+	}
+	if got := logKey(header, "trace_id"); len(got) != 32 {
+		t.Errorf("trace_id = %q", got)
+	}
+	tr := logTrailer(t, log)
+	for _, k := range []string{"prelude_seconds", "build_seconds", "post_steps_seconds"} {
+		if logKey(tr, k) == "<absent>" {
+			t.Errorf("trailer lacks %s:\n%s", k, tr)
+		}
+	}
+	if logKey(tr, "activate_seconds") != "<absent>" {
+		t.Errorf("legacy apply has no separate activate phase:\n%s", tr)
+	}
+	if logKey(tr, "plan") != "builds=24 fetches=3 download_mib=1.5" {
+		t.Errorf("plan line wrong:\n%s", tr)
+	}
+	if _, err := os.Lstat(filepath.Join(applyLogDir(), "latest-build")); err == nil {
+		t.Error("an apply must not write latest-build")
+	}
+}
+
+// Without telemetry the header says so, and an unreadable nix.conf reads unknown.
+func TestRunLog_HeaderWithoutTelemetryOrNixConf(t *testing.T) {
+	old := nixConfPath
+	nixConfPath = filepath.Join(t.TempDir(), "absent.conf")
+	t.Cleanup(func() { nixConfPath = old })
+	env := newPlanVerbEnv(t, "")
+	if _, err := env.run(context.Background(), "build"); err != nil {
+		t.Fatal(err)
+	}
+	header, _, _ := strings.Cut(logFile(t, "latest-build"), applyLogOutput)
+	for key, want := range map[string]string{"trace_id": "none", "max_jobs": "unknown", "cores": "unknown"} {
+		if got := logKey(header, key); got != want {
+			t.Errorf("header %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestReadNixConfJobs(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, jobs, cores string
+	}{
+		{"plain", "max-jobs = 3\ncores = 1\n", "3", "1"},
+		{"last wins and comments", "max-jobs = 2 # old\nmax-jobs = 6\ncores=4\n", "6", "4"},
+		{"legacy build-cores", "build-cores = 0\n", "unknown", "0"},
+		{"non-token values are ignored", "max-jobs = https://x.invalid/a b\ncores = $(id)\n", "unknown", "unknown"},
+		{"other keys never read", "substituters = https://x.invalid\n", "unknown", "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubNixConf(t, tc.body)
+			if j, c := readNixConfJobs(nixConfPath); j != tc.jobs || c != tc.cores {
+				t.Errorf("got (%q, %q), want (%q, %q)", j, c, tc.jobs, tc.cores)
+			}
+		})
+	}
+}
+
+// Phase accounting, exactly: prelude from Begin, then each phase until the next.
+func TestRunLog_PhaseTimesAreExact(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t0 := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(2 * time.Second) // 2s of prelude already elapsed at open
+	applyLogNow = func() time.Time { return now }
+	t.Cleanup(func() { applyLogNow = time.Now })
+	l, err := openRunLog(runLogOpts{Verb: "apply", Terminal: "leaf", Cmdline: []string{"x"}, Begin: t0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		phase string
+		after time.Duration
+	}{{phaseBuild, 5 * time.Second}, {phaseActivate, 3 * time.Second}, {phasePostSteps, 1500 * time.Millisecond}} {
+		now = now.Add(step.after)
+		l.phase(step.phase)
+	}
+	now = now.Add(time.Second)
+	l.finish(nil)
+	b, _ := os.ReadFile(l.path)
+	tr := strings.SplitN(string(b), applyLogTrailer+"\n", 2)[1]
+	// The build phase starts when phase(build) is called, so the prelude is the
+	// 2s before open plus the 5s before that call: 7s.
+	for k, want := range map[string]string{
+		"prelude_seconds": "7.0", "build_seconds": "3.0", "activate_seconds": "1.5", "post_steps_seconds": "1.0",
+	} {
+		if got := logKey(tr, k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if logKey(tr, "plan") != "<absent>" {
+		t.Errorf("no plan was recorded, yet:\n%s", tr)
+	}
+}
+
+// Retention is per verb: a burst of builds never evicts apply logs, nor the
+// reverse, and each keeps exactly applyLogKeep.
+func TestRunLog_RetentionIsPerVerb(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	dir := filepath.Join(state, "pn", "apply-logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := func(prefix string, n int) {
+		for i := 0; i < n; i++ {
+			name := fmt.Sprintf("%s20260101T0000%02dZ-1.log", prefix, i)
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("old"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed(applyLogPrefix, applyLogKeep)
+	seed(buildLogPrefix, applyLogKeep)
+	applyLogNow = func() time.Time { return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { applyLogNow = time.Now })
+
+	// A burst of builds (distinct pids are not available, so distinct start times).
+	for i := 0; i < 5; i++ {
+		at := time.Date(2026, 6, 1, 12, 0, i, 0, time.UTC)
+		applyLogNow = func() time.Time { return at }
+		l, err := openRunLog(runLogOpts{Verb: "build", Terminal: "leaf", Cmdline: []string{"x"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.finish(nil)
+	}
+	applyLogs, _ := filepath.Glob(filepath.Join(dir, "apply-*.log"))
+	buildLogs, _ := filepath.Glob(filepath.Join(dir, "build-*.log"))
+	if len(applyLogs) != applyLogKeep {
+		t.Errorf("a burst of builds changed the apply logs: %d, want %d", len(applyLogs), applyLogKeep)
+	}
+	if len(buildLogs) != applyLogKeep {
+		t.Errorf("build logs = %d, want %d", len(buildLogs), applyLogKeep)
+	}
+
+	// And the reverse: a burst of applies leaves the build logs alone.
+	for i := 0; i < 5; i++ {
+		at := time.Date(2026, 6, 1, 13, 0, i, 0, time.UTC)
+		applyLogNow = func() time.Time { return at }
+		l, err := openApplyLog("leaf", []string{"x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.finish(nil)
+	}
+	applyLogs, _ = filepath.Glob(filepath.Join(dir, "apply-*.log"))
+	buildLogs2, _ := filepath.Glob(filepath.Join(dir, "build-*.log"))
+	if len(applyLogs) != applyLogKeep || len(buildLogs2) != len(buildLogs) {
+		t.Errorf("after an apply burst: apply=%d build=%d (was %d)", len(applyLogs), len(buildLogs2), len(buildLogs))
+	}
+}
+
+// `latest` follows the newest apply log and `latest-build` the newest build log,
+// independently of each other.
+func TestRunLog_LatestLinksAreIndependent(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	open := func(verb string, sec int) *applyLog {
+		at := time.Date(2026, 6, 1, 12, 0, sec, 0, time.UTC)
+		applyLogNow = func() time.Time { return at }
+		l, err := openRunLog(runLogOpts{Verb: verb, Terminal: "leaf", Cmdline: []string{"x"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.finish(nil)
+		return l
+	}
+	t.Cleanup(func() { applyLogNow = time.Now })
+	open("apply", 1)
+	b := open("build", 2)
+	a2 := open("apply", 3)
+	for link, want := range map[string]string{"latest": a2.path, "latest-build": b.path} {
+		got, err := os.Readlink(filepath.Join(applyLogDir(), link))
+		if err != nil || got != filepath.Base(want) {
+			t.Errorf("%s -> %q (%v), want %q", link, got, err, filepath.Base(want))
+		}
+	}
+}
+
+// A skipped build-nothing case: a --show-nix-commands dry run runs nothing and
+// so retains nothing.
+func TestBuildLog_DryRunWritesNoLog(t *testing.T) {
+	env := newPlanVerbEnv(t, "")
+	var out bytes.Buffer
+	if err := env.w.Build(context.Background(), &out, BuildOptions{ShowNixCommandsOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := filepath.Glob(filepath.Join(applyLogDir(), "*.log")); len(m) != 0 {
+		t.Errorf("dry run wrote a log: %v", m)
+	}
+}
+
+// Format compatibility: a version 1 log (no log_format, no new header keys, no
+// phase lines) is read by the documented reader (cut at the trailer marker, read
+// `key: value` lines) exactly as before; the new keys are simply absent.
+func TestRunLog_Version1LogStillReadable(t *testing.T) {
+	v1 := strings.Join([]string{
+		applyLogHeader, "started_at: 2026-10-20T01:02:03Z", "terminal: leaf", "command: sudo darwin-rebuild switch",
+		applyLogRefs, "leaf: abc123", applyLogOutput, "building...", "", applyLogTrailer,
+		"ended_at: 2026-10-20T01:09:03Z", "exit_status: 0", "result: success", "",
+	}, "\n")
+	_, trailer, ok := strings.Cut(v1, applyLogTrailer+"\n")
+	if !ok {
+		t.Fatal("no trailer")
+	}
+	for k, want := range map[string]string{"exit_status": "0", "result": "success", "ended_at": "2026-10-20T01:09:03Z"} {
+		if got := logKey(trailer, k); got != want {
+			t.Errorf("v1 %s = %q, want %q", k, got, want)
+		}
+	}
+	for _, k := range []string{"prelude_seconds", "build_seconds", "plan", "error"} {
+		if logKey(trailer, k) != "<absent>" {
+			t.Errorf("v1 trailer unexpectedly has %s", k)
+		}
+	}
+	header, _, _ := strings.Cut(v1, applyLogOutput)
+	if logKey(header, "log_format") != "<absent>" {
+		t.Error("a v1 log has no log_format line (that absence IS the version marker)")
+	}
+	// A v2 log keeps every v1 trailer key at the same place and meaning.
+	l, err := openApplyLog("leaf", []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.setExit(nil)
+	l.finish(nil)
+	b, _ := os.ReadFile(l.path)
+	_, tr2, _ := strings.Cut(string(b), applyLogTrailer+"\n")
+	for k, want := range map[string]string{"exit_status": "0", "result": "success"} {
+		if got := logKey(tr2, k); got != want {
+			t.Errorf("v2 %s = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// Log files stay world-readable (0644) for both verbs.
+func TestRunLog_ModeIs0644ForBothVerbs(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for _, verb := range []string{"apply", "build"} {
+		l, err := openRunLog(runLogOpts{Verb: verb, Terminal: "leaf", Cmdline: []string{"x"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.finish(nil)
+		st, _ := os.Stat(l.path)
+		if st.Mode().Perm()&0o044 != 0o044 {
+			t.Errorf("%s log mode = %v, want 0644", verb, st.Mode().Perm())
+		}
 	}
 }
