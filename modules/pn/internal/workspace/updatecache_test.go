@@ -16,9 +16,9 @@ import (
 
 func TestNeedsRebuild_Force(t *testing.T) {
 	w := &Workspace{runner: exec.NewFakeRunner()}
-	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/x", gitDir: "/x"}}, true, &bytes.Buffer{})
-	if err != nil || !got {
-		t.Fatalf("force should rebuild: %v %v", got, err)
+	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/x", gitDir: "/x"}}, true)
+	if err != nil || got != reasonForced || !got.rebuild() {
+		t.Fatalf("force should rebuild with reason forced: %v %v", got, err)
 	}
 }
 
@@ -27,9 +27,9 @@ func TestNeedsRebuild_DirtyTree(t *testing.T) {
 	f := exec.NewFakeRunner()
 	f.AddResponse("git", []string{"-C", "/repo", "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte(" M file\n")}, nil)
 	w := &Workspace{runner: f}
-	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/repo", gitDir: "/repo"}}, false, &bytes.Buffer{})
-	if err != nil || !got {
-		t.Fatalf("dirty tree should rebuild: %v %v", got, err)
+	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/repo", gitDir: "/repo"}}, false)
+	if err != nil || got != reasonDirty || !got.rebuild() {
+		t.Fatalf("dirty tree should rebuild with reason dirty: %v %v", got, err)
 	}
 }
 
@@ -45,9 +45,38 @@ func TestNeedsRebuild_ReadsNewStore(t *testing.T) {
 	if err := writeAppliedState(dir, AppliedState{AppliedRef: "abc123"}); err != nil {
 		t.Fatal(err)
 	}
-	rebuild, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: dir, gitDir: dir}}, false, &bytes.Buffer{})
-	if err != nil || rebuild {
-		t.Fatalf("clean + matching applied_ref should skip rebuild; rebuild=%v err=%v", rebuild, err)
+	reason, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: dir, gitDir: dir}}, false)
+	if err != nil || reason != reasonUnchanged || reason.rebuild() {
+		t.Fatalf("clean + matching applied_ref should skip rebuild; reason=%q err=%v", reason, err)
+	}
+}
+
+// needsRebuildFixture scripts a clean single repo at /repo whose HEAD is head.
+func needsRebuildFixture(head string) *Workspace {
+	f := exec.NewFakeRunner()
+	f.AddResponse("git", []string{"-C", "/repo", "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", "/repo", "rev-parse", "HEAD"}, exec.Result{Stdout: []byte(head + "\n")}, nil)
+	return &Workspace{runner: f}
+}
+
+func TestNeedsRebuild_NoRecord(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir()) // empty store: no record for /repo
+	w := needsRebuildFixture("abc123")
+	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/repo", gitDir: "/repo"}}, false)
+	if err != nil || got != reasonNoRecord {
+		t.Fatalf("a repo with no applied-state record must give no_record; got %q err=%v", got, err)
+	}
+}
+
+func TestNeedsRebuild_HeadChanged(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if err := writeAppliedState("/repo", AppliedState{AppliedRef: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	w := needsRebuildFixture("new")
+	got, err := w.needsRebuild(context.Background(), []repoDir{{keyPath: "/repo", gitDir: "/repo"}}, false)
+	if err != nil || got != reasonHeadChanged {
+		t.Fatalf("a HEAD that differs from the recorded ref must give head_changed; got %q err=%v", got, err)
 	}
 }
 

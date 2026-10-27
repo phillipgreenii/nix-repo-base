@@ -156,6 +156,16 @@ deterministic across host OSes.
   `${terminal_nix_dir}`) would still be substituted — an accepted edge case; the
   `$`-awareness guarantee is only that legitimate shell vars are not _rejected_.
 
+## Amendment 2026-10-27 (bead pg2-sdbhh4.8)
+
+`pn workspace build` and `apply` now substitute `{hostname}` through ONE resolver
+(`Workspace.hostname`, short `os.Hostname()`), so a `build_command` that includes
+`#{hostname}` addresses the same flake output as `apply_command`. An empty hostname with a
+template that references `{hostname}` is now an error instead of producing `<dir>#`. The
+default build command is unchanged (it still omits `#{hostname}`); changing a configured
+template is a separate concern. See the `pn workspace build and apply: one pipeline` section of
+`modules/pn/README.md`.
+
 ## Residual / out of scope
 
 - **Sibling flake in a subdir:** `overrideInputArgsFor` emits

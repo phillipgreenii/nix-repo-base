@@ -4,11 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path/filepath"
-	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
-	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
@@ -39,65 +36,71 @@ type BuildOptions struct {
 // Build builds the terminal flake, injecting --override-input for
 // every non-terminal workspace repo. It does not activate.
 // Formatting is a separate step: run `pn workspace format` before building.
-func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions) (err error) {
-	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
-	if err != nil {
-		return err
-	}
-	// pn.repo span for the terminal repo this verb builds/applies; ended with the
-	// verb's final error.
-	ctx, endRepo := telemetry.StartRepo(ctx, terminal)
-	defer func() { endRepo(err) }()
-	terminalRepoDir := filepath.Join(ws.root, terminal)
-	if td, ok := opts.OverridePaths[terminal]; ok {
-		terminalRepoDir = td
-	}
-	nixRel := filepath.Dir(ws.resolveFlakePath(terminal))
-	terminalNixDir := filepath.Join(terminalRepoDir, nixRel)
-
-	overrides := ws.overrideInputArgsFor(terminal, overrideOpts{OverridePaths: opts.OverridePaths})
-
-	if err := checkFollows(terminalNixDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
-		return err
-	}
-
-	tmpl := ws.config.BuildCommandTemplate()
-	if opts.BuildCmd != "" {
-		tmpl = opts.BuildCmd
-	}
-	builder := opts.Builder
-	if builder == "" {
-		builder = defaultBuilder()
-	}
-	cmdArgs, err := substituteCommand(tmpl, templateVars{
-		TerminalRepoDir:    terminalRepoDir,
-		TerminalNixDir:     terminalNixDir,
-		TerminalNixRelPath: nixRel,
-		Hostname:           shortHostname(),
-		Builder:            builder,
+//
+// Build runs the same shared prelude as Apply (Workspace.rebuild), so it
+// reproduces the failures apply would hit before activation. Before building it
+// also evaluates apply's skip gate READ-ONLY and prints one `apply would: ...`
+// line; build itself NEVER skips and NEVER writes applied state.
+func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions) error {
+	return ws.rebuild(ctx, out, buildVerb{}, rebuildOptions{
+		Terminal:            opts.Terminal,
+		Cmd:                 opts.BuildCmd,
+		OverridePaths:       opts.OverridePaths,
+		ShowNixCommandsOnly: opts.ShowNixCommandsOnly,
+		Builder:             opts.Builder,
 	})
-	if err != nil {
-		return err
-	}
+}
 
-	if opts.ShowNixCommandsOnly {
-		fmt.Fprintln(out, strings.Join(append(append([]string{}, cmdArgs...), overrides...), " "))
-		return nil
-	}
+// buildVerb is the build strategy of the rebuild Template Method.
+type buildVerb struct{}
 
-	// Trust gate (bead pg2-x2q6o): abort before executing the config-sourced
-	// build_command when the workspace root is untrusted.
-	if err := ws.ensureExecTrusted(); err != nil {
-		return err
-	}
+func (buildVerb) name() string { return "build" }
 
-	fmt.Fprintf(out, "  --== %s: building flake ==--  \n", terminal)
-	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
-	if _, err := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{Dir: terminalRepoDir, Stdout: out, Stderr: out, WrapNix: true}); err != nil {
+func (buildVerb) commandTemplate(ws *Workspace, opts rebuildOptions) (string, error) {
+	if opts.Cmd != "" {
+		return opts.Cmd, nil
+	}
+	return ws.config.BuildCommandTemplate(), nil
+}
+
+func (buildVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) error {
+	fmt.Fprintf(out, "  --== %s: building flake ==--  \n", p.terminal)
+	ws.recordStep("build", false, stepReportApplyDecision)
+	ws.reportApplyDecision(ctx, out, p.opts.OverridePaths)
+	ws.recordStep("build", false, stepRunCommand)
+	if _, err := ws.runner.Run(ctx, p.cmdArgs[0], p.fullArgs(), exec.RunOptions{Dir: p.terminalRepoDir, Stdout: out, Stderr: out, WrapNix: true}); err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
 	fmt.Fprintln(out, "Build successful. To apply, run: pn workspace apply")
 	return nil
+}
+
+// reportApplyDecision evaluates apply's skip gate (needsRebuild) READ-ONLY and
+// prints what `pn workspace apply` would do right now:
+//
+//	apply would: skip (unchanged)
+//	apply would: rebuild (<forced|dirty|head_changed|no_record>)
+//
+// It only runs `git status` / `git rev-parse` and reads the applied-state store;
+// it never writes applied state and never changes build's own behavior. A gate
+// failure (an unreadable store, a failing git) is reported as `apply would: fail
+// (...)` — that is what apply would do (it fails closed) — and does not fail the
+// build. force is never set: an operator's `apply --force` is not knowable here.
+func (ws *Workspace) reportApplyDecision(ctx context.Context, out io.Writer, overridePaths map[string]string) {
+	reason, err := ws.needsRebuild(ctx, ws.allRepoDirs(overridePaths), false)
+	fmt.Fprintln(out, applyDecisionLine(reason, err))
+}
+
+// applyDecisionLine renders the gate's verdict as the `apply would: ...` line.
+func applyDecisionLine(reason rebuildReason, err error) string {
+	switch {
+	case err != nil:
+		return fmt.Sprintf("apply would: fail (%v)", err)
+	case reason == reasonUnchanged:
+		return "apply would: skip (unchanged)"
+	default:
+		return fmt.Sprintf("apply would: rebuild (%s)", reason)
+	}
 }
 
 // effectiveTerminal returns the terminal repo key: flagTerminal if non-empty,

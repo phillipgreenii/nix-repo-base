@@ -63,7 +63,7 @@ url = "github:o/leaf"
 `)
 	trustWS(t, root) // build now gates on workspace trust (bead pg2-x2q6o)
 	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"fmt"}, exec.Result{}, nil)
+	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check (shared prelude)
 	f.AddResponse("darwin-rebuild", []string{"build", "--flake", filepath.Join(root, "leaf")}, exec.Result{}, nil)
 	w, err := Open(root, f)
 	if err != nil {

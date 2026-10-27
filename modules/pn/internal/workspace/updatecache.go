@@ -17,12 +17,30 @@ import (
 // produced by appliedStateFile (sha256 of the full repo path).
 var hexFilenameRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// needsRebuild reports whether apply must rebuild. Returns true if force is set,
-// any repo's working tree is dirty, any repo's HEAD differs from the recorded
-// applied hash, or any repo has no recorded hash (absent store triggers rebuild).
-// A corrupt or unreadable store returns an error (fail-closed) rather than
-// triggering a rebuild. Returns false (with a notice) only when every repo is
-// clean and unchanged.
+// rebuildReason is why apply's skip gate (needsRebuild) decided what it did. The
+// four non-unchanged values mean "rebuild"; reasonUnchanged means "skip". The
+// string form is what `pn workspace build` prints in its `apply would: ...` line.
+type rebuildReason string
+
+const (
+	reasonForced      rebuildReason = "forced"       // --force bypassed the gate
+	reasonDirty       rebuildReason = "dirty"        // a repo's working tree is dirty
+	reasonHeadChanged rebuildReason = "head_changed" // a repo's HEAD differs from its recorded applied ref
+	reasonNoRecord    rebuildReason = "no_record"    // a repo has no applied-state record
+	reasonUnchanged   rebuildReason = "unchanged"    // every repo clean and matching: skip
+)
+
+// rebuild reports whether the reason means a rebuild happens (everything but
+// reasonUnchanged).
+func (r rebuildReason) rebuild() bool { return r != reasonUnchanged }
+
+// needsRebuild is apply's skip gate. It returns the reason apply must rebuild
+// (forced, dirty, head_changed, no_record) or reasonUnchanged when every repo is
+// clean and unchanged. Repos are examined in order and the FIRST repo that
+// triggers a rebuild decides the reason. A corrupt or unreadable store returns an
+// error (fail-closed) rather than triggering a rebuild. It is READ-ONLY (git
+// status, git rev-parse, a store read) and prints nothing, so `pn workspace
+// build` can evaluate it too; Apply prints the skip notice itself.
 //
 // The gate compares local HEAD against AppliedState.AppliedRef, and ADR 0025
 // deliberately left that comparison alone: it added LockedRevs as a SEPARATE field
@@ -31,35 +49,37 @@ var hexFilenameRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // working copy; if it had been redefined to a terminal-locked rev, this comparison
 // would pit local HEAD against a rev that normally differs from it, the skip would
 // never fire, and every apply would rebuild.
-func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []repoDir, force bool, out io.Writer) (bool, error) {
+func (ws *Workspace) needsRebuild(ctx context.Context, repoDirs []repoDir, force bool) (rebuildReason, error) {
 	if force {
-		return true, nil
+		return reasonForced, nil
 	}
 	for _, rd := range repoDirs {
 		porcelain, err := ws.gitStatusPorcelain(ctx, rd.gitDir)
 		if err != nil {
-			return false, fmt.Errorf("git status in %s: %w", rd.gitDir, err)
+			return "", fmt.Errorf("git status in %s: %w", rd.gitDir, err)
 		}
 		if porcelain != "" {
-			return true, nil
+			return reasonDirty, nil
 		}
 		res, err := ws.runner.Run(ctx, "git", []string{"-C", rd.gitDir, "rev-parse", "HEAD"}, exec.RunOptions{})
 		if err != nil {
-			return false, fmt.Errorf("git rev-parse in %s: %w", rd.gitDir, err)
+			return "", fmt.Errorf("git rev-parse in %s: %w", rd.gitDir, err)
 		}
 		head := strings.TrimSpace(string(res.Stdout))
 		// Key the store by the canonical path so the rebuild-skip check reads
 		// the same entry markApplied wrote and Info reads (shared key rule).
 		st, ok, err := readAppliedState(rd.keyPath)
 		if err != nil {
-			return false, fmt.Errorf("read applied-state for %s: %w", rd.keyPath, err)
+			return "", fmt.Errorf("read applied-state for %s: %w", rd.keyPath, err)
 		}
-		if !ok || head != st.AppliedRef {
-			return true, nil
+		if !ok {
+			return reasonNoRecord, nil
+		}
+		if head != st.AppliedRef {
+			return reasonHeadChanged, nil
 		}
 	}
-	fmt.Fprintln(out, "Skipping rebuild: all workspace repos clean and unchanged since last apply")
-	return false, nil
+	return reasonUnchanged, nil
 }
 
 // gitStatusProbeTimeout bounds apply's `git status` dirtiness probes. Disabling

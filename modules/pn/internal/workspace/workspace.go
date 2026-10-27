@@ -24,6 +24,12 @@ type Workspace struct {
 	// registerChecksFn overrides the default check registry. nil in production;
 	// set only in tests to stub the re-run inside applyFixes.
 	registerChecksFn func() []check
+	// stepRecorder, when non-nil, observes the ordered steps of build/apply (the
+	// parity contract test). nil in production.
+	stepRecorder stepRecorder
+	// hostnameFn overrides the {hostname} resolver (see Workspace.hostname).
+	// nil in production; set only in tests.
+	hostnameFn func() string
 }
 
 // Open loads the workspace rooted at dir. Reads pn-workspace.toml (required)

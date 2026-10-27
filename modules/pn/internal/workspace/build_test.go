@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,6 +16,7 @@ import (
 )
 
 func TestBuild_TerminalOnlyWithOverrides(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir()) // applied-state store read by the apply-would gate
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	mkRepoDir(t, root, "dep")
@@ -40,6 +44,7 @@ url = "github:owner/dep"
 	leafDir := filepath.Join(root, "leaf")
 	depDir := filepath.Join(root, "dep")
 	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check (shared prelude)
 	f.AddResponse("darwin-rebuild", []string{
 		"build", "--flake", leafDir,
 		"--override-input", "dep-input", "git+file://" + depDir,
@@ -56,15 +61,23 @@ url = "github:owner/dep"
 	if !strings.Contains(out.String(), "leaf") {
 		t.Errorf("build output should name the terminal project %q; got:\n%s", "leaf", out.String())
 	}
-	calls := f.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 build call (no fmt), got %d", len(calls))
+	// Calls: the shared nix-daemon probe, the read-only apply-would gate's git
+	// probes (unscripted in this test, so they fail and are reported, not fatal),
+	// and exactly one build command.
+	var builds []exec.Call
+	for _, c := range f.Calls() {
+		if c.Name == "darwin-rebuild" {
+			builds = append(builds, c)
+		}
 	}
-	if calls[0].Opts.Dir != leafDir {
-		t.Errorf("build command must run in terminal dir; got %q", calls[0].Opts.Dir)
+	if len(builds) != 1 {
+		t.Fatalf("expected 1 build call (no fmt), got %d", len(builds))
+	}
+	if builds[0].Opts.Dir != leafDir {
+		t.Errorf("build command must run in terminal dir; got %q", builds[0].Opts.Dir)
 	}
 	// Build command streams its output live (Opts.Stdout set).
-	if calls[0].Opts.Stdout == nil {
+	if builds[0].Opts.Stdout == nil {
 		t.Errorf("build should stream subprocess output (Opts.Stdout set on build)")
 	}
 }
@@ -238,5 +251,138 @@ url = "github:owner/leaf"
 	}
 	if len(f.Calls()) != 0 {
 		t.Errorf("untrusted build must not exec any command; got %d calls: %+v", len(f.Calls()), f.Calls())
+	}
+}
+
+func TestApplyDecisionLine(t *testing.T) {
+	cases := []struct {
+		reason rebuildReason
+		err    error
+		want   string
+	}{
+		{reasonForced, nil, "apply would: rebuild (forced)"},
+		{reasonDirty, nil, "apply would: rebuild (dirty)"},
+		{reasonHeadChanged, nil, "apply would: rebuild (head_changed)"},
+		{reasonNoRecord, nil, "apply would: rebuild (no_record)"},
+		{reasonUnchanged, nil, "apply would: skip (unchanged)"},
+		{"", errors.New("boom"), "apply would: fail (boom)"},
+	}
+	for _, c := range cases {
+		if got := applyDecisionLine(c.reason, c.err); got != c.want {
+			t.Errorf("applyDecisionLine(%q, %v) = %q, want %q", c.reason, c.err, got, c.want)
+		}
+	}
+}
+
+// buildGateFixture opens a trusted one-repo workspace whose build is scripted to
+// succeed, with the read-only apply-would gate's git probes scripted per the
+// arguments. status is `git status --porcelain` output; head is `git rev-parse
+// HEAD`. It returns the workspace, the runner, and the repo dir.
+func buildGateFixture(t *testing.T, status, head string) (*Workspace, *exec.FakeRunner, string) {
+	t.Helper()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "leaf"
+
+[repos.leaf]
+url = "github:owner/leaf"
+`)
+	trustWS(t, root)
+	leafDir := filepath.Join(root, "leaf")
+	f := exec.NewFakeRunner()
+	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
+	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte(status)}, nil)
+	if status == "" {
+		f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte(head + "\n")}, nil)
+	}
+	f.AddResponse("darwin-rebuild", []string{"build", "--flake", leafDir}, exec.Result{}, nil)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	return w, f, leafDir
+}
+
+// storeFiles lists every file under the applied-state store (XDG_DATA_HOME).
+func storeFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	_ = filepath.WalkDir(os.Getenv("XDG_DATA_HOME"), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			files = append(files, p)
+		}
+		return nil
+	})
+	return files
+}
+
+// TestBuild_ReportsApplyDecision: build prints apply's skip decision for each
+// reason the gate can give (forced is not reachable from build: it has no
+// --force), still runs the build every time, and never writes applied state.
+func TestBuild_ReportsApplyDecision(t *testing.T) {
+	cases := []struct {
+		name         string
+		status, head string
+		seed         string // applied_ref to seed ("" = no record)
+		want         string
+	}{
+		{"dirty", " M f\n", "", "", "apply would: rebuild (dirty)"},
+		{"no_record", "", "h1", "", "apply would: rebuild (no_record)"},
+		{"head_changed", "", "h2", "h1", "apply would: rebuild (head_changed)"},
+		{"unchanged", "", "h1", "h1", "apply would: skip (unchanged)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w, f, leafDir := buildGateFixture(t, c.status, c.head)
+			if c.seed != "" {
+				if err := writeAppliedState(leafDir, AppliedState{AppliedRef: c.seed}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := storeFiles(t)
+			var out bytes.Buffer
+			if err := w.Build(context.Background(), &out, BuildOptions{Builder: "darwin-rebuild"}); err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			if !strings.Contains(out.String(), c.want+"\n") {
+				t.Errorf("output missing %q:\n%s", c.want, out.String())
+			}
+			// Build NEVER skips: the build command ran even for "unchanged".
+			var built bool
+			for _, call := range f.Calls() {
+				built = built || call.Name == "darwin-rebuild"
+			}
+			if !built {
+				t.Errorf("build must run the build command even when apply would skip")
+			}
+			if after := storeFiles(t); !reflect.DeepEqual(before, after) {
+				t.Errorf("build must not write applied state: before %v, after %v", before, after)
+			}
+		})
+	}
+}
+
+// TestBuild_ApplyDecisionFailureDoesNotFailBuild: an unreadable gate is reported
+// as what apply would do (fail) but the build itself still runs and succeeds.
+func TestBuild_ApplyDecisionFailureDoesNotFailBuild(t *testing.T) {
+	w, _, leafDir := buildGateFixture(t, "", "h1")
+	// Corrupt the store record: apply's gate fails closed on it.
+	if err := writeAppliedState(leafDir, AppliedState{AppliedRef: "h1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range storeFiles(t) {
+		if err := os.WriteFile(p, []byte("{not json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	if err := w.Build(context.Background(), &out, BuildOptions{Builder: "darwin-rebuild"}); err != nil {
+		t.Fatalf("Build must still succeed: %v", err)
+	}
+	if !strings.Contains(out.String(), "apply would: fail (") {
+		t.Errorf("expected an `apply would: fail (...)` line:\n%s", out.String())
 	}
 }

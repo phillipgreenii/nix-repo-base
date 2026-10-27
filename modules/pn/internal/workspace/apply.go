@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
-	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 )
 
 // ApplyOptions configures Apply.
@@ -30,85 +29,43 @@ type ApplyOptions struct {
 // when nothing changed, diffs the system profile via nvd when available, and
 // records the applied state. Formatting is a separate step: run
 // `pn workspace format` before applying.
-func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions) (err error) {
-	terminal, err := ws.requireTerminal(ctx, opts.Terminal)
-	if err != nil {
-		return err
-	}
-	// pn.repo span for the terminal repo this verb builds/applies; ended with the
-	// verb's final error.
-	ctx, endRepo := telemetry.StartRepo(ctx, terminal)
-	defer func() { endRepo(err) }()
-	terminalRepoDir := filepath.Join(ws.root, terminal)
-	if td, ok := opts.OverridePaths[terminal]; ok {
-		terminalRepoDir = td
-	}
-	nixRel := filepath.Dir(ws.resolveFlakePath(terminal))
-	terminalNixDir := filepath.Join(terminalRepoDir, nixRel)
-
-	// ONE resolution, TWO projections: the flags nix is given and the record of what
-	// this apply overrode (markApplied's `overridden`). Resolving once is deliberate
-	// — the set depends on which clones exist on disk, so a second resolution could
-	// sample a different filesystem and record an override nix was never told about,
-	// or miss one it was (bead pg2-14yqh).
-	resolvedOverrides := ws.resolveOverridesFor(terminal, overrideOpts{OverridePaths: opts.OverridePaths})
-	overrides := overrideInputArgs(resolvedOverrides)
-
-	if err := checkFollows(terminalNixDir, ws.workspaceInputNamesFromEdges(terminal)); err != nil {
-		return err
-	}
-
-	tmpl := opts.ApplyCmd
-	if tmpl == "" {
-		tmpl, err = ws.config.ApplyCommandTemplate()
-		if err != nil {
-			return err
-		}
-	}
-	builder := opts.Builder
-	if builder == "" {
-		builder = defaultBuilder()
-	}
-	cmdArgs, err := substituteCommand(tmpl, templateVars{
-		TerminalRepoDir:    terminalRepoDir,
-		TerminalNixDir:     terminalNixDir,
-		TerminalNixRelPath: nixRel,
-		Hostname:           shortHostname(),
-		Builder:            builder,
+//
+// Apply runs the same shared prelude as Build (Workspace.rebuild); only the
+// strategy after the prelude is apply-specific (applyVerb.run).
+func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions) error {
+	return ws.rebuild(ctx, out, applyVerb{}, rebuildOptions{
+		Terminal:            opts.Terminal,
+		Cmd:                 opts.ApplyCmd,
+		OverridePaths:       opts.OverridePaths,
+		ShowNixCommandsOnly: opts.ShowNixCommandsOnly,
+		Force:               opts.Force,
+		Builder:             opts.Builder,
 	})
-	if err != nil {
-		return err
-	}
+}
 
-	if opts.ShowNixCommandsOnly {
-		fmt.Fprintln(out, strings.Join(append(append([]string{}, cmdArgs...), overrides...), " "))
-		return nil
-	}
+// applyVerb is the apply strategy of the rebuild Template Method.
+type applyVerb struct{}
 
-	// Trust gate (bead pg2-x2q6o): abort before ANY execution (including the nix
-	// daemon check and rebuild probe) when the workspace root is untrusted, so
-	// the config-sourced apply_command is never run from an untrusted checkout.
-	if err := ws.ensureExecTrusted(); err != nil {
-		return err
-	}
+func (applyVerb) name() string { return "apply" }
 
-	if id := ws.config.Workspace.Id; id != "" {
-		if err := checkWsidUnique(id, ws.root); err != nil {
-			return err
-		}
+func (applyVerb) commandTemplate(ws *Workspace, opts rebuildOptions) (string, error) {
+	if opts.Cmd != "" {
+		return opts.Cmd, nil
 	}
+	return ws.config.ApplyCommandTemplate()
+}
 
-	if err := ws.checkNixDaemon(ctx); err != nil {
-		return err
-	}
-
+func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) (err error) {
+	terminal, terminalRepoDir, terminalNixDir := p.terminal, p.terminalRepoDir, p.terminalNixDir
 	fmt.Fprintf(out, "  --== %s: applying flake ==--  \n", terminal)
-	allDirs := ws.allRepoDirs(opts.OverridePaths)
-	rebuild, err := ws.needsRebuild(ctx, allDirs, opts.Force, out)
+	allDirs := ws.allRepoDirs(p.opts.OverridePaths)
+	ws.recordStep("apply", false, stepSkipGate)
+	reason, err := ws.needsRebuild(ctx, allDirs, p.opts.Force)
 	if err != nil {
 		return err
 	}
-	if !rebuild {
+	if reason == reasonUnchanged {
+		fmt.Fprintln(out, "Skipping rebuild: all workspace repos clean and unchanged since last apply")
 		return nil
 	}
 
@@ -116,7 +73,8 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	// sees in the apply log (bead pg2-xdvbj; see applylog.go). `out` is rebound to
 	// tee into it, so the terminal output is unchanged. A failure to open the log
 	// is reported and otherwise ignored: it must never fail or alter the apply.
-	alog, logErr := openApplyLog(terminal, append(append([]string{}, cmdArgs...), overrides...))
+	ws.recordStep("apply", false, stepApplyLog)
+	alog, logErr := openApplyLog(terminal, append(append([]string{}, p.cmdArgs...), p.overrideArgs...))
 	if logErr != nil {
 		fmt.Fprintf(out, "warning: could not retain the apply log: %v\n", logErr)
 	}
@@ -137,14 +95,15 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 	// window — which can be minutes wide — would be recorded as applied even
 	// though the activated system was evaluated before that commit existed
 	// (bead pg2-0782j).
+	ws.recordStep("apply", false, stepCaptureHeads)
 	preBuildHeads, err := ws.captureHeads(ctx, allDirs)
 	if err != nil {
 		alog.recordRefs(nil)
 		return err
 	}
 	alog.recordRefs(preBuildHeads)
-	full := append(append([]string{}, cmdArgs[1:]...), overrides...)
-	if _, runErr := ws.runner.Run(ctx, cmdArgs[0], full, exec.RunOptions{
+	ws.recordStep("apply", false, stepRunCommand)
+	if _, runErr := ws.runner.Run(ctx, p.cmdArgs[0], p.fullArgs(), exec.RunOptions{
 		Dir:     terminalRepoDir,
 		Stdout:  out,
 		Stderr:  out,
@@ -154,6 +113,7 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		return fmt.Errorf("apply failed: %w", runErr)
 	}
 	alog.setExit(nil)
+	ws.recordStep("apply", false, stepPostSteps)
 	newProfile := readSystemProfile()
 	if oldProfile != newProfile && newProfile != "" && commandExists("nvd") {
 		fmt.Fprintln(out, "  --== Package changes ==--  ")
@@ -167,10 +127,11 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		ws.restartFsmonitorDaemon(ctx, out)
 	}
 
-	// markApplied is reached ONLY here, after a real rebuild — the !rebuild early
+	// markApplied is reached ONLY here, after a real rebuild — the unchanged early
 	// return above skips it. So a record (its locked_revs and its overridden_inputs)
 	// is written exactly when a build actually happened, never on a skipped apply.
-	return ws.markApplied(ctx, allDirs, terminal, terminalNixDir, overriddenInputs(resolvedOverrides), preBuildHeads, out)
+	ws.recordStep("apply", false, stepMarkApplied)
+	return ws.markApplied(ctx, allDirs, terminal, terminalNixDir, overriddenInputs(p.resolvedOverrides), preBuildHeads, out)
 }
 
 // captureHeads resolves each repo's local HEAD, keyed by [repos.<key>] name, at

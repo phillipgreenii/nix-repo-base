@@ -113,6 +113,15 @@ func substituteCommand(tmpl string, v templateVars) ([]string, error) {
 		}
 	}
 
+	// Guard 1b: {hostname} referenced but unresolvable. build and apply share ONE
+	// resolver (Workspace.hostname); an empty value would silently address
+	// `<dir>#` instead of the host's flake output.
+	for _, n := range names {
+		if n == "hostname" && v.Hostname == "" {
+			return nil, fmt.Errorf("cannot determine this host's name for the {hostname} placeholder; set build_command/apply_command without {hostname} or fix the system hostname")
+		}
+	}
+
 	// Guard 2: unknown placeholders (typos, or the removed {terminal_flake}).
 	if unknown := unknownPlaceholders(tmpl); len(unknown) > 0 {
 		return nil, fmt.Errorf(

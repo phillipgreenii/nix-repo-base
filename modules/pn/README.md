@@ -90,6 +90,33 @@ and reports a missing wrapper or a failing check as a warning (never an error); 
 system whose collector is unreachable, and `enabled = true` with no endpoint, are warnings too. It is
 silent when telemetry is off.
 
+## pn workspace build and apply: one pipeline
+
+Agents may not run `pn workspace apply`, so `pn workspace build` exists to reproduce what apply
+would hit. Both verbs therefore run ONE shared prelude (`Workspace.rebuild`, a Template Method in
+`internal/workspace/rebuild.go`), in this order: require a terminal, open the `pn.repo` span, resolve
+the `--override-input` set once, check follows, substitute the command template (one shared
+hostname resolver for `{hostname}`; an unresolvable hostname is an error when the template uses
+it), the dry-run exit, the workspace trust gate, the workspace-id uniqueness check, and the nix
+daemon health check (`nix eval --expr true`). A parity contract test
+(`rebuild_parity_test.go`) records the prelude step names for both verbs and fails if they diverge.
+
+After the prelude the verbs differ, deliberately:
+
+- **build** prints one read-only line, then builds. It evaluates apply's skip gate without writing
+  anything and reports `apply would: skip (unchanged)` or
+  `apply would: rebuild (<reason>)`, where the reason is `dirty`, `head_changed` (a repo's HEAD
+  differs from the recorded applied ref) or `no_record` (no applied-state record). `forced` is the
+  fourth rebuild reason and only `apply --force` produces it. If the gate itself fails (an unreadable
+  record, a failing `git`) the line reads `apply would: fail (<error>)`, which is what apply would
+  do, and the build still runs. Build NEVER skips and NEVER writes applied state.
+- **apply** runs the skip gate for real (skipping when nothing changed), opens the apply log, captures
+  each repo's HEAD, runs the switch command, diffs the system profile with nvd, restarts a stale
+  fsmonitor daemon, and records the applied state.
+
+Build's command template has no required `#{hostname}`; when `build_command` includes `{hostname}` it
+addresses the same flake output as apply. Neither verb changes how the workspace root is resolved.
+
 ## pn workspace apply: the apply log
 
 Every `pn workspace apply` (and the apply step of `upgrade`) that actually REBUILDS keeps a copy of
