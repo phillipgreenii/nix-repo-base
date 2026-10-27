@@ -16,15 +16,15 @@ CMD is resolved from `PATH` skipping the wrapper's own file, so a `PATH` shadow 
 
 ## What you get
 
-| Signal | Name                      | Notes                                                                 |
-| ------ | ------------------------- | --------------------------------------------------------------------- |
-| span   | `nix.invocation`          | `INTERNAL`; child of `--traceparent` / `TRACEPARENT`, else a new root |
-| span   | `nix.build`               | one per derivation; `nix.drv.name`; error status on failure           |
-| span   | `nix.substitute`          | `server.address`; only when at least 250 ms (always counted)          |
-| span   | `nix.build.wait`          | waiting for a lock held by another client                             |
-| metric | `nix.derivations`         | counter, `outcome` = `built` / `substituted` / `failed`               |
-| metric | `nix.build.duration`      | histogram, seconds, `status`                                          |
-| metric | `nix.invocation.duration` | histogram, seconds, `command`, `subcommand`, `status`                 |
+| Signal | Name                      | Notes                                                                                                                                        |
+| ------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| span   | `nix.invocation`          | `INTERNAL`; child of `--traceparent` / `TRACEPARENT`, else a new root                                                                        |
+| span   | `nix.build`               | one per derivation; `nix.drv.name`; error status and `error.type` on failure; `nix.hash_mismatch.placeholder` on a placeholder-hash mismatch |
+| span   | `nix.substitute`          | `server.address`; only when at least 250 ms (always counted)                                                                                 |
+| span   | `nix.build.wait`          | waiting for a lock held by another client                                                                                                    |
+| metric | `nix.derivations`         | counter, `outcome` = `built` / `substituted` / `failed`                                                                                      |
+| metric | `nix.build.duration`      | histogram, seconds, `status`                                                                                                                 |
+| metric | `nix.invocation.duration` | histogram, seconds, `command`, `subcommand`, `status`, `failure_kind` (only when `status=error`)                                             |
 
 Metrics use **delta** temporality (the process is short-lived and exports once at exit); query with
 `increase()` / `rate()`. Derivation names are never metric labels. The `built` count includes
@@ -47,6 +47,35 @@ progress line was seen; they differ from the plan when nix stops early, e.g. aft
 cap was hit. A `nix.substitute` span carries `nix.substitute.bytes` (the last "done" bytes progress seen
 for that substitution; absent when none was seen), so slow caches can be identified. All of these are
 span attributes only, never metric labels.
+
+**Failure diagnostics (a failed or noisy run).** A non-zero exit sets `error.type` on the invocation
+span to the first match of this CLOSED set, else the generic `nonzero_exit`:
+
+| `error.type` / `failure_kind` | When                                                                                                                                |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `signal`                      | exit `128+n` (129 to 192), OR a run that printed `error: interrupted by the user` (a real nix exits 1 on SIGTERM/SIGINT); beats all |
+| `hash_mismatch`               | `error: hash mismatch in fixed-output derivation '<drv>'`                                                                           |
+| `build_failed`                | `Cannot build '<drv>'` with `builder failed ...`                                                                                    |
+| `dependency_failed`           | `Cannot build '<drv>'` with `N dependency failed` (and no root-cause message was seen)                                              |
+| `eval_error`                  | an `error:` message with no derivation (`.drv`) path in it                                                                          |
+| `other`                       | an `error:` message that names a derivation but matches none of the above; as `failure_kind` also "non-zero exit, nothing known"    |
+
+The metric label `failure_kind` on `nix.invocation.duration` uses the same set for `status=error`
+only; where the span says `nonzero_exit` the label says `other`, and a value outside the set is
+recorded as `other`, so the label cannot grow. Precedence is the table order. The span also carries
+`nix.error.message` (the run's FIRST `error:` message, read from `msg` because `raw_msg` has no
+`error:` prefix; whitespace collapsed, store hashes removed as `/nix/store/<name>`, URL
+credentials redacted as `://<redacted>@`, cut to 200 characters), `nix.failed.drvs` (names of up
+to 5 failing derivations, in message order), `nix.ignored.eval_cache_busy` (count of
+`error (ignored): SQLite database '.../eval-cache-...' is busy`), `nix.db_busy` (count of
+`warning: SQLite database '...' is busy`) and `nix.build.wait.count` (number of `nix.build.wait`
+spans); the last three are set only when above zero. `nix.error.message` and `nix.failed.drvs`
+are free text, so they are span attributes only, NEVER metric labels. A fixed-output
+derivation that fails its hash check gets a failed `nix.build` span with `error.type =
+hash_mismatch` and counts in `nix.derivations{outcome="failed"}` (as do its dependents); when its
+`specified:` hash is the all-A placeholder (`sha256-AAAA...=`, a deliberately wrong hash such as a
+test fixture) the span also carries `nix.hash_mismatch.placeholder = true`, so dashboards can
+filter those out without the metric hiding real failures.
 
 **Progress is read only for a few activities.** The parser skips `type 101` (build log) lines and
 progress (`type 105` result) lines without decoding them. The exception is the progress of the aggregate

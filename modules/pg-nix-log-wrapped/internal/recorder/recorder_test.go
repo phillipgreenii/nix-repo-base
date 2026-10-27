@@ -2,6 +2,7 @@ package recorder
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -218,8 +219,8 @@ func TestWaitSpanHasNoMetric(t *testing.T) {
 
 func TestInvocationDuration(t *testing.T) {
 	h := newHarness(t)
-	h.rec.Invocation("nix", "flake check", 2*time.Second, false)
-	h.rec.Invocation("nix", "build", 4*time.Second, true)
+	h.rec.Invocation("nix", "flake check", 2*time.Second, false, "")
+	h.rec.Invocation("nix", "build", 4*time.Second, true, "build_failed")
 	hist := findMetric(h.collect(t), MetricInvocationLength).Data.(metricdata.Histogram[float64])
 	if len(hist.DataPoints) != 2 {
 		t.Fatalf("data points = %d", len(hist.DataPoints))
@@ -257,7 +258,7 @@ func TestMetricNamesAreInTheSharedCatalog(t *testing.T) {
 		}
 		h := newHarness(t)
 		h.rec.Emit(nixlog.Activity{Kind: nixlog.KindBuild, Name: "n", Start: start, End: end})
-		h.rec.Invocation("nix", "build", time.Second, false)
+		h.rec.Invocation("nix", "build", time.Second, false, "")
 		m := findMetric(h.collect(t), name)
 		if m == nil || m.Unit != spec.Unit {
 			t.Errorf("%s unit = %v, catalog says %q", name, m, spec.Unit)
@@ -295,11 +296,130 @@ func TestSubstituteBytesIsASpanAttributeOnlyWhenSeen(t *testing.T) {
 
 func TestInvocationMetricCarriesOnlyCommandSubcommandAndStatus(t *testing.T) {
 	h := newHarness(t)
-	h.rec.Invocation("nix", "build", time.Second, false)
+	h.rec.Invocation("nix", "build", time.Second, false, "")
 	hist := findMetric(h.collect(t), MetricInvocationLength).Data.(metricdata.Histogram[float64])
 	for _, kv := range hist.DataPoints[0].Attributes.ToSlice() {
 		if kv.Key != "command" && kv.Key != "subcommand" && kv.Key != "status" {
 			t.Errorf("unexpected invocation metric label %s", kv.Key)
 		}
+	}
+}
+
+func invocationLabels(t *testing.T, h *harness) []map[string]string {
+	t.Helper()
+	hist := findMetric(h.collect(t), MetricInvocationLength).Data.(metricdata.Histogram[float64])
+	var out []map[string]string
+	for _, dp := range hist.DataPoints {
+		m := map[string]string{}
+		for _, kv := range dp.Attributes.ToSlice() {
+			m[string(kv.Key)] = kv.Value.AsString()
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// failure_kind labels a failed run only, and the label is the closed set: a
+// value outside nixlog.FailureKinds (including "") is recorded as "other".
+func TestFailureKindLabelIsBoundedAndOnlyOnFailedRuns(t *testing.T) {
+	h := newHarness(t)
+	h.rec.Invocation("nix", "build", time.Second, false, nixlog.ErrBuildFailed) // ignored: ok run
+	for _, k := range nixlog.FailureKinds {
+		h.rec.Invocation("nix", "build", time.Second, true, k)
+	}
+	h.rec.Invocation("nix", "build", time.Second, true, "")
+	h.rec.Invocation("nix", "build", time.Second, true, "some free text: /nix/store/x")
+	seen := map[string]bool{}
+	for _, l := range invocationLabels(t, h) {
+		if l["status"] == "ok" {
+			if _, has := l["failure_kind"]; has {
+				t.Errorf("an ok run carries failure_kind: %v", l)
+			}
+			continue
+		}
+		k, has := l["failure_kind"]
+		if !has {
+			t.Fatalf("a failed run lacks failure_kind: %v", l)
+		}
+		seen[k] = true
+	}
+	for k := range seen {
+		if BoundedFailureKind(k) != k {
+			t.Errorf("failure_kind %q is outside the closed set", k)
+		}
+	}
+	if len(seen) != len(nixlog.FailureKinds) {
+		t.Errorf("seen kinds = %v, want exactly %v", seen, nixlog.FailureKinds)
+	}
+}
+
+// The closed set is exactly the documented one: adding a kind is a deliberate,
+// reviewed change to this list (and to README, SKILL.md and ADR 0030).
+func TestFailureKindsAreTheDocumentedClosedSet(t *testing.T) {
+	want := []string{"build_failed", "dependency_failed", "hash_mismatch", "eval_error", "signal", "other"}
+	if fmt.Sprint(nixlog.FailureKinds) != fmt.Sprint(want) {
+		t.Errorf("FailureKinds = %v, want %v", nixlog.FailureKinds, want)
+	}
+}
+
+// nix.error.message and nix.failed.drvs are free text: they never become
+// metric labels, whatever the run carried.
+func TestFreeTextIsNeverAMetricLabel(t *testing.T) {
+	h := newHarness(t)
+	h.rec.Emit(nixlog.Activity{
+		Kind: nixlog.KindBuild, Name: "n", Start: start, End: end,
+		Failed: true, ErrorType: nixlog.ErrHashMismatch, Reason: "free text", Placeholder: true,
+	})
+	h.rec.Invocation("nix", "build", time.Second, true, nixlog.ErrHashMismatch)
+	rm := h.collect(t)
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			var sets []attribute.Set
+			switch d := m.Data.(type) {
+			case metricdata.Sum[int64]:
+				for _, dp := range d.DataPoints {
+					sets = append(sets, dp.Attributes)
+				}
+			case metricdata.Histogram[float64]:
+				for _, dp := range d.DataPoints {
+					sets = append(sets, dp.Attributes)
+				}
+			}
+			for _, set := range sets {
+				for _, kv := range set.ToSlice() {
+					switch string(kv.Key) {
+					case "nix.error.message", "nix.failed.drvs", "nix.drv.name", "nix.hash_mismatch.placeholder":
+						t.Errorf("%s carries span-only attribute %s as a label", m.Name, kv.Key)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestHashMismatchSpanCarriesPlaceholderAttrOnlyWhenPlaceholder(t *testing.T) {
+	h := newHarness(t)
+	h.rec.Emit(nixlog.Activity{
+		Kind: nixlog.KindBuild, Name: "a", Start: start, End: end,
+		Failed: true, ErrorType: nixlog.ErrHashMismatch, Placeholder: true,
+	})
+	h.rec.Emit(nixlog.Activity{
+		Kind: nixlog.KindBuild, Name: "b", Start: start, End: end,
+		Failed: true, ErrorType: nixlog.ErrHashMismatch,
+	})
+	spans := h.ended()
+	if v, ok := attrs(spans[0])["nix.hash_mismatch.placeholder"]; !ok || !v.AsBool() {
+		t.Errorf("placeholder attr = %v (found %v)", v, ok)
+	}
+	if v, ok := attrs(spans[0])["error.type"]; !ok || v.AsString() != "hash_mismatch" {
+		t.Errorf("error.type = %v", v)
+	}
+	if _, ok := attrs(spans[1])["nix.hash_mismatch.placeholder"]; ok {
+		t.Error("a real (non-placeholder) mismatch must not carry the attribute")
+	}
+	// Decision: a placeholder mismatch still counts as a failed derivation;
+	// dashboards filter on the span attribute.
+	if got := counter(t, h.collect(t), OutcomeFailed); got != 2 {
+		t.Errorf("failed derivations = %d, want 2 (placeholder mismatches count)", got)
 	}
 }

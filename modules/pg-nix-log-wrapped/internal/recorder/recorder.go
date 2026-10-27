@@ -60,16 +60,31 @@ func New(ctx context.Context, tracer trace.Tracer, meter metric.Meter) (*Recorde
 // Invocation records the wrapped command's duration; command is its base name
 // and subcommand its bounded operation label (app.Subcommand: an allowlisted
 // verb or "other", never a raw user string), both low cardinality; failed is
-// true for a non-zero exit.
-func (r *Recorder) Invocation(command, subcommand string, d time.Duration, failed bool) {
+// true for a non-zero exit. failureKind is the closed set
+// nixlog.FailureKinds; it labels the metric for a failed run only, and any
+// value outside the set (including "") is recorded as "other" so the label
+// can never grow.
+func (r *Recorder) Invocation(command, subcommand string, d time.Duration, failed bool, failureKind string) {
 	status := "ok"
+	attrs := []attribute.KeyValue{
+		attribute.String("command", command), attribute.String("subcommand", subcommand),
+	}
 	if failed {
 		status = "error"
+		attrs = append(attrs, attribute.String("failure_kind", BoundedFailureKind(failureKind)))
 	}
-	r.invocation.Record(r.ctx, seconds(d), metric.WithAttributes(
-		attribute.String("command", command), attribute.String("subcommand", subcommand),
-		attribute.String("status", status),
-	))
+	attrs = append(attrs, attribute.String("status", status))
+	r.invocation.Record(r.ctx, seconds(d), metric.WithAttributes(attrs...))
+}
+
+// BoundedFailureKind returns k when it is in nixlog.FailureKinds, else "other".
+func BoundedFailureKind(k string) string {
+	for _, f := range nixlog.FailureKinds {
+		if k == f {
+			return k
+		}
+	}
+	return nixlog.ErrOther
 }
 
 var spanNames = map[nixlog.Kind]string{
@@ -93,6 +108,9 @@ func (r *Recorder) Emit(a nixlog.Activity) {
 	}
 	if a.Kind == nixlog.KindSubstitute && a.HasBytes {
 		attrs = append(attrs, attribute.Int64("nix.substitute.bytes", a.Bytes))
+	}
+	if a.Placeholder {
+		attrs = append(attrs, attribute.Bool("nix.hash_mismatch.placeholder", true))
 	}
 	_, span := r.tracer.Start(r.ctx, spanNames[a.Kind],
 		trace.WithTimestamp(a.Start), trace.WithAttributes(attrs...))

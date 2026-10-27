@@ -340,8 +340,9 @@ func TestNonZeroExitIsPassedThroughAndMarksSpan(t *testing.T) {
 	if v, _ := attrOf(inv, "process.exit.code"); v.AsInt64() != 3 {
 		t.Errorf("exit code attr = %v", v)
 	}
-	if v, _ := attrOf(inv, "error.type"); v.AsString() == "" {
-		t.Error("error.type missing")
+	// Nothing more specific than the exit code is known: the generic type.
+	if v, _ := attrOf(inv, "error.type"); v.AsString() != "nonzero_exit" {
+		t.Errorf("error.type = %v, want nonzero_exit", v)
 	}
 }
 
@@ -360,6 +361,10 @@ func TestKilledChildPassesThrough137AndClosesOpenSpansWithError(t *testing.T) {
 	inv := r.mem.span(t, "nix.invocation")
 	if v, _ := attrOf(inv, "process.exit.code"); v.AsInt64() != 137 || inv.Status().Code != codes.Error {
 		t.Errorf("invocation = %v %v", v, inv.Status())
+	}
+	// An exit of 128+n is a signal, not the generic nonzero_exit.
+	if v, _ := attrOf(inv, "error.type"); v.AsString() != "signal" {
+		t.Errorf("error.type = %v, want signal", v)
 	}
 	if !b.EndTime().Before(inv.EndTime().Add(time.Millisecond)) {
 		t.Error("the invocation span must end after its activities")

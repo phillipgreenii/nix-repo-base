@@ -56,6 +56,9 @@ const (
 	// The SDK default is 5 s, which a 2 s flush can never reach, so one
 	// transient collector 503 would drop the whole batch.
 	RetryInitialInterval = 100 * time.Millisecond
+	// ErrTypeNonzeroExit is the invocation's error.type when nothing more
+	// specific than the exit code is known.
+	ErrTypeNonzeroExit = "nonzero_exit"
 	// drainFor bounds the tailer's final drain after CMD exits.
 	drainFor = 2 * time.Second
 )
@@ -513,18 +516,43 @@ func (s *session) finish(code int) {
 			attribute.Int64("nix.fetch.expected", sum.Fetch.Expected),
 		)
 	}
+	// Failure diagnostics (pg2-sdbhh4.4). nix.error.message and nix.failed.drvs
+	// are free text: span attributes only, NEVER metric labels.
+	if sum.FirstError != "" {
+		s.inv.SetAttributes(attribute.String("nix.error.message", sum.FirstError))
+	}
+	if len(sum.FailedDrvs) > 0 {
+		s.inv.SetAttributes(attribute.StringSlice("nix.failed.drvs", sum.FailedDrvs))
+	}
+	if sum.EvalCacheBusy > 0 {
+		s.inv.SetAttributes(attribute.Int("nix.ignored.eval_cache_busy", sum.EvalCacheBusy))
+	}
+	if sum.DBBusy > 0 {
+		s.inv.SetAttributes(attribute.Int("nix.db_busy", sum.DBBusy))
+	}
+	if sum.Waits > 0 {
+		s.inv.SetAttributes(attribute.Int("nix.build.wait.count", sum.Waits))
+	}
 	if s.tail.Truncated() {
 		s.inv.SetAttributes(attribute.Bool("nix.log.truncated", true))
 	}
 	if s.retainedTruncated {
 		s.inv.SetAttributes(attribute.Bool("nix.log.retained.truncated", true))
 	}
+	kind := ""
 	if code != 0 {
-		s.inv.SetAttributes(attribute.String("error.type", "nonzero_exit"))
+		// error.type is the closed set nixlog.FailureKinds, or the generic
+		// nonzero_exit when nothing more specific is known.
+		kind = sum.FailureKind(code)
+		errType := kind
+		if errType == "" {
+			errType = ErrTypeNonzeroExit
+		}
+		s.inv.SetAttributes(attribute.String("error.type", errType))
 		s.inv.SetStatus(codes.Error, fmt.Sprintf("exit code %d", code))
 	}
 	s.inv.End(trace.WithTimestamp(end)) // (d)
-	s.rec.Invocation(filepath.Base(s.opts.Cmd[0]), Subcommand(s.opts.Cmd), end.Sub(s.start), code != 0)
+	s.rec.Invocation(filepath.Base(s.opts.Cmd[0]), Subcommand(s.opts.Cmd), end.Sub(s.start), code != 0, kind)
 	s.shutdown() // (e) bounded flush
 }
 

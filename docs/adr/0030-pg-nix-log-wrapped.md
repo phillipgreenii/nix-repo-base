@@ -114,6 +114,20 @@ non-zero exit, `nix.tailer.lag` (max seconds), `nix.plan.build`, `nix.plan.fetch
 `nix.builds.expected`, `nix.builds.failed`, `nix.fetch.done`, `nix.fetch.expected` (final aggregate
 progress, summed, only when seen) and, on `nix.substitute` spans, `nix.substitute.bytes`.
 
+_Amended 2026-10-27 (`pg2-sdbhh4.4`):_ the invocation's `error.type` on a non-zero exit is no longer
+always `nonzero_exit`. It is one of the CLOSED set `signal` (exit `128+n`, or `error: interrupted by
+the user`, which a real nix prints before exiting 1), `hash_mismatch`, `build_failed`,
+`dependency_failed`, `eval_error`, `other`, or `nonzero_exit` when nothing more specific is known;
+`nix.invocation.duration` gains a `failure_kind` label (same set, `other` instead of
+`nonzero_exit`; `status=error` only). The failure messages are matched on the ANSI-stripped `msg`
+(`raw_msg` has no `error:` prefix and a hash mismatch has none at all). Added invocation span
+attributes `nix.error.message` (first `error:` message: hashes and URL credentials removed, 200
+characters), `nix.failed.drvs`, `nix.ignored.eval_cache_busy`, `nix.db_busy` and
+`nix.build.wait.count`; the free-text two are never metric labels. A fixed-output hash mismatch is a
+failed `nix.build` (`error.type = hash_mismatch`, counted in `nix.derivations{outcome="failed"}`, as
+are its dependents), with `nix.hash_mismatch.placeholder = true` when the specified hash is the all-A
+placeholder.
+
 ### Polling only
 
 The tailer polls every 20 ms (the spike measured lag of about one interval). The plan allowed kqueue

@@ -16,6 +16,9 @@
 //     without a decode.
 //   - Build failure has no flag on `stop` (F6): it is inferred from a level-0
 //     message (raw_msg when present, else msg; ANSI stripped) naming the drv.
+//     The run's first `error:` message, hash mismatches, ignored eval-cache
+//     errors and database-busy warnings are read from the same messages
+//     (pg2-sdbhh4.4); the `error:` prefix exists only on msg, never raw_msg.
 //     A drv whose dependency failed never starts, so it is emitted from the
 //     message alone. Errors can arrive long after the stop, so a stopped
 //     build is HELD until a message names it or the run ends.
@@ -62,7 +65,22 @@ const (
 	ErrBuildFailed      = "build_failed"
 	ErrDependencyFailed = "dependency_failed"
 	ErrAborted          = "aborted"
+	ErrHashMismatch     = "hash_mismatch"
+
+	// ErrEval, ErrSignal and ErrOther complete the closed set of run-level
+	// failure kinds (see FailureKinds); they never appear on an Activity.
+	ErrEval   = "eval_error"
+	ErrSignal = "signal"
+	ErrOther  = "other"
 )
+
+// FailureKinds is the CLOSED set of values Summary.FailureKind can return.
+// The wrapper sets it as the invocation's error.type (together with the
+// generic "nonzero_exit" when nothing more specific is known) and as the
+// bounded failure_kind metric label.
+var FailureKinds = []string{
+	ErrBuildFailed, ErrDependencyFailed, ErrHashMismatch, ErrEval, ErrSignal, ErrOther,
+}
 
 // Activity is one finished (or force-closed) nix activity.
 type Activity struct {
@@ -87,6 +105,11 @@ type Activity struct {
 	// HasBytes is false when none was seen (nothing to report).
 	Bytes    int64
 	HasBytes bool
+	// Placeholder is true on a hash_mismatch build whose specified hash is
+	// the all-A placeholder (a deliberately wrong hash, e.g. a test fixture
+	// or a freshly added fetch). It still counts as a failed derivation;
+	// dashboards filter on this attribute.
+	Placeholder bool
 }
 
 // Sink receives finished activities.
@@ -117,6 +140,44 @@ type Summary struct {
 	// whose progress is not kept); Folded counts progress lines of kept
 	// activities; Malformed counts undecodable lines.
 	Lines, Dropped, Folded, Malformed int
+
+	// FirstError is the first level-0 `error:` message, cleaned by
+	// CleanError (empty when none). FailedDrvs holds the names of up to
+	// MaxFailedDrvs failing derivations in the order their messages arrived.
+	FirstError string
+	FailedDrvs []string
+	// EvalCacheBusy counts `error (ignored)` events about a busy eval-cache
+	// SQLite database; DBBusy counts the busy warnings about any SQLite
+	// database; Waits counts the build-wait activities emitted.
+	EvalCacheBusy, DBBusy, Waits int
+
+	// kinds is the set of failure kinds seen in messages (ErrBuildFailed,
+	// ErrDependencyFailed, ErrHashMismatch, ErrEval, ErrOther) plus
+	// ErrSignal for an "interrupted by the user" message.
+	kinds map[string]bool
+}
+
+// MaxFailedDrvs caps Summary.FailedDrvs.
+const MaxFailedDrvs = 5
+
+// MaxErrorLen caps Summary.FirstError (in characters).
+const MaxErrorLen = 200
+
+// FailureKind classifies a run that ended with a non-zero exit code. It
+// returns one of FailureKinds, or "" when nothing more specific than the
+// exit code is known. Precedence: signal (an exit of 128+n, or an
+// "interrupted by the user" message, which wins over everything), then
+// hash_mismatch, build_failed, dependency_failed, eval_error, other.
+func (s Summary) FailureKind(exit int) string {
+	if exit > 128 && exit <= 128+64 || s.kinds[ErrSignal] {
+		return ErrSignal
+	}
+	for _, k := range []string{ErrHashMismatch, ErrBuildFailed, ErrDependencyFailed, ErrEval, ErrOther} {
+		if s.kinds[k] {
+			return k
+		}
+	}
+	return ""
 }
 
 // Progress is the [done, expected, running, failed] result of nix's progress
@@ -132,6 +193,12 @@ type agg struct {
 	nested bool // its parent is itself an aggregate activity: counted only via the outer one
 	seen   bool
 	last   Progress
+}
+
+// failure is what a message said about one drv.
+type failure struct {
+	reason, errType string
+	placeholder     bool
 }
 
 type open struct {
@@ -153,7 +220,7 @@ type Processor struct {
 	// stopped builds waiting for a failure message or the end of the run.
 	held []held
 	// failed remembers drvs a message already named, to emit each once.
-	failed map[string]string
+	failed map[string]failure
 	// aggs holds every aggregate activity seen; copies maps an open type-100
 	// CopyPath activity to the open substitution that is its parent (nix
 	// reports a substitution's bytes on that child).
@@ -169,16 +236,25 @@ func NewProcessor(sink Sink, opts Options) *Processor {
 		sink:   sink,
 		opts:   opts,
 		active: make(map[uint64]*open),
-		failed: make(map[string]string),
+		failed: make(map[string]failure),
 		aggs:   make(map[uint64]*agg),
 		copies: make(map[uint64]uint64),
 	}
+}
+
+// emit forwards a finished activity to the sink, counting waits.
+func (p *Processor) emit(a Activity) {
+	if a.Kind == KindWait {
+		p.sum.Waits++
+	}
+	p.sink.Emit(a)
 }
 
 // Summary returns the counters, plan counts and aggregate progress gathered
 // so far.
 func (p *Processor) Summary() Summary {
 	s := p.sum
+	s.FailedDrvs = append([]string(nil), p.sum.FailedDrvs...)
 	for _, a := range p.aggs {
 		if !a.seen || a.nested {
 			continue
@@ -239,8 +315,15 @@ var (
 	reCannotBuild = regexp.MustCompile(`Cannot build '(/[^']+\.drv)'`)
 	reReason      = regexp.MustCompile(`Reason: ([^\n]*?)\.?(?:\n|$)`)
 	reQuoted      = regexp.MustCompile(`'(/[^']+)'`)
-	rePlanBuild   = regexp.MustCompile(`^(?:this derivation|these (\d+) derivations) will be built`)
-	rePlanFetch   = regexp.MustCompile(`^(?:this path|these (\d+) paths) will be fetched`)
+	// reHashMismatch matches the fixed-output hash failure; nix prints no
+	// "Cannot build" for that derivation. specified: is read separately.
+	reHashMismatch = regexp.MustCompile(`hash mismatch in fixed-output derivation '(/[^']+\.drv)'`)
+	reSpecified    = regexp.MustCompile(`specified:\s+(\S+)`)
+	reInterrupted  = regexp.MustCompile(`^error:\s+interrupted by the user`)
+	reSQLiteBusy   = regexp.MustCompile(`^(warning|error \(ignored\)):\s+SQLite database '([^']*)' is busy`)
+	reDrvPath      = regexp.MustCompile(`/nix/store/[0-9a-z]{32}-[^\s']*\.drv`)
+	rePlanBuild    = regexp.MustCompile(`^(?:this derivation|these (\d+) derivations) will be built`)
+	rePlanFetch    = regexp.MustCompile(`^(?:this path|these (\d+) paths) will be fetched`)
 )
 
 // Line feeds one complete line (no trailing newline), stamped at read time.
@@ -338,17 +421,17 @@ func (p *Processor) stop(id uint64, at time.Time) {
 	a.End = at
 	switch a.Kind {
 	case KindBuild:
-		if reason, bad := p.failed[a.Path]; bad {
-			markFailed(&a, reason)
-			p.sink.Emit(a)
+		if f, bad := p.failed[a.Path]; bad {
+			markFailed(&a, f)
+			p.emit(a)
 			return
 		}
 		p.held = append(p.held, held{a, o.order})
 	case KindSubstitute:
 		a.NoSpan = p.opts.MinSubstituteSpan > 0 && a.End.Sub(a.Start) < p.opts.MinSubstituteSpan
-		p.sink.Emit(a)
+		p.emit(a)
 	default:
-		p.sink.Emit(a)
+		p.emit(a)
 	}
 }
 
@@ -358,14 +441,18 @@ func (p *Processor) msg(ev *event, at time.Time) {
 		text = ev.Msg
 	}
 	text = StripANSI(text)
-	if ev.Level == 0 {
-		if m := reCannotBuild.FindStringSubmatch(text); m != nil {
-			reason := "build failed"
-			if r := reReason.FindStringSubmatch(text); r != nil {
-				reason = r[1]
-			}
-			p.buildFailed(m[1], reason, at)
+	// The "error:" prefix exists only on msg, never on raw_msg.
+	clean := strings.TrimSpace(StripANSI(ev.Msg))
+	if m := reSQLiteBusy.FindStringSubmatch(clean); m != nil {
+		if m[1] == "warning" {
+			p.sum.DBBusy++
+		} else if strings.Contains(m[2], "eval-cache") {
+			p.sum.EvalCacheBusy++
 		}
+		return
+	}
+	if ev.Level == 0 {
+		p.errorMsg(text, clean, at)
 		return
 	}
 	if m := rePlanBuild.FindStringSubmatch(text); m != nil {
@@ -373,6 +460,74 @@ func (p *Processor) msg(ev *event, at time.Time) {
 	} else if m := rePlanFetch.FindStringSubmatch(text); m != nil {
 		p.sum.PlanFetch += countOrOne(m[1])
 	}
+}
+
+// errorMsg handles a level-0 message: text is raw_msg-or-msg, clean is msg.
+func (p *Processor) errorMsg(text, clean string, at time.Time) {
+	isError := strings.HasPrefix(clean, "error:")
+	if isError && p.sum.FirstError == "" {
+		p.sum.FirstError = CleanError(clean)
+	}
+	if m := reCannotBuild.FindStringSubmatch(text); m != nil {
+		reason := "build failed"
+		if r := reReason.FindStringSubmatch(text); r != nil {
+			reason = r[1]
+		}
+		p.buildFailed(m[1], failure{reason: reason, errType: reasonType(reason)}, at)
+		return
+	}
+	if m := reHashMismatch.FindStringSubmatch(text); m != nil {
+		f := failure{reason: "hash mismatch in fixed-output derivation", errType: ErrHashMismatch}
+		if sp := reSpecified.FindStringSubmatch(text); sp != nil {
+			f.placeholder = isPlaceholderHash(sp[1])
+		}
+		p.buildFailed(m[1], f, at)
+		return
+	}
+	if !isError {
+		return
+	}
+	switch {
+	case reInterrupted.MatchString(clean):
+		p.noteKind(ErrSignal)
+	case reDrvPath.MatchString(clean):
+		p.noteKind(ErrOther) // an error about a derivation we cannot classify
+	default:
+		p.noteKind(ErrEval)
+	}
+}
+
+func (p *Processor) noteKind(k string) {
+	if p.sum.kinds == nil {
+		p.sum.kinds = make(map[string]bool)
+	}
+	p.sum.kinds[k] = true
+}
+
+// isPlaceholderHash reports whether an SRI hash is the all-A placeholder
+// (lib.fakeHash: "sha256-AAAA...=").
+func isPlaceholderHash(h string) bool {
+	i := strings.LastIndexByte(h, '-')
+	body := strings.TrimRight(h[i+1:], "=")
+	return body != "" && strings.Trim(body, "A") == ""
+}
+
+var (
+	reCredentials = regexp.MustCompile(`(://)[^/@\s:]*(?::[^/@\s]*)?@`)
+	reStoreHash   = regexp.MustCompile(`/nix/store/[0-9a-z]{32}-`)
+)
+
+// CleanError makes an error message safe to record on a span: URL
+// credentials are redacted, store hashes dropped, whitespace collapsed and
+// the result cut to MaxErrorLen characters.
+func CleanError(s string) string {
+	s = reCredentials.ReplaceAllString(s, "${1}<redacted>@")
+	s = reStoreHash.ReplaceAllString(s, "/nix/store/")
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > MaxErrorLen {
+		s = string(r[:MaxErrorLen])
+	}
+	return s
 }
 
 func countOrOne(s string) int {
@@ -383,16 +538,20 @@ func countOrOne(s string) int {
 }
 
 // buildFailed applies a failure message to a drv in whatever state it is in.
-func (p *Processor) buildFailed(drv, reason string, at time.Time) {
+func (p *Processor) buildFailed(drv string, f failure, at time.Time) {
 	if _, seen := p.failed[drv]; seen {
 		return
 	}
-	p.failed[drv] = reason
+	p.failed[drv] = f
+	p.noteKind(f.errType)
+	if len(p.sum.FailedDrvs) < MaxFailedDrvs {
+		p.sum.FailedDrvs = append(p.sum.FailedDrvs, StorePathName(drv))
+	}
 	for i, h := range p.held {
 		if h.act.Path == drv {
-			markFailed(&h.act, reason)
+			markFailed(&h.act, f)
 			p.held = append(p.held[:i], p.held[i+1:]...)
-			p.sink.Emit(h.act)
+			p.emit(h.act)
 			return
 		}
 	}
@@ -403,24 +562,30 @@ func (p *Processor) buildFailed(drv, reason string, at time.Time) {
 	}
 	// Never started (a dependency failed): attribute it from the message.
 	a := Activity{Kind: KindBuild, Path: drv, Name: StorePathName(drv), Start: at, End: at, Instant: true}
-	markFailed(&a, reason)
-	p.sink.Emit(a)
+	markFailed(&a, f)
+	p.emit(a)
 }
 
-func markFailed(a *Activity, reason string) {
-	a.Failed = true
-	a.Reason = reason
-	a.ErrorType = ErrBuildFailed
+// reasonType maps a "Cannot build" reason to an activity error type.
+func reasonType(reason string) string {
 	if strings.Contains(reason, "dependency failed") || strings.Contains(reason, "dependencies failed") {
-		a.ErrorType = ErrDependencyFailed
+		return ErrDependencyFailed
 	}
+	return ErrBuildFailed
+}
+
+func markFailed(a *Activity, f failure) {
+	a.Failed = true
+	a.Reason = f.reason
+	a.ErrorType = f.errType
+	a.Placeholder = f.placeholder
 }
 
 // Finish ends the run at end (W-9 c): held builds are released as successful,
 // and every still-open activity is closed with an error status.
 func (p *Processor) Finish(end time.Time) {
 	for _, h := range p.held {
-		p.sink.Emit(h.act)
+		p.emit(h.act)
 	}
 	p.held = nil
 	rest := make([]*open, 0, len(p.active))
@@ -434,7 +599,7 @@ func (p *Processor) Finish(end time.Time) {
 		a.Failed = true
 		a.ErrorType = ErrAborted
 		a.Reason = "nix exited before the activity stopped"
-		p.sink.Emit(a)
+		p.emit(a)
 	}
 	p.active = make(map[uint64]*open)
 }
