@@ -10,6 +10,7 @@ Contents: [Overview](#overview), [Stages](#stages), [The `pg-hooks` command](#th
 [The eval-only pre-land check](#the-eval-only-pre-land-check-pre-land-eval),
 [Messages](#messages), [Exit codes](#exit-codes), [Bundle layout](#bundle-layout),
 [Staleness](#staleness), [Old config symlinks](#old-config-symlinks), [Configuration](#configuration),
+[Grafana alert uid hook](#grafana-alert-uid-hook), [Drift guard](#drift-guard),
 [Operator runbook](#operator-runbook), [Open follow-ups](#open-follow-ups).
 
 ## Overview
@@ -550,7 +551,8 @@ whose `entry` invokes `pg-hooks fix` or `pre-commit-fix`. An unknown stage name 
 git-hooks.nix's own stage type.
 
 Hook definitions that arrive through `flake.lock` need no `stampPaths`; repo-base itself lists
-`flake-modules/pre-commit.nix` and `modules/pg-git-check-identity` because its hooks live in the repo.
+`flake-modules/pre-commit.nix`, `modules/pg-git-check-identity` and
+`modules/pg-check-grafana-alert-uids` because its hooks live in the repo.
 
 The global dispatcher (the personal repo's `home/programs/git`, one script registered under every
 client-side hook name) exists so that a fresh clone with no local `core.hooksPath` still reaches
@@ -565,6 +567,45 @@ bundle is live, the stamp matches and every recorded override is unchanged), run
 check `pre-commit-hook-live` reports, for repos whose `pn-workspace.toml` entry runs
 `install-pre-commit-hooks`: a missing pointer, a broken or dangling bundle, a relocated clone,
 unreachable hooks, and missing or foreign stubs.
+
+## Grafana alert uid hook
+
+`check-grafana-alert-uids` is a base hook: it is part of the standard set in
+`flake-modules/pre-commit.nix`, so every repo that imports the module gets it on the next hook-bundle
+rebuild, with no per-repo wiring. It runs at the `pre-commit` stage (so also under
+`pg-hooks run pre-land`) and rejects, over Grafana alerting provisioning files, the uid mistakes that
+make Grafana refuse to start (2026-10-13: a 42-character uid in `pg-desk` crash-looped Grafana and
+aborted `pn workspace apply`).
+
+| Rejected                                                                | Query on the YAML                  |
+| ----------------------------------------------------------------------- | ---------------------------------- |
+| an alert-rule uid longer than 40 characters                             | `.groups[].rules[].uid`            |
+| an alert-rule uid declared twice within one file                        | `.groups[].rules[].uid`            |
+| a contact-point receiver uid longer than 40 characters                  | `.contactPoints[].receivers[].uid` |
+| a selected file that does not parse as YAML (Grafana could not load it) |                                    |
+
+Policies:
+
+- The hook MUST select only `grafana/alerting/**/*.yaml` and `*.yml`, matched at any depth of the
+  repo (`(^|/)grafana/alerting/.*\.ya?ml$`).
+- It MUST NOT select promtool rule-test fixtures: anything under a `rule-tests*/` directory, and any
+  `*.test.yaml` / `*.test.yml`, are not provisioning files.
+- A receiver uid is only length-checked; a repeated receiver uid is not an error (not verified
+  against Grafana). A duplicate is checked per file, not across files: the cross-file duplicate check
+  stays with nix-support-apps' build-time funnel validator
+  (`darwin/modules/observability/alerting-validate.nix`), which this hook complements and does not
+  replace.
+- Length is counted in bytes, which is how Grafana counts it.
+- The YAML MUST be read with a real parser (`yq-go`), never a regex. The hook invokes no nix (HK-2):
+  the script and `yq-go` come from the bundle's store closure.
+
+Each violation is printed on stderr with the file, the uid and its length, for example
+`ERROR: pkg/grafana/alerting/alerts.yaml: alert-rule uid '<uid>' is 41 bytes long (limit 40); Grafana rejects uids longer than 40 and fails to start`,
+and the hook exits 1 (`pg-hooks run` then exits 10). Source: `modules/pg-check-grafana-alert-uids/`.
+Tests: the bats suite, flake check `test-pg-check-grafana-alert-uids` (the script against the real `yq`:
+41-character rule uid rejected, duplicate rejected, 41-character receiver uid rejected, 40-character
+uid passes) and the flake check `pg-hooks-grafana-alert-uids-real-tools` (the same verdicts through
+the real bundle, plus file selection).
 
 ## Drift guard
 

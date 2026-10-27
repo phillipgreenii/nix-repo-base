@@ -266,6 +266,15 @@ in
         inherit pkgs;
         bashBuilders = pgGitCheckIdentityBashBuilders;
       };
+      # pg-check-grafana-alert-uids (modules/pg-check-grafana-alert-uids, bead
+      # pg2-hlxmkk): built SELF-CONTAINED here for the same reason as
+      # pgGitCheckIdentityScripts above (a consumer's `pkgs` lacks this repo's
+      # overlay). yq-go and coreutils are its own runtimeDeps, so the hook is
+      # sandbox-safe and invokes no nix (HK-2).
+      pgCheckGrafanaAlertUidsScripts = import ../modules/pg-check-grafana-alert-uids/scripts.nix {
+        inherit pkgs;
+        bashBuilders = pgGitCheckIdentityBashBuilders;
+      };
       # The base fixer hooks' entries, shared with the bundle's default fixers
       # (fixers.json) so `pg-hooks fix` and the prek check hooks run the same tools.
       trailingWhitespaceEntry = "${pkgs.python3Packages.pre-commit-hooks}/bin/trailing-whitespace-fixer";
@@ -331,6 +340,26 @@ in
               exec ${pgGitCheckIdentityScripts.pg-git-check-identity.script}/bin/pg-git-check-identity
             ''}";
             pass_filenames = false;
+          };
+          # Grafana rejects an alert-rule uid over 40 characters (and a duplicate
+          # one) and then fails to START (2026-10-13 pg-desk incident); a
+          # contact-point receiver uid has the same cap. Rejects them at commit
+          # time in the repo that defines the alert, complementing nix-support-apps'
+          # build-time funnel validator (bead pg2-hlxmkk). Selects the alerting
+          # YAML files directly under or below a `grafana/alerting/` directory and
+          # skips the promtool rule-test fixtures (`rule-tests/`,
+          # `rule-tests-size-400/`, ... and any `*.test.yaml`), which are not
+          # provisioning files.
+          check-grafana-alert-uids = {
+            enable = true;
+            name = "check-grafana-alert-uids";
+            description = "Reject Grafana alert-rule uids over 40 characters or duplicated, and receiver uids over 40 characters";
+            entry = "${pgCheckGrafanaAlertUidsScripts.pg-check-grafana-alert-uids.script}/bin/pg-check-grafana-alert-uids";
+            files = "(^|/)grafana/alerting/.*\\.ya?ml$";
+            excludes = [
+              "(^|/)rule-tests[^/]*/"
+              "\\.test\\.ya?ml$"
+            ];
           };
           # NOTE: Go linting is intentionally NOT a pre-commit hook. golangci-lint
           # must load the full package graph, which cannot be done offline in the

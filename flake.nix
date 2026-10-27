@@ -81,6 +81,7 @@
         stampPaths = [
           "flake-modules/pre-commit.nix"
           "modules/pg-git-check-identity"
+          "modules/pg-check-grafana-alert-uids"
         ];
         # Drift guard (plan Task 22): fails on a hook-machinery regression outside
         # the explicit, reasoned allowlist.
@@ -238,6 +239,13 @@
           # overlays.default applied (this repo's own perSystem pkgs
           # doesn't either; see pgTestRunnerScripts et al. above).
           pgGitCheckIdentityScripts = import ./modules/pg-git-check-identity/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
+          # pg-check-grafana-alert-uids: the check-grafana-alert-uids prek hook's
+          # script (bead pg2-hlxmkk). Wired only through flake-modules/pre-commit.nix
+          # (self-contained there); bound here for its bats check and the
+          # real-bundle check pg-hooks-grafana-alert-uids-real-tools.
+          pgCheckGrafanaAlertUidsScripts = import ./modules/pg-check-grafana-alert-uids/scripts.nix {
             inherit pkgs bashBuilders;
           };
           # This repo's OWN repo-specific pg-test-runner configuration: the
@@ -823,6 +831,80 @@
                     echo "FAIL: second pg-hooks fix left unstaged changes" >&2
                     exit 1
                   fi
+                  touch $out
+                '';
+
+            # The check-grafana-alert-uids hook against the REAL bundle (bead
+            # pg2-hlxmkk): the bats suite proves the script's verdicts; this proves
+            # the bundle WIRING -- that prek selects the right files (`grafana/
+            # alerting/*.yaml`, not rule-tests/ fixtures, not other directories) and
+            # runs the real script and yq-go from the bundle. A 41-character rule
+            # uid, a duplicate rule uid and a 41-character receiver uid MUST each
+            # exit 10; a 40-character uid, a rule-test fixture and an alerting file
+            # outside grafana/ MUST exit 0.
+            pg-hooks-grafana-alert-uids-real-tools =
+              pkgs.runCommand "check-pg-hooks-grafana-alert-uids-real-tools"
+                {
+                  nativeBuildInputs = [ pkgs.git ];
+                }
+                ''
+                  bundle=${self.legacyPackages.${system}.pgHooksBundle}
+                  pgh=${pgHooksScripts.pg-hooks.script}/bin/pg-hooks
+                  export HOME="$TMPDIR/home" GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null
+                  mkdir -p "$HOME"
+
+                  repo="$TMPDIR/repo"
+                  mkdir -p "$repo"
+                  cd "$repo"
+                  git init -q -b main
+                  git config user.email check@bashfixture.invalid
+                  git config user.name "pg-hooks-grafana-alert-uids-real-tools"
+                  git config core.hooksPath /dev/null
+                  mkdir -p .git/pg-hooks/gen-1
+                  ln -s "$bundle" .git/pg-hooks/gen-1/bundle
+                  printf 'gen-1\n' >.git/pg-hooks/current
+
+                  uid40=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  uid41=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  [ "''${#uid40}" -eq 40 ] && [ "''${#uid41}" -eq 41 ]
+
+                  mkdir -p pkg/grafana/alerting/rule-tests other/alerting
+                  rules() {
+                    printf 'apiVersion: 1\ngroups:\n  - orgId: 1\n    name: g\n    rules:\n'
+                    for u in "$@"; do printf '      - uid: %s\n' "$u"; done
+                  }
+                  rules "$uid40" >pkg/grafana/alerting/ok40.yaml
+                  rules "$uid41" >pkg/grafana/alerting/long41.yaml
+                  rules dup dup >pkg/grafana/alerting/dup.yml
+                  printf 'apiVersion: 1\ncontactPoints:\n  - name: cp\n    receivers:\n      - uid: %s\n' "$uid41" >pkg/grafana/alerting/receiver41.yaml
+                  rules "$uid41" >pkg/grafana/alerting/rule-tests/fixture.test.yaml
+                  rules "$uid41" >other/alerting/outside.yaml
+                  git add -A
+                  git commit -q -m fixtures
+
+                  hook() { "$pgh" run pre-commit "$@" -- check-grafana-alert-uids; }
+                  expect() {
+                    want=$1 file=$2 pattern=$3
+                    rc=0
+                    hook_out="$(hook "$file" 2>&1)" || rc=$?
+                    if [ "$rc" -ne "$want" ]; then
+                      echo "FAIL: $file: expected exit $want, got $rc" >&2
+                      echo "$hook_out" >&2
+                      exit 1
+                    fi
+                    if [ -n "$pattern" ] && ! printf '%s' "$hook_out" | grep -q -- "$pattern"; then
+                      echo "FAIL: $file: output lacks '$pattern'" >&2
+                      echo "$hook_out" >&2
+                      exit 1
+                    fi
+                  }
+
+                  expect 0 pkg/grafana/alerting/ok40.yaml ""
+                  expect 10 pkg/grafana/alerting/long41.yaml "$uid41"
+                  expect 10 pkg/grafana/alerting/dup.yml "more than once"
+                  expect 10 pkg/grafana/alerting/receiver41.yaml "contact-point receiver uid"
+                  expect 0 pkg/grafana/alerting/rule-tests/fixture.test.yaml ""
+                  expect 0 other/alerting/outside.yaml ""
                   touch $out
                 '';
 
@@ -2395,6 +2477,7 @@
           // gogateScripts.checks
           // pgTempoSearchScripts.checks
           // pgGitCheckIdentityScripts.checks
+          // pgCheckGrafanaAlertUidsScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
           # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
           # never imported by any .nix (bead pg2-fqar3 / prior deep-dive T1).
