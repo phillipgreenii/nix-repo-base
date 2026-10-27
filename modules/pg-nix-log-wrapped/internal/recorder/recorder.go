@@ -88,6 +88,9 @@ func (r *Recorder) Emit(a nixlog.Activity) {
 	if a.Server != "" {
 		attrs = append(attrs, attribute.String("server.address", a.Server))
 	}
+	if a.Kind == nixlog.KindSubstitute && a.HasBytes {
+		attrs = append(attrs, attribute.Int64("nix.substitute.bytes", a.Bytes))
+	}
 	_, span := r.tracer.Start(r.ctx, spanNames[a.Kind],
 		trace.WithTimestamp(a.Start), trace.WithAttributes(attrs...))
 	if a.Failed {

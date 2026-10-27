@@ -96,7 +96,11 @@ writable, mode 0750; otherwise fail open), and ignores `--log-dir`. `HOME` survi
   are NOT counted in `nix.derivations` (they neither built nor failed).
 - **Dropping.** Result types 101 and 105 are dropped by a byte prefix/suffix check before any JSON
   decode; a failed check falls back to a full decode that drops by type, so key order is never
-  relied on for correctness.
+  relied on for correctness. _Amended 2026-10-27 (`pg2-sdbhh4.2`):_ progress results are still
+  dropped unread, except those of the aggregate activities (type 104 Builds, type 103 CopyPaths) and
+  of substitutions (type 108 and its type-100 CopyPath child), which are folded into an in-memory last
+  value (the id is read from the byte suffix; a failed check still falls back to a full decode). Type
+  101 lines are still skipped without decode.
 
 ### Signals added beyond the plan's table
 
@@ -105,7 +109,9 @@ writable, mode 0750; otherwise fail open), and ignores `--log-dir`. `HOME` survi
 `nix.invocation.duration` carry only `status` (and `command` for the latter); derivation names are
 span attributes only. Invocation span attributes: `command`, `process.exit.code`, `error.type` on
 non-zero exit, `nix.tailer.lag` (max seconds), `nix.plan.build`, `nix.plan.fetch`,
-`nix.log.truncated` (when true), `nix.log.file`.
+`nix.log.truncated` (when true), `nix.log.file`; since 2026-10-27 also `nix.builds.done`,
+`nix.builds.expected`, `nix.builds.failed`, `nix.fetch.done`, `nix.fetch.expected` (final aggregate
+progress, summed, only when seen) and, on `nix.substitute` spans, `nix.substitute.bytes`.
 
 ### Polling only
 

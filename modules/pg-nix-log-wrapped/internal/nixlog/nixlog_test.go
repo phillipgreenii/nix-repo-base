@@ -3,9 +3,11 @@ package nixlog
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -113,51 +115,377 @@ func TestLocalBuildGolden(t *testing.T) {
 	}
 }
 
-func TestProgressAndBuildLogResultsDropped(t *testing.T) {
-	for _, name := range []string{"cached-fetch.jsonl", "chatty-build.trimmed.jsonl", "local-build.jsonl"} {
+// kept returns the ids whose progress the Processor is meant to keep when the
+// stream is read start to end: aggregate (103/104) activities, substitutions
+// (108) and CopyPath (100) children of a substitution. It is a deliberately
+// independent re-derivation (encoding/json, no byte tricks).
+func keptIDs(t *testing.T, raw []byte) map[uint64]bool {
+	t.Helper()
+	kept := map[uint64]bool{}
+	subs := map[uint64]bool{}
+	for _, l := range bytes.Split(raw, []byte("\n")) {
+		if len(l) == 0 {
+			continue
+		}
+		var ev struct {
+			Action string `json:"action"`
+			ID     uint64 `json:"id"`
+			Parent uint64 `json:"parent"`
+			Type   int    `json:"type"`
+		}
+		if err := json.Unmarshal(l, &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Action != "start" {
+			continue
+		}
+		switch ev.Type {
+		case 103, 104:
+			kept[ev.ID] = true
+		case 108:
+			kept[ev.ID], subs[ev.ID] = true, true
+		case 100:
+			if subs[ev.Parent] {
+				kept[ev.ID] = true
+			}
+		}
+	}
+	return kept
+}
+
+func TestProgressOfKeptActivitiesIsFoldedAndAllOtherResultsDropped(t *testing.T) {
+	for _, name := range []string{"cached-fetch.jsonl", "chatty-build.trimmed.jsonl", "local-build.jsonl", "flake-check.jsonl", "failed-build-keep-going.jsonl"} {
 		raw, _ := os.ReadFile(filepath.Join("testdata", name))
-		want := 0
+		kept := keptIDs(t, raw)
+		wantDrop, wantFold := 0, 0
 		for _, l := range bytes.Split(raw, []byte("\n")) {
-			if FastDrop(l) {
-				want++
+			if len(l) == 0 {
+				continue
+			}
+			var ev struct {
+				Action string `json:"action"`
+				ID     uint64 `json:"id"`
+				Type   int    `json:"type"`
+			}
+			_ = json.Unmarshal(l, &ev)
+			switch {
+			case ev.Action == "result" && ev.Type == 101:
+				wantDrop++
+			case ev.Action == "result" && ev.Type == 105 && kept[ev.ID]:
+				wantFold++
+			case ev.Action == "result" && ev.Type == 105:
+				wantDrop++
 			}
 		}
 		p, _, n := feedFile(t, name, Options{})
 		s := p.Summary()
-		if s.Dropped != want || want == 0 {
-			t.Errorf("%s: dropped %d, want %d (>0)", name, s.Dropped, want)
+		if s.Dropped != wantDrop || s.Folded != wantFold {
+			t.Errorf("%s: dropped %d folded %d, want %d / %d", name, s.Dropped, s.Folded, wantDrop, wantFold)
 		}
 		if s.Lines != n || s.Malformed != 0 {
 			t.Errorf("%s: lines=%d malformed=%d", name, s.Lines, s.Malformed)
 		}
 	}
+	// The fixtures must actually exercise both branches.
+	p, _, _ := feedFile(t, "chatty-build.trimmed.jsonl", Options{})
+	if s := p.Summary(); s.Dropped == 0 {
+		t.Error("chatty-build must have dropped lines")
+	}
+	p, _, _ = feedFile(t, "flake-check.jsonl", Options{})
+	if s := p.Summary(); s.Folded == 0 {
+		t.Error("flake-check must have folded progress")
+	}
 }
 
-func TestFastDropIsConservative(t *testing.T) {
-	cases := []struct {
+func TestSuffixIDAndFastFieldsAreConservative(t *testing.T) {
+	ids := []struct {
 		line string
-		drop bool
+		id   uint64
+		ok   bool
 	}{
-		{`{"action":"result","fields":[0,0,0,0],"id":1,"type":105}`, true},
-		{`{"action":"result","fields":["x"],"id":1,"type":101}`, true},
-		{`{"action":"result","fields":[1,2],"id":1,"type":106}`, false},
-		{`{"action":"start","id":1,"level":3,"parent":0,"text":"t","type":105}`, false},
-		{`{"action":"start","id":1,"type":101}`, false},
-		{`{"action":"msg","msg":"type":105}`, false},
+		{`{"action":"result","fields":[0,0,0,0],"id":1,"type":105}`, 1, true},
+		{`{"action":"result","fields":[2,3,0,2],"id":43958990274602,"type":105}`, 43958990274602, true},
+		{`{"action":"result","fields":[1,2],"id":7,"type":105}`, 7, true},
+		{`{"action":"result","fields":[1,2],"id":,"type":105}`, 0, false},
+		{`{"action":"result","fields":[1,2],"id":7x,"type":105}`, 0, false},
+		{`{"action":"result","fields":[1,2],"id":99999999999999999999,"type":105}`, 0, false},
+		{`{"action":"result","fields":[1,2],"type":105}`, 0, false},
+		{`{"action":"result","fields":[1,2],"id":7 ,"type":105}`, 0, false},
+		{`,"type":105}`, 0, false},
+		{`"type":105}`, 0, false},
 	}
-	for _, c := range cases {
-		if got := FastDrop([]byte(c.line)); got != c.drop {
-			t.Errorf("FastDrop(%s) = %v", c.line, got)
+	for _, c := range ids {
+		if !bytes.HasSuffix([]byte(c.line), suffix105) {
+			t.Fatalf("bad case %s", c.line)
+		}
+		id, ok := suffixID([]byte(c.line))
+		if id != c.id || ok != c.ok {
+			t.Errorf("suffixID(%s) = %d,%v", c.line, id, ok)
 		}
 	}
-	// Key order does not matter for correctness: a reordered 105 result is not
-	// fast-dropped but must still produce no activity.
+	fields := []struct {
+		line string
+		want [4]int64
+		ok   bool
+	}{
+		{`{"action":"result","fields":[2,3,0,2],"id":1,"type":105}`, [4]int64{2, 3, 0, 2}, true},
+		{`{"action":"result","fields":[10],"id":1,"type":105}`, [4]int64{10}, true},
+		{`{"action":"result","fields":[],"id":1,"type":105}`, [4]int64{}, false},
+		{`{"action":"result","fields":[1,2,3,4,5],"id":1,"type":105}`, [4]int64{}, false},
+		{`{"action":"result","fields":[1.5,2],"id":1,"type":105}`, [4]int64{}, false},
+		{`{"action":"result","fields":[-1,2],"id":1,"type":105}`, [4]int64{}, false},
+		{`{"action":"result","fields":["x"],"id":1,"type":105}`, [4]int64{}, false},
+		{`{"action":"result","fields":[1, 2],"id":1,"type":105}`, [4]int64{}, false},
+	}
+	for _, c := range fields {
+		got, ok := fastFields([]byte(c.line))
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("fastFields(%s) = %v,%v", c.line, got, ok)
+		}
+	}
+}
+
+func progressLine(id uint64, f ...int) string {
+	parts := make([]string, len(f))
+	for i, v := range f {
+		parts[i] = strconv.Itoa(v)
+	}
+	return fmt.Sprintf(`{"action":"result","fields":[%s],"id":%d,"type":105}`, strings.Join(parts, ","), id)
+}
+
+func startLine(id, parent uint64, typ int) string {
+	return fmt.Sprintf(`{"action":"start","id":%d,"level":0,"parent":%d,"text":"","type":%d}`, id, parent, typ)
+}
+
+func feedLines(p *Processor, lines ...string) {
+	for _, l := range lines {
+		p.Line([]byte(l), t0)
+	}
+}
+
+func TestReorderedProgressKeysAreStillSafe(t *testing.T) {
 	c := &collect{}
 	p := NewProcessor(c, Options{})
-	p.Line([]byte(`{"type":105,"id":9,"action":"result","fields":[0,0,0,0]}`), t0)
+	feedLines(p, startLine(1, 0, 104))
+	// Key order is not relied on: a reordered progress result for a kept
+	// activity is still folded (through the full decode), and one for any
+	// other activity produces nothing and is not counted as fast-dropped.
+	feedLines(
+		p,
+		`{"type":105,"id":1,"action":"result","fields":[4,5,0,1]}`,
+		`{"type":105,"id":9,"action":"result","fields":[0,0,0,0]}`,
+	)
 	p.Finish(t0)
-	if len(c.acts) != 0 || p.Summary().Dropped != 0 {
-		t.Errorf("reordered result mishandled: %+v %+v", c.acts, p.Summary())
+	s := p.Summary()
+	if !s.HasBuilds || s.Builds != (Progress{Done: 4, Expected: 5, Failed: 1}) {
+		t.Errorf("reordered fold: %+v", s)
+	}
+	if s.Folded != 1 || s.Dropped != 0 || len(c.acts) != 0 {
+		t.Errorf("counters/acts: %+v %+v", s, c.acts)
+	}
+}
+
+func TestOddProgressShapeForKeptActivityKeepsPreviousValue(t *testing.T) {
+	p := NewProcessor(&collect{}, Options{})
+	feedLines(
+		p, startLine(1, 0, 104), progressLine(1, 2, 3, 0, 0),
+		`{"action":"result","fields":[1.5,2],"id":1,"type":105}`, // not an integer: ignored
+		`{"action":"result","fields":[],"id":1,"type":105}`,
+		`{"action":"result","fields":[1,2,3,4,5],"id":1,"type":105}`,
+	)
+	if s := p.Summary(); s.Builds != (Progress{Done: 2, Expected: 3}) || s.Malformed != 0 {
+		t.Errorf("summary = %+v", s)
+	}
+}
+
+func TestFlakeCheckAggregateProgress(t *testing.T) {
+	p, _, _ := feedFile(t, "flake-check.jsonl", Options{})
+	p.Finish(t0.Add(time.Hour))
+	s := p.Summary()
+	if !s.HasBuilds || s.Builds != (Progress{Done: 2, Expected: 3, Failed: 0}) {
+		t.Errorf("builds = %+v (has %v), want done 2 expected 3 failed 0", s.Builds, s.HasBuilds)
+	}
+	if !s.HasFetch || s.Fetch != (Progress{}) {
+		t.Errorf("fetch = %+v (has %v), want seen with zeros", s.Fetch, s.HasFetch)
+	}
+}
+
+func TestKeepGoingProgressDiffersFromPlanMessage(t *testing.T) {
+	p, _, _ := feedFile(t, "failed-build-keep-going.jsonl", Options{})
+	p.Finish(t0.Add(time.Hour))
+	s := p.Summary()
+	if s.PlanBuild != 4 {
+		t.Errorf("plan = %d, the message count must stay 4", s.PlanBuild)
+	}
+	if !s.HasBuilds || s.Builds != (Progress{Done: 2, Expected: 3, Failed: 2}) {
+		t.Errorf("builds = %+v, want done 2 expected 3 failed 2", s.Builds)
+	}
+}
+
+func TestSiblingAggregatesAreSummed(t *testing.T) {
+	// Real shape (2026-10-26 log): three siblings (parent 0) of each type, two
+	// of them ending [0,0,0,0].
+	p := NewProcessor(&collect{}, Options{})
+	feedLines(
+		p,
+		startLine(10, 0, 104), startLine(11, 0, 103),
+		startLine(20, 0, 104), startLine(21, 0, 103),
+		startLine(30, 0, 104), startLine(31, 0, 103),
+		progressLine(10, 0, 0, 0, 0), progressLine(11, 0, 0, 0, 0),
+		progressLine(20, 0, 0, 0, 0), progressLine(21, 0, 0, 0, 0),
+		progressLine(30, 100, 266, 3, 0), progressLine(31, 502, 502, 0, 0),
+		progressLine(30, 266, 266, 0, 1), // only the LAST value counts
+		`{"action":"stop","id":10}`, `{"action":"stop","id":30}`,
+	)
+	s := p.Summary()
+	if s.Builds != (Progress{Done: 266, Expected: 266, Failed: 1}) || !s.HasBuilds {
+		t.Errorf("builds = %+v", s.Builds)
+	}
+	if s.Fetch != (Progress{Done: 502, Expected: 502}) || !s.HasFetch {
+		t.Errorf("fetch = %+v", s.Fetch)
+	}
+	// And a second sibling with real values adds up.
+	feedLines(p, progressLine(20, 5, 7, 0, 2))
+	if s := p.Summary(); s.Builds != (Progress{Done: 271, Expected: 273, Failed: 3}) {
+		t.Errorf("summed builds = %+v", s.Builds)
+	}
+}
+
+func TestNestedAggregateCountsOnlyTheOuterOne(t *testing.T) {
+	p := NewProcessor(&collect{}, Options{})
+	feedLines(
+		p,
+		startLine(1, 0, 104), // outer builds
+		startLine(2, 1, 104), // nested builds under it
+		startLine(3, 2, 104), // grand-nested: parent is itself nested
+		startLine(4, 1, 103), // fetches nested under the outer builds
+		startLine(5, 0, 103), // outer fetches
+		progressLine(1, 5, 6, 0, 1), progressLine(2, 3, 3, 0, 0), progressLine(3, 9, 9, 0, 9),
+		progressLine(4, 8, 8, 0, 0), progressLine(5, 7, 7, 0, 0),
+	)
+	s := p.Summary()
+	if s.Builds != (Progress{Done: 5, Expected: 6, Failed: 1}) {
+		t.Errorf("builds = %+v, want only the outer activity", s.Builds)
+	}
+	if s.Fetch != (Progress{Done: 7, Expected: 7}) {
+		t.Errorf("fetch = %+v, want only the outer activity", s.Fetch)
+	}
+}
+
+func TestNoProgressLinesMeansNothingSeenAndPlanStillWorks(t *testing.T) {
+	p := NewProcessor(&collect{}, Options{})
+	feedLines(
+		p,
+		`{"action":"msg","level":3,"msg":"these 3 derivations will be built:"}`,
+		`{"action":"msg","level":3,"msg":"these 5 paths will be fetched (1 MiB download):"}`,
+		startLine(1, 0, 104), startLine(2, 0, 103), // aggregates that never report
+	)
+	s := p.Summary()
+	if s.HasBuilds || s.HasFetch || s.Builds != (Progress{}) || s.Fetch != (Progress{}) {
+		t.Errorf("progress reported without any progress line: %+v", s)
+	}
+	if s.PlanBuild != 3 || s.PlanFetch != 5 {
+		t.Errorf("plan = %+v", s)
+	}
+	// A real log with its progress lines removed: plan only.
+	raw, _ := os.ReadFile(filepath.Join("testdata", "local-build.jsonl"))
+	p2 := NewProcessor(&collect{}, Options{})
+	for _, l := range bytes.Split(raw, []byte("\n")) {
+		if len(l) > 0 && !RetainDrop(l) {
+			p2.Line(l, t0)
+		}
+	}
+	if s := p2.Summary(); s.HasBuilds || s.HasFetch || s.PlanBuild != 1 {
+		t.Errorf("local-build without progress: %+v", s)
+	}
+}
+
+func TestDownloadProgressOfOtherActivitiesIsNeverDecoded(t *testing.T) {
+	// A download (type 101 FileTransfer, a child of a type-100 CopyPath that is
+	// NOT under a substitution) emits thousands of progress lines.
+	p := NewProcessor(&collect{}, Options{})
+	feedLines(p, startLine(1, 0, 104), startLine(100, 0, 100), startLine(101, 100, 101))
+	const n = 5000
+	line := []byte(progressLine(101, 1234567, 99999999, 0, 0))
+	for i := 0; i < n; i++ {
+		p.Line(line, t0)
+		if i%1000 == 0 {
+			p.Line([]byte(progressLine(1, i, n, 0, 0)), t0) // aggregate progress interleaved
+		}
+	}
+	s := p.Summary()
+	if s.Dropped != n || s.Folded != 5 {
+		t.Errorf("dropped %d folded %d, want %d / 5", s.Dropped, s.Folded, n)
+	}
+	if s.Malformed != 0 || s.Builds.Done != 4000 {
+		t.Errorf("summary = %+v", s)
+	}
+	// The skip path must not even allocate (no decode, no copy).
+	if a := testing.AllocsPerRun(200, func() { p.Line(line, t0) }); a != 0 {
+		t.Errorf("a skipped progress line allocates %v times", a)
+	}
+}
+
+func BenchmarkSkippedProgressLine(b *testing.B) {
+	p := NewProcessor(&collect{}, Options{})
+	p.Line([]byte(startLine(1, 0, 104)), t0)
+	line := []byte(progressLine(101, 1234567, 99999999, 0, 0))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		p.Line(line, t0)
+	}
+}
+
+func subStart(id uint64) string {
+	return fmt.Sprintf(`{"action":"start","fields":["/nix/store/9m2blbp495aa5rxslryxhjx3hjsnd421-x","https://cache.nixos.org"],"id":%d,"level":0,"parent":0,"text":"","type":108}`, id)
+}
+
+func TestSubstituteBytesFromItsCopyPathChild(t *testing.T) {
+	c := &collect{}
+	p := NewProcessor(c, Options{})
+	feedLines(
+		p,
+		subStart(7),
+		startLine(8, 7, 100), // nix reports a substitution's bytes on this child
+		startLine(9, 8, 101), // the download under it: never kept
+		progressLine(8, 100, 400, 0, 0),
+		progressLine(9, 5, 5, 0, 0),
+		progressLine(8, 400, 400, 0, 0),
+		`{"action":"stop","id":8}`,
+		`{"action":"stop","id":7}`,
+		progressLine(8, 999, 999, 0, 0), // late: the activity is gone
+	)
+	if len(c.acts) != 1 || !c.acts[0].HasBytes || c.acts[0].Bytes != 400 {
+		t.Fatalf("acts = %+v", c.acts)
+	}
+	if s := p.Summary(); s.Folded != 2 || s.Dropped != 2 {
+		t.Errorf("summary = %+v", s)
+	}
+}
+
+func TestSubstituteBytesFromItsOwnProgressAndAbsentWhenNone(t *testing.T) {
+	c := &collect{}
+	p := NewProcessor(c, Options{})
+	feedLines(p, subStart(1), subStart(2), startLine(3, 0, 100), // 3 is not under a substitution
+		progressLine(1, 10, 20, 0, 0), progressLine(3, 77, 77, 0, 0),
+		`{"action":"stop","id":1}`, `{"action":"stop","id":2}`)
+	byID := map[int]Activity{}
+	for i, a := range c.acts {
+		byID[i] = a
+	}
+	if !byID[0].HasBytes || byID[0].Bytes != 10 {
+		t.Errorf("first substitution = %+v", byID[0])
+	}
+	if byID[1].HasBytes || byID[1].Bytes != 0 {
+		t.Errorf("a substitution with no progress must report none: %+v", byID[1])
+	}
+	// A substitution still open at the end keeps its last bytes.
+	c2 := &collect{}
+	p2 := NewProcessor(c2, Options{})
+	feedLines(p2, subStart(5), progressLine(5, 3, 9, 0, 0))
+	p2.Finish(t0)
+	if len(c2.acts) != 1 || !c2.acts[0].Failed || c2.acts[0].Bytes != 3 || !c2.acts[0].HasBytes {
+		t.Errorf("aborted substitution = %+v", c2.acts)
 	}
 }
 
@@ -416,7 +744,7 @@ func TestRetainDropDropsOnlyProgressResults(t *testing.T) {
 	for line, want := range map[string]bool{
 		`{"action":"result","fields":[1,2,3,4],"id":7,"type":105}`:    true,  // progress
 		`{"action":"result","fields":[104,1,2],"id":7,"type":106}`:    true,  // set-expected
-		`{"action":"result","fields":["log text"],"id":7,"type":101}`: false, // build log line: kept, unlike FastDrop
+		`{"action":"result","fields":["log text"],"id":7,"type":101}`: false, // build log line: kept in the retained log
 		`{"action":"result","fields":["x"],"id":7,"type":104}`:        false, // set-phase
 		`{"action":"start","id":7,"level":0,"text":"b","type":105}`:   false, // a build ACTIVITY is type 105 too
 		`{"action":"stop","id":7}`:                                    false,
@@ -428,7 +756,10 @@ func TestRetainDropDropsOnlyProgressResults(t *testing.T) {
 			t.Errorf("RetainDrop(%s) = %v, want %v", line, got, want)
 		}
 	}
-	if !FastDrop([]byte(`{"action":"result","fields":["x"],"id":7,"type":101}`)) {
-		t.Error("FastDrop must keep dropping 101 for the parser; only the retained log keeps it")
+	// The parser still skips 101 unread; only the retained log keeps it.
+	p := NewProcessor(&collect{}, Options{})
+	p.Line([]byte(`{"action":"result","fields":["x"],"id":7,"type":101}`), t0)
+	if s := p.Summary(); s.Dropped != 1 || s.Folded != 0 {
+		t.Errorf("101 line not skipped: %+v", s)
 	}
 }

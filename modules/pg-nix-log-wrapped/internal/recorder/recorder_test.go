@@ -258,3 +258,42 @@ func TestMetricNamesAreInTheSharedCatalog(t *testing.T) {
 		}
 	}
 }
+
+func TestSubstituteBytesIsASpanAttributeOnlyWhenSeen(t *testing.T) {
+	h := newHarness(t)
+	h.rec.Emit(nixlog.Activity{Kind: nixlog.KindSubstitute, Name: "a", Server: "c.example", Start: start, End: end, Bytes: 4096, HasBytes: true})
+	h.rec.Emit(nixlog.Activity{Kind: nixlog.KindSubstitute, Name: "b", Server: "c.example", Start: start, End: end})
+	h.rec.Emit(nixlog.Activity{Kind: nixlog.KindBuild, Name: "c", Start: start, End: end, Bytes: 7, HasBytes: true})
+	spans := h.ended()
+	if len(spans) != 3 {
+		t.Fatalf("spans = %d", len(spans))
+	}
+	if v, ok := attrs(spans[0])["nix.substitute.bytes"]; !ok || v.AsInt64() != 4096 {
+		t.Errorf("bytes = %v (found %v)", v, ok)
+	}
+	for _, s := range spans[1:] {
+		if _, ok := attrs(s)["nix.substitute.bytes"]; ok {
+			t.Errorf("%s span must not carry nix.substitute.bytes", s.Name())
+		}
+	}
+	// Not a metric label: derivations carries only outcome.
+	m := findMetric(h.collect(t), MetricDerivations).Data.(metricdata.Sum[int64])
+	for _, dp := range m.DataPoints {
+		for _, kv := range dp.Attributes.ToSlice() {
+			if kv.Key != "outcome" {
+				t.Errorf("unexpected metric label %s", kv.Key)
+			}
+		}
+	}
+}
+
+func TestInvocationMetricCarriesOnlyCommandAndStatus(t *testing.T) {
+	h := newHarness(t)
+	h.rec.Invocation("nix", time.Second, false)
+	hist := findMetric(h.collect(t), MetricInvocationLength).Data.(metricdata.Histogram[float64])
+	for _, kv := range hist.DataPoints[0].Attributes.ToSlice() {
+		if kv.Key != "command" && kv.Key != "status" {
+			t.Errorf("unexpected invocation metric label %s", kv.Key)
+		}
+	}
+}

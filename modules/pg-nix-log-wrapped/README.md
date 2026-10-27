@@ -29,9 +29,23 @@ CMD is resolved from `PATH` skipping the wrapper's own file, so a `PATH` shadow 
 Metrics use **delta** temporality (the process is short-lived and exports once at exit); query with
 `increase()` / `rate()`. Derivation names are never metric labels. The `built` count includes
 trivial always-local derivations. The invocation span carries `process.exit.code`, `nix.plan.build`,
-`nix.plan.fetch`, `nix.tailer.lag` (seconds), `nix.log.file` (the retained `.jsonl`),
+`nix.plan.fetch` (the plan MESSAGES, "these N derivations will be built", summed), `nix.builds.done`,
+`nix.builds.expected`, `nix.builds.failed`, `nix.fetch.done`, `nix.fetch.expected` (the final aggregate
+progress of nix's own "N of M" counters, summed over the run's aggregate activities; set only when a
+progress line was seen; they differ from the plan when nix stops early, e.g. after the first failure),
+`nix.tailer.lag` (seconds), `nix.log.file` (the retained `.jsonl`),
 `nix.log.truncated` when the parse cap was hit, and `nix.log.retained.truncated` when the retained
-cap was hit.
+cap was hit. A `nix.substitute` span carries `nix.substitute.bytes` (the last "done" bytes progress seen
+for that substitution; absent when none was seen), so slow caches can be identified. All of these are
+span attributes only, never metric labels.
+
+**Progress is read only for a few activities.** The parser skips `type 101` (build log) lines and
+progress (`type 105` result) lines without decoding them. The exception is the progress of the aggregate
+activities (type 104 Builds, type 103 CopyPaths; the last value is kept in memory) and of substitutions
+(type 108, plus the type-100 CopyPath child that nix reports a substitution's bytes on). The id is read
+from the line's byte suffix, so progress of every other activity (downloads emit thousands of lines) is
+still never decoded. Aggregate activities are summed when they are siblings; one nested under another
+aggregate activity is ignored, so only the outer one counts.
 
 ## Endpoint and configuration
 
@@ -114,7 +128,7 @@ nix writes its JSONL to a scratch file, and the wrapper keeps a **filtered copy*
 `$XDG_STATE_HOME/pn/nix-logs` (or `~/.local/state/pn/nix-logs`), or `--log-dir`. The retained log is
 NOT a verbatim copy of nix's output: it omits `type 105` (progress) and `type 106` results, which are
 about 99% of the bytes of a big run, and keeps everything else, including `type 101` build-log lines
-(`nixlog.RetainDrop`, deliberately not the parser's `FastDrop`). `nix.log.file` on `nix.invocation`
+(`nixlog.RetainDrop`; the parser separately skips `type 101` and progress unread, see below). `nix.log.file` on `nix.invocation`
 names the retained `.jsonl`, never the scratch file.
 
 - **Two caps, two meanings.** The _retained cap_ (64 MiB) stops writing the `.jsonl` when hit and sets

@@ -496,6 +496,21 @@ func (s *session) finish(code int) {
 		attribute.Int("nix.plan.build", sum.PlanBuild),
 		attribute.Int("nix.plan.fetch", sum.PlanFetch),
 	)
+	// Aggregate progress: what nix scheduled and finished, summed over the
+	// run's aggregate activities. Span attributes only, never metric labels.
+	if sum.HasBuilds {
+		s.inv.SetAttributes(
+			attribute.Int64("nix.builds.done", sum.Builds.Done),
+			attribute.Int64("nix.builds.expected", sum.Builds.Expected),
+			attribute.Int64("nix.builds.failed", sum.Builds.Failed),
+		)
+	}
+	if sum.HasFetch {
+		s.inv.SetAttributes(
+			attribute.Int64("nix.fetch.done", sum.Fetch.Done),
+			attribute.Int64("nix.fetch.expected", sum.Fetch.Expected),
+		)
+	}
 	if s.tail.Truncated() {
 		s.inv.SetAttributes(attribute.Bool("nix.log.truncated", true))
 	}

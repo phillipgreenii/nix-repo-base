@@ -1174,3 +1174,144 @@ func TestSweepFinalizesADeadWrappersRawAtTheNextRun(t *testing.T) {
 		t.Errorf("finalized orphan = %q, want %q", got, want)
 	}
 }
+
+// writeFixture writes lines as a JSONL fixture for the fake command.
+func writeFixture(t *testing.T, lines ...string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "fixture.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// metricAttrKeys returns every attribute key on every data point of every
+// metric recorded so far.
+func (m *mem) metricAttrKeys(t *testing.T) map[string]bool {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := m.reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]bool{}
+	add := func(s attribute.Set) {
+		for _, kv := range s.ToSlice() {
+			keys[string(kv.Key)] = true
+		}
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, mt := range sm.Metrics {
+			switch d := mt.Data.(type) {
+			case metricdata.Sum[int64]:
+				for _, dp := range d.DataPoints {
+					add(dp.Attributes)
+				}
+			case metricdata.Histogram[float64]:
+				for _, dp := range d.DataPoints {
+					add(dp.Attributes)
+				}
+			default:
+				t.Fatalf("unexpected metric data type %T in %s", mt.Data, mt.Name)
+			}
+		}
+	}
+	return keys
+}
+
+func TestAggregateProgressBecomesInvocationAttributes(t *testing.T) {
+	for _, c := range []struct {
+		fixture                             string
+		exit                                int
+		planBuild, done, expected, failed   int64
+		fetchDone, fetchExpected, planFetch int64
+	}{
+		// flake-check: final aggregate progress [2,3,0,0]; fetch [0,0,0,0].
+		{"flake-check.jsonl", 0, 0, 2, 3, 0, 0, 0, 0},
+		// keep-going: the plan message says 4, the progress [2,3,0,2].
+		{"failed-build-keep-going.jsonl", 1, 4, 2, 3, 2, 0, 0, 0},
+	} {
+		r := newRig(t, fakecmd.Spec{Fixture: golden(c.fixture), Exit: c.exit})
+		r.run("fake-nix")
+		inv := r.mem.span(t, "nix.invocation")
+		for key, want := range map[string]int64{
+			"nix.plan.build": c.planBuild, "nix.builds.done": c.done, "nix.builds.expected": c.expected,
+			"nix.builds.failed": c.failed, "nix.fetch.done": c.fetchDone, "nix.fetch.expected": c.fetchExpected,
+		} {
+			if v, ok := attrOf(inv, key); !ok || v.AsInt64() != want {
+				t.Errorf("%s: %s = %v (found %v), want %d", c.fixture, key, v, ok, want)
+			}
+		}
+		// Span attributes only: no metric ever carries them.
+		for k := range r.mem.metricAttrKeys(t) {
+			if strings.HasPrefix(k, "nix.") {
+				t.Errorf("%s: metric label %q", c.fixture, k)
+			}
+		}
+	}
+}
+
+func TestLogWithoutProgressSetsNoAggregateAttributes(t *testing.T) {
+	fixture := writeFixture(
+		t,
+		`{"action":"msg","level":3,"msg":"this derivation will be built:"}`,
+		`{"action":"msg","level":3,"msg":"these 6 paths will be fetched (1 MiB download):"}`,
+		`{"action":"start","id":1,"level":0,"parent":0,"text":"","type":104}`,
+		`{"action":"stop","id":1}`,
+	)
+	r := newRig(t, fakecmd.Spec{Fixture: fixture})
+	if code := r.run("fake-nix"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	inv := r.mem.span(t, "nix.invocation")
+	for _, kv := range inv.Attributes() {
+		if strings.HasPrefix(string(kv.Key), "nix.builds.") || strings.HasPrefix(string(kv.Key), "nix.fetch.") {
+			t.Errorf("unexpected attribute %s", kv.Key)
+		}
+	}
+	if v, _ := attrOf(inv, "nix.plan.build"); v.AsInt64() != 1 {
+		t.Errorf("plan build = %v", v)
+	}
+	if v, _ := attrOf(inv, "nix.plan.fetch"); v.AsInt64() != 6 {
+		t.Errorf("plan fetch = %v", v)
+	}
+}
+
+func TestSubstituteBytesAreASpanAttributeNeverAMetricLabel(t *testing.T) {
+	fixture := writeFixture(
+		t,
+		`{"action":"start","fields":["/nix/store/9m2blbp495aa5rxslryxhjx3hjsnd421-x","https://cache.nixos.org"],"id":7,"level":0,"parent":0,"text":"","type":108}`,
+		`{"action":"start","fields":["/nix/store/9m2blbp495aa5rxslryxhjx3hjsnd421-x","https://cache.nixos.org","local"],"id":8,"level":3,"parent":7,"text":"","type":100}`,
+		`{"action":"result","fields":[100,500,0,0],"id":8,"type":105}`,
+		`{"action":"result","fields":[500,500,0,0],"id":8,"type":105}`,
+		`{"action":"stop","id":8}`,
+		`{"action":"stop","id":7}`,
+		`{"action":"start","fields":["/nix/store/2222222222222222222222222222222m-y","https://cache.nixos.org"],"id":9,"level":0,"parent":0,"text":"","type":108}`,
+		`{"action":"stop","id":9}`,
+	)
+	r := newRig(t, fakecmd.Spec{Fixture: fixture})
+	if code := r.run("--min-substitute-span=0", "fake-nix"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	var withBytes, without int
+	for _, s := range r.mem.spans.Ended() {
+		if s.Name() != "nix.substitute" {
+			continue
+		}
+		if v, ok := attrOf(s, "nix.substitute.bytes"); ok {
+			withBytes++
+			if v.AsInt64() != 500 {
+				t.Errorf("nix.substitute.bytes = %v, want 500", v)
+			}
+		} else {
+			without++
+		}
+	}
+	if withBytes != 1 || without != 1 {
+		t.Errorf("substitute spans with bytes %d, without %d, want 1/1", withBytes, without)
+	}
+	for k := range r.mem.metricAttrKeys(t) {
+		if strings.HasPrefix(k, "nix.") {
+			t.Errorf("metric label %q", k)
+		}
+	}
+}
