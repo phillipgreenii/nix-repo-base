@@ -376,8 +376,11 @@ tool-owned, not the nix-managed config.
 ## 10. Bead filing
 
 One triage bead per Go **package** (finer than the sweep's one-per-project), filed once every file
-in that package has a recorded status. Same status-tally-only protocol as the sweep's existing bead
-body (never a survivor count). Every bead filed is also written to the tool's JSONL log (§12) and
+in that package has a recorded status. The bead carries the run's results for an agent to analyze
+(operator ruling, Phillip, 2026-10-26; bead `pg2-tkm9g0`): the worklist rows (`file:line`, mutation,
+operator), or the per-file report paths when the rows would exceed bd's 64 KB body cap, plus the
+`go-test-gaps` skill's "How to work this bead" block verbatim, and never a survivor or kill count, a
+percentage or a score. ADR 0027 decision 5 is the authority for the body and the hand-off. Every bead filed is also written to the tool's JSONL log (§12) and
 visible in the Beads popup.
 
 **Repo label resolution.** Each repo in this workspace declares its own canonical bead label,

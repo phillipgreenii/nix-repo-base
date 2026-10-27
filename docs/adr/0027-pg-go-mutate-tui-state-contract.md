@@ -93,13 +93,39 @@ cannot oversubscribe the machine the way `N` independently-invoked `--workers K`
 
 ### 5. Per-package triage bead, never an epic
 
-On finishing every file in a package, `pg-go-mutate-tui` files (or amends) exactly one bead: `P3`,
-labeled `go-test-gaps` plus the caller-supplied canonical repo label, title `go-test-gaps triage:
-<pkgPath>`, body carrying the file-status tally only — never a survivor or kill count. It MUST NOT
-file an epic, for the identical reason ADR-0026 decision 4 gave the sweep: an open epic never
-leaves `bd ready`. The granularity is finer than ADR-0026's per-**project** rule: `pg-go-mutate-tui`
-completes packages incrementally as it works through a project's queue, so a per-package bead
-surfaces triage-worthy findings as they finish rather than batching them behind an entire project.
+On finishing every file in a package, `pg-go-mutate-tui` files exactly one bead: `P3`, a plain
+task, labeled `go-test-gaps` plus the repo's canonical label, title `go-test-gaps triage:
+<pkgPath>` (`<pkgPath>` is the package directory relative to its module root, no leading `./`).
+It files nothing before every file of the package has a recorded status, and only when all those
+records carry the same package hash (a package edited between two of its files' analyses has no
+single consistent run to hand over). It MUST NOT file an epic, for the identical reason ADR-0026
+decision 4 gave the sweep: an open epic never leaves `bd ready`. The granularity is finer than
+ADR-0026's per-**project** rule: `pg-go-mutate-tui` completes packages incrementally as it works
+through a project's queue, so a per-package bead surfaces triage-worthy findings as they finish
+rather than batching them behind an entire project.
+
+The bead is the hand-off to an agent (operator ruling, Phillip, 2026-10-26, recorded verbatim on
+`pg2-tkm9g0`): the sweep hums along in the background and, when a package completes, signals an
+agent to do a deep dive on the results. So the body carries the results, not a tally: it names the
+module (relative to the repo root), the package path and the command; carries the worklist rows
+(`file:line`, mutation, operator) inline, or, when the rows would exceed bd's 64 KB body cap, the
+per-file report paths instead (the report paths are always listed); notes, without any number,
+the files that have no worklist (`no-tests`, `unhealthy`, ...) and the runs that were not
+decisively analysed; and copies in the `go-test-gaps` skill's "How to work this bead" block
+verbatim. It never carries a survivor or kill count, a percentage or a score. The agent that works
+the bead analyzes the recorded results and MUST NOT re-run `pg-go-mutate` or `pg-go-mutate-tui`;
+it files one new bead per fix, each linked `discovered-from` the review bead and never by a
+blocking edge, whose acceptance criteria name the missed paths and the tests that must exist; and
+it closes the review bead with a reason that lists those beads, or says why none is needed. A
+bead for a package is filed once per (module, package, package hash): a record in
+`${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-tui/triage-filed.jsonl` stops a restart or a
+second worker finishing at the same moment from filing a second, and a filing that fails (for
+example, `bd` is down) is retried on the next recorded file, never silently dropped.
+
+The repo label is resolved, never derived from a path: the repository's own entry in the
+`repoLabels` setting, else the label its `CLAUDE.md` states ("MUST carry the repo label"); a
+repository with neither gets no bead. The bead is filed with `bd -C <repo root>`, in the tracker of
+the repository that holds the package, which is where the fix will land.
 
 ### Rejected alternatives
 
@@ -125,7 +151,7 @@ surfaces triage-worthy findings as they finish rather than batching them behind 
 - `N`-way concurrency comes with an enforced ceiling (`--workers 1`, capped `GOMAXPROCS`) instead
   of trusting every caller to self-limit.
 - The tool family's score prohibition is enforced at two independent layers: the ledger schema
-  (status only) and the bead body (tally only) — neither can regress into a survivor/kill count
+  (status only) and the bead body (worklist rows and paths only) — neither can regress into a survivor/kill count
   without a review catching the shape change.
 
 ### Negative / Neutral

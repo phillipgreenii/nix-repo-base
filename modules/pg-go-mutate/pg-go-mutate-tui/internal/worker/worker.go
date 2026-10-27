@@ -45,9 +45,10 @@ type Pool struct {
 	ledger *ledger.Ledger
 	run    RunFunc
 
-	mu     sync.Mutex
-	paused bool
-	fatal  error
+	mu         sync.Mutex
+	paused     bool
+	fatal      error
+	onRecorded func(file string)
 }
 
 // New returns a Pool that pops files from q, invokes run on each, and
@@ -55,6 +56,12 @@ type Pool struct {
 func New(q *queue.Queue, l *ledger.Ledger, run RunFunc) *Pool {
 	return &Pool{q: q, ledger: l, run: run}
 }
+
+// SetOnRecorded registers fn to be called, from the worker goroutine, after a
+// file's outcome is in the ledger and the queue has released it. The sweep uses
+// it to file a package's triage bead once the package's last file is recorded.
+// fn MUST NOT panic or block the sweep on failure; call it before Run.
+func (p *Pool) SetOnRecorded(fn func(file string)) { p.onRecorded = fn }
 
 // Pause halts new dispatch without touching in-flight work or ending any
 // worker goroutine.
@@ -143,6 +150,9 @@ func (p *Pool) Run(ctx context.Context, concurrency int) {
 				// Only AFTER the ledger append: until then the queue's
 				// outstanding set is what stops Refill re-queuing this file.
 				p.q.Finish(file)
+				if p.onRecorded != nil {
+					p.onRecorded(file)
+				}
 			}
 		}()
 	}

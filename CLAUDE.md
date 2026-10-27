@@ -318,12 +318,15 @@ analysed at what package hash; that hash is captured once, when a file is select
 recomputed later. The ledger records STATUS only — `done`, `no-tests`, `failed`, … — and MUST NOT
 record a survivor count, a percentage, or any score; that prohibition is the family's, not the
 file format's, and binds beads, commit messages, and docs equally, because a worklist is
-actionable and a score is not. By design (§10 of the design below) it files the package's `P3`
-triage bead once every file in that package has a recorded status, labeled `go-test-gaps` plus the
-repo's canonical label, and MUST NOT file an epic — an open epic never leaves `bd ready`. That
-filing is NOT wired yet: `internal/beads` `FileTriageBead` has no caller, and its body is a
-file-status tally without the run's results; `pg2-tkm9g0` wires it and makes the bead carry the
-results the triage agent needs. Until then a sweep files no bead. Its own `/metrics`
+actionable and a score is not. When every file in a package has a recorded status (all at the same package hash) it files that
+package's one `P3` review bead, labeled `go-test-gaps` plus the repo's canonical label (the
+`repoLabels` setting, else the repo's own `CLAUDE.md` label; never derived from a path), in the
+tracker of the repo that holds the package (`bd -C <repo root>`), and MUST NOT file an epic: an
+open epic never leaves `bd ready`. The bead's body names the module, the package path and the
+command, carries the worklist rows (or, over bd's 64 KB cap, the per-file report paths) and the
+`go-test-gaps` skill's "How to work this bead" block verbatim, and never a survivor/kill count, a
+percentage or a score (ADR 0027 decision 5; design §10; `internal/beads`: `Filer`,
+`FileTriageBead`). A failed filing is logged and retried on the next recorded file. Its own `/metrics`
 endpoint (Prometheus, `127.0.0.1:9464`) and JSONL log likewise expose operational counters only,
 never a survivor/kill count. `pg-go-mutate` and `bd` MUST NOT be added to CI, a pre-commit
 hook, or any `checks.*` derivation that performs a mutation run — a sweep costs hours and gates

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/beads"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/config"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/discover"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/ledger"
@@ -40,6 +41,9 @@ type appOptions struct {
 	Root        string
 	Concurrency int
 	StubRunFunc worker.RunFunc // non-nil only in tests; production wires runViaPgGoMutate
+	// NewBdClient is non-nil only in tests; production files beads through the
+	// real `bd` (beads.CLIClient) in the tracker of the package's repository.
+	NewBdClient func(repoRoot string) beads.BdClient
 }
 
 type app struct {
@@ -153,6 +157,23 @@ func newApp(opts appOptions) (*app, error) {
 		run = runViaPgGoMutate(m, filepath.Join(stateHome, "pg-go-mutate-tui", "reports"))
 	}
 	pool := worker.New(q, l, run)
+
+	newBd := opts.NewBdClient
+	if newBd == nil {
+		newBd = func(repoRoot string) beads.BdClient {
+			return &beads.CLIClient{Dir: repoRoot, Actor: "pg-go-mutate-tui"}
+		}
+	}
+	filer := &beads.Filer{
+		Ledger:     l,
+		NewClient:  newBd,
+		RepoLabels: staticCfg.RepoLabels,
+		FiledPath:  filepath.Join(stateHome, "pg-go-mutate-tui", "triage-filed.jsonl"),
+		Log:        logger,
+	}
+	// design, "Bead filing": a package's triage bead is filed once every file
+	// in it has a recorded status, never before.
+	pool.SetOnRecorded(filer.OnRecorded)
 
 	return &app{
 		q:             q,

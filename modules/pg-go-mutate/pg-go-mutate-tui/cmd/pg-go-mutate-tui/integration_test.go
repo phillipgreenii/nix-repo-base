@@ -5,9 +5,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/beads"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/queue"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -190,5 +193,102 @@ func TestMetricsAddrIsLoopbackOnly(t *testing.T) {
 	}
 	if host != "127.0.0.1" && host != "localhost" {
 		t.Fatalf("metricsAddr %q binds host %q, want loopback only", metricsAddr, host)
+	}
+}
+
+type recordingBd struct {
+	mu      sync.Mutex
+	titles  []string
+	labels  [][]string
+	bodies  []string
+	repoDir []string
+}
+
+func (r *recordingBd) client(repoRoot string) beads.BdClient {
+	return &recordingClient{r: r, repoRoot: repoRoot}
+}
+
+type recordingClient struct {
+	r        *recordingBd
+	repoRoot string
+}
+
+func (c *recordingClient) Create(title, body string, labels []string, priority int) (string, error) {
+	c.r.mu.Lock()
+	defer c.r.mu.Unlock()
+	c.r.titles = append(c.r.titles, title)
+	c.r.bodies = append(c.r.bodies, body)
+	c.r.labels = append(c.r.labels, labels)
+	c.r.repoDir = append(c.r.repoDir, c.repoRoot)
+	return "pg2-recorded", nil
+}
+
+// TestSweepFilesOneTriageBeadWhenTheLastFileOfAPackageIsRecorded drives the
+// whole wiring (discovery, queue, pool, ledger, filer) over a two-file package
+// with a stub analyser that writes real-shaped reports. The bd client is a
+// recorder here: the contract with the real bd is proved in
+// internal/beads/realbd_test.go.
+func TestSweepFilesOneTriageBeadWhenTheLastFileOfAPackageIsRecorded(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil { // repository-root marker only; the filer never runs git
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("Every bead filed against this repo MUST carry the repo label `base`.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(repo, "mod", "pkg")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		filepath.Join(repo, "mod", "go.mod"): "module fixture\n\ngo 1.22\n",
+		filepath.Join(pkg, "a.go"):           "package pkg\n",
+		filepath.Join(pkg, "b.go"):           "package pkg\n",
+		filepath.Join(pkg, "a_test.go"):      "package pkg\n",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	reports := t.TempDir()
+	rec := &recordingBd{}
+	app, err := newApp(appOptions{
+		Root:        repo,
+		Concurrency: 2,
+		NewBdClient: rec.client,
+		StubRunFunc: func(file string) (string, string, error) {
+			rp := filepath.Join(reports, filepath.Base(file)+".json")
+			body := `{"survivors":[{"file":"","line":3,"type":"conditional","description":"x -> y"}],"statistics":{"killed":1,"survived":1}}`
+			return "done", rp, os.WriteFile(rp, []byte(body), 0o644)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	app.runHeadless(ctx)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.titles) != 1 {
+		t.Fatalf("want exactly one triage bead for the package, got %d: %v", len(rec.titles), rec.titles)
+	}
+	if rec.titles[0] != "go-test-gaps triage: pkg" {
+		t.Errorf("title = %q", rec.titles[0])
+	}
+	if got := strings.Join(rec.labels[0], ","); got != "go-test-gaps,base" {
+		t.Errorf("labels = %s", got)
+	}
+	if rec.repoDir[0] != repo {
+		t.Errorf("filed in tracker %q, want the repository root %q", rec.repoDir[0], repo)
+	}
+	for _, want := range []string{"`pkg/a.go:3`", "`pkg/b.go:3`", beads.HowToWorkThisBead} {
+		if !strings.Contains(rec.bodies[0], want) {
+			t.Errorf("body lacks %q\n%s", want, rec.bodies[0])
+		}
 	}
 }

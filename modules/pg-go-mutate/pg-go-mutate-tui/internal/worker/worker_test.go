@@ -317,3 +317,45 @@ func TestRetryOutcomeLeavesFileUnrecordedAndKeepsDispatching(t *testing.T) {
 		t.Fatalf("re-queued file = %q (ok=%v), want %q", got, ok, retried)
 	}
 }
+
+func TestOnRecordedRunsAfterTheLedgerHoldsTheFilesRecordAndSkipsRetriesAndFatals(t *testing.T) {
+	q := fixtureQueue(t, 3)
+	l := ledger.New(t.TempDir() + "/ledger.jsonl")
+	calls := map[string]int{}
+	seenInLedger := map[string]bool{}
+	var mu sync.Mutex
+	n := 0
+	run := func(file string) (string, string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		if n == 1 {
+			return "", "", ErrRetry // never analysed: nothing recorded, so no hook call
+		}
+		return "done", "", nil
+	}
+	p := New(q, l, run)
+	p.SetOnRecorded(func(file string) {
+		recs, err := l.Replay()
+		mu.Lock()
+		defer mu.Unlock()
+		calls[file]++
+		_, seenInLedger[file] = recs[file]
+		if err != nil {
+			t.Errorf("Replay: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p.Run(ctx, 1)
+
+	recs, _ := l.Replay()
+	if len(calls) != len(recs) || len(recs) != 2 {
+		t.Fatalf("hook ran for %d files, ledger holds %d (want 2 each: the retried file is neither)", len(calls), len(recs))
+	}
+	for file, c := range calls {
+		if c != 1 || !seenInLedger[file] {
+			t.Fatalf("%s: hook calls = %d, record visible in ledger at hook time = %v", file, c, seenInLedger[file])
+		}
+	}
+}
