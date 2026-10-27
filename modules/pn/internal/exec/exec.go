@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -60,6 +61,21 @@ type RunOptions struct {
 	// before. Like WrapNix it is set only by explicit call sites and changes
 	// nothing for a Runner that is not the production decorator stack.
 	PropagateTrace bool
+	// OwnProcessGroup starts the child as the leader of a NEW process group and
+	// makes a pn-initiated stop (context cancel) reach the WHOLE group: SIGTERM
+	// to every member at once, then, once the kill grace has elapsed, SIGKILL to
+	// every member still alive (pg2-sdbhh4.20). Without it the signals reach only
+	// the direct child, so a build script's grandchildren (darwin-rebuild's
+	// `nix build | jq` inside $(...)) keep running as orphans.
+	//
+	// Costs and limits, which is why it is opt-in and set ONLY for the user-run
+	// build: the group is no longer the terminal's foreground group, so a
+	// terminal Ctrl-C (and a terminal hangup) reaches pn alone and pn's own
+	// handler turns it into the cancel (internal/cli/root.go catches SIGINT,
+	// SIGTERM and SIGHUP); and a child that reads the terminal (sudo asking for
+	// a password) would be stopped by SIGTTIN, so a sudo child MUST NOT set it.
+	// Callers keep Stdin nil (the child reads /dev/null).
+	OwnProcessGroup bool
 }
 
 // Result captures the outcome of a Run call.
@@ -135,8 +151,19 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 	// flush; only if it is still running after WaitDelay does os/exec SIGKILL
 	// it. The default (immediate SIGKILL) gives children no chance to exit
 	// cleanly.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	grace := r.killGrace()
+	var cancelledAt atomic.Int64 // UnixNano of the SIGTERM sent on cancel
+	cmd.Cancel = func() error {
+		cancelledAt.Store(time.Now().UnixNano())
+		if opts.OwnProcessGroup {
+			// Setpgid made the child's pid the group id: signal every member.
+			return signalGroup(cmd.Process.Pid, syscall.SIGTERM)
+		}
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	if opts.OwnProcessGroup {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 	cmd.WaitDelay = grace
 	if opts.Dir != "" {
 		cmd.Dir = opts.Dir
@@ -175,6 +202,12 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 		}
 	}
 	err := cmd.Run()
+	if opts.OwnProcessGroup && ctx.Err() != nil && cmd.Process != nil {
+		// A pn-initiated stop: the leader may be gone already, but members that
+		// ignored or outlived the SIGTERM are not. Give them the rest of the grace
+		// counted from the SIGTERM, then SIGKILL whatever is left in the group.
+		reapGroup(cmd.Process.Pid, time.Unix(0, cancelledAt.Load()).Add(grace))
+	}
 	if waitDelayAfterSuccess(ctx, cmd, err) {
 		// The command itself exited 0, but a descendant it spawned (e.g. a
 		// backgrounded `timeout 30s launchctl kickstart -k`) still held the
@@ -212,6 +245,32 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 		return res, &CommandError{Name: name, Args: args, Result: res}
 	}
 	return res, nil
+}
+
+// signalGroup sends sig to every member of process group pgid. A group that no
+// longer exists is not an error (the work is already done).
+func signalGroup(pgid int, sig syscall.Signal) error {
+	if err := syscall.Kill(-pgid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
+}
+
+// reapGroup waits until process group pgid is empty or deadline passes, then
+// SIGKILLs whatever is still in it. pgid MUST be the pid of a child this package
+// started with Setpgid: while any member lives the kernel cannot reuse that id,
+// so the group-wide signal can only ever reach this child's own descendants.
+func reapGroup(pgid int, deadline time.Time) {
+	for {
+		if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = signalGroup(pgid, syscall.SIGKILL)
 }
 
 // waitDelayAfterSuccess reports whether err is os/exec's ErrWaitDelay for a

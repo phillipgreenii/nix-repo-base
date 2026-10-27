@@ -136,6 +136,11 @@ func TestRebuild_FallbackToolRunsBareNameWithPATHOverlay(t *testing.T) {
 					continue
 				}
 				found = true
+				// pg2-sdbhh4.20: the user-run build leads its own process group so a
+				// stop reaches its descendants; a sudo child must not (SIGTTIN).
+				if wantGroup := verb == "build"; c.Opts.OwnProcessGroup != wantGroup {
+					t.Errorf("OwnProcessGroup = %v, want %v for %s", c.Opts.OwnProcessGroup, wantGroup, wantName)
+				}
 				if !reflect.DeepEqual(c.Opts.Env, overlay) {
 					t.Errorf("Env = %v, want %v", c.Opts.Env, overlay)
 				}

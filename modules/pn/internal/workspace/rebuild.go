@@ -157,16 +157,25 @@ type rebuildVerb interface {
 // plan (plan.go), then records the plan in OTel (RecordPlan, once per run that
 // reached the build step, 0 builds when nix printed no plan). The tap passes
 // the child's bytes through unchanged and nothing here stops or signals the
-// child. out is what the operator sees (for apply: the terminal tee'd into the
+// child. A cancel does reach the child, and (for a user-run command) the whole
+// process group it leads, see ownGroup below. out is what the operator sees (for apply: the terminal tee'd into the
 // apply log), so the optional warning reaches both.
 func (ws *Workspace) runPlanned(ctx context.Context, out io.Writer, verb string, p *rebuildPlan) error {
 	tap := newPlanTap(out, ws.config.WarnBuildsThreshold())
+	// ownGroup: a user-run command (build; NOT apply's `sudo darwin-rebuild
+	// switch` until build-as-user apply lands, pg2-sdbhh4.9) runs as its own process group so
+	// a pn-initiated stop reaches every descendant, e.g. darwin-rebuild's
+	// `nix build | jq` (pg2-sdbhh4.20). A sudo child stays in pn's group: sudo
+	// reads the password from the terminal, which a background group cannot
+	// (SIGTTIN), and a non-root pn cannot signal root children anyway.
+	ownGroup := p.cmdArgs[0] != "sudo"
 	_, err := ws.runner.Run(ctx, p.cmdArgs[0], p.fullArgs(), exec.RunOptions{
-		Dir:     p.terminalRepoDir,
-		Stdout:  tap,
-		Stderr:  tap,
-		WrapNix: true,
-		Env:     p.toolEnv,
+		Dir:             p.terminalRepoDir,
+		Stdout:          tap,
+		Stderr:          tap,
+		WrapNix:         true,
+		Env:             p.toolEnv,
+		OwnProcessGroup: ownGroup,
 	})
 	tap.finish()
 	st := tap.stats()

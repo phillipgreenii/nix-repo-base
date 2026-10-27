@@ -149,6 +149,40 @@ run ends with `msg` level 0 `interrupted by the user` and an unclosed `type:105`
 `killed-mid-build.jsonl`). `darwin-rebuild` was not killed in this spike; it execs nix with the
 inherited environment (item 4), so the same signal path applies; the root case is below.
 
+> **Correction 2026-10-27 (`pg2-sdbhh4.20`).** The claim above that `darwin-rebuild` "execs nix" is
+> WRONG for the build path, and so is the conclusion drawn from it ("the same signal path applies").
+> `darwin-rebuild` is a bash script that runs `systemConfig=$(nix build --json ... | jq -r ...)`
+> (read from the installed script on 2026-10-26): `nix` and `jq` are grandchildren of bash, in a
+> pipeline inside `$(...)`, not an exec, and bash forwards no signal to them. The wrapper forwards
+> TERM/HUP only to its direct child (the bash script). A terminal Ctrl-C still reaches every
+> process, because it goes to the whole foreground process group, but a signal that pn itself sends
+> on a context cancel (SIGTERM, then the SIGKILL escalation by os/exec) reached only the direct
+> child, so `nix` could keep building as an orphan while pn reported the run aborted. A real-process
+> test (`TestRealRunner_CancelReachesGrandchildInPipeline`) reproduced exactly that before the fix.
+>
+> Fix: the exec Runner takes `RunOptions.OwnProcessGroup`, which starts the child as a process group
+> leader and signals the whole group, SIGTERM to every member on cancel and SIGKILL to every member
+> still alive when the kill grace ends (`modules/pn/internal/exec/exec.go`). The user-run build
+> (`darwin-rebuild build`) sets it. Consequences and limits:
+>
+> - A group that is not the terminal's foreground group no longer receives a terminal Ctrl-C or
+>   hangup. pn catches SIGINT, SIGTERM and SIGHUP (`internal/cli/root.go`) and turns each into the
+>   cancel, so the child sees exactly ONE SIGTERM (test `TestRealRunner_CtrlCReachesChildExactlyOnce`),
+>   never the SIGINT. The wrapper's rule not to forward SIGINT is unaffected.
+> - Under the wrapper, the wrapper's direct child receives SIGTERM from the group signal AND from
+>   the wrapper's forward (two deliveries). For the bash `darwin-rebuild` script the first one
+>   ends it; `nix` itself gets one. A command that is itself the long-running nix process (a
+>   `buildCommand` of plain `nix build`) would get two SIGTERMs; that was not measured with real
+>   nix.
+> - A `sudo` child does NOT get its own group: a sudo child in a background group would be stopped
+>   by SIGTTIN when it reads the password from the terminal (inferred from the job-control rules,
+>   not verified; no sudo was run), and a non-root pn cannot signal a root child anyway (EPERM,
+>   verified above). Apply's `sudo darwin-rebuild switch` therefore keeps the old limitation (a
+>   pn-initiated stop reaches `sudo`, which relays it to its command); the build-as-user apply
+>   design (`pg2-sdbhh4.9`) moves the build out of the root step, where this fix covers it.
+> - The Phase 7 verification in "Consequences" (pn's cancel of a real apply leaves no nix or
+>   darwin-rebuild process) covered the root apply path, not this one.
+
 pn-driven cancel under sudo (the EPERM case): the OS-level fact is VERIFIED without root:
 
 ```text

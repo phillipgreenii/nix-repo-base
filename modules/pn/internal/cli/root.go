@@ -99,8 +99,11 @@ func executeWith(version string, args []string, stdout, stderr io.Writer, res te
 	// fan-out (e.g. `pn workspace update`) propagates cancellation to the
 	// in-flight subprocesses via cmd.Context(), instead of being ignored until
 	// each child exits on its own (bead pg2-x3r0a). A second signal restores the
-	// default behavior (immediate termination).
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// default behavior (immediate termination). SIGHUP (terminal closed) is
+	// caught too: a build child that leads its own process group (RunOptions.
+	// OwnProcessGroup, pg2-sdbhh4.20) no longer receives the terminal's hangup
+	// itself, so pn must turn it into the cancel that reaches that group.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 
 	state := telemetrycfg.NewRunState(res)
