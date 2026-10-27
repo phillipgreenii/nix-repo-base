@@ -763,3 +763,47 @@ func TestRetainDropDropsOnlyProgressResults(t *testing.T) {
 		t.Errorf("101 line not skipped: %+v", s)
 	}
 }
+
+func TestFirstActiveIsTheFirstNonEvaluationStart(t *testing.T) {
+	// Eval-then-build: type-0 starts (evaluation) never count, a result line
+	// never counts, and the first start of any other type fixes the stamp.
+	p := NewProcessor(&collect{}, Options{})
+	p.Line([]byte(startLine(1, 0, 0)), t0)
+	p.Line([]byte(startLine(2, 0, 0)), t0.Add(time.Second))
+	p.Line([]byte(progressLine(9, 1, 2, 0, 0)), t0.Add(2*time.Second))
+	p.Line([]byte(startLine(3, 0, TypeBuild)), t0.Add(3*time.Second))
+	p.Line([]byte(startLine(4, 0, TypeSubstitute)), t0.Add(5*time.Second))
+	s := p.Summary()
+	if !s.HasFirstActive || !s.FirstActive.Equal(t0.Add(3*time.Second)) {
+		t.Errorf("FirstActive = %v (has %v), want t0+3s", s.FirstActive, s.HasFirstActive)
+	}
+}
+
+func TestFirstActiveAbsentWhenOnlyEvaluationActivities(t *testing.T) {
+	p := NewProcessor(&collect{}, Options{})
+	feedLines(p, startLine(1, 0, 0), startLine(2, 0, 0))
+	if s := p.Summary(); s.HasFirstActive || !s.FirstActive.IsZero() {
+		t.Errorf("eval-only run has FirstActive %v (has %v)", s.FirstActive, s.HasFirstActive)
+	}
+}
+
+func TestFirstActiveWhenTheFirstLineIsAlreadyABuild(t *testing.T) {
+	p := NewProcessor(&collect{}, Options{})
+	p.Line([]byte(startLine(1, 0, TypeBuild)), t0)
+	p.Line([]byte(startLine(2, 0, 0)), t0.Add(time.Hour))
+	if s := p.Summary(); !s.HasFirstActive || !s.FirstActive.Equal(t0) {
+		t.Errorf("FirstActive = %v (has %v), want t0", s.FirstActive, s.HasFirstActive)
+	}
+}
+
+func TestFirstActiveInGoldens(t *testing.T) {
+	// Line numbers are the first non-type-0 start in each golden (0-based
+	// index = stamp step count): cached-fetch line 10, flake-check line 14.
+	for name, idx := range map[string]int{"cached-fetch.jsonl": 9, "flake-check.jsonl": 13} {
+		p, _, _ := feedFileStep(t, name, Options{}, time.Second)
+		s := p.Summary()
+		if want := t0.Add(time.Duration(idx) * time.Second); !s.HasFirstActive || !s.FirstActive.Equal(want) {
+			t.Errorf("%s: FirstActive = %v (has %v), want %v", name, s.FirstActive, s.HasFirstActive, want)
+		}
+	}
+}

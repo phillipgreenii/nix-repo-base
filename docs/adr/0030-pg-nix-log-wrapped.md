@@ -112,7 +112,8 @@ span attributes: `command`, `nix.subcommand`, `process.exit.code`, `error.type` 
 non-zero exit, `nix.tailer.lag` (max seconds), `nix.plan.build`, `nix.plan.fetch`,
 `nix.log.truncated` (when true), `nix.log.file`; since 2026-10-27 also `nix.builds.done`,
 `nix.builds.expected`, `nix.builds.failed`, `nix.fetch.done`, `nix.fetch.expected` (final aggregate
-progress, summed, only when seen) and, on `nix.substitute` spans, `nix.substitute.bytes`.
+progress, summed, only when seen), `nix.eval.duration` (seconds to the first non-evaluation activity,
+or the whole invocation with `nix.eval.only = true`) and, on `nix.substitute` spans, `nix.substitute.bytes`.
 
 _Amended 2026-10-27 (`pg2-sdbhh4.4`):_ the invocation's `error.type` on a non-zero exit is no longer
 always `nonzero_exit`. It is one of the CLOSED set `signal` (exit `128+n`, or `error: interrupted by

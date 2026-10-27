@@ -135,6 +135,12 @@ type Summary struct {
 	// scheduled and finished, unlike the plan messages above.
 	Builds, Fetch       Progress
 	HasBuilds, HasFetch bool
+	// FirstActive is the read-time stamp of the first start event whose
+	// activity type is not 0 (0 is unknown, which is how nix reports
+	// evaluation); HasFirstActive is false when none was seen. It marks the
+	// end of the evaluation-only phase (pg2-sdbhh4.5).
+	FirstActive    time.Time
+	HasFirstActive bool
 	// Lines counts complete lines offered; Dropped counts those skipped
 	// without a JSON decode (build log lines, and progress of activities
 	// whose progress is not kept); Folded counts progress lines of kept
@@ -376,6 +382,9 @@ func (p *Processor) Line(line []byte, at time.Time) {
 }
 
 func (p *Processor) start(ev *event, at time.Time) {
+	if ev.Type != 0 && !p.sum.HasFirstActive {
+		p.sum.FirstActive, p.sum.HasFirstActive = at, true
+	}
 	a := Activity{Start: at}
 	switch ev.Type {
 	case typeBuilds, typeCopyPaths:

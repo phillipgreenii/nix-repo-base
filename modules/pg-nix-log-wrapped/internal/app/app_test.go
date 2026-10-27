@@ -1326,3 +1326,75 @@ func TestSubstituteBytesAreASpanAttributeNeverAMetricLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestEvalDurationFromProcessorStamps(t *testing.T) {
+	t0 := time.Unix(1_800_000_000, 0)
+	end := t0.Add(100 * time.Second)
+	feed := func(lines ...string) nixlog.Summary {
+		p := nixlog.NewProcessor(nopSink{}, nixlog.Options{})
+		for i, l := range lines {
+			p.Line([]byte(l), t0.Add(time.Duration(10+i*10)*time.Second))
+		}
+		return p.Summary()
+	}
+	start := func(id, typ int) string {
+		return fmt.Sprintf(`{"action":"start","id":%d,"level":0,"parent":0,"text":"","type":%d}`, id, typ)
+	}
+
+	// Eval then build: the first non-zero start is the 3rd line, stamped t0+30s.
+	d, only := EvalDuration(t0, end, feed(start(1, 0), start(2, 0), start(3, 105), start(4, 108)))
+	if d != 30*time.Second || only {
+		t.Errorf("eval-then-build = %v only=%v, want 30s false", d, only)
+	}
+	// Eval only (everything cached): the whole invocation.
+	d, only = EvalDuration(t0, end, feed(start(1, 0), start(2, 0)))
+	if d != 100*time.Second || !only {
+		t.Errorf("eval-only = %v only=%v, want 100s true", d, only)
+	}
+	// First line already a build, stamped at the invocation start: about 0.
+	p := nixlog.NewProcessor(nopSink{}, nixlog.Options{})
+	p.Line([]byte(start(1, 105)), t0)
+	if d, only = EvalDuration(t0, end, p.Summary()); d != 0 || only {
+		t.Errorf("first-line build = %v only=%v, want 0 false", d, only)
+	}
+	// A stamp before the start (clock step) never goes negative.
+	if d, _ = EvalDuration(t0.Add(time.Minute), end, p.Summary()); d != 0 {
+		t.Errorf("negative clamp = %v", d)
+	}
+}
+
+type nopSink struct{}
+
+func (nopSink) Emit(nixlog.Activity) {}
+
+func TestInvocationSpanCarriesEvalDuration(t *testing.T) {
+	r := newRig(t, fakecmd.Spec{Fixture: golden("local-build.jsonl")})
+	if code := r.run("fake-nix", "build"); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, r.stderr.String())
+	}
+	inv := r.mem.span(t, "nix.invocation")
+	d, ok := attrOf(inv, "nix.eval.duration")
+	total := inv.EndTime().Sub(inv.StartTime()).Seconds()
+	if !ok || d.AsFloat64() < 0 || d.AsFloat64() > total {
+		t.Errorf("nix.eval.duration = %v (found %v), invocation %vs", d, ok, total)
+	}
+	if _, ok := attrOf(inv, "nix.eval.only"); ok {
+		t.Error("a run with build/fetch activity must not set nix.eval.only")
+	}
+}
+
+func TestEvalOnlyRunDurationEqualsInvocation(t *testing.T) {
+	eval := `{"action":"start","id":1,"level":4,"parent":0,"text":"evaluating derivation 'x'","type":0}`
+	r := newRig(t, fakecmd.Spec{Lines: []string{eval}})
+	if code := r.run("fake-nix", "build"); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, r.stderr.String())
+	}
+	inv := r.mem.span(t, "nix.invocation")
+	d, ok := attrOf(inv, "nix.eval.duration")
+	if want := inv.EndTime().Sub(inv.StartTime()).Seconds(); !ok || d.AsFloat64() != want {
+		t.Errorf("nix.eval.duration = %v (found %v), want the invocation's %v", d, ok, want)
+	}
+	if v, ok := attrOf(inv, "nix.eval.only"); !ok || !v.AsBool() {
+		t.Errorf("nix.eval.only = %v (found %v), want true", v, ok)
+	}
+}

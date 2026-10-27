@@ -42,7 +42,8 @@ The invocation span carries `nix.subcommand`, `process.exit.code`, `nix.plan.bui
 `nix.builds.expected`, `nix.builds.failed`, `nix.fetch.done`, `nix.fetch.expected` (the final aggregate
 progress of nix's own "N of M" counters, summed over the run's aggregate activities; set only when a
 progress line was seen; they differ from the plan when nix stops early, e.g. after the first failure),
-`nix.tailer.lag` (seconds), `nix.log.file` (the retained `.jsonl`),
+`nix.tailer.lag` (seconds), `nix.eval.duration` (seconds; see below), `nix.eval.only` (`true` only
+when no build or fetch activity ever occurred), `nix.log.file` (the retained `.jsonl`),
 `nix.log.truncated` when the parse cap was hit, and `nix.log.retained.truncated` when the retained
 cap was hit. A `nix.substitute` span carries `nix.substitute.bytes` (the last "done" bytes progress seen
 for that substitution; absent when none was seen), so slow caches can be identified. All of these are
@@ -76,6 +77,14 @@ hash_mismatch` and counts in `nix.derivations{outcome="failed"}` (as do its depe
 `specified:` hash is the all-A placeholder (`sha256-AAAA...=`, a deliberately wrong hash such as a
 test fixture) the span also carries `nix.hash_mismatch.placeholder = true`, so dashboards can
 filter those out without the metric hiding real failures.
+**`nix.eval.duration` is "time to first build/fetch activity", not evaluation CPU.** It is the
+read-time stamp of the first `start` event whose activity type is not 0 (type 0 is nix's "unknown",
+which is how evaluation is reported, e.g. `evaluating derivation '...'`) minus the invocation start.
+If no such activity ever occurs (everything cached) it is the whole invocation duration and
+`nix.eval.only` is `true`. Limits: lines are stamped when the wrapper reads them (20 ms poll; the lag
+is exported as `nix.tailer.lag`), and `nix flake check` interleaves evaluation and builds, so the value
+sizes only the lead-in before the first non-evaluation activity. Any other typed activity (a flake input
+download, a path-info query) also ends the phase. It is a span attribute only, never a metric.
 
 **Progress is read only for a few activities.** The parser skips `type 101` (build log) lines and
 progress (`type 105` result) lines without decoding them. The exception is the progress of the aggregate

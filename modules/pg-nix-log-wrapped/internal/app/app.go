@@ -533,6 +533,11 @@ func (s *session) finish(code int) {
 	if sum.Waits > 0 {
 		s.inv.SetAttributes(attribute.Int("nix.build.wait.count", sum.Waits))
 	}
+	evalDur, evalOnly := EvalDuration(s.start, end, sum)
+	s.inv.SetAttributes(attribute.Float64("nix.eval.duration", evalDur.Seconds()))
+	if evalOnly {
+		s.inv.SetAttributes(attribute.Bool("nix.eval.only", true))
+	}
 	if s.tail.Truncated() {
 		s.inv.SetAttributes(attribute.Bool("nix.log.truncated", true))
 	}
@@ -554,6 +559,18 @@ func (s *session) finish(code int) {
 	s.inv.End(trace.WithTimestamp(end)) // (d)
 	s.rec.Invocation(filepath.Base(s.opts.Cmd[0]), Subcommand(s.opts.Cmd), end.Sub(s.start), code != 0, kind)
 	s.shutdown() // (e) bounded flush
+}
+
+// EvalDuration is the time from the invocation start to the first activity
+// whose type is not 0 (the first build, fetch or other non-evaluation work),
+// from the read-time stamp of that line. When no such activity ever occurred
+// (everything was cached) it is the whole invocation and evalOnly is true.
+// A stamp before start (clock step) is clamped to zero.
+func EvalDuration(start, end time.Time, sum nixlog.Summary) (d time.Duration, evalOnly bool) {
+	if !sum.HasFirstActive {
+		return end.Sub(start), true
+	}
+	return max(sum.FirstActive.Sub(start), 0), false
 }
 
 // exitCode maps a finished process to a shell-style code: the exit status, or
