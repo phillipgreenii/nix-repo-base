@@ -106,8 +106,9 @@ writable, mode 0750; otherwise fail open), and ignores `--log-dir`. `HOME` survi
 
 `nix.derivations{outcome}` gains `failed` (build failures, including dependency failures) next to
 `built` and `substituted`; `increase(...{outcome="built"})` is unaffected. `nix.build.duration` and
-`nix.invocation.duration` carry only `status` (and `command` for the latter); derivation names are
-span attributes only. Invocation span attributes: `command`, `process.exit.code`, `error.type` on
+`nix.invocation.duration` carry only `status` (and `command`, plus since 2026-10-27 the bounded
+`subcommand` operation label, for the latter); derivation names are span attributes only. Invocation
+span attributes: `command`, `nix.subcommand`, `process.exit.code`, `error.type` on
 non-zero exit, `nix.tailer.lag` (max seconds), `nix.plan.build`, `nix.plan.fetch`,
 `nix.log.truncated` (when true), `nix.log.file`; since 2026-10-27 also `nix.builds.done`,
 `nix.builds.expected`, `nix.builds.failed`, `nix.fetch.done`, `nix.fetch.expected` (final aggregate

@@ -270,7 +270,10 @@ func TestObservedRunProducesSpansMetricsAndKeepsStreamsClean(t *testing.T) {
 	if inv.SpanKind() != trace.SpanKindInternal || inv.Status().Code == codes.Error {
 		t.Errorf("invocation kind=%v status=%v", inv.SpanKind(), inv.Status())
 	}
-	for key, want := range map[string]any{"command": "fake-nix", "process.exit.code": int64(0), "nix.plan.build": int64(1), "nix.plan.fetch": int64(0)} {
+	// fake-nix is neither nix nor darwin-rebuild, so its operation is the
+	// bounded "other" and never the raw argv word "build" (Subcommand's table
+	// test covers the allowlisted values).
+	for key, want := range map[string]any{"command": "fake-nix", "nix.subcommand": "other", "process.exit.code": int64(0), "nix.plan.build": int64(1), "nix.plan.fetch": int64(0)} {
 		v, ok := attrOf(inv, key)
 		if !ok || v.AsInterface() != want {
 			t.Errorf("invocation %s = %v (found %v), want %v", key, v.AsInterface(), ok, want)
@@ -294,6 +297,9 @@ func TestObservedRunProducesSpansMetricsAndKeepsStreamsClean(t *testing.T) {
 	}
 	if !r.mem.hasMetric(t, "nix.invocation.duration") {
 		t.Error("invocation duration not recorded")
+	}
+	if !r.mem.metricAttrKeys(t)["subcommand"] {
+		t.Error("nix.invocation.duration lacks the subcommand label")
 	}
 
 	// The child got the log path through NIX_CONFIG and the file was kept.

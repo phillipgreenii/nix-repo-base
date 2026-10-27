@@ -24,11 +24,20 @@ CMD is resolved from `PATH` skipping the wrapper's own file, so a `PATH` shadow 
 | span   | `nix.build.wait`          | waiting for a lock held by another client                             |
 | metric | `nix.derivations`         | counter, `outcome` = `built` / `substituted` / `failed`               |
 | metric | `nix.build.duration`      | histogram, seconds, `status`                                          |
-| metric | `nix.invocation.duration` | histogram, seconds, `command`, `status`                               |
+| metric | `nix.invocation.duration` | histogram, seconds, `command`, `subcommand`, `status`                 |
 
 Metrics use **delta** temporality (the process is short-lived and exports once at exit); query with
 `increase()` / `rate()`. Derivation names are never metric labels. The `built` count includes
-trivial always-local derivations. The invocation span carries `process.exit.code`, `nix.plan.build`,
+trivial always-local derivations. The `subcommand` label (span attribute `nix.subcommand`) names the
+operation: for `nix` one of `build`, `eval`, `fmt`, `run`, `develop`, `shell`, `path-info`, `store`,
+`copy`, `flake check`, `flake update`, `flake lock`, `flake show`, `flake metadata`; for
+`darwin-rebuild` one of `switch`, `activate`, `build`, `check`, `edit`, `changelog`; everything else
+(unknown verb, no verb, another program) is `other`, so the label is closed and never a raw user string.
+It is found by skipping flags and the values of known value-taking flags (`--option`, `--override-input`,
+`--flake`, ...) and taking the first allowlisted word; a value-taking flag missing from the table can
+still mislead it. Split error rates with
+`sum by (command, subcommand) (increase(nix_invocation_duration_count{status="error"}[1d]))`.
+The invocation span carries `nix.subcommand`, `process.exit.code`, `nix.plan.build`,
 `nix.plan.fetch` (the plan MESSAGES, "these N derivations will be built", summed), `nix.builds.done`,
 `nix.builds.expected`, `nix.builds.failed`, `nix.fetch.done`, `nix.fetch.expected` (the final aggregate
 progress of nix's own "N of M" counters, summed over the run's aggregate activities; set only when a

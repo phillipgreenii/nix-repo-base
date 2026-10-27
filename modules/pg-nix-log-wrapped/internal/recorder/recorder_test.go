@@ -218,20 +218,26 @@ func TestWaitSpanHasNoMetric(t *testing.T) {
 
 func TestInvocationDuration(t *testing.T) {
 	h := newHarness(t)
-	h.rec.Invocation("nix", 2*time.Second, false)
-	h.rec.Invocation("nix", 4*time.Second, true)
+	h.rec.Invocation("nix", "flake check", 2*time.Second, false)
+	h.rec.Invocation("nix", "build", 4*time.Second, true)
 	hist := findMetric(h.collect(t), MetricInvocationLength).Data.(metricdata.Histogram[float64])
 	if len(hist.DataPoints) != 2 {
 		t.Fatalf("data points = %d", len(hist.DataPoints))
 	}
 	byStatus := map[string]float64{}
+	bySub := map[string]string{}
 	for _, dp := range hist.DataPoints {
 		s, _ := dp.Attributes.Value("status")
 		c, _ := dp.Attributes.Value("command")
 		if c.AsString() != "nix" {
 			t.Errorf("command = %v", c)
 		}
+		sub, _ := dp.Attributes.Value("subcommand")
+		bySub[s.AsString()] = sub.AsString()
 		byStatus[s.AsString()] = dp.Sum
+	}
+	if bySub["ok"] != "flake check" || bySub["error"] != "build" {
+		t.Errorf("subcommand label by status = %v", bySub)
 	}
 	if byStatus["ok"] != 2 || byStatus["error"] != 4 {
 		t.Errorf("by status = %v", byStatus)
@@ -251,7 +257,7 @@ func TestMetricNamesAreInTheSharedCatalog(t *testing.T) {
 		}
 		h := newHarness(t)
 		h.rec.Emit(nixlog.Activity{Kind: nixlog.KindBuild, Name: "n", Start: start, End: end})
-		h.rec.Invocation("nix", time.Second, false)
+		h.rec.Invocation("nix", "build", time.Second, false)
 		m := findMetric(h.collect(t), name)
 		if m == nil || m.Unit != spec.Unit {
 			t.Errorf("%s unit = %v, catalog says %q", name, m, spec.Unit)
@@ -287,12 +293,12 @@ func TestSubstituteBytesIsASpanAttributeOnlyWhenSeen(t *testing.T) {
 	}
 }
 
-func TestInvocationMetricCarriesOnlyCommandAndStatus(t *testing.T) {
+func TestInvocationMetricCarriesOnlyCommandSubcommandAndStatus(t *testing.T) {
 	h := newHarness(t)
-	h.rec.Invocation("nix", time.Second, false)
+	h.rec.Invocation("nix", "build", time.Second, false)
 	hist := findMetric(h.collect(t), MetricInvocationLength).Data.(metricdata.Histogram[float64])
 	for _, kv := range hist.DataPoints[0].Attributes.ToSlice() {
-		if kv.Key != "command" && kv.Key != "status" {
+		if kv.Key != "command" && kv.Key != "subcommand" && kv.Key != "status" {
 			t.Errorf("unexpected invocation metric label %s", kv.Key)
 		}
 	}

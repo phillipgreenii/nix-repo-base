@@ -337,10 +337,12 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 	}
 
 	start := r.Now()
+	subcommand := Subcommand(opts.Cmd)
 	ctx, inv := tel.Tracer.Start(ctx, "nix.invocation",
 		trace.WithSpanKind(trace.SpanKindInternal), trace.WithTimestamp(start),
 		trace.WithAttributes(
 			attribute.String("command", filepath.Base(opts.Cmd[0])),
+			attribute.String("nix.subcommand", subcommand),
 			attribute.String("nix.log.file", logPath),
 		))
 	rec, err := recorder.New(ctx, tel.Tracer, tel.Meter)
@@ -522,7 +524,7 @@ func (s *session) finish(code int) {
 		s.inv.SetStatus(codes.Error, fmt.Sprintf("exit code %d", code))
 	}
 	s.inv.End(trace.WithTimestamp(end)) // (d)
-	s.rec.Invocation(filepath.Base(s.opts.Cmd[0]), end.Sub(s.start), code != 0)
+	s.rec.Invocation(filepath.Base(s.opts.Cmd[0]), Subcommand(s.opts.Cmd), end.Sub(s.start), code != 0)
 	s.shutdown() // (e) bounded flush
 }
 

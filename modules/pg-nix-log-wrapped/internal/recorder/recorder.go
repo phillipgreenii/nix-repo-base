@@ -58,14 +58,17 @@ func New(ctx context.Context, tracer trace.Tracer, meter metric.Meter) (*Recorde
 }
 
 // Invocation records the wrapped command's duration; command is its base name
-// (low cardinality) and failed is true for a non-zero exit.
-func (r *Recorder) Invocation(command string, d time.Duration, failed bool) {
+// and subcommand its bounded operation label (app.Subcommand: an allowlisted
+// verb or "other", never a raw user string), both low cardinality; failed is
+// true for a non-zero exit.
+func (r *Recorder) Invocation(command, subcommand string, d time.Duration, failed bool) {
 	status := "ok"
 	if failed {
 		status = "error"
 	}
 	r.invocation.Record(r.ctx, seconds(d), metric.WithAttributes(
-		attribute.String("command", command), attribute.String("status", status),
+		attribute.String("command", command), attribute.String("subcommand", subcommand),
+		attribute.String("status", status),
 	))
 }
 
