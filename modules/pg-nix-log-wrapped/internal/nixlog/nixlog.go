@@ -147,6 +147,7 @@ var (
 	prefixResult = []byte(`{"action":"result"`)
 	suffix101    = []byte(`"type":101}`)
 	suffix105    = []byte(`"type":105}`)
+	suffix106    = []byte(`"type":106}`)
 )
 
 // FastDrop reports whether line is certainly a type 101/105 result, using only
@@ -156,6 +157,19 @@ var (
 func FastDrop(line []byte) bool {
 	return bytes.HasPrefix(line, prefixResult) &&
 		(bytes.HasSuffix(line, suffix101) || bytes.HasSuffix(line, suffix105))
+}
+
+// RetainDrop reports whether line is certainly a type 105 (progress) or 106
+// (set-phase) result, which the RETAINED log omits (operator ruling
+// 2026-10-26: progress lines are about 99% of the bytes and not useful there).
+// It is deliberately not FastDrop: type 101 (build log lines) is kept in the
+// retained log for debugging. It uses the same suffix check as FastDrop (nix
+// emits keys alphabetically, so "type" is last); a line it does not recognise
+// is KEPT, so an unexpected key order costs disk, never evidence. The
+// real-nix test in cmd/pg-nix-log-wrapped pins that key order.
+func RetainDrop(line []byte) bool {
+	return bytes.HasPrefix(line, prefixResult) &&
+		(bytes.HasSuffix(line, suffix105) || bytes.HasSuffix(line, suffix106))
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)

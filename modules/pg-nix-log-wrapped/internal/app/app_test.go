@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/fakecmd"
+	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/nixlog"
 	"github.com/phillipgreenii/x/otelsetup"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -219,6 +220,30 @@ func (r *rig) dump(t *testing.T) (nixConfig string, argv []string) {
 	return v.NixConfig, v.Argv
 }
 
+func (r *rig) rawFiles(t *testing.T) []string {
+	t.Helper()
+	m, _ := filepath.Glob(filepath.Join(r.logDir, "*.raw"))
+	return m
+}
+
+// retained returns what the retained log must hold for a fixture: its lines
+// minus type-105/106 results, each newline-terminated.
+func retained(t *testing.T, fixture string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	for _, l := range bytes.Split(b, []byte("\n")) {
+		if len(l) > 0 && !nixlog.RetainDrop(l) {
+			out.Write(l)
+			out.WriteByte('\n')
+		}
+	}
+	return out.Bytes()
+}
+
 func (r *rig) logFiles(t *testing.T) []string {
 	t.Helper()
 	m, _ := filepath.Glob(filepath.Join(r.logDir, "*.jsonl"))
@@ -274,15 +299,23 @@ func TestObservedRunProducesSpansMetricsAndKeepsStreamsClean(t *testing.T) {
 	// The child got the log path through NIX_CONFIG and the file was kept.
 	nc, argv := r.dump(t)
 	files := r.logFiles(t)
-	if len(files) != 1 || fakecmd.LogPath(nc) != files[0] {
+	// nix is pointed at the scratch .raw; the run is left with the .jsonl only,
+	// and nix.log.file names that retained file, never the scratch one.
+	if len(files) != 1 || fakecmd.LogPath(nc) != strings.TrimSuffix(files[0], ".jsonl")+".raw" {
 		t.Fatalf("nix_config %q vs files %v", nc, files)
+	}
+	if raws := r.rawFiles(t); len(raws) != 0 {
+		t.Errorf("scratch file left behind after a normal exit: %v", raws)
+	}
+	if v, ok := attrOf(inv, "nix.log.file"); !ok || v.AsString() != files[0] || !strings.HasSuffix(v.AsString(), ".jsonl") {
+		t.Errorf("nix.log.file = %v (found %v), want the retained %s", v, ok, files[0])
 	}
 	if strings.Join(argv[1:], " ") != "build --no-link ." {
 		t.Errorf("argv = %v", argv)
 	}
-	want, _ := os.ReadFile(golden("local-build.jsonl"))
-	if got, _ := os.ReadFile(files[0]); !bytes.Equal(got, want) {
-		t.Error("raw log was not preserved byte for byte")
+	// The retained log is the fixture minus progress (105/106), nothing else.
+	if got, _ := os.ReadFile(files[0]); !bytes.Equal(got, retained(t, golden("local-build.jsonl"))) {
+		t.Error("retained log is not the fixture filtered by the retain rule")
 	}
 	if fi, _ := os.Stat(files[0]); fi.Mode().Perm() != 0o600 {
 		t.Errorf("log mode = %v", fi.Mode().Perm())
@@ -477,8 +510,8 @@ func TestAmbientNixConfigIsKeptAndOurLineComesLast(t *testing.T) {
 	if len(lines) != 3 || lines[0] != "experimental-features = nix-command" || lines[1] != "json-log-path = not/absolute/and/invalid" {
 		t.Fatalf("ambient lines changed: %q", nc)
 	}
-	if got := fakecmd.LogPath(nc); got != r.logFiles(t)[0] {
-		t.Errorf("effective json-log-path %q is not ours", got)
+	if got, want := fakecmd.LogPath(nc), strings.TrimSuffix(r.logFiles(t)[0], ".jsonl")+".raw"; got != want {
+		t.Errorf("effective json-log-path %q is not our scratch file %q", got, want)
 	}
 }
 
@@ -754,7 +787,9 @@ func TestConcurrentRunsGetDistinctLogFiles(t *testing.T) {
 		rigs[i] = newRig(t, fakecmd.Spec{})
 		rigs[i].d.Environ = filterEnv(rigs[i].d.Environ, "XDG_STATE_HOME")
 		rigs[i].d.Environ = append(rigs[i].d.Environ, "XDG_STATE_HOME="+shared.state)
-		rigs[i].d.Pid = 4242 // identical pid and (nearly) identical second
+		// Identical pid and (nearly) identical second. It must be a LIVE pid:
+		// a sibling's sweep finalizes the .raw of a pid that is gone.
+		rigs[i].d.Pid = os.Getpid()
 	}
 	var wg sync.WaitGroup
 	for _, r := range rigs {
@@ -959,5 +994,183 @@ func TestCheckReportsTomlEnabledFalse(t *testing.T) {
 	r.writeUserToml(t, "enabled = false\n")
 	if code := r.run("--check"); code != 1 || !strings.Contains(r.stdout.String(), "telemetry: disabled (telemetry.toml enabled = false)") {
 		t.Errorf("code=%d out=%s", code, r.stdout)
+	}
+}
+
+// withProgress writes a fixture to a temp file whose lines are the golden
+// fixture's with n extra type-105 progress lines inserted after its first line,
+// so the RAW file is much larger than what the retained log keeps.
+func withProgress(t *testing.T, fixture string, n int) string {
+	t.Helper()
+	b, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, rest, _ := bytes.Cut(b, []byte("\n"))
+	var out bytes.Buffer
+	out.Write(first)
+	out.WriteByte('\n')
+	for range n {
+		out.WriteString(`{"action":"result","fields":[1,2,3,4],"id":999999,"type":105}` + "\n")
+	}
+	out.Write(rest)
+	p := filepath.Join(t.TempDir(), "noisy.jsonl")
+	if err := os.WriteFile(p, out.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func countStatus(r *rig, ok bool) (n int) {
+	for _, s := range r.mem.spans.Ended() {
+		if s.Name() == "nix.build" && (s.Status().Code != codes.Error) == ok {
+			n++
+		}
+	}
+	return n
+}
+
+func TestRetainedLogDropsProgressButKeepsEverythingElse(t *testing.T) {
+	fixture := golden("failed-build-keep-going.jsonl")
+	raw, _ := os.ReadFile(fixture)
+	for _, typ := range []string{`"type":105}`, `"type":106}`, `"type":101}`} {
+		if !bytes.Contains(raw, []byte(typ)) {
+			t.Fatalf("fixture lacks %s lines; the test would pass vacuously", typ)
+		}
+	}
+	r := newRig(t, fakecmd.Spec{Fixture: fixture, Exit: 1})
+	if code := r.run("fake-nix"); code != 1 {
+		t.Fatalf("exit = %d", code)
+	}
+	files := r.logFiles(t)
+	if len(files) != 1 {
+		t.Fatalf("files = %v", files)
+	}
+	got, _ := os.ReadFile(files[0])
+	// A start line of an activity of type 105 (build) is NOT progress: only
+	// action=result lines of type 105/106 are dropped.
+	for _, l := range bytes.Split(got, []byte("\n")) {
+		if bytes.HasPrefix(l, []byte(`{"action":"result"`)) &&
+			(bytes.HasSuffix(l, []byte(`"type":105}`)) || bytes.HasSuffix(l, []byte(`"type":106}`))) {
+			t.Fatalf("retained log holds a progress result: %s", l)
+		}
+	}
+	for _, want := range []string{`"type":101}`, `"action":"start"`, `"action":"stop"`, `"action":"msg"`} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Errorf("retained log lost %s lines", want)
+		}
+	}
+	if !bytes.Equal(got, retained(t, fixture)) {
+		t.Error("retained log differs from the fixture filtered by the retain rule")
+	}
+	if _, ok := attrOf(r.mem.span(t, "nix.invocation"), "nix.log.retained.truncated"); ok {
+		t.Error("retained.truncated set although the cap was not hit")
+	}
+}
+
+func TestRetainedCapStopsWritingButParsingContinues(t *testing.T) {
+	fixture := golden("failed-build-keep-going.jsonl")
+	full := retained(t, fixture)
+	r := newRig(t, fakecmd.Spec{Fixture: fixture, Exit: 1})
+	r.d.RetainedCap = int64(len(full) / 4) // the failure messages arrive after this
+	if code := r.run("fake-nix"); code != 1 {
+		t.Fatalf("exit = %d", code)
+	}
+	files := r.logFiles(t)
+	fi, err := os.Stat(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() > r.d.RetainedCap || fi.Size() == 0 {
+		t.Errorf("retained size %d, cap %d", fi.Size(), r.d.RetainedCap)
+	}
+	got, _ := os.ReadFile(files[0])
+	if !bytes.HasPrefix(full, got) {
+		t.Error("a capped retained log must be a prefix of the full one")
+	}
+	inv := r.mem.span(t, "nix.invocation")
+	if v, ok := attrOf(inv, "nix.log.retained.truncated"); !ok || !v.AsBool() {
+		t.Errorf("nix.log.retained.truncated = %v (found %v)", v, ok)
+	}
+	if v, ok := attrOf(inv, "nix.log.truncated"); ok && v.AsBool() {
+		t.Error("parsing must not stop when only the retained cap is hit")
+	}
+	// Parsing went on: the same failed/ok build spans as an uncapped run.
+	if countStatus(r, false) != 2 || countStatus(r, true) != 2 {
+		t.Errorf("failed=%d ok=%d, want 2/2 despite the retained cap", countStatus(r, false), countStatus(r, true))
+	}
+	if r.mem.counter(t, "failed") != 2 {
+		t.Errorf("failed counter = %d", r.mem.counter(t, "failed"))
+	}
+	if raws := r.rawFiles(t); len(raws) != 0 {
+		t.Errorf("scratch left behind: %v", raws)
+	}
+}
+
+func TestParseCapCountsRetainedBytesNotRawBytes(t *testing.T) {
+	fixture := golden("failed-build-keep-going.jsonl")
+	noisy := withProgress(t, fixture, 5000) // ~350 KB of progress
+	keep := int64(len(retained(t, fixture)))
+	r := newRig(t, fakecmd.Spec{Fixture: noisy, Exit: 1})
+	r.d.LogSizeCap = keep + 16 // above the retained bytes, far below the raw file size
+	if fi, _ := os.Stat(noisy); fi.Size() <= 2*r.d.LogSizeCap {
+		t.Fatalf("raw %d is not much larger than the parse cap %d", fi.Size(), r.d.LogSizeCap)
+	}
+	if code := r.run("fake-nix"); code != 1 {
+		t.Fatalf("exit = %d", code)
+	}
+	inv := r.mem.span(t, "nix.invocation")
+	if v, ok := attrOf(inv, "nix.log.truncated"); ok && v.AsBool() {
+		t.Error("nix.log.truncated set: the parse cap counted raw progress bytes")
+	}
+	if countStatus(r, false) != 2 || countStatus(r, true) != 2 {
+		t.Errorf("failed=%d ok=%d, want 2/2", countStatus(r, false), countStatus(r, true))
+	}
+	for _, s := range r.mem.spans.Ended() {
+		if v, _ := attrOf(s, "error.type"); s.Name() == "nix.build" && v.AsString() == "aborted" {
+			t.Errorf("build %v closed as aborted although its stop and failure message arrived", s.Name())
+		}
+	}
+	// And the cap still bites on retained bytes.
+	r2 := newRig(t, fakecmd.Spec{Fixture: noisy, Exit: 1})
+	r2.d.LogSizeCap = keep / 4
+	r2.run("fake-nix")
+	if v, ok := attrOf(r2.mem.span(t, "nix.invocation"), "nix.log.truncated"); !ok || !v.AsBool() {
+		t.Error("a parse cap below the retained bytes must still mark nix.log.truncated")
+	}
+}
+
+func TestCommandThatNeverStartsLeavesNeitherFile(t *testing.T) {
+	r := newRig(t, fakecmd.Spec{})
+	plain := filepath.Join(r.home, "plain")
+	_ = os.WriteFile(plain, []byte("x"), 0o755) // executable but not a program: exec fails after setup
+	r.run(plain)
+	if len(r.logFiles(t))+len(r.rawFiles(t)) != 0 {
+		t.Errorf("leftovers: %v %v", r.logFiles(t), r.rawFiles(t))
+	}
+}
+
+func TestSweepFinalizesADeadWrappersRawAtTheNextRun(t *testing.T) {
+	r := newRig(t, fakecmd.Spec{})
+	if err := os.MkdirAll(r.logDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const dead = 999999 // above macOS and Linux default pid ceilings: kill(pid, 0) is ESRCH
+	raw := filepath.Join(r.logDir, fmt.Sprintf("20261001T000000Z-%d-aabbccdd.raw", dead))
+	body := `{"action":"start","id":1,"level":0,"parent":0,"text":"x","type":105}` + "\n" +
+		`{"action":"result","fields":[1,2,3,4],"id":1,"type":105}` + "\n" +
+		`{"action":"stop","id":1}` + "\n"
+	if err := os.WriteFile(raw, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := r.run("fake-nix"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if _, err := os.Stat(raw); err == nil {
+		t.Error("the dead wrapper's .raw survived the sweep")
+	}
+	got, _ := os.ReadFile(strings.TrimSuffix(raw, ".raw") + ".jsonl")
+	if want := `{"action":"start","id":1,"level":0,"parent":0,"text":"x","type":105}` + "\n" + `{"action":"stop","id":1}` + "\n"; string(got) != want {
+		t.Errorf("finalized orphan = %q, want %q", got, want)
 	}
 }

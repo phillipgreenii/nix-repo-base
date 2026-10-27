@@ -18,7 +18,8 @@ const (
 	// nix output; it is discarded rather than allowed to grow without bound.
 	maxPartial = 16 << 20
 
-	// DefaultMaxBytes is the W-12 ingest cap (256 MiB).
+	// DefaultMaxBytes is the W-12 parse cap (256 MiB of RETAINED bytes: those
+	// the handler reports, not the raw file offset).
 	DefaultMaxBytes int64 = 256 << 20
 	// DefaultInterval is the poll period; the Phase 1 spike measured lag of
 	// about one such interval.
@@ -26,10 +27,17 @@ const (
 )
 
 // Handler receives each complete line (without its newline) and the read-time
-// stamp. The slice is only valid during the call.
+// stamp. The slice is only valid during the call. It returns how many bytes
+// the line counts toward the parse cap (zero for a line the retained log
+// drops, such as progress); the tailer keeps that running total separately
+// from the file offset.
 type Handler interface {
-	Line(line []byte, at time.Time)
+	Line(line []byte, at time.Time) (counted int)
 }
+
+// flusher is an optional Handler capability: Flush is called at the end of
+// every Poll so a buffering handler never holds data across a poll.
+type flusher interface{ Flush() }
 
 // Tailer follows one file. It is used by a single goroutine at a time.
 type Tailer struct {
@@ -39,6 +47,7 @@ type Tailer struct {
 	maxBytes int64
 
 	offset    int64
+	retained  int64 // bytes the handler counted; compared with maxBytes
 	buf       []byte
 	chunk     []byte
 	truncated bool
@@ -54,7 +63,7 @@ func New(f *os.File, h Handler, now func() time.Time, maxBytes int64) *Tailer {
 	return &Tailer{f: f, h: h, now: now, maxBytes: maxBytes}
 }
 
-// Truncated reports whether the size cap was hit; ingestion stopped then.
+// Truncated reports whether the parse cap was hit; parsing stopped then.
 func (t *Tailer) Truncated() bool { return t.truncated }
 
 // MaxLag is the largest read-time-minus-mtime observed, never negative.
@@ -62,8 +71,11 @@ func (t *Tailer) MaxLag() time.Duration { return t.maxLag }
 
 // Poll reads whatever has been appended since the last call and returns the
 // number of bytes consumed from the file (including bytes skipped past the
-// cap).
+// parse cap).
 func (t *Tailer) Poll() int64 {
+	if f, ok := t.h.(flusher); ok {
+		defer f.Flush()
+	}
 	fi, err := t.f.Stat()
 	if err != nil {
 		return 0
@@ -78,17 +90,13 @@ func (t *Tailer) Poll() int64 {
 	}
 	chunk := t.chunk
 	for t.offset < size {
-		if t.truncated || t.offset >= t.maxBytes {
-			// Past the cap: keep draining without parsing.
-			t.truncated = true
+		if t.truncated {
+			// Past the parse cap: keep draining without parsing.
 			t.offset, t.buf = size, nil
 			break
 		}
 		want := int64(len(chunk))
 		if rem := size - t.offset; rem < want {
-			want = rem
-		}
-		if rem := t.maxBytes - t.offset; rem < want {
 			want = rem
 		}
 		n, err := t.f.ReadAt(chunk[:want], t.offset)
@@ -107,6 +115,9 @@ func (t *Tailer) Poll() int64 {
 }
 
 func (t *Tailer) consume(data []byte, mtime time.Time) {
+	if t.truncated {
+		return
+	}
 	at := t.now()
 	if lag := at.Sub(mtime); lag > t.maxLag {
 		t.maxLag = lag
@@ -119,7 +130,15 @@ func (t *Tailer) consume(data []byte, mtime time.Time) {
 		}
 		line := bytes.TrimSuffix(t.buf[:i], []byte{'\r'})
 		if len(line) > 0 {
-			t.h.Line(line, at)
+			if t.retained >= t.maxBytes {
+				// The parse cap counts retained bytes only: raw progress
+				// never gets here, so stop and failure events survive a
+				// long run. Once hit, parsing stops for good.
+				t.truncated = true
+				t.buf = nil
+				return
+			}
+			t.retained += int64(t.h.Line(line, at))
 		}
 		t.buf = t.buf[i+1:]
 	}

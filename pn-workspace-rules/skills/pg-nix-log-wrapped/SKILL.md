@@ -156,13 +156,18 @@ log-dir: /Users/phillipg/.local/state/pn/nix-logs (writable: yes)
 
 ## Where the data goes
 
-Every observed run keeps its raw nix JSONL at `<log-dir>/<utc-ts>-<pid>-<rand>.jsonl` (mode 0600).
+Every observed run keeps a filtered copy of nix's JSONL (the retained log) at
+`<log-dir>/<utc-ts>-<pid>-<rand>.jsonl` (mode 0600); it omits `type 105`/`106` progress results and
+keeps everything else, so it is not a verbatim copy. nix itself writes a scratch
+`<utc-ts>-<pid>-<rand>.raw` next to it, deleted when the run ends.
 Non-root default: `$XDG_STATE_HOME/pn/nix-logs`, else `~/.local/state/pn/nix-logs`. Root:
 `/var/log/pg-nix-log-wrapped` (read with `sudo`; the files are 0600, so admin-group membership alone
 is not enough, and a non-root agent sees root runs only as Tempo spans). Each start sweeps its own
 directory only: files older than 7 days go first, then oldest-first until under 2 GiB, so a few
-oversized logs can push out history younger than 7 days. A file stops being ingested at 256 MiB
-(`nix.log.truncated`) but nix keeps writing it. A new file appearing in that directory right after a
+oversized logs can push out history younger than 7 days (the retained cap of 64 MiB, flagged by
+`nix.log.retained.truncated`, now bounds each file). Parsing stops at 256 MiB of retained bytes
+(`nix.log.truncated`). A `.raw` left by a SIGKILLed wrapper is finalized into its `.jsonl` by the next
+sweep. A new file appearing in that directory right after a
 run is the quickest evidence the wrapper observed it. The reverse does not hold: a log file can have
 no span in Tempo, because a collector refusal at the end-of-run flush drops that run's whole batch.
 
@@ -181,7 +186,8 @@ Resource `service.name` is `pg-nix-log-wrapped` (set in code). `pn`'s own spans 
 Limits that are real and MUST NOT be papered over:
 
 - **Spans appear at the end of the run**, not live. Builds are held until the invocation ends, so
-  an in-progress run cannot be inspected in Tempo; read the raw JSONL file for that.
+  an in-progress run cannot be inspected in Tempo; read the live `.raw` scratch file in the log directory for that (the `.jsonl` is only complete once
+  the run ends).
 - **Derivation names are span attributes only**, never metric labels. "Which derivation was slow"
   is a Tempo question; Prometheus only answers "how many / how long overall".
 - The `built` count includes trivial always-local derivations (wrapper scripts, generations), so it

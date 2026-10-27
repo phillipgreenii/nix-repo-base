@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/config"
-	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/tailer"
+	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/retain"
 	"github.com/phillipgreenii/x/otelsetup"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
@@ -63,11 +63,11 @@ func hasOverrideInput(args []string) bool {
 	return false
 }
 
-// overrideGuard is a tailer.Handler that forwards every line and remembers
+// overrideGuard is a retain.Observer that forwards every line and remembers
 // the unmatched-override warnings. It is used by the tailer goroutine only;
 // unmatched is read after that goroutine has finished.
 type overrideGuard struct {
-	next  tailer.Handler
+	next  retain.Observer
 	found []string
 }
 

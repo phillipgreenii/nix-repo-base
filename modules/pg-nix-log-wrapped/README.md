@@ -29,8 +29,9 @@ CMD is resolved from `PATH` skipping the wrapper's own file, so a `PATH` shadow 
 Metrics use **delta** temporality (the process is short-lived and exports once at exit); query with
 `increase()` / `rate()`. Derivation names are never metric labels. The `built` count includes
 trivial always-local derivations. The invocation span carries `process.exit.code`, `nix.plan.build`,
-`nix.plan.fetch`, `nix.tailer.lag` (seconds), `nix.log.file`, and `nix.log.truncated` when the log
-size cap was hit.
+`nix.plan.fetch`, `nix.tailer.lag` (seconds), `nix.log.file` (the retained `.jsonl`),
+`nix.log.truncated` when the parse cap was hit, and `nix.log.retained.truncated` when the retained
+cap was hit.
 
 ## Endpoint and configuration
 
@@ -105,26 +106,48 @@ Tests: `internal/app/overrideguard_test.go` (fake nix) and
 `cmd/pg-nix-log-wrapped/override_guard_realnix_test.go` (real `nix`, hermetic local path flake,
 `--offline`).
 
-## Raw logs
+## Retained logs
 
-Every observed run keeps its raw JSONL at `<log-dir>/<utc-ts>-<pid>-<rand>.jsonl` (mode 0600, created
-`O_EXCL|O_NOFOLLOW`): `$XDG_STATE_HOME/pn/nix-logs` (or `~/.local/state/pn/nix-logs`), or
-`--log-dir`. Each start sweeps **its own directory only**: files older than 7 days, then oldest first
-until the directory is under 2 GiB. Ingest stops at 256 MiB per file (`nix.log.truncated`).
+nix writes its JSONL to a scratch file, and the wrapper keeps a **filtered copy**. A run creates
+`<log-dir>/<utc-ts>-<pid>-<rand>.raw` (the scratch file nix writes through `json-log-path`) and
+`<utc-ts>-<pid>-<rand>.jsonl` (the retained log), both mode 0600 and created `O_EXCL|O_NOFOLLOW`, in
+`$XDG_STATE_HOME/pn/nix-logs` (or `~/.local/state/pn/nix-logs`), or `--log-dir`. The retained log is
+NOT a verbatim copy of nix's output: it omits `type 105` (progress) and `type 106` results, which are
+about 99% of the bytes of a big run, and keeps everything else, including `type 101` build-log lines
+(`nixlog.RetainDrop`, deliberately not the parser's `FastDrop`). `nix.log.file` on `nix.invocation`
+names the retained `.jsonl`, never the scratch file.
 
-- **The 256 MiB cap bounds ingestion, not the file (W-12).** nix keeps writing, so a log can be
-  larger (observed: 523 MB and 576 MB; 97.2% of the larger one was dropped `type 105` progress
-  lines). The size cap that bounds the directory is the 2 GiB sweep above.
-- **The sweep is oldest-first by mtime, so the 7-day window is a ceiling, not a floor.** A few
-  oversized logs reach 2 GiB and push out everything older, including logs younger than 7 days
-  (the observation week kept 3 of 7 days). Nothing records what a sweep removed.
+- **Two caps, two meanings.** The _retained cap_ (64 MiB) stops writing the `.jsonl` when hit and sets
+  `nix.log.retained.truncated=true`; parsing carries on, so a failure message after the cap still
+  yields its failed `nix.build` span. The _parse cap_ (256 MiB, W-12) counts RETAINED bytes (the
+  lines the retained log keeps), not the raw file offset, so progress cannot exhaust it; when it is
+  hit parsing stops, nix keeps writing the scratch file, and `nix.log.truncated=true` is set.
+  Deps `RetainedCap` and `LogSizeCap` inject both for tests.
+- **A live run is the `.raw` file.** To inspect an in-progress run, read its `.raw` (unfiltered, live).
+  The `.jsonl` is written as lines are read and is complete only when the run ends. On a normal exit,
+  and after a forwarded SIGTERM/SIGHUP, the wrapper flushes and closes the `.jsonl` and then deletes the
+  `.raw`.
+- **A SIGKILLed wrapper leaves its `.raw`**, which is then the only evidence of that run. The next
+  sweep FINALIZES it: a `.raw` whose pid (part of its name) is no longer alive is filtered into its
+  `.jsonl` with the same rule and the retained cap, then removed (never deleted unfiltered). A `.raw`
+  whose pid is alive is left alone, except that one older than the max age is finalized regardless
+  (pid reuse). A `.raw` whose name carries no parseable pid is left until it is over age.
+- **Retention.** Each start sweeps **its own directory only**: orphan `.raw` files are finalized
+  first, then `.jsonl` files older than 7 days go, then oldest first until the directory is under
+  2 GiB. Live `.raw` files count toward the 2 GiB total but are never evicted, and neither is the
+  `.jsonl` of a run that still holds a `.raw`; only finalized `.jsonl` files are evicted.
+- **The sweep is oldest-first by mtime, so the 7-day window is a ceiling, not a floor.** Before
+  filtering, a few oversized logs (1.07 GB and 0.50 GB, 12.6M of 12.7M lines progress) reached
+  2 GiB and pushed out everything older, including logs younger than 7 days (the observation week
+  kept 3 of 7 days). The 64 MiB retained cap bounds each file now. Nothing records what a sweep
+  removed.
 - **Spans can be fewer than log files.** A log file exists once CMD has started (setup failures
   remove it), but the run's spans and metrics leave in one bounded end-of-run flush
   (`PG_NIX_LOG_FLUSH_TIMEOUT`, 2 s). The wrapper asks the exporters for a short retry (first wait
   100 ms, total bounded by the flush budget), so one transient refusal (for example the collector's
   memory limiter answering 503) is retried inside the budget. A refusal that outlasts the budget
-  still drops the whole batch, including `nix.invocation`, and the exit code is unaffected; the raw
-  log is then the only record of the run. `PG_NIX_LOG_DEBUG=1` prints the export error.
+  still drops the whole batch, including `nix.invocation`, and the exit code is unaffected; the
+  retained log is then the only record of the run. `PG_NIX_LOG_DEBUG=1` prints the export error.
 
 Root-run logs in `/var/log/pg-nix-log-wrapped` (directory 0750, files 0600, owned by root) are read
 with `sudo`. Membership of the `admin` group is not enough on its own: the directory's group is
@@ -139,6 +162,7 @@ Tempo (`nix.log.file` names the file).
 | `internal/app`           | control flow: fail-open decision, spawn, signals, W-9 ordering |
 | `internal/config`        | flags and endpoint / traceparent precedence                    |
 | `internal/logdir`        | directory choice, safe file creation, retention sweep          |
+| `internal/retain`        | filtered retained log: live handler and offline finalize       |
 | `internal/resolve`       | PATH lookup that skips the wrapper itself                      |
 | `internal/tailer`        | polling reader, partial lines, read-time stamps, lag, size cap |
 | `internal/nixlog`        | activity state machine (tested against the ADR 0028 goldens)   |

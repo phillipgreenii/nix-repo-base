@@ -327,6 +327,19 @@ func (r *signalRun) wait(t *testing.T) int {
 	return r.cmd.ProcessState.ExitCode()
 }
 
+// assertLogsFinalized checks a finished run left the retained .jsonl and
+// deleted the scratch .raw, however the run ended.
+func (r *signalRun) assertLogsFinalized(t *testing.T) {
+	t.Helper()
+	dir := filepath.Join(r.home, "state", "pn", "nix-logs")
+	if raws, _ := filepath.Glob(filepath.Join(dir, "*.raw")); len(raws) != 0 {
+		t.Errorf("scratch file left behind after the signal: %v", raws)
+	}
+	if logs, _ := filepath.Glob(filepath.Join(dir, "*.jsonl")); len(logs) != 1 {
+		t.Errorf("retained logs = %v, want exactly one", logs)
+	}
+}
+
 func TestSIGTERMAndSIGHUPAreForwardedExactlyOnce(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
 		t.Run(sig.String(), func(t *testing.T) {
@@ -341,6 +354,7 @@ func TestSIGTERMAndSIGHUPAreForwardedExactlyOnce(t *testing.T) {
 			if got := r.signals(); len(got) != 1 || got[0] != want {
 				t.Errorf("child saw %v, want exactly [%s]", got, want)
 			}
+			r.assertLogsFinalized(t)
 		})
 	}
 }
@@ -357,6 +371,7 @@ func TestSIGINTFromTheProcessGroupReachesChildExactlyOnce(t *testing.T) {
 	if got := r.signals(); len(got) != 1 || got[0] != "INT" {
 		t.Errorf("child saw %v, want exactly one INT (group delivery, no forward)", got)
 	}
+	r.assertLogsFinalized(t)
 }
 
 func TestSIGINTToTheWrapperAloneIsNotForwarded(t *testing.T) {

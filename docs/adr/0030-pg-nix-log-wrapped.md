@@ -20,8 +20,9 @@ flowchart TD
     CALLER["pn, agent or human"] -->|"flags: traceparent, otlp-endpoint, log-dir"| W["pg-nix-log-wrapped"]
     W -->|"exec, unmodified, silent"| OFF["fail-open: CMD only"]
     W -->|"NIX_CONFIG += json-log-path"| NIX["CMD (nix / darwin-rebuild)"]
-    NIX -->|"append"| F["nix-logs/RUN.jsonl (0600)"]
+    NIX -->|"append"| F["nix-logs/RUN.raw scratch (0600)"]
     F -->|"poll + stamp on read"| T["tailer"]
+    T -->|"drop type 105/106"| K["nix-logs/RUN.jsonl retained (0600)"]
     T --> SM["nixlog state machine"]
     SM -->|"finished activities"| R["recorder (Adapter)"]
     R -->|"OTLP/HTTP, delta metrics"| OC["otelcol :4318"]
@@ -145,9 +146,21 @@ misconfiguration.
   root-owned 0750 directory"); `pg2-lur5p` item 4 reviewed it and kept it. A non-root observer sees
   root runs only as spans in Tempo.
 - A run's spans and metrics leave in one bounded flush at the end. A collector refusal or failure at
-  that moment drops the whole batch, including `nix.invocation`, while the raw log file remains, so
+  that moment drops the whole batch, including `nix.invocation`, while the retained log file remains, so
   spans can be fewer than log files (`pg2-lur5p` item 1). The wrapper cannot retry inside the 2 s
   budget because the exporter's first retry wait is longer.
+
+## Amendment 2026-10-27: the retained log is a filtered copy (`pg2-sdbhh4.1`)
+
+Operator ruling (Phillip, 2026-10-26): progress lines are not useful in the retained log. nix is now
+pointed (`json-log-path`) at a pre-created scratch `<stem>.raw`, and the wrapper writes the filtered
+`<stem>.jsonl` (drops `type 105` and `type 106` results, keeps `type 101`; `nix.log.file` names the
+`.jsonl`). The retained cap (64 MiB, `nix.log.retained.truncated`) stops writing only; the parse cap
+(256 MiB, `nix.log.truncated`) counts retained bytes. The `.raw` is deleted after the `.jsonl` is
+complete (normal exit and forwarded signals); the sweep finalizes the `.raw` of a dead pid into its
+`.jsonl` (a SIGKILLed wrapper must not lose its run) and counts live `.raw` files toward the 2 GiB
+cap without ever evicting them. Statements above that the log is "raw" or that the file nix appends
+to is the retained one describe the original design. Details: wrapper README "Retained logs".
 
 ## Not verified here
 

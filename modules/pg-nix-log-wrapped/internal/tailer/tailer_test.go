@@ -13,9 +13,10 @@ type rec struct {
 	at    []time.Time
 }
 
-func (r *rec) Line(l []byte, at time.Time) {
+func (r *rec) Line(l []byte, at time.Time) int {
 	r.lines = append(r.lines, string(l))
 	r.at = append(r.at, at)
+	return len(l) + 1 // every line counts toward the parse cap
 }
 
 type clock struct{ t time.Time }
@@ -200,5 +201,55 @@ func TestHugeUnterminatedLineIsDiscarded(t *testing.T) {
 	tl.Poll()
 	if got := strings.Join(r.lines, ","); got != "ok" {
 		t.Errorf("lines = %q", got)
+	}
+}
+
+// weighted counts only lines that do not start with "noise", the way the
+// retained-log handler counts nothing for a progress line.
+type weighted struct {
+	rec
+	flushes int
+}
+
+func (w *weighted) Line(l []byte, at time.Time) int {
+	n := w.rec.Line(l, at)
+	if strings.HasPrefix(string(l), "noise") {
+		return 0
+	}
+	return n
+}
+
+func (w *weighted) Flush() { w.flushes++ }
+
+func TestParseCapCountsReportedBytesNotTheFileOffset(t *testing.T) {
+	f, p := newFile(t)
+	w := &weighted{}
+	tl := New(f, w, time.Now, 20) // 20 counted bytes: four 4-byte lines
+	// 5 KiB of uncounted noise between the keepers dwarfs the 20-byte cap.
+	appendTo(t, p, "aaaa\n"+strings.Repeat("noise-noise-noise\n", 300)+"bbbb\ncccc\n")
+	tl.Poll()
+	if tl.Truncated() {
+		t.Fatal("uncounted lines must not trip the parse cap")
+	}
+	appendTo(t, p, "dddd\n") // 4th counted line: exactly at the cap, still no loss
+	tl.Poll()
+	if tl.Truncated() {
+		t.Fatal("a stream that ends exactly at the cap lost nothing")
+	}
+	last := w.lines[len(w.lines)-1]
+	if last != "dddd" {
+		t.Fatalf("last parsed line = %q", last)
+	}
+	appendTo(t, p, "eeee\nnoise\nffff\n") // past the cap: stop parsing, keep draining
+	if consumed := tl.Poll(); consumed == 0 || !tl.Truncated() {
+		t.Fatalf("consumed=%d truncated=%v", consumed, tl.Truncated())
+	}
+	for _, l := range w.lines {
+		if l == "eeee" || l == "ffff" {
+			t.Errorf("parsed %q after the cap", l)
+		}
+	}
+	if w.flushes == 0 {
+		t.Error("a handler with Flush must be flushed at the end of each Poll")
 	}
 }

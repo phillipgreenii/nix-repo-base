@@ -234,6 +234,12 @@ was 14.5 MB, about 5.5% of the cap. The cap is workable. Of the 14.5 MB, 13.7 MB
 `result 105` progress lines (178,363 of 186,346 lines), so dropping 105 is what keeps the tail cheap
 during fetches; the stamped, filtered stream for that run was 745 KB.
 
+Update 2026-10-27 (`pg2-sdbhh4.1`, operator ruling 2026-10-26: progress lines are not useful in the
+retained log): the retained log is no longer a verbatim copy of nix's output. The wrapper points
+`json-log-path` at a scratch `.raw` file and writes a filtered `.jsonl` that omits `type 105` and
+`type 106` results (`type 101` is kept), with its own 64 MiB cap; the W-12 256 MiB cap now counts
+RETAINED bytes, so progress cannot exhaust it. See ADR 0030 and the wrapper README "Retained logs".
+
 Correction to the plan's estimate: about 18 MB per 300-path invocation was extrapolated; the measured
 418-path fetch was 14.5 MB, consistent with the extrapolation.
 

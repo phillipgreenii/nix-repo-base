@@ -34,6 +34,7 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/nixlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/recorder"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/resolve"
+	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/retain"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/tailer"
 	"github.com/phillipgreenii/x/otelsetup"
 	"go.opentelemetry.io/otel"
@@ -93,8 +94,12 @@ type Deps struct {
 
 	// RootLogDir overrides logdir.RootDir (tests only).
 	RootLogDir string
-	// LogSizeCap overrides the W-12 cap; zero selects the default.
+	// LogSizeCap overrides the W-12 PARSE cap (counted in retained bytes, not
+	// raw file offset); zero selects the default.
 	LogSizeCap int64
+	// RetainedCap overrides the retained-file cap (writing .jsonl stops when
+	// hit; parsing continues); zero selects retain.DefaultCap.
+	RetainedCap int64
 	// Sweep limits override the W-10 defaults when non-zero.
 	SweepMaxAge   time.Duration
 	SweepTotalCap int64
@@ -248,15 +253,21 @@ type session struct {
 	cmdPath string
 	env     []string
 
-	logFile *os.File
+	// files is the run's scratch/retained pair: nix writes files.RawPath, the
+	// wrapper writes the filtered copy to files.OutPath. logPath is the
+	// RETAINED path (nix.log.file), never the scratch one.
+	files   *logdir.Files
 	logPath string
-	tel     Telemetry
-	inv     trace.Span
-	rec     *recorder.Recorder
-	proc    *nixlog.Processor
-	tail    *tailer.Tailer
-	guard   *overrideGuard // nil unless CMD carries --override-input
-	start   time.Time
+	retain  *retain.Handler
+	// retainedTruncated is set by closeLogs: the retained cap was hit.
+	retainedTruncated bool
+	tel               Telemetry
+	inv               trace.Span
+	rec               *recorder.Recorder
+	proc              *nixlog.Processor
+	tail              *tailer.Tailer
+	guard             *overrideGuard // nil unless CMD carries --override-input
+	start             time.Time
 }
 
 func (r *runner) flushTimeout() time.Duration {
@@ -297,17 +308,17 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 	if r.SweepTotalCap > 0 {
 		totalCap = r.SweepTotalCap
 	}
-	logdir.Sweep(dir, r.Now(), maxAge, totalCap)
-	f, logPath, err := logdir.Create(dir, r.Now(), r.Pid)
+	logdir.SweepWith(dir, r.Now(), maxAge, totalCap, logdir.SweepOptions{RetainedCap: r.RetainedCap})
+	files, err := logdir.Create(dir, r.Now(), r.Pid)
 	if err != nil {
 		return nil, err
 	}
+	logPath := files.OutPath
 	fail := func(err error) (*session, error) {
-		_ = f.Close()
-		_ = os.Remove(logPath)
+		files.Remove()
 		return nil, err
 	}
-	if strings.ContainsAny(logPath, "\r\n") {
+	if strings.ContainsAny(files.RawPath, "\r\n") {
 		return fail(errors.New("log path contains a newline"))
 	}
 
@@ -338,23 +349,28 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 		return fail(err)
 	}
 	proc := nixlog.NewProcessor(rec, nixlog.Options{MinSubstituteSpan: opts.MinSubstituteSpan})
-	var handler tailer.Handler = proc
+	var next retain.Observer = proc
 	guard := newOverrideGuard(opts.Cmd, r.getenv)
 	if guard != nil {
 		guard.next = proc
-		handler = guard
+		next = guard
 	}
+	// tailer -> retain.Handler (writes the filtered copy, reports retained
+	// bytes) -> guard -> processor. Every line reaches the processor.
+	ret := &retain.Handler{W: retain.NewWriter(files.Out, r.RetainedCap), Next: next}
 	return &session{
 		r: r, opts: opts, cmdPath: cmdPath,
-		env:     ChildEnv(r.Environ, logPath),
-		logFile: f, logPath: logPath, tel: tel, inv: inv, rec: rec, proc: proc,
-		tail:  tailer.New(f, handler, r.Now, r.LogSizeCap),
+		// nix writes the scratch file; nix.log.file names the retained one.
+		env:   ChildEnv(r.Environ, files.RawPath),
+		files: files, logPath: logPath, retain: ret, tel: tel, inv: inv, rec: rec, proc: proc,
+		tail:  tailer.New(files.Raw, ret, r.Now, r.LogSizeCap),
 		guard: guard,
 		start: start,
 	}, nil
 }
 
-// ChildEnv returns environ with "json-log-path = <logPath>" appended to any
+// ChildEnv returns environ with "json-log-path = <logPath>" (the scratch .raw
+// file; the wrapper filters it into the retained .jsonl) appended to any
 // ambient NIX_CONFIG (W-5). A later json-log-path line wins in nix, so no
 // argument rewriting is needed.
 func ChildEnv(environ []string, logPath string) []string {
@@ -423,6 +439,7 @@ func (s *session) run() int {
 	code := exitCode(cmd.ProcessState, werr)
 	close(stop) // (b) drain the file to EOF
 	<-done
+	s.closeLogs() // the .jsonl is complete: drop the scratch file
 	// Unmatched-override guard: only a would-be exit 0 is converted.
 	if code == 0 && len(s.guard.unmatched()) > 0 {
 		s.guard.report(r.Stderr)
@@ -435,9 +452,24 @@ func (s *session) run() int {
 // abandon releases everything when CMD never started.
 func (s *session) abandon() {
 	s.inv.End()
-	_ = s.logFile.Close()
-	_ = os.Remove(s.logPath)
+	s.files.Remove()
 	s.shutdown()
+}
+
+// closeLogs completes the retained log and then deletes the scratch file:
+// flush and close the .jsonl first, and keep the .raw if that fails (the next
+// sweep finalizes it once this pid is gone). It runs after the tailer has
+// drained, on the normal exit path and on forwarded signals alike (a signal
+// only ends CMD earlier). Never panics out: it must not affect the exit code.
+func (s *session) closeLogs() {
+	defer func() { _ = recover() }()
+	s.retainedTruncated = s.retain.W.Truncated()
+	ferr := s.retain.W.Flush()
+	cerr := s.files.Out.Close()
+	_ = s.files.Raw.Close()
+	if ferr == nil && cerr == nil {
+		_ = os.Remove(s.files.RawPath)
+	}
 }
 
 func (s *session) shutdown() {
@@ -467,13 +499,15 @@ func (s *session) finish(code int) {
 	if s.tail.Truncated() {
 		s.inv.SetAttributes(attribute.Bool("nix.log.truncated", true))
 	}
+	if s.retainedTruncated {
+		s.inv.SetAttributes(attribute.Bool("nix.log.retained.truncated", true))
+	}
 	if code != 0 {
 		s.inv.SetAttributes(attribute.String("error.type", "nonzero_exit"))
 		s.inv.SetStatus(codes.Error, fmt.Sprintf("exit code %d", code))
 	}
 	s.inv.End(trace.WithTimestamp(end)) // (d)
 	s.rec.Invocation(filepath.Base(s.opts.Cmd[0]), end.Sub(s.start), code != 0)
-	_ = s.logFile.Close()
 	s.shutdown() // (e) bounded flush
 }
 

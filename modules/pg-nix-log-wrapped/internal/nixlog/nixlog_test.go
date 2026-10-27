@@ -411,3 +411,24 @@ func TestManyActivitiesAreAllEmitted(t *testing.T) {
 		t.Errorf("emitted %d of 600", len(c.acts))
 	}
 }
+
+func TestRetainDropDropsOnlyProgressResults(t *testing.T) {
+	for line, want := range map[string]bool{
+		`{"action":"result","fields":[1,2,3,4],"id":7,"type":105}`:    true,  // progress
+		`{"action":"result","fields":[104,1,2],"id":7,"type":106}`:    true,  // set-expected
+		`{"action":"result","fields":["log text"],"id":7,"type":101}`: false, // build log line: kept, unlike FastDrop
+		`{"action":"result","fields":["x"],"id":7,"type":104}`:        false, // set-phase
+		`{"action":"start","id":7,"level":0,"text":"b","type":105}`:   false, // a build ACTIVITY is type 105 too
+		`{"action":"stop","id":7}`:                                    false,
+		`{"action":"msg","level":0,"msg":"x"}`:                        false,
+		`{"action":"result","type":105,"id":7}`:                       false, // unexpected key order is kept, never lost
+		``:                                                            false,
+	} {
+		if got := RetainDrop([]byte(line)); got != want {
+			t.Errorf("RetainDrop(%s) = %v, want %v", line, got, want)
+		}
+	}
+	if !FastDrop([]byte(`{"action":"result","fields":["x"],"id":7,"type":101}`)) {
+		t.Error("FastDrop must keep dropping 101 for the parser; only the retained log keeps it")
+	}
+}
