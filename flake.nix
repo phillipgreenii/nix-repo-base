@@ -217,6 +217,13 @@
           gogateScripts = import ./modules/gogate/scripts.nix {
             inherit pkgs bashBuilders;
           };
+          # pg-tempo-search: Tempo /api/search that always sets start and end,
+          # slices the range, splits truncated slices and merges the traces
+          # (bead pg2-sdbhh4.15). curl, jq and coreutils come from its own
+          # runtimeDeps; no extra threaded package.
+          pgTempoSearchScripts = import ./modules/pg-tempo-search/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
           # pg-git-check-identity: rejects a commit whose author or
           # committer identity looks like a test/placeholder account. No
           # extra threaded package -- it resolves identity via `git var`
@@ -384,6 +391,10 @@
             # gogate: sequential Go validation gate (fmt/build/vet/test) with
             # fixed output truncation and a machine-readable PASS/FAIL verdict.
             gogate = gogateScripts.gogate.script;
+
+            # pg-tempo-search: Tempo /api/search with an always-explicit
+            # start/end window (sliced, split at the limit, merged).
+            pg-tempo-search = pgTempoSearchScripts.pg-tempo-search.script;
 
             # pg-git-check-identity: rejects a commit whose author or
             # committer identity looks like a test/placeholder account.
@@ -2366,6 +2377,7 @@
           // pgTestRunnerScripts.checks
           // pgHooksScripts.checks
           // gogateScripts.checks
+          // pgTempoSearchScripts.checks
           // pgGitCheckIdentityScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
           # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
@@ -2394,6 +2406,7 @@
           pg-test-runner = import ./home/pg-test-runner/default.nix;
           pg-hooks = import ./home/pg-hooks/default.nix;
           gogate = import ./home/gogate/default.nix;
+          pg-tempo-search = import ./home/pg-tempo-search/default.nix;
           install-metadata = ./home-modules/install-metadata.nix;
           # Light capability model framework (Plan 5): declares the shared
           # phillipgreenii.account.* property namespace + phillipgreenii.bundles.*
@@ -2431,6 +2444,7 @@
             pre-commit-fix
             pre-land-eval
             gogate
+            pg-tempo-search
             pg-git-check-identity
             ;
         };

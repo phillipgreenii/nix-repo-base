@@ -225,6 +225,32 @@ with `sudo`. Membership of the `admin` group is not enough on its own: the direc
 `wheel` and the files grant nothing to a group. A non-root observer sees root runs only as spans in
 Tempo (`nix.log.file` names the file).
 
+## Querying the traces in Tempo
+
+> **WARNING: a Tempo `/api/search` call without `start` and `end` silently searches only the
+> ingesters' recent data (about the last 15 minutes).** It returns a near-empty answer with no error
+> (2 traces instead of about 2,000 per 7 days, observed 2026-10-26). Every search MUST carry explicit
+> `start` and `end` (epoch seconds, at most 168 h apart), and a search stops at its `limit`.
+
+Use `pg-tempo-search` (`modules/pg-tempo-search`), which always sets them, slices the range into
+windows of at most 24 h, splits a window that hits the limit, and prints one merged JSON array:
+
+```sh
+pg-tempo-search --lookback 7d '{ resource.service.name = "pg-nix-log-wrapped" && name = "nix.invocation" }'
+```
+
+A raw call looks like this:
+
+```sh
+END=$(date +%s); START=$((END - 86400))
+curl -sG "http://127.0.0.1:3200/api/search?start=$START&end=$END&limit=1000&spss=100" \
+  --data-urlencode 'q={ resource.service.name = "pg-nix-log-wrapped" && name = "nix.invocation" }'
+```
+
+In a response the span duration is `durationNanos` (a string; not `durationNs`), and Tempo 2.10.5
+rejects `| select(span:startTime, span:duration)`: the span already carries `startTimeUnixNano` and
+`durationNanos`. More recipes: the `pg-nix-log-wrapped` skill in `pn-workspace-rules`.
+
 ## Layout
 
 | Path                     | Responsibility                                                 |

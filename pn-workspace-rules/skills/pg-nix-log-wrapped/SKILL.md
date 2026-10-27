@@ -198,10 +198,41 @@ Limits that are real and MUST NOT be papered over:
 
 ## Where to look: Tempo (TraceQL)
 
-Tempo is local (`http://127.0.0.1:3200` on this machine; its search window is 7 days). In Grafana,
-use Explore with the Tempo data source and the TraceQL editor. The first two recipes are the
+> **WARNING: a Tempo `/api/search` call WITHOUT `start` and `end` silently searches only the
+> ingesters' recent data (about the last 15 minutes) and returns a near-empty answer, with no
+> error.** On 2026-10-26 such a call returned 2 wrapper traces where explicit windows return about
+> 2,000 per 7 days, and an analysis wrongly concluded that pn traces were missing. Every query below
+> MUST go through `pg-tempo-search` (below) or carry explicit `start`/`end` epoch seconds. Tempo
+> also rejects a range over 168 h, and a search stops at its `limit`.
+
+Tempo is local (`http://127.0.0.1:3200` on this machine; it retains 7 days). In Grafana,
+use Explore with the Tempo data source and the TraceQL editor (the time picker supplies the
+window there). From a shell or an agent, use the helper, which always sets `start` and `end`,
+cuts the range into windows of at most 24 h, splits any window that hits the limit, merges the
+traces (deduplicated by trace ID) and prints one JSON array:
+
+```sh
+pg-tempo-search --lookback 7d --select 'span.nix.drv.name' \
+  '{ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" }' |
+  jq '[.[].spans[].durationNanos] | length'
+```
+
+It exits 3 (results still printed, warning on stderr) when a 1 h window still hit the limit, so
+the answer may be truncated; narrow the query then. Its source is `modules/pg-tempo-search`.
+
+Without the helper, a raw call MUST look like this (`start`/`end` in epoch seconds, at most 168 h
+apart; `spss` at most 100):
+
+```sh
+END=$(date +%s); START=$((END - 86400))
+curl -sG "http://127.0.0.1:3200/api/search?start=$START&end=$END&limit=1000&spss=100" \
+  --data-urlencode 'q={ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" }'
+```
+
+The first two recipes are the
 ADR 0028 ones (verified against Tempo 2.10.5); the duration and error filters are standard TraceQL
-that this skill's author did NOT run against a live Tempo, so treat them as starting points.
+that this skill's author did NOT run against a live Tempo, so treat them as starting points. The
+TraceQL below is the query only: run it through the helper or add `start`/`end`.
 
 ```text
 { resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" }
@@ -224,6 +255,11 @@ Slow or failed runs (starting points):
 - `nix.build.wait` is time lost to a lock held by another client (a concurrent nix run).
 - Tempo's search API rejects `spss` above 100 and rejects `| select(span:startTime, span:duration)`
   (a parse error in 2.10.5): the search results already carry start time and duration.
+- The span duration field in a search response is `durationNanos` (a string of nanoseconds), NOT
+  `durationNs`; spans are in `.traces[].spanSet.spans[]` (or `.spanSets[].spans[]`), with
+  `startTimeUnixNano` and `attributes` of `{key, value: {stringValue | intValue}}`. `pg-tempo-search`
+  returns `durationNanos` as a number and the selected attributes as plain `"key": value` pairs on
+  each span.
 
 ## pn span attributes that explain a run
 

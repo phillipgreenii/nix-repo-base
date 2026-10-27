@@ -1,0 +1,9 @@
+#compdef pg-tempo-search
+
+_arguments -s \
+  '--lookback[how far back to search, at most 168h]:duration:(1h 12h 24h 3d 7d)' \
+  '--select[span attributes to return, e.g. "span.a, span.b"]:attributes:' \
+  '--limit[traces per slice]:count:' \
+  '(-h --help)'{-h,--help}'[show help]' \
+  '(-v --version)'{-v,--version}'[show version information]' \
+  '1:TraceQL query:'

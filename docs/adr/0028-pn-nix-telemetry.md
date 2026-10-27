@@ -639,10 +639,8 @@ The check is the maximum overlap over the returned intervals (a sweep: +1 at eac
 sorted before starts at the same instant), which MUST print 3 or less:
 
 ```sh
-curl -sG "$TEMPO/api/search" \
-  --data-urlencode 'q={ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" }' \
-  --data-urlencode "start=$START_EPOCH_S" --data-urlencode "end=$END_EPOCH_S" \
-  --data-urlencode limit=5000 --data-urlencode spss=100 |
+curl -sG "$TEMPO/api/search?start=$START_EPOCH_S&end=$END_EPOCH_S&limit=5000&spss=100" \
+  --data-urlencode 'q={ resource.service.name = "pg-nix-log-wrapped" && name = "nix.build" }' |
   jq '[.traces[].spanSets[].spans[]
        | {s: (.startTimeUnixNano | tonumber), d: (.durationNanos | tonumber)}
        | ({t: .s, v: 1}, {t: (.s + .d), v: -1})]

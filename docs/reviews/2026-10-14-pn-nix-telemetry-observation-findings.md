@@ -8,7 +8,7 @@
 
 - Phase 7 (`pg2-kqrrs.14`) closed 2026-10-07T02:28:24Z. Seven days later is 2026-10-14T02:28:24Z, so the week has elapsed.
 - Every comparison below uses ONE fixed window, `[2026-10-07T03:50:00Z, 2026-10-14T03:50:00Z]` = 7 d = 168 h. Its start is the earliest instant Prometheus can answer for: `storage.tsdb.retention.time` is `1w` (`/api/v1/status/flags`). The queries in this note return different numbers a few days from now.
-- Tempo search is limited to a 168 h range (`start`/`end` > 168 h is rejected), so Tempo counts are taken in 12 h slices and de-duplicated by span id.
+- Tempo search is limited to a 168 h range (`start`/`end` > 168 h is rejected), so Tempo counts are taken in 12 h slices and de-duplicated by span id. Both `start` and `end` are mandatory: a search without them silently covers only the last ~15 minutes of ingester data (see the warning in the `pg-nix-log-wrapped` skill). `pg-tempo-search` (`modules/pg-tempo-search`) now does the slicing, limit-splitting and de-duplication.
 - "Tempo count" is the reference for how many runs happened. It is a lower bound (the wrapper can drop spans, see Q4), but it does not pass through the delta-to-cumulative conversion, so it isolates that conversion's error.
 - "Reconstructed" means: take every raw remote-written sample of the counter (`pn_command_duration_count[8d]`), treat a sample that is not strictly greater than its predecessor as a reset (a run always adds at least 1 to a `_count`, so equal means reset), and sum the increments. It is the best estimate of what the collector actually emitted.
 - Probes used only read-only `GET`s against `127.0.0.1` (Prometheus 9090, Tempo 3200, Loki 3100, Grafana 3000) and read-only local files. Nothing was restarted, paused or applied.
