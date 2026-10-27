@@ -120,6 +120,14 @@ func newRealRunner(grace time.Duration) Runner {
 
 func (r *realRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) (Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// os/exec resolves a bare name against the PARENT's PATH, ignoring
+	// cmd.Env. When the caller overrides PATH (ResolveTool's fallback), resolve
+	// the name against that PATH instead, so the lookup and the child agree.
+	if p, ok := opts.Env["PATH"]; ok && cmd.Err != nil && !strings.ContainsRune(name, os.PathSeparator) {
+		if path, err := lookPathIn(name, p); err == nil {
+			cmd.Path, cmd.Err = path, nil
+		}
+	}
 	// On cancel, ask the child to terminate (SIGTERM) so it can clean up and
 	// flush; only if it is still running after WaitDelay does os/exec SIGKILL
 	// it. The default (immediate SIGKILL) gives children no chance to exit

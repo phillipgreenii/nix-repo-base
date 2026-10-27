@@ -121,7 +121,12 @@ func openWorkspaceRoot(rootFlag string) (*workspace.Workspace, error) {
 	}
 	_ = os.Setenv("PN_WORKSPACE_ROOT", root)
 	_ = os.Setenv("WORKSPACE_ROOT", root)
-	return workspace.Open(root, exec.NewRealRunner())
+	w, err := workspace.Open(root, exec.NewRealRunner())
+	if err != nil {
+		return nil, err
+	}
+	w.EnableToolResolution()
+	return w, nil
 }
 
 // resolveWorkspaceRoot resolves the workspace root: --root flag, then

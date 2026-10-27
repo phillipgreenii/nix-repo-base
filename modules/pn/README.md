@@ -97,7 +97,7 @@ would hit. Both verbs therefore run ONE shared prelude (`Workspace.rebuild`, a T
 `internal/workspace/rebuild.go`), in this order: require a terminal, open the `pn.repo` span, resolve
 the `--override-input` set once, check follows, substitute the command template (one shared
 hostname resolver for `{hostname}`; an unresolvable hostname is an error when the template uses
-it), the dry-run exit, the workspace trust gate, the workspace-id uniqueness check, and the nix
+it), the dry-run exit, tool resolution (below), the workspace trust gate, the workspace-id uniqueness check, and the nix
 daemon health check (`nix eval --expr true`). A parity contract test
 (`rebuild_parity_test.go`) records the prelude step names for both verbs and fails if they diverge.
 
@@ -113,6 +113,29 @@ After the prelude the verbs differ, deliberately:
 - **apply** runs the skip gate for real (skipping when nothing changed), opens the apply log, captures
   each repo's HEAD, runs the switch command, diffs the system profile with nvd, restarts a stale
   fsmonitor daemon, and records the applied state.
+
+### Finding darwin-rebuild when PATH lacks it
+
+A shell that does not have the system profile on `PATH` (a fresh agent or workforest session) used to
+make `build` and `apply` exit 127 instantly with no `nix.invocation`. The prelude now has a
+`resolve_tool` step, after the dry-run exit and before the trust gate, so it runs before any other
+subprocess or side effect. It resolves the command's bare tool name (`darwin-rebuild`,
+`nixos-rebuild`, `nix`, or the name after a leading `sudo`):
+
+- On `PATH`: nothing changes.
+- Not on `PATH` but in `/run/current-system/sw/bin` or `/nix/var/nix/profiles/system/sw/bin` (both
+  exist on a nix-darwin machine): that directory is appended to the `PATH` of the child (via
+  `RunOptions.Env`; the real runner also looks the name up in that `PATH`). argv is NOT rewritten to
+  an absolute path, because the nix wrapper rewrite only recognises the bare names, so the call still
+  runs wrapped and keeps its `nix.invocation` telemetry. Under `sudo`, sudo's own `secure_path` /
+  `env_reset` policy still decides what the privileged child sees.
+- Nowhere: the verb fails at once with `darwin-rebuild not found on PATH (also tried <dirs>); run from
+a shell with the system profile on PATH`, exit status 69 (not the 127 a shell reports, so it is
+  countable apart from the old failures), no trust-gate, lock or applied-state effect, and one
+  `pn.exec` span with `process.executable.name=<tool>`, `process.exit.code=69` and
+  `pn.exec.tool_not_found=true`.
+
+Both verbs get this through the shared prelude. `--show-nix-commands-only` only prints and is exempt.
 
 Build's command template has no required `#{hostname}`; when `build_command` includes `{hostname}` it
 addresses the same flake output as apply. Neither verb changes how the workspace root is resolved.

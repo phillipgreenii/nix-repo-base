@@ -30,6 +30,7 @@ const (
 	stepCheckFollows       = "check_follows"
 	stepSubstituteTemplate = "substitute_template"
 	stepDryRunGate         = "dry_run_gate"
+	stepResolveTool        = "resolve_tool"
 	stepTrustGate          = "trust_gate"
 	stepCheckWsidUnique    = "check_wsid_unique"
 	stepCheckNixDaemon     = "check_nix_daemon"
@@ -70,6 +71,41 @@ func (ws *Workspace) hostname() string {
 	return shortHostname()
 }
 
+// EnableToolResolution turns on the rebuild prelude's tool resolution: when the
+// verb's command (darwin-rebuild, nixos-rebuild, nix, or one of them after sudo)
+// is not on PATH, the system-profile directories are appended to the child's
+// PATH, and when it is found nowhere the verb fails before doing anything else
+// (bead pg2-sdbhh4.12). Production (openWorkspaceRoot) calls it; it is off by
+// default so tests with a fake runner need no real binary.
+func (ws *Workspace) EnableToolResolution() {
+	ws.resolveTool = func(name string) (map[string]string, error) {
+		return exec.ResolveTool(name, exec.SystemProfileBinDirs)
+	}
+}
+
+// resolveCommandTool resolves the bare command name of cmdArgs (the name after
+// sudo, when sudo leads) and returns the Env overlay for running it. A missing
+// tool is recorded as a pn.exec span (telemetry.RecordToolNotFound) and
+// returned as an *exec.ToolNotFoundError.
+func (ws *Workspace) resolveCommandTool(ctx context.Context, cmdArgs []string) (map[string]string, error) {
+	if ws.resolveTool == nil || len(cmdArgs) == 0 {
+		return nil, nil
+	}
+	tool := cmdArgs[0]
+	if tool == "sudo" {
+		if len(cmdArgs) < 2 || strings.HasPrefix(cmdArgs[1], "-") {
+			return nil, nil
+		}
+		tool = cmdArgs[1]
+	}
+	env, err := ws.resolveTool(tool)
+	if err != nil {
+		telemetry.RecordToolNotFound(ctx, tool, exec.ToolNotFoundExitCode, err)
+		return nil, err
+	}
+	return env, nil
+}
+
 // rebuildOptions is the option set common to both verbs. BuildOptions and
 // ApplyOptions are projected onto it; Cmd is the per-invocation override of the
 // verb's command template.
@@ -95,6 +131,9 @@ type rebuildPlan struct {
 	overrideArgs      []string
 	// cmdArgs is the substituted command argv (before overrideArgs).
 	cmdArgs []string
+	// toolEnv is the RunOptions.Env overlay for the command's Run (the system
+	// profile appended to PATH when PATH lacked the tool), or nil.
+	toolEnv map[string]string
 }
 
 // fullArgs is the command's arguments after the program name, with the override
@@ -127,6 +166,7 @@ func (ws *Workspace) runPlanned(ctx context.Context, out io.Writer, verb string,
 		Stdout:  tap,
 		Stderr:  tap,
 		WrapNix: true,
+		Env:     p.toolEnv,
 	})
 	tap.finish()
 	st := tap.stats()
@@ -143,7 +183,7 @@ func (ws *Workspace) runPlanned(ctx context.Context, out io.Writer, verb string,
 //
 // Prelude order (identical for both verbs): requireTerminal, pn.repo span,
 // resolve overrides once, checkFollows, template substitution (shared hostname
-// resolver), the dry-run exit, the trust gate, checkWsidUnique, checkNixDaemon.
+// resolver), the dry-run exit, tool resolution, the trust gate, checkWsidUnique, checkNixDaemon.
 func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, opts rebuildOptions) (err error) {
 	verb := v.name()
 	step := func(s string) { ws.recordStep(verb, true, s) }
@@ -210,6 +250,16 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 		fmt.Fprintln(out, strings.Join(append(append([]string{}, cmdArgs...), plan.overrideArgs...), " "))
 		return nil
 	}
+
+	// Resolve the command's tool BEFORE the trust gate and every other probe, so a
+	// missing darwin-rebuild fails at once with nothing else done (bead
+	// pg2-sdbhh4.12).
+	step(stepResolveTool)
+	toolEnv, err := ws.resolveCommandTool(ctx, cmdArgs)
+	if err != nil {
+		return err
+	}
+	plan.toolEnv = toolEnv
 
 	// Trust gate (bead pg2-x2q6o): abort before ANY execution (including the nix
 	// daemon check and the verb's probes) when the workspace root is untrusted, so

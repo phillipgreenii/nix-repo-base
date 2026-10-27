@@ -26,7 +26,8 @@ func (e ExitCodeError) Error() string {
 
 // ExitCode maps an error to a process exit code: 0 for nil, the carried
 // code for an ExitCodeError, the failed subprocess's own code for a
-// CommandError, and 1 for any other error.
+// CommandError, exec.ToolNotFoundExitCode for a ToolNotFoundError, and 1 for
+// any other error.
 func ExitCode(err error) int {
 	if err == nil {
 		return 0
@@ -37,6 +38,11 @@ func ExitCode(err error) int {
 	}
 	// A wrapped subprocess failure should propagate the child's own non-zero
 	// exit code rather than collapsing every failure to 1 (bead pg2-x3r0a).
+	// A tool pn could not find before launching anything has its own status,
+	// distinct from the 127 a shell would report (bead pg2-sdbhh4.12).
+	if exec.IsToolNotFound(err) {
+		return exec.ToolNotFoundExitCode
+	}
 	var ce *exec.CommandError
 	if errors.As(err, &ce) && ce.Result.ExitCode != 0 {
 		return ce.Result.ExitCode

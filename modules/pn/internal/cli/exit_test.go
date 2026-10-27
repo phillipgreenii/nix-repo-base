@@ -46,3 +46,15 @@ func TestExitCode_PropagatesCommandError(t *testing.T) {
 		t.Errorf("ExitCodeError precedence: want 2, got %d", got)
 	}
 }
+
+// TestExitCode_ToolNotFoundIsDistinct: a tool pn could not find before launching
+// anything maps to its own status (bead pg2-sdbhh4.12), also when wrapped.
+func TestExitCode_ToolNotFoundIsDistinct(t *testing.T) {
+	err := &exec.ToolNotFoundError{Tool: "darwin-rebuild", Tried: exec.SystemProfileBinDirs}
+	if got := ExitCode(err); got != exec.ToolNotFoundExitCode {
+		t.Fatalf("want %d, got %d", exec.ToolNotFoundExitCode, got)
+	}
+	if got := ExitCode(fmt.Errorf("build: %w", err)); got != exec.ToolNotFoundExitCode {
+		t.Fatalf("wrapped: want %d, got %d", exec.ToolNotFoundExitCode, got)
+	}
+}

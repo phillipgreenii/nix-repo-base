@@ -65,8 +65,11 @@ const (
 	AttrExitCode   = "process.exit.code"
 	AttrErrorType  = "error.type"
 	AttrExecutable = "process.executable.name"
-	StatusOK       = "ok"
-	StatusError    = "error"
+	// AttrToolNotFound marks a pn.exec span that records a refused launch: the
+	// command was on neither PATH nor the system profile, so no process ran.
+	AttrToolNotFound = "pn.exec.tool_not_found"
+	StatusOK         = "ok"
+	StatusError      = "error"
 
 	// Build-plan attributes on the pn.repo span (bead pg2-sdbhh4.10); names are
 	// aligned with the wrapper's nix.plan.build / nix.plan.fetch.
@@ -339,6 +342,21 @@ func StartExec(ctx context.Context, name string) (context.Context, func(exitCode
 		}
 		span.End()
 	}
+}
+
+// RecordToolNotFound emits a pn.exec span for a command pn refused to launch
+// because it was found nowhere (exec.ResolveTool). No process ran, so the span
+// is instantaneous; it carries the same process.executable.name and
+// process.exit.code as a real pn.exec span, plus AttrToolNotFound=true, so the
+// refusals are countable next to the exec spans they replace.
+func RecordToolNotFound(ctx context.Context, name string, exitCode int, err error) {
+	_, span := From(ctx).tracer.Start(ctx, SpanExec, trace.WithAttributes(
+		attribute.String(AttrExecutable, name),
+		attribute.Bool(AttrToolNotFound, true),
+		attribute.Int(AttrExitCode, exitCode),
+	))
+	setError(span, err)
+	span.End()
 }
 
 // setError marks span as failed with an error.type attribute.

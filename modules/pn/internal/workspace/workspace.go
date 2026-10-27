@@ -30,6 +30,10 @@ type Workspace struct {
 	// hostnameFn overrides the {hostname} resolver (see Workspace.hostname).
 	// nil in production; set only in tests.
 	hostnameFn func() string
+	// resolveTool, when non-nil, makes the rebuild prelude confirm the command is
+	// runnable (exec.ResolveTool). nil in tests, where the runner is a fake and
+	// no real binary is needed; production sets it via EnableToolResolution.
+	resolveTool func(name string) (map[string]string, error)
 }
 
 // Open loads the workspace rooted at dir. Reads pn-workspace.toml (required)

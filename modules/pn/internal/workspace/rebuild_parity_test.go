@@ -22,6 +22,7 @@ var wantPrelude = []string{
 	stepCheckFollows,
 	stepSubstituteTemplate,
 	stepDryRunGate,
+	stepResolveTool,
 	stepTrustGate,
 	stepCheckWsidUnique,
 	stepCheckNixDaemon,
