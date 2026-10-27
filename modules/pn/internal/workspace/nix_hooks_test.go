@@ -297,7 +297,7 @@ func TestRunEventHooks_EnforcedGateRunsOnUpgrade(t *testing.T) {
 	root := t.TempDir()
 	p := filepath.Join(root, "pn-workspace.toml")
 	writeFile(t, p, "[workspace]\nid = 'x'\n[repos.a]\nurl = \"github:o/a\"\n")
-	if _, err := EnforceKeys(p, "x", "pb gate check", "", ""); err != nil {
+	if _, err := EnforceKeys(p, "x", "pb gate check", "", "", ""); err != nil {
 		t.Fatalf("EnforceKeys: %v", err)
 	}
 	f := exec.NewFakeRunner()

@@ -725,7 +725,7 @@ func TestWriteConfigTOMLTo_PreservesFoundation(t *testing.T) {
 
 func TestEnforceKeys_PreservesFoundation(t *testing.T) {
 	p := writeTemp(t, "pn-workspace.toml", foundationTOML, 0o600)
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
 	if err != nil {
 		t.Fatalf("EnforceKeys: %v", err)
 	}

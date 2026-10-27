@@ -18,6 +18,10 @@ type templateVars struct {
 	TerminalNixRelPath string // {terminal_nix_relative_path}
 	Hostname           string // {hostname}
 	Builder            string // {builder}
+	// Out is the validated system out path, {out}. It is set only when an
+	// activate_command is expanded; in build_command/apply_command {out} stays
+	// an unknown placeholder.
+	Out string
 }
 
 // knownPlaceholders lists the placeholder names recognized in command templates,
@@ -58,13 +62,26 @@ func scanPlaceholders(tmpl string) []string {
 	return names
 }
 
+// outPlaceholder is {out}, the validated system out path. It is valid ONLY in
+// activate_command (bead pg2-sdbhh4.9).
+const outPlaceholder = "out"
+
 // unknownPlaceholders returns the sorted, de-duplicated set of $-unescaped
 // {token}s in tmpl that are not known placeholders.
 func unknownPlaceholders(tmpl string) []string {
+	return unknownPlaceholdersAllowing(tmpl, false)
+}
+
+// unknownPlaceholdersAllowing is unknownPlaceholders, additionally accepting
+// {out} when allowOut is set (activate_command only).
+func unknownPlaceholdersAllowing(tmpl string, allowOut bool) []string {
 	var unknown []string
 	seen := map[string]struct{}{}
 	for _, n := range scanPlaceholders(tmpl) {
 		if _, ok := knownPlaceholderSet[n]; ok {
+			continue
+		}
+		if allowOut && n == outPlaceholder {
 			continue
 		}
 		if _, dup := seen[n]; dup {
@@ -91,6 +108,30 @@ func validateCommandPlaceholders(field, tmpl string) error {
 	return nil
 }
 
+// validateActivateCommand is validateCommandPlaceholders for activate_command,
+// plus its shape rules (bead pg2-sdbhh4.9): {out} is accepted, argv[0] MUST be
+// sudo (with no sudo options), and the activate program MUST be one argv element
+// beginning with {out}/. A static check at config-parse time; the validated out
+// path itself is only known at run time.
+func validateActivateCommand(field, tmpl string) error {
+	if unknown := unknownPlaceholdersAllowing(tmpl, true); len(unknown) > 0 {
+		return fmt.Errorf(
+			"%s references unknown placeholder(s) %q; known placeholders: %q (plus {out}, valid only in activate_command)",
+			field, unknown, knownPlaceholders,
+		)
+	}
+	fields := strings.Fields(tmpl)
+	if len(fields) < 2 || fields[0] != "sudo" {
+		return fmt.Errorf("%s %q: argv[0] must be sudo, followed directly by the activate program (for example %q)",
+			field, tmpl, "sudo {out}/sw/bin/darwin-rebuild activate")
+	}
+	if !strings.HasPrefix(fields[1], "{out}/") {
+		return fmt.Errorf("%s %q: the activate program (the argument right after sudo, which takes no options) must be one element beginning with {out}/",
+			field, tmpl)
+	}
+	return nil
+}
+
 // substituteCommand splits the command template into argv on whitespace and
 // THEN expands the known placeholders in each element. Splitting first (rather
 // than expanding first) keeps a placeholder value that contains spaces — e.g. a
@@ -101,6 +142,17 @@ func validateCommandPlaceholders(field, tmpl string) error {
 // on an OS with no built-in builder, when it references an unknown placeholder,
 // or when it expands to an empty command.
 func substituteCommand(tmpl string, v templateVars) ([]string, error) {
+	return substituteCommandOut(tmpl, v, false)
+}
+
+// substituteActivateCommand expands an activate_command template: substituteCommand
+// that also accepts {out}, replaced by v.Out AFTER the argv split so the path can
+// never fragment. v.Out MUST already be validated (validateBuildOut).
+func substituteActivateCommand(tmpl string, v templateVars) ([]string, error) {
+	return substituteCommandOut(tmpl, v, true)
+}
+
+func substituteCommandOut(tmpl string, v templateVars, allowOut bool) ([]string, error) {
 	names := scanPlaceholders(tmpl)
 
 	// Guard 1: {builder} referenced but no builder for this OS.
@@ -123,7 +175,7 @@ func substituteCommand(tmpl string, v templateVars) ([]string, error) {
 	}
 
 	// Guard 2: unknown placeholders (typos, or the removed {terminal_flake}).
-	if unknown := unknownPlaceholders(tmpl); len(unknown) > 0 {
+	if unknown := unknownPlaceholdersAllowing(tmpl, allowOut); len(unknown) > 0 {
 		return nil, fmt.Errorf(
 			"unknown placeholder(s) %q in command template; known placeholders: %q",
 			unknown, knownPlaceholders,
@@ -137,6 +189,16 @@ func substituteCommand(tmpl string, v templateVars) ([]string, error) {
 		"{hostname}", v.Hostname,
 		"{builder}", v.Builder,
 	)
+	if allowOut {
+		r = strings.NewReplacer(
+			"{terminal_repo_dir}", v.TerminalRepoDir,
+			"{terminal_nix_dir}", v.TerminalNixDir,
+			"{terminal_nix_relative_path}", v.TerminalNixRelPath,
+			"{hostname}", v.Hostname,
+			"{builder}", v.Builder,
+			"{out}", v.Out,
+		)
+	}
 	// Tokenize the template first, then expand each token, so spaces inside a
 	// substituted value do not split it into separate arguments. Skip elements
 	// that expand to empty (matching the old strings.Fields behavior, which

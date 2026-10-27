@@ -59,7 +59,7 @@ func writeTemp(t *testing.T, name, content string, mode os.FileMode) string {
 func TestEnforceKeys_AbsentFileNoOp(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "pn-workspace.toml")
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestEnforceKeys_NoOpWhenAlreadyCorrect(t *testing.T) {
 
 	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check",
 		"darwin-rebuild build --flake {terminal_nix_dir}",
-		"sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}")
+		"sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +120,7 @@ when = ['post-apply']
 run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", wrongID, 0o600)
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,7 +157,7 @@ url = 'git@github.com:phillipgreenii/nix-repo-base.git'
 branch = 'main'
 `
 	p := writeTemp(t, "pn-workspace.toml", noHooks, 0o600)
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,7 +193,7 @@ when = ['post-apply']
 run = ['echo custom', 'notify send']
 `
 	p := writeTemp(t, "pn-workspace.toml", withExtra, 0o600)
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -212,7 +212,7 @@ run = ['echo custom', 'notify send']
 
 	// Idempotent: a second enforce with the same value is a no-op (append branch
 	// must not re-append when already present).
-	changed2, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	changed2, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error on second enforce: %v", err)
 	}
@@ -234,7 +234,7 @@ url = 'git@github.com:phillipgreenii/nix-repo-base.git'
 branch = 'main'
 `
 	p := writeTemp(t, "pn-workspace.toml", noHooks, 0o600)
-	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", ""); err != nil {
+	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	cfg, err := loadConfigFile(t, p)
@@ -264,7 +264,7 @@ id = ''
 url = 'git@github.com:x/y.git'
 `
 	p := writeTemp(t, "pn-workspace.toml", wrongID, 0o600)
-	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", ""); err != nil {
+	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	info, err := os.Stat(p)
@@ -280,7 +280,7 @@ url = 'git@github.com:x/y.git'
 // also reject it defensively rather than write garbage.
 func TestEnforceKeys_RejectsBadID(t *testing.T) {
 	p := writeTemp(t, "pn-workspace.toml", realWorldTOML, 0o600)
-	if _, err := EnforceKeys(p, "Phillip_MBP", "pb gate check", "", ""); err == nil {
+	if _, err := EnforceKeys(p, "Phillip_MBP", "pb gate check", "", "", ""); err == nil {
 		t.Errorf("expected error for non-slug id, got nil")
 	}
 }
@@ -318,7 +318,7 @@ when = ['post-apply']
 run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", wrongCommands, 0o600)
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand)
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -383,7 +383,7 @@ run = ['pb gate check']
 		t.Fatal(err)
 	}
 	// id + apply-post already correct AND build/apply left empty → full no-op.
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestEnforceKeys_AllFourKeysNoOpWhenAlreadyCorrect(t *testing.T) {
 	}
 	beforeInfo, _ := os.Stat(p)
 
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand)
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -453,7 +453,7 @@ when = ['post-apply']
 run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", wrong, 0o600)
-	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand); err != nil {
+	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	info, err := os.Stat(p)
@@ -469,7 +469,7 @@ run = ['pb gate check']
 func TestEnforceKeys_AbsentFileNoOpWithCommands(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "pn-workspace.toml")
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand)
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -498,7 +498,7 @@ when = ['post-apply']
 run = ['pb gate check']
 `
 	p := writeTemp(t, "pn-workspace.toml", wrong, 0o600)
-	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand); err != nil {
+	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", committedBuildCommand, committedApplyCommand, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	raw, err := os.ReadFile(p)

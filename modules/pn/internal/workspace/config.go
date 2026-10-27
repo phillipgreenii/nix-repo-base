@@ -36,6 +36,17 @@ type WorkspaceSection struct {
 	// required by `apply`. See ADR 0017.
 	BuildCommand string `toml:"build_command,omitempty"`
 	ApplyCommand string `toml:"apply_command,omitempty"`
+	// ActivateCommand is the OPTIONAL root-only activation template of the
+	// build-as-user apply flow (bead pg2-sdbhh4.9, ADR 0038). Unset: apply runs
+	// the single apply_command exactly as before. Set: apply builds as the
+	// invoking user with build_command (which MUST leave ./result in its working
+	// directory, as `darwin-rebuild build` does), validates the system out path
+	// and runs only this command as root. It takes the five placeholders above
+	// plus {out} (the validated out path, valid ONLY here); argv[0] MUST be
+	// sudo, and the program MUST be one argv element beginning with {out}/. The
+	// root profile step is NOT templated: it is hard-coded in pn. apply_command
+	// stays the fallback when the built system cannot be activated this way.
+	ActivateCommand string `toml:"activate_command,omitempty"`
 	// WorkforestsDir is where `pn workspace workforest` creates sets. Relative paths are
 	// resolved against the workspace root. Defaults to ".workforests" when empty.
 	WorkforestsDir string `toml:"workforests_dir,omitempty"`
@@ -128,6 +139,15 @@ func (c *WorkspaceConfig) ApplyCommandTemplate() (string, error) {
 		return "", fmt.Errorf("workspace.apply_command is not set in pn-workspace.toml")
 	}
 	return c.Workspace.ApplyCommand, nil
+}
+
+// ActivateCommandTemplate returns the configured activate_command, or "" when
+// unset (the build-as-user apply flow is then not used).
+func (c *WorkspaceConfig) ActivateCommandTemplate() string {
+	if c == nil {
+		return ""
+	}
+	return c.Workspace.ActivateCommand
 }
 
 // WarnBuildsThreshold returns the effective workspace.warn_builds: the
@@ -288,6 +308,11 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 	}
 	if ac := cfg.Workspace.ApplyCommand; ac != "" {
 		if err := validateCommandPlaceholders("workspace.apply_command", ac); err != nil {
+			return nil, err
+		}
+	}
+	if ac := cfg.Workspace.ActivateCommand; ac != "" {
+		if err := validateActivateCommand("workspace.activate_command", ac); err != nil {
 			return nil, err
 		}
 	}

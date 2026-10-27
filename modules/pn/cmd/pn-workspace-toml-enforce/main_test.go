@@ -181,3 +181,60 @@ run = ['pb gate check']
 		t.Errorf("file changed when command flags omitted:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
+
+// --activate-command enforces the optional key (bead pg2-sdbhh4.9), reports a
+// change, and an omitted flag leaves the key untouched.
+func TestRun_EnforcesActivateCommand(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pn-workspace.toml")
+	if err := os.WriteFile(p, []byte(liveTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const activateCmd = "sudo {out}/sw/bin/darwin-rebuild activate"
+	var out bytes.Buffer
+	code := run([]string{
+		"--root", dir,
+		"--id", "phillipg-mbp",
+		"--apply-post", "pb gate check",
+		"--activate-command", activateCmd,
+	}, &out)
+	if code != 0 {
+		t.Fatalf("exit code = %d; want 0. output: %s", code, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte("enforced")) {
+		t.Errorf("expected an 'enforced' line, got: %q", out.String())
+	}
+	data, _ := os.ReadFile(p)
+	if !bytes.Contains(data, []byte("activate_command = 'sudo {out}/sw/bin/darwin-rebuild activate'")) {
+		t.Errorf("activate_command not written verbatim:\n%s", data)
+	}
+
+	// A later run WITHOUT the flag neither removes nor changes it, and is silent.
+	out.Reset()
+	code = run([]string{"--root", dir, "--id", "phillipg-mbp", "--apply-post", "pb gate check"}, &out)
+	if code != 0 || out.Len() != 0 {
+		t.Errorf("run without --activate-command: code=%d out=%q, want a silent no-op", code, out.String())
+	}
+	data2, _ := os.ReadFile(p)
+	if !bytes.Equal(data, data2) {
+		t.Errorf("a run without the flag changed the file:\n%s", data2)
+	}
+}
+
+// A value pn cannot parse is rejected with a non-zero exit and nothing written.
+func TestRun_RejectsABadActivateCommand(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pn-workspace.toml")
+	if err := os.WriteFile(p, []byte(liveTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	code := run([]string{"--root", dir, "--id", "phillipg-mbp", "--apply-post", "pb gate check", "--activate-command", "sudo /usr/bin/true"}, &out)
+	if code == 0 {
+		t.Errorf("exit code = 0; want non-zero for an activate_command that does not start with {out}/")
+	}
+	data, _ := os.ReadFile(p)
+	if bytes.Contains(data, []byte("activate_command")) {
+		t.Errorf("a rejected value was written:\n%s", data)
+	}
+}
