@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
@@ -142,6 +144,27 @@ func privateInstallArgs(overrideArgs []string) []string {
 	return args
 }
 
+// phaseName is the pn.hook.when value of phase.
+func phaseName(phase HookPhase) string {
+	if phase == HookPhasePre {
+		return "pre"
+	}
+	return "post"
+}
+
+// hookExitCode is the exit status a pn.hook span reports for err: the failing
+// command's own exit code when it has one, else 1 (0 for nil).
+func hookExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ce *exec.CommandError
+	if errors.As(err, &ce) && ce.Result.ExitCode != 0 {
+		return ce.Result.ExitCode
+	}
+	return 1
+}
+
 // eventName returns the "<phase>-<command>" event string.
 func eventName(phase HookPhase, cmd string) string {
 	if phase == HookPhasePre {
@@ -178,7 +201,7 @@ func (ws *Workspace) ProcessedReposFor(ctx context.Context, cmd string) []string
 // (for every event, every caller — workforest add/add-repo included) when
 // that repo's hook bundle is present and current; see installHookUpToDate. In a linked
 // worktree the installer is invoked with `--private` and the set's pins.
-func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out, errOut io.Writer) error {
+func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd string, processed []string, out, errOut io.Writer) (retErr error) {
 	ev := eventName(phase, cmd)
 
 	// Trust gate (bead pg2-oymai): hooks execute `sh -c` from a pn-workspace.toml
@@ -207,20 +230,37 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 			}
 		}
 	}
-	if willFire {
-		if err := trust.EnsureAllowed(ws.root); err != nil {
-			if phase == HookPhasePre {
-				return err
-			}
-			fmt.Fprintf(errOut, "warning: skipping post-%s hooks: %v\n", cmd, err)
-			return nil
+	if !willFire {
+		return nil
+	}
+
+	// One pn.hook span per fired event, in the caller's span (pn.verb for the
+	// CLI verbs, outside every pn.repo span), so hook time is not hidden in the
+	// verb duration. A warn-only post-hook failure does not fail the command but
+	// is still the span's error.
+	ctx, endHook := telemetry.StartHook(ctx, phaseName(phase), cmd)
+	var warned error
+	defer func() {
+		failure := retErr
+		if failure == nil {
+			failure = warned
 		}
+		endHook(hookExitCode(failure), failure)
+	}()
+
+	if err := trust.EnsureAllowed(ws.root); err != nil {
+		if phase == HookPhasePre {
+			return err
+		}
+		fmt.Fprintf(errOut, "warning: skipping post-%s hooks: %v\n", cmd, err)
+		warned = err
+		return nil
 	}
 
 	// Workspace-scoped: once at root (no {nix_run}; enforced by validateAllHooks).
 	for _, h := range ws.config.Hooks {
 		if slices.Contains(h.When, ev) {
-			if err := RunHooks(ctx, ws.runner, h.Run, ws.root, phase); err != nil {
+			if err := runHooks(ctx, ws.runner, h.Run, ws.root, phase, &warned); err != nil {
 				return err
 			}
 		}
@@ -303,6 +343,7 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 						return fmt.Errorf("pre-hook %q in %s: %w", raw, key, err)
 					}
 					fmt.Fprintf(errOut, "warning: post-hook %q in %s: %v\n", raw, key, err)
+					noteWarned(&warned, err)
 				}
 			}
 		}

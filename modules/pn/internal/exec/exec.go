@@ -67,6 +67,9 @@ type Result struct {
 	ExitCode int
 	Stdout   []byte
 	Stderr   []byte
+	// Signal names the signal that killed the process (e.g. "SIGKILL") when it
+	// died on one, in which case ExitCode is -1; empty otherwise.
+	Signal string
 }
 
 // syncWriter serializes concurrent Writes to an underlying io.Writer. See
@@ -195,6 +198,9 @@ func (r *realRunner) Run(ctx context.Context, name string, args []string, opts R
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		res.ExitCode = exitErr.ExitCode()
+		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			res.Signal = signalName(ws.Signal())
+		}
 	} else if err == nil {
 		res.ExitCode = 0
 	} else {
@@ -225,6 +231,31 @@ type CommandError struct {
 	Name   string
 	Args   []string
 	Result Result
+}
+
+// ExitSignal names the signal that killed the command, or "" when it exited on
+// its own. The telemetry package reads it (by interface) to mark a pn.exec span
+// error.type=signal.
+func (e *CommandError) ExitSignal() string { return e.Result.Signal }
+
+// signalName renders a signal as its SIG name for the common signals and as
+// "SIG<n>" for the rest.
+func signalName(sig syscall.Signal) string {
+	switch sig {
+	case syscall.SIGHUP:
+		return "SIGHUP"
+	case syscall.SIGINT:
+		return "SIGINT"
+	case syscall.SIGQUIT:
+		return "SIGQUIT"
+	case syscall.SIGKILL:
+		return "SIGKILL"
+	case syscall.SIGPIPE:
+		return "SIGPIPE"
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	}
+	return fmt.Sprintf("SIG%d", int(sig))
 }
 
 func (e *CommandError) Error() string {

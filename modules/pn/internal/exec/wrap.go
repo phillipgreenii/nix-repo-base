@@ -60,10 +60,18 @@ func isExecutableFile(path string) bool {
 
 // Run implements Runner.
 func (r *wrapRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) (Result, error) {
-	wname, wargs, ok := r.rewrite(ctx, name, args, opts)
-	if !ok {
+	wname, wargs, skip := r.rewrite(ctx, name, args, opts)
+	if skip != "" {
+		if opts.WrapNix {
+			// A call that asked to be wrapped but runs unwrapped says why on its
+			// pn.exec span (the span in ctx; this decorator sits inside the
+			// tracing one). Calls that never asked (WrapNix false) are not
+			// wrap candidates and carry no attribute.
+			telemetry.RecordExecWrap(ctx, false, skip)
+		}
 		return r.inner.Run(ctx, name, args, opts)
 	}
+	telemetry.RecordExecWrap(ctx, true, "")
 	res, err := r.inner.Run(ctx, wname, wargs, opts)
 	// Errors must read as if the wrapper were absent: report the command pn
 	// asked for, not the wrapper argv.
@@ -74,32 +82,45 @@ func (r *wrapRunner) Run(ctx context.Context, name string, args []string, opts R
 	return res, err
 }
 
-// rewrite computes the wrapped command, or ok=false to run unwrapped.
-func (r *wrapRunner) rewrite(ctx context.Context, name string, args []string, opts RunOptions) (string, []string, bool) {
+// Reasons a WrapNix call runs unwrapped, recorded as pn.exec.wrap_skip_reason.
+const (
+	skipNotRequested   = "not_requested" // internal only: WrapNix false, nothing is recorded
+	skipTelemetryOff   = "telemetry_off"
+	skipNoEndpoint     = "no_endpoint"
+	skipNoWrapperPath  = "no_wrapper_path"
+	skipUnrecognized   = "unrecognized_form"
+	skipSudoNotInStore = "sudo_wrapper_not_in_store"
+	skipNotAbsolute    = "wrapper_not_absolute"
+	skipNotExecutable  = "wrapper_not_executable"
+)
+
+// rewrite computes the wrapped command, or a non-empty skip reason to run
+// unwrapped.
+func (r *wrapRunner) rewrite(ctx context.Context, name string, args []string, opts RunOptions) (string, []string, string) {
 	if !opts.WrapNix {
-		return "", nil, false
+		return "", nil, skipNotRequested
 	}
-	st, ok := wrapState(ctx)
-	if !ok {
-		return "", nil, false
+	st, why := wrapStateReason(ctx)
+	if why != "" {
+		return "", nil, why
 	}
 	under, sudo := wrapTarget(name, args)
 	if under == "" {
-		return "", nil, false
+		return "", nil, skipUnrecognized
 	}
 
 	wrapper := st.Res.WrapperPath
 	if sudo {
 		real, err := telemetrycfg.ValidateSudoWrapper(wrapper, r.evalSymlinks)
 		if err != nil {
-			return "", nil, false
+			return "", nil, skipSudoNotInStore
 		}
 		wrapper = real
 	} else if !filepath.IsAbs(wrapper) {
-		return "", nil, false
+		return "", nil, skipNotAbsolute
 	}
 	if !r.usable(wrapper) {
-		return "", nil, false
+		return "", nil, skipNotExecutable
 	}
 
 	flags := make([]string, 0, 7)
@@ -123,23 +144,35 @@ func (r *wrapRunner) rewrite(ctx context.Context, name string, args []string, op
 		out = append(out, wrapper)
 		out = append(out, flags...)
 		out = append(out, args...)
-		return name, out, true
+		return name, out, ""
 	}
 	out := make([]string, 0, len(flags)+1+len(args))
 	out = append(out, flags...)
 	out = append(out, name)
 	out = append(out, args...)
-	return wrapper, out, true
+	return wrapper, out, ""
 }
 
 // wrapState returns the run's telemetry state when nix wrapping is configured
 // at all: telemetry enabled, an endpoint resolved and a wrapper path named.
 func wrapState(ctx context.Context) (*telemetrycfg.RunState, bool) {
+	st, why := wrapStateReason(ctx)
+	return st, why == ""
+}
+
+// wrapStateReason is wrapState with the reason it is not configured: "" when it
+// is, else telemetry_off, no_endpoint or no_wrapper_path.
+func wrapStateReason(ctx context.Context) (*telemetrycfg.RunState, string) {
 	st := telemetrycfg.RunStateFrom(ctx)
-	if st == nil || !st.Res.Enabled || st.Res.Endpoint == "" || st.Res.WrapperPath == "" || !telemetry.From(ctx).Enabled() {
-		return nil, false
+	switch {
+	case st == nil || !st.Res.Enabled || !telemetry.From(ctx).Enabled():
+		return nil, skipTelemetryOff
+	case st.Res.Endpoint == "":
+		return nil, skipNoEndpoint
+	case st.Res.WrapperPath == "":
+		return nil, skipNoWrapperPath
 	}
-	return st, true
+	return st, ""
 }
 
 // userWrapper returns the absolute path of the configured wrapper and the

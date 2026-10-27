@@ -68,6 +68,13 @@ func resolveHookPath(cmd, workspaceRoot string) (string, error) {
 //     add to the verbosity problem the previous silence was presumably
 //     trying to avoid.
 func RunHooks(ctx context.Context, runner exec.Runner, entries []string, workspaceRoot string, phase HookPhase) error {
+	return runHooks(ctx, runner, entries, workspaceRoot, phase, nil)
+}
+
+// runHooks is RunHooks that also reports the first warn-only post-hook failure
+// through warned (when non-nil), so the pn.hook span can show a post-hook that
+// failed even though the command did not.
+func runHooks(ctx context.Context, runner exec.Runner, entries []string, workspaceRoot string, phase HookPhase, warned *error) error {
 	for _, raw := range entries {
 		resolved, err := rewriteFirstToken(raw, workspaceRoot)
 		if err != nil {
@@ -85,6 +92,7 @@ func RunHooks(ctx context.Context, runner exec.Runner, entries []string, workspa
 			return fmt.Errorf("pre-hook failed: %s: %w", raw, err)
 		}
 		// post-hook failure — warn, continue
+		noteWarned(warned, err)
 		_, _ = fmt.Fprintf(os.Stderr, "warning: post-hook failed: %s: %v\n", raw, err)
 		_, _ = os.Stderr.Write(res.Stderr)
 	}
@@ -115,4 +123,11 @@ func rewriteFirstToken(raw, workspaceRoot string) (string, error) {
 		return "", err
 	}
 	return resolved + rest, nil
+}
+
+// noteWarned records err in *warned unless it already holds an earlier one.
+func noteWarned(warned *error, err error) {
+	if warned != nil && *warned == nil {
+		*warned = err
+	}
 }

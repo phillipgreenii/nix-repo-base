@@ -4,6 +4,8 @@
 // vocabulary:
 //
 //	pn.verb  (root, one per pn invocation)
+//	  pn.hook  (one per fired pre/post hook event)
+//	    pn.exec  (the hook's subprocesses)
 //	  pn.repo  (one per repo a workspace verb touches)
 //	    pn.exec  (one per subprocess, emitted by the exec.Runner decorator)
 //
@@ -26,6 +28,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -53,6 +56,7 @@ const (
 	SpanVerb              = "pn.verb"
 	SpanRepo              = "pn.repo"
 	SpanExec              = "pn.exec"
+	SpanHook              = "pn.hook"
 	MetricCommandDuration = "pn.command.duration"
 	MetricPlanBuilds      = "pn.plan.builds"
 )
@@ -68,14 +72,41 @@ const (
 	// AttrToolNotFound marks a pn.exec span that records a refused launch: the
 	// command was on neither PATH nor the system profile, so no process ran.
 	AttrToolNotFound = "pn.exec.tool_not_found"
-	StatusOK         = "ok"
-	StatusError      = "error"
+	// AttrExecSubcommand is the closed-allowlist subcommand of a pn.exec span
+	// (exec.ExecSubcommand), e.g. "darwin-rebuild switch" or "other".
+	AttrExecSubcommand = "pn.exec.subcommand"
+	// AttrExecWrapped and AttrExecWrapSkipReason record, on a pn.exec span of a
+	// call that asked to run under pg-nix-log-wrapped (RunOptions.WrapNix),
+	// whether it did and, when not, why.
+	AttrExecWrapped        = "pn.exec.wrapped"
+	AttrExecWrapSkipReason = "pn.exec.wrap_skip_reason"
+	// AttrProcessSignal is the signal that ended a pn.exec or pn.verb span
+	// (with error.type=signal), e.g. "SIGINT".
+	AttrProcessSignal = "process.signal"
+	ErrorTypeSignal   = "signal"
+	StatusOK          = "ok"
+	StatusError       = "error"
 
 	// Build-plan attributes on the pn.repo span (bead pg2-sdbhh4.10); names are
 	// aligned with the wrapper's nix.plan.build / nix.plan.fetch.
 	AttrPlanBuild       = "pn.plan.build"
 	AttrPlanFetch       = "pn.plan.fetch"
 	AttrPlanDownloadMiB = "pn.plan.download_mib"
+
+	// Rebuild-context attributes on the pn.repo span of build and apply (bead
+	// pg2-sdbhh4.13). pn.verb is not reachable from workspace code, so they live
+	// on pn.repo.
+	AttrTerminal           = "pn.terminal"
+	AttrHostname           = "pn.hostname"
+	AttrBuilder            = "pn.builder"
+	AttrOverrideCount      = "pn.override.count"
+	AttrApplyForce         = "pn.apply.force"
+	AttrApplyRebuild       = "pn.apply.rebuild"
+	AttrApplyRebuildReason = "pn.apply.rebuild_reason"
+
+	// pn.hook span attributes.
+	AttrHookWhen = "pn.hook.when"
+	AttrHookName = "pn.hook.name"
 )
 
 // Telemetry is the process-wide telemetry handle.
@@ -196,6 +227,58 @@ func RecordPlan(ctx context.Context, verb string, p Plan) {
 		metric.WithAttributes(attribute.String(AttrVerb, verb)))
 }
 
+// RebuildContext is what a build or apply run records about itself on its
+// pn.repo span, so a trace shows the terminal, host, activation tool and
+// override set without reading the command line.
+type RebuildContext struct {
+	Terminal      string
+	Hostname      string
+	Builder       string
+	OverrideCount int
+	// Force is apply's --force (always false for build).
+	Force bool
+}
+
+// RecordRebuildContext sets the rebuild-context attributes on the span in ctx
+// (the pn.repo span). A no-op without a recording span.
+func RecordRebuildContext(ctx context.Context, rc RebuildContext) {
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String(AttrTerminal, rc.Terminal),
+		attribute.String(AttrHostname, rc.Hostname),
+		attribute.String(AttrBuilder, rc.Builder),
+		attribute.Int(AttrOverrideCount, rc.OverrideCount),
+		attribute.Bool(AttrApplyForce, rc.Force),
+	)
+}
+
+// RecordApplyDecision sets pn.apply.rebuild and pn.apply.rebuild_reason on the
+// span in ctx: apply's skip-gate verdict, or for build the read-only "apply
+// would" verdict. reason is one of forced, dirty, head_changed, no_record or
+// unchanged (rebuild is false only for unchanged), so a skipped apply (~1 s) is
+// distinguishable from a real rebuild.
+func RecordApplyDecision(ctx context.Context, rebuild bool, reason string) {
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.Bool(AttrApplyRebuild, rebuild),
+		attribute.String(AttrApplyRebuildReason, reason),
+	)
+}
+
+// RecordExecSubcommand sets pn.exec.subcommand on the span in ctx (the pn.exec
+// span); sub comes from the closed allowlist exec.ExecSubcommand.
+func RecordExecSubcommand(ctx context.Context, sub string) {
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String(AttrExecSubcommand, sub))
+}
+
+// RecordExecWrap sets pn.exec.wrapped on the span in ctx (the pn.exec span of a
+// call that asked to be wrapped) and, when it was not wrapped, the reason.
+func RecordExecWrap(ctx context.Context, wrapped bool, skipReason string) {
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attribute.Bool(AttrExecWrapped, wrapped))
+	if !wrapped && skipReason != "" {
+		span.SetAttributes(attribute.String(AttrExecWrapSkipReason, skipReason))
+	}
+}
+
 // Enabled reports whether telemetry is exporting.
 func (t *Telemetry) Enabled() bool { return t != nil && t.enabled }
 
@@ -299,7 +382,7 @@ func (v *VerbSpan) End(exitCode int, err error) {
 		v.span.SetAttributes(attribute.Int(AttrExitCode, exitCode))
 		if exitCode != 0 {
 			status = StatusError
-			setError(v.span, err)
+			setExitError(v.span, exitCode, err)
 		}
 		v.span.End()
 		v.t.commandDuration.Record(context.Background(), time.Since(v.start).Seconds(),
@@ -336,9 +419,32 @@ func StartExec(ctx context.Context, name string) (context.Context, func(exitCode
 	return ctx, func(exitCode int, err error) {
 		if err != nil || exitCode != 0 {
 			span.SetAttributes(attribute.Int(AttrExitCode, exitCode))
-			setError(span, err)
+			setExitError(span, exitCode, err)
 		} else {
 			span.SetAttributes(attribute.Int(AttrExitCode, 0))
+		}
+		span.End()
+	}
+}
+
+// StartHook starts a pn.hook span for one pre or post hook event of a pn
+// command (when is "pre" or "post"; name is the command, e.g. "apply"), a child
+// of the current span. The returned func ends it with the hook's exit status
+// (process.exit.code; 1 when err is non-nil and exitCode is 0) and error, and
+// MUST be called exactly once. Hook time otherwise hides in the pn.verb
+// duration, outside every pn.repo span.
+func StartHook(ctx context.Context, when, name string) (context.Context, func(exitCode int, err error)) {
+	ctx, span := From(ctx).tracer.Start(ctx, SpanHook, trace.WithAttributes(
+		attribute.String(AttrHookWhen, when),
+		attribute.String(AttrHookName, name),
+	))
+	return ctx, func(exitCode int, err error) {
+		if err != nil && exitCode == 0 {
+			exitCode = 1
+		}
+		span.SetAttributes(attribute.Int(AttrExitCode, exitCode))
+		if err != nil || exitCode != 0 {
+			setExitError(span, exitCode, err)
 		}
 		span.End()
 	}
@@ -359,17 +465,65 @@ func RecordToolNotFound(ctx context.Context, name string, exitCode int, err erro
 	span.End()
 }
 
+// signaler is implemented by errors that know the signal that killed the child
+// (exec.CommandError, whose os/exec exit status is -1 for a signal death).
+type signaler interface{ ExitSignal() string }
+
+// signalFor names the signal behind a failed run, or "" when it was not one: the
+// 128+N shell convention for SIGINT (130) and SIGTERM (143), and a -1 exit
+// status (os/exec's status for a child killed by a signal), named by the error
+// when it knows ("unknown" otherwise).
+func signalFor(exitCode int, err error) string {
+	switch exitCode {
+	case 130:
+		return "SIGINT"
+	case 143:
+		return "SIGTERM"
+	case -1:
+		var sg signaler
+		if errors.As(err, &sg) && sg.ExitSignal() != "" {
+			return sg.ExitSignal()
+		}
+		return "unknown"
+	}
+	return ""
+}
+
+// setExitError marks span as failed like setError, and for a run that ended on
+// a signal (signalFor) reports error.type=signal and process.signal instead of
+// the Go error type.
+func setExitError(span trace.Span, exitCode int, err error) {
+	sig := signalFor(exitCode, err)
+	if sig == "" {
+		setError(span, err)
+		return
+	}
+	span.SetAttributes(
+		attribute.String(AttrErrorType, ErrorTypeSignal),
+		attribute.String(AttrProcessSignal, sig),
+	)
+	span.SetStatus(codes.Error, errDesc(err, "terminated by "+sig))
+}
+
 // setError marks span as failed with an error.type attribute.
 func setError(span trace.Span, err error) {
 	errType := "exit_status"
-	desc := "non-zero exit"
 	if err != nil {
 		errType = fmt.Sprintf("%T", err)
-		desc = err.Error()
-		if len(desc) > 256 {
-			desc = desc[:256]
-		}
 	}
 	span.SetAttributes(attribute.String(AttrErrorType, errType))
-	span.SetStatus(codes.Error, desc)
+	span.SetStatus(codes.Error, errDesc(err, "non-zero exit"))
+}
+
+// errDesc is the span status description: err's message capped at 256 bytes, or
+// fallback for a nil err.
+func errDesc(err error, fallback string) string {
+	if err == nil {
+		return fallback
+	}
+	desc := err.Error()
+	if len(desc) > 256 {
+		desc = desc[:256]
+	}
+	return desc
 }

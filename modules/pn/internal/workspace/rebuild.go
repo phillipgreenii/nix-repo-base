@@ -245,6 +245,14 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 		cmdArgs:           cmdArgs,
 	}
 
+	telemetry.RecordRebuildContext(ctx, telemetry.RebuildContext{
+		Terminal:      terminal,
+		Hostname:      ws.hostname(),
+		Builder:       builder,
+		OverrideCount: len(resolvedOverrides),
+		Force:         opts.Force,
+	})
+
 	step(stepDryRunGate)
 	if opts.ShowNixCommandsOnly {
 		fmt.Fprintln(out, strings.Join(append(append([]string{}, cmdArgs...), plan.overrideArgs...), " "))

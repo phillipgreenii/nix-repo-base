@@ -182,6 +182,37 @@ It is validated when the config is parsed (a negative or non-integer value is an
 and survives pn's own rewrites of the file. It only controls the warning: the metric and span attributes
 are always recorded.
 
+## Rebuild, hook and exec span attributes
+
+What a trace answers beyond "how long" (bead pg2-sdbhh4.13). The same table is in the
+`pg-nix-log-wrapped` skill of the `pn-workspace-rules` plugin.
+
+| Span      | Attribute                      | Values and meaning                                                                                                                                                                                                                                                                                                 |
+| --------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pn.repo` | `pn.terminal`                  | The terminal repo key the verb builds or applies.                                                                                                                                                                                                                                                                  |
+| `pn.repo` | `pn.hostname`                  | The `{hostname}` the command template used.                                                                                                                                                                                                                                                                        |
+| `pn.repo` | `pn.builder`                   | The `{builder}` (activation tool) the template used, e.g. `darwin-rebuild`.                                                                                                                                                                                                                                        |
+| `pn.repo` | `pn.override.count`            | How many `--override-input` pairs pn passed.                                                                                                                                                                                                                                                                       |
+| `pn.repo` | `pn.apply.force`               | `true` only for `apply --force` (always `false` for build).                                                                                                                                                                                                                                                        |
+| `pn.repo` | `pn.apply.rebuild`             | Apply's skip-gate verdict: `false` for a skipped apply (about 1 s), `true` for a real rebuild. For `build` it is the read-only "apply would" verdict. Absent when the gate itself failed.                                                                                                                          |
+| `pn.repo` | `pn.apply.rebuild_reason`      | Why: `forced`, `dirty`, `head_changed`, `no_record` or `unchanged`.                                                                                                                                                                                                                                                |
+| `pn.repo` | `pn.plan.build`                | Derivations nix planned to build (bead pg2-sdbhh4.10; see the build-plan section).                                                                                                                                                                                                                                 |
+| `pn.repo` | `pn.plan.fetch`                | Paths nix planned to fetch (same bead).                                                                                                                                                                                                                                                                            |
+| `pn.hook` | `pn.hook.when`                 | `pre` or `post`. One `pn.hook` span per fired hook event, a child of `pn.verb` (outside every `pn.repo`), so hook time is no longer hidden in the verb duration. An event with no matching hook has no span.                                                                                                       |
+| `pn.hook` | `pn.hook.name`                 | The pn command the event belongs to (`apply`, `rebase`, ...), not the hook command line.                                                                                                                                                                                                                           |
+| `pn.hook` | `process.exit.code`            | The failing hook command's exit status (1 when it has none), 0 on success. A post-hook failure is warn-only for the command but still marks the span Error.                                                                                                                                                        |
+| `pn.exec` | `pn.exec.subcommand`           | Closed allowlist, `other` otherwise: `darwin-rebuild build\|switch\|activate\|check`, `nixos-rebuild build\|switch\|test\|boot`, `nix-env`, `nix-store`, `nix build\|eval\|fmt\|run\|path-info\|flake check\|flake update\|flake lock\|flake metadata\|store gc`. Tells `sudo darwin-rebuild switch` from `build`. |
+| `pn.exec` | `pn.exec.wrapped`              | Set on a call that asked to run under `pg-nix-log-wrapped`: `true` if it did.                                                                                                                                                                                                                                      |
+| `pn.exec` | `pn.exec.wrap_skip_reason`     | When `pn.exec.wrapped` is `false`: `telemetry_off`, `no_endpoint`, `no_wrapper_path`, `unrecognized_form`, `sudo_wrapper_not_in_store`, `wrapper_not_absolute` or `wrapper_not_executable`. A lost wrapper no longer looks like a missing nix run.                                                                 |
+| `pn.exec` | `error.type`, `process.signal` | `error.type=signal` and `process.signal` (`SIGINT`, `SIGTERM`, ...) when the command exited 130, 143 or died on a signal (exit status -1). `pn.verb` marks 130 and 143 the same way.                                                                                                                               |
+
+These are span attributes only. `pn.command.duration` keeps its `pn.verb` and `status` dimensions
+and gains none of them (cardinality). The `pn.exec.subcommand` normalizer looks through a leading
+`sudo`, then `env` with `-i` and `NAME=VALUE` tokens, and takes the basename of an absolute `argv[0]`
+(so `sudo env -i HOME=... nix-env ...` and `sudo <out>/sw/bin/darwin-rebuild activate` are named
+correctly); flag values are skipped with the same table the nix deny-list uses. None of this changes
+argv: the attributes are observations only.
+
 ## pn workspace apply: the apply log
 
 Every `pn workspace apply` (and the apply step of `upgrade`) that actually REBUILDS keeps a copy of

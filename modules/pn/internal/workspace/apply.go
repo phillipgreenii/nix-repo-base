@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 )
 
 // ApplyOptions configures Apply.
@@ -64,6 +65,7 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	if err != nil {
 		return err
 	}
+	telemetry.RecordApplyDecision(ctx, reason.rebuild(), string(reason))
 	if reason == reasonUnchanged {
 		fmt.Fprintln(out, "Skipping rebuild: all workspace repos clean and unchanged since last apply")
 		return nil

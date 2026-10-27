@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
@@ -87,6 +88,9 @@ func (buildVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 // build. force is never set: an operator's `apply --force` is not knowable here.
 func (ws *Workspace) reportApplyDecision(ctx context.Context, out io.Writer, overridePaths map[string]string) {
 	reason, err := ws.needsRebuild(ctx, ws.allRepoDirs(overridePaths), false)
+	if err == nil {
+		telemetry.RecordApplyDecision(ctx, reason.rebuild(), string(reason))
+	}
 	fmt.Fprintln(out, applyDecisionLine(reason, err))
 }
 
