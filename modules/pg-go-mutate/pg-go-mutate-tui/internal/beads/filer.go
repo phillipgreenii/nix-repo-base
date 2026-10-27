@@ -77,6 +77,49 @@ func (f *Filer) OnRecorded(file string) {
 		}
 	}
 	sort.Strings(dirs[1:])
+	f.fileDirs(dirs)
+}
+
+// Reconcile is the startup pass: it files the triage bead for every package
+// that the ledger already shows complete (every non-test .go file recorded, all
+// at one package hash) but that has no triage-filed.jsonl marker. It exists
+// because OnRecorded only fires when a file is recorded, and a package analysed
+// in an earlier session whose filing failed (bd was down) is never re-analysed,
+// so nothing else would retry it.
+//
+// It reads the ledger and files through fileIfComplete, the same path OnRecorded
+// uses (same body, labels and dedupe marker), so a package with a marker, with a
+// file lacking a status, or with mixed package hashes files nothing. It never
+// runs pg-go-mutate and never re-analyses. A ledger entry whose directory no
+// longer exists is skipped quietly. A failure is logged and kept for retry on
+// the next OnRecorded, exactly as there; it never reaches the caller.
+func (f *Filer) Reconcile() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	records, err := f.Ledger.Replay()
+	if err != nil {
+		f.logger().Error("could not read the ledger to reconcile triage beads", "error", err.Error())
+		return
+	}
+	seen := map[string]struct{}{}
+	for file := range records {
+		dir := filepath.Dir(file)
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		seen[dir] = struct{}{}
+	}
+	dirs := make([]string, 0, len(seen))
+	for d := range seen {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	f.fileDirs(dirs)
+}
+
+// fileDirs runs fileIfComplete for each dir, recording a failed dir in pending
+// and clearing a succeeded one. The caller holds f.mu.
+func (f *Filer) fileDirs(dirs []string) {
 	for _, dir := range dirs {
 		if err := f.fileIfComplete(dir); err != nil {
 			if f.pending == nil {

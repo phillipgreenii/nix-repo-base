@@ -50,6 +50,7 @@ type app struct {
 	q             *queue.Queue
 	ledger        *ledger.Ledger
 	pool          *worker.Pool
+	filer         *beads.Filer
 	metrics       *metrics.Registry
 	root          string
 	concurrency   int
@@ -179,6 +180,7 @@ func newApp(opts appOptions) (*app, error) {
 		q:             q,
 		ledger:        l,
 		pool:          pool,
+		filer:         filer,
 		metrics:       m,
 		root:          opts.Root,
 		concurrency:   concurrency,
@@ -428,6 +430,11 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	// Retry the triage bead of any package a previous session fully analysed
+	// but could not file (bd down): nothing re-analyses such a package, so
+	// only this startup pass files it. It reads the ledger only; it never runs
+	// pg-go-mutate. In its own goroutine so a slow bd cannot delay the TUI.
+	go a.filer.Reconcile()
 	go a.refillLoop(ctx, *root)
 	go func() {
 		a.pool.Run(ctx, a.concurrency)

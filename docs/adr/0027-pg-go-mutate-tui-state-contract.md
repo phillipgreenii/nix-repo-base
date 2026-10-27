@@ -120,7 +120,12 @@ it closes the review bead with a reason that lists those beads, or says why none
 bead for a package is filed once per (module, package, package hash): a record in
 `${XDG_STATE_HOME:-$HOME/.local/state}/pg-go-mutate-tui/triage-filed.jsonl` stops a restart or a
 second worker finishing at the same moment from filing a second, and a filing that fails (for
-example, `bd` is down) is retried on the next recorded file, never silently dropped.
+example, `bd` is down) is retried on the next recorded file, never silently dropped. A package
+analysed in an earlier session never produces a next recorded file, so at startup the sweep MUST
+also scan the ledger for packages whose files all have a recorded status at one package hash but
+have no marker, and MUST file the missing bead through the same path (same body, labels and
+marker); it MUST NOT file a second bead for a package with a marker, MUST NOT run `pg-go-mutate`
+and MUST NOT re-analyse anything (`beads.Filer.Reconcile`, bead `pg2-wgyapy`).
 
 The repo label is resolved, never derived from a path: the repository's own entry in the
 `repoLabels` setting, else the label its `CLAUDE.md` states ("MUST carry the repo label"); a

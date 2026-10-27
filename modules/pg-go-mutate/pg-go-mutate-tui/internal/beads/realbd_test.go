@@ -23,6 +23,7 @@ package beads
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -284,6 +285,114 @@ func TestRealBDFilesExactlyOneP3TriageBeadWhenAPackageCompletes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// downBd is a bd that is unreachable: every Create fails.
+type downBd struct{}
+
+func (downBd) Create(string, string, []string, int) (string, error) {
+	return "", errors.New("bd is down")
+}
+
+// TestRealBDStartupReconcileFilesAnUnfiledCompletePackageExactlyOnce is the
+// regression guard for bead pg2-wgyapy: a package fully analysed in an earlier
+// session whose filing failed must get its triage bead at the next startup,
+// through the same Filer path, without running or re-analysing anything. Each
+// Filer below is a fresh process: same ledger, same triage-filed.jsonl, new
+// in-memory state.
+func TestRealBDStartupReconcileFilesAnUnfiledCompletePackageExactlyOnce(t *testing.T) {
+	r := newRealBD(t)
+	writeFile(t, filepath.Join(r.repo, "CLAUDE.md"),
+		"# Rules\n\nEvery bead filed against this repo MUST carry the repo label `base`.\n")
+
+	l := ledger.New(filepath.Join(t.TempDir(), "ledger.jsonl"))
+	filedPath := filepath.Join(t.TempDir(), "triage-filed.jsonl")
+	appendRec := func(file, hash, reportPath string) {
+		t.Helper()
+		if err := l.Append(ledger.Record{FilePath: file, PackageHash: hash, Status: "done", ReportPath: reportPath}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// complete: both files recorded at one hash, no marker.
+	cA, cB, cRA, cRB := makePackage(t, r.repo, "internal/complete", 2)
+	appendRec(cA, "h1", cRA)
+	appendRec(cB, "h1", cRB)
+	// marked: complete, but a marker for (module, package, hash) already exists.
+	mA, mB, mRA, mRB := makePackage(t, r.repo, "internal/marked", 1)
+	appendRec(mA, "h1", mRA)
+	appendRec(mB, "h1", mRB)
+	marker, err := json.Marshal(filedRecord{Module: "modules/gate", PkgPath: "internal/marked", PackageHash: "h1", BeadID: "tt-earlier", Timestamp: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filedPath, string(marker)+"\n")
+	// partial: only one of its two files has a recorded status.
+	pA, _, pRA, _ := makePackage(t, r.repo, "internal/partial", 1)
+	appendRec(pA, "h1", pRA)
+	// mixed: both files recorded, at different package hashes.
+	xA, xB, xRA, xRB := makePackage(t, r.repo, "internal/mixed", 1)
+	appendRec(xA, "h1", xRA)
+	appendRec(xB, "h2", xRB)
+	// vanished: a ledger entry whose directory no longer exists.
+	appendRec(filepath.Join(r.repo, "modules", "gate", "internal", "gone", "g.go"), "h1", "")
+
+	newFiler := func(client func(string) BdClient) *Filer {
+		return &Filer{Ledger: l, NewClient: client, FiledPath: filedPath}
+	}
+	realClient := func(root string) BdClient { return &CLIClient{Dir: root, Env: r.env, Actor: "pg-go-mutate-tui-test"} }
+	titles := func() []string {
+		var out []string
+		for _, b := range r.triageBeads() {
+			out = append(out, b.Title)
+		}
+		return out
+	}
+
+	// Startup 1: bd is down. Nothing is filed and no marker is written.
+	newFiler(func(string) BdClient { return downBd{} }).Reconcile()
+	if got := titles(); len(got) != 0 {
+		t.Fatalf("beads filed while bd was down: %v", got)
+	}
+
+	// Startup 2: bd is back. Exactly the complete, unmarked package is filed.
+	newFiler(realClient).Reconcile()
+	got := r.triageBeads()
+	if len(got) != 1 || got[0].Title != "go-test-gaps triage: internal/complete" {
+		t.Fatalf("want exactly the complete package filed, got %v", titles())
+	}
+	bead := got[0]
+	if bead.Priority != 3 || bead.IssueType != "task" || bead.Status != "open" {
+		t.Errorf("priority/type/status = %d/%s/%s, want 3/task/open", bead.Priority, bead.IssueType, bead.Status)
+	}
+	if len(bead.Labels) != 2 || !contains(bead.Labels, "go-test-gaps") || !contains(bead.Labels, "base") {
+		t.Errorf("labels = %v, want exactly go-test-gaps and base", bead.Labels)
+	}
+	for _, want := range []string{"`internal/complete`", "`modules/gate`", cRA, cRB, HowToWorkThisBead} {
+		if !strings.Contains(bead.Description, want) {
+			t.Errorf("stored body lacks %q", want)
+		}
+	}
+
+	// Startup 3 and 4: the dedupe marker now exists, so nothing more is filed.
+	newFiler(realClient).Reconcile()
+	newFiler(realClient).Reconcile()
+	if got := titles(); len(got) != 1 {
+		t.Fatalf("a later startup filed again: %v", got)
+	}
+
+	// The marker file now names the filed package, and the pre-existing marker
+	// for the marked package is untouched.
+	raw, err := os.ReadFile(filedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), "\n"); n != 2 {
+		t.Errorf("triage-filed.jsonl has %d lines, want 2:\n%s", n, raw)
+	}
+	if !strings.Contains(string(raw), `"pkg_path":"internal/complete"`) || !strings.Contains(string(raw), bead.ID) {
+		t.Errorf("no marker recording %s for internal/complete:\n%s", bead.ID, raw)
+	}
 }
 
 func contains(ss []string, s string) bool {

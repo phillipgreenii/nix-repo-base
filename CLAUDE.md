@@ -326,7 +326,9 @@ open epic never leaves `bd ready`. The bead's body names the module, the package
 command, carries the worklist rows (or, over bd's 64 KB cap, the per-file report paths) and the
 `go-test-gaps` skill's "How to work this bead" block verbatim, and never a survivor/kill count, a
 percentage or a score (ADR 0027 decision 5; design §10; `internal/beads`: `Filer`,
-`FileTriageBead`). A failed filing is logged and retried on the next recorded file. Its own `/metrics`
+`FileTriageBead`). A failed filing is logged and retried on the next recorded file, and at startup the sweep files the
+bead of any ledger-complete package that has no `triage-filed.jsonl` marker (a ledger read only: it
+never runs `pg-go-mutate` or re-analyses). Its own `/metrics`
 endpoint (Prometheus, `127.0.0.1:9464`) and JSONL log likewise expose operational counters only,
 never a survivor/kill count. `pg-go-mutate` and `bd` MUST NOT be added to CI, a pre-commit
 hook, or any `checks.*` derivation that performs a mutation run — a sweep costs hours and gates
