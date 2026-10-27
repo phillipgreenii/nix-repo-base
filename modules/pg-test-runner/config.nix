@@ -114,6 +114,15 @@
   # entries above while a genuinely hung suite is still killed. (900 by the
   # df-survey/pn/pg-router precedent; the bead left the value operator-chosen,
   # so it is reversible.)
+  #
+  # packages/pg-router-handlers (phillipgreenii-nix-agent-support, bead
+  # pg2-l7he8o; cap analysis pg2-wclb73): its `go test -race ./...` suite took
+  # 395s at load average 45-75 with every package printing ok, and the 300s
+  # default killed two pre-land runs. The tests are NOT skipped or weakened;
+  # 900s keeps the same ~2x+ margin over the loaded run as the entries above
+  # while a genuinely hung suite is still killed. A timeout still reports as a
+  # failure (exit 10), never as a pass. (900 by the df-survey/pn/pg-router
+  # precedent; reversible.)
   projectTimeouts = {
     "packages/claude-extended-tool-approver" = 900;
     "modules/daily-focus/df-survey" = 900;
@@ -121,6 +130,7 @@
     "packages/pg-desk" = 900;
     "packages/pg-router" = 900;
     "packages/pg-connector" = 900;
+    "packages/pg-router-handlers" = 900;
   };
   # Per-project extra test inputs (pg2-41fzsf): project path suffix -> globs,
   # relative to the project root, of files that make --files mode (the commit

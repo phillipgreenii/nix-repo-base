@@ -995,3 +995,25 @@ _embed_source() {
   jq -e '.languages[] | select(.name == "go") | .inputs | (.names | index("*.go")) != null and (.names | index("go.mod")) != null and (.names | index("go.sum")) != null and (.dirs | index("testdata")) != null and .goEmbed == true' <<<"$json"
   jq -e '.projectExtraPaths == {}' <<<"$json"
 }
+
+@test "the shipped projectTimeouts caps packages/pg-router-handlers at 900s and leaves other projects at the 300s default" {
+  # Pins bead pg2-l7he8o: resolves through the real ptr_timeout_for against the
+  # SHIPPED config.nix, so dropping the entry (or lowering it) fails here.
+  local cfg="$BATS_TEST_DIRNAME/../../config.nix" json
+  [ -f "$cfg" ] || skip "config.nix not beside the sources (nix sandbox layout)"
+  command -v nix-instantiate >/dev/null 2>&1 || skip "nix-instantiate unavailable"
+  json="$(nix-instantiate --eval --strict --json "$cfg")"
+  [ "$(jq -r '.timeoutSeconds' <<<"$json")" = "300" ]
+  run bash -c '
+    source "$1"
+    TIMEOUT_SECONDS="$(jq -r .timeoutSeconds <<<"$2")"
+    PROJECT_TIMEOUTS_JSON="$(jq -c .projectTimeouts <<<"$2")"
+    ptr_timeout_for /r/packages/pg-router-handlers
+    ptr_timeout_for /r/packages/pg-router
+    ptr_timeout_for /r/packages/no-such-project
+  ' _ "$SCRIPTS_DIR/pg-test-runner.bash" "$json"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "900" ]
+  [ "${lines[1]}" = "900" ]
+  [ "${lines[2]}" = "300" ]
+}
