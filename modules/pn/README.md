@@ -97,7 +97,7 @@ would hit. Both verbs therefore run ONE shared prelude (`Workspace.rebuild`, a T
 `internal/workspace/rebuild.go`), in this order: require a terminal, open the `pn.repo` span, resolve
 the `--override-input` set once, check follows, substitute the command template (one shared
 hostname resolver for `{hostname}`; an unresolvable hostname is an error when the template uses
-it), the dry-run exit, tool resolution (below), the workspace trust gate, the workspace-id uniqueness check, and the nix
+it), the dry-run exit, tool resolution (below), the workspace trust gate, the single-flight lock (below), the workspace-id uniqueness check, and the nix
 daemon health check (`nix eval --expr true`). A parity contract test
 (`rebuild_parity_test.go`) records the prelude step names for both verbs and fails if they diverge.
 
@@ -113,6 +113,39 @@ After the prelude the verbs differ, deliberately:
 - **apply** runs the skip gate for real (skipping when nothing changed), opens the apply log, captures
   each repo's HEAD, runs the switch command, diffs the system profile with nvd, restarts a stale
   fsmonitor daemon, and records the applied state.
+
+### Single-flight lock: two runs cannot overlap
+
+On 2026-10-26 an apply and a build ran at the same time with the same 423-derivation plan, doubling
+the work on the same build slots. The prelude therefore takes `flock(2)` locks (the `acquire_lock`
+step, after the trust gate and before any probe or build; `internal/workspace/rebuildlock.go`)
+under `$XDG_STATE_HOME/pn/locks/` (fallback `~/.local/state/pn/locks/`). The kernel drops a flock when
+pn dies, so a killed run never leaves a stale lock and there is nothing to clean up. The holder writes
+one JSON object into the file (`pid`, `verb`, `root`, `terminal`, `started`). Two keys:
+
+| Key   | File                                       | Scope                              | Who holds it                                                                                             |
+| ----- | ------------------------------------------ | ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| apply | `apply-<terminal>-<hostname>.lock`         | host-wide, from ANY workspace root | `apply`, exclusively; `build` only probes it (fails while an apply holds it)                             |
+| build | `build-<sha256 of root and terminal>.lock` | one workspace root and terminal    | `build`, exclusively; `apply` ALSO takes its own root's build key for its whole run, not for other roots |
+
+So an apply from any root blocks a second apply, a build in the same root blocks an apply in that root
+(and the reverse), two builds in one directory (which would rewrite the same `./result`) conflict, and
+a build in a workforest set fails while the canonical apply runs, while builds in different sets do
+not conflict. An apply does not wait for builds in other roots. The apply's build key is defense in
+depth (it de-duplicates identical plans); the real pin of `./result` is the private per-run directory
+(pg2-sdbhh4.9).
+
+On contention the run fails fast with exit status **75** (sysexits `EX_TEMPFAIL`; distinct from 1,
+2, and 69) and a message naming the holder (pid, verb, root, start time). Pass `--wait=<duration>`
+(for example `--wait=5m`) to block up to that long instead; a bare `--wait` waits indefinitely. The
+value MUST be written with `=`: `--wait` takes an optional value, so `--wait 5m` is NOT parsed as the
+value (pn rejects the stray `5m` argument rather than waiting forever). A waiting run holds nothing
+while it polls, so a waiting build and a waiting apply in one root cannot deadlock. `--show-nix-commands-only`
+takes no lock.
+
+The lock is held until the build or apply returns and is NOT held across post-hooks (the CLI runs
+them afterwards). `pn workspace flake-check` is NOT covered by this lock; its concurrency is
+tracked separately (pg2-sdbhh4.16).
 
 ### Finding darwin-rebuild when PATH lacks it
 

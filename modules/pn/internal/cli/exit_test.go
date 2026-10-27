@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/workspace"
 )
 
 func TestExitCode(t *testing.T) {
@@ -56,5 +57,23 @@ func TestExitCode_ToolNotFoundIsDistinct(t *testing.T) {
 	}
 	if got := ExitCode(fmt.Errorf("build: %w", err)); got != exec.ToolNotFoundExitCode {
 		t.Fatalf("wrapped: want %d, got %d", exec.ToolNotFoundExitCode, got)
+	}
+}
+
+// TestExitCode_LockBusyIsDistinct: a build/apply refused by the single-flight
+// lock exits with its own status (bead pg2-sdbhh4.11), also when wrapped, and
+// that status collides with none of pn's other fixed statuses.
+func TestExitCode_LockBusyIsDistinct(t *testing.T) {
+	err := &workspace.LockBusyError{Key: "apply", Path: "/x/apply-leaf-h.lock"}
+	if got := ExitCode(err); got != workspace.LockBusyExitCode {
+		t.Fatalf("want %d, got %d", workspace.LockBusyExitCode, got)
+	}
+	if got := ExitCode(fmt.Errorf("apply: %w", err)); got != workspace.LockBusyExitCode {
+		t.Fatalf("wrapped: want %d, got %d", workspace.LockBusyExitCode, got)
+	}
+	for _, other := range []int{0, 1, 2, exec.ToolNotFoundExitCode, 126, 127, 130, 143} {
+		if workspace.LockBusyExitCode == other {
+			t.Errorf("LockBusyExitCode collides with %d", other)
+		}
 	}
 }

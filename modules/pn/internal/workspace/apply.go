@@ -8,6 +8,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
@@ -23,6 +24,9 @@ type ApplyOptions struct {
 	// Builder overrides the OS-detected {builder} value (activation tool).
 	// Empty falls through to defaultBuilder().
 	Builder string
+	// Wait is how long to wait for a contended single-flight lock; 0 fails fast,
+	// WaitForever waits indefinitely (see rebuildlock.go).
+	Wait time.Duration
 }
 
 // Apply activates the terminal flake, injecting --override-input for
@@ -41,6 +45,7 @@ func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions
 		ShowNixCommandsOnly: opts.ShowNixCommandsOnly,
 		Force:               opts.Force,
 		Builder:             opts.Builder,
+		Wait:                opts.Wait,
 	})
 }
 

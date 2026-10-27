@@ -24,6 +24,7 @@ var wantPrelude = []string{
 	stepDryRunGate,
 	stepResolveTool,
 	stepTrustGate,
+	stepAcquireLock,
 	stepCheckWsidUnique,
 	stepCheckNixDaemon,
 }

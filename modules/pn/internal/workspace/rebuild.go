@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
@@ -32,6 +33,7 @@ const (
 	stepDryRunGate         = "dry_run_gate"
 	stepResolveTool        = "resolve_tool"
 	stepTrustGate          = "trust_gate"
+	stepAcquireLock        = "acquire_lock"
 	stepCheckWsidUnique    = "check_wsid_unique"
 	stepCheckNixDaemon     = "check_nix_daemon"
 )
@@ -116,6 +118,9 @@ type rebuildOptions struct {
 	ShowNixCommandsOnly bool
 	Force               bool // apply only: bypass the skip gate
 	Builder             string
+	// Wait is how long to wait for a contended single-flight lock (rebuildlock.go):
+	// 0 fails fast, WaitForever waits indefinitely.
+	Wait time.Duration
 }
 
 // rebuildPlan is everything the shared prelude resolves, handed to the verb's run.
@@ -192,7 +197,8 @@ func (ws *Workspace) runPlanned(ctx context.Context, out io.Writer, verb string,
 //
 // Prelude order (identical for both verbs): requireTerminal, pn.repo span,
 // resolve overrides once, checkFollows, template substitution (shared hostname
-// resolver), the dry-run exit, tool resolution, the trust gate, checkWsidUnique, checkNixDaemon.
+// resolver), the dry-run exit, tool resolution, the trust gate, the single-flight
+// lock (rebuildlock.go), checkWsidUnique, checkNixDaemon.
 func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, opts rebuildOptions) (err error) {
 	verb := v.name()
 	step := func(s string) { ws.recordStep(verb, true, s) }
@@ -285,6 +291,17 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 	if err := ws.ensureExecTrusted(); err != nil {
 		return err
 	}
+
+	// Single-flight lock (bead pg2-sdbhh4.11): after the trust gate, before any
+	// probe or build, so a contended run fails (or waits) before doing work. It is
+	// held until this function returns, i.e. through the verb's whole run and never
+	// through the post-hooks, which the CLI layer runs after Build/Apply returns.
+	step(stepAcquireLock)
+	releaseLock, err := ws.acquireRebuildLock(ctx, out, verb, terminal, opts.Wait)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
 
 	step(stepCheckWsidUnique)
 	if id := ws.config.Workspace.Id; id != "" {

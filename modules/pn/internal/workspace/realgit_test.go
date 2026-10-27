@@ -72,7 +72,20 @@ func TestMain(m *testing.M) {
 	cloneGitRepo = func(ctx context.Context, url, dir string, opts gitclient.CloneOptions) (gitMutator, *gitclient.Handle, error) {
 		return gitclient.Clone(ctx, url, dir, opts, hermeticGitOptions()...)
 	}
-	os.Exit(m.Run())
+	// Build/Apply take a single-flight flock under $XDG_STATE_HOME/pn/locks
+	// (rebuildlock.go). Point every test at a private state dir by default so none
+	// ever touches the developer's real lock directory; a test that cares sets its
+	// own with t.Setenv.
+	stateDir, err := os.MkdirTemp("", "pn-workspace-test-state-")
+	if err != nil {
+		panic("realgit_test TestMain: MkdirTemp: " + err.Error())
+	}
+	if err := os.Setenv("XDG_STATE_HOME", stateDir); err != nil {
+		panic("realgit_test TestMain: os.Setenv XDG_STATE_HOME: " + err.Error())
+	}
+	code := m.Run()
+	_ = os.RemoveAll(stateDir)
+	os.Exit(code)
 }
 
 // hermeticGitOptions is gitConfigIsolationEnv's equivalent for x/gitclient

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -204,10 +205,66 @@ func workspaceInitCmd(terminal *string) *cobra.Command {
 	}
 }
 
+// waitFlag is the value of --wait on build and apply: a duration, or no value to
+// wait indefinitely (bead pg2-sdbhh4.11). The flag is optional-valued, so pflag
+// takes its value only in the --wait=5m form; `--wait 5m` would leave 5m as a
+// positional argument, which noWaitArgs rejects with a pointer to the = form.
+type waitFlag struct{ d *time.Duration }
+
+func (w waitFlag) String() string {
+	if w.d == nil {
+		return ""
+	}
+	switch {
+	case *w.d == workspace.WaitForever:
+		return "forever"
+	case *w.d == 0:
+		return ""
+	}
+	return w.d.String()
+}
+
+func (w waitFlag) Set(s string) error {
+	d, err := workspace.ParseWait(s)
+	if err != nil {
+		return err
+	}
+	*w.d = d
+	return nil
+}
+
+func (waitFlag) Type() string { return "duration" }
+
+// addWaitFlag registers --wait[=<duration>] on cmd, storing into wait.
+func addWaitFlag(cmd *cobra.Command, wait *time.Duration) {
+	cmd.Flags().Var(waitFlag{d: wait}, "wait", "if another pn build/apply holds the lock, wait up to this long instead of failing at once (write --wait=5m: the value needs '='); a bare --wait waits indefinitely")
+	cmd.Flags().Lookup("wait").NoOptDefVal = "forever"
+}
+
+// noWaitArgs rejects positional arguments. build and apply take none, and a
+// space-separated `--wait 5m` would otherwise be silently read as a bare --wait
+// (wait forever) plus an ignored argument.
+func noWaitArgs(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return fmt.Errorf("unexpected argument %q: %s takes no arguments (an optional-value flag needs '=': write --wait=5m, not --wait 5m)", args[0], cmd.CommandPath())
+}
+
 func workspaceBuildCmd(terminal *string) *cobra.Command {
-	return &cobra.Command{
+	var wait time.Duration
+	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Build all workspace repos",
+		Long: `Build the terminal flake without activating it.
+
+Single-flight lock: a build holds the lock for this workspace root and terminal,
+so two builds in one directory cannot overlap (builds in different workforest
+sets do not conflict), and it fails while any pn workspace apply for the same
+terminal and host runs, from any root. A refused run exits 75 and names the
+holder. Pass --wait=<duration> (the value needs '=', e.g. --wait=5m) to wait up
+to that long; a bare --wait waits indefinitely. flake-check is not covered.`,
+		Args: noWaitArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -216,17 +273,30 @@ func workspaceBuildCmd(terminal *string) *cobra.Command {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "build", func() error {
-				return w.Build(ctx, out, workspace.BuildOptions{Terminal: *terminal})
+				return w.Build(ctx, out, workspace.BuildOptions{Terminal: *terminal, Wait: wait})
 			})
 		},
 	}
+	addWaitFlag(cmd, &wait)
+	return cmd
 }
 
 func workspaceApplyCmd(terminal *string) *cobra.Command {
 	var force bool
+	var wait time.Duration
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Apply nix configurations across workspace repos",
+		Long: `Apply the terminal flake: build, switch and record the applied state.
+
+Single-flight lock: an apply holds the host-wide apply lock (one per terminal
+and host, taken from any workspace root) and its own root's build lock, so a
+second apply, or a build in the same root, cannot overlap it, and a build in
+another root (a workforest set) fails while it runs. A refused run exits 75 and
+names the holder. Pass --wait=<duration> (the value needs '=', e.g. --wait=5m) to
+wait up to that long; a bare --wait waits indefinitely. Post-hooks run after the
+lock is released. flake-check is not covered.`,
+		Args: noWaitArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -235,11 +305,12 @@ func workspaceApplyCmd(terminal *string) *cobra.Command {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "apply", func() error {
-				return w.Apply(ctx, out, workspace.ApplyOptions{Terminal: *terminal, Force: force})
+				return w.Apply(ctx, out, workspace.ApplyOptions{Terminal: *terminal, Force: force, Wait: wait})
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "always rebuild, bypassing the skip-when-unchanged gate")
+	addWaitFlag(cmd, &wait)
 	return cmd
 }
 

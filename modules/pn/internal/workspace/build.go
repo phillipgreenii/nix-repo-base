@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
@@ -31,6 +32,9 @@ type BuildOptions struct {
 	// Builder overrides the OS-detected {builder} value (activation tool).
 	// Empty falls through to defaultBuilder().
 	Builder string
+	// Wait is how long to wait for a contended single-flight lock; 0 fails fast,
+	// WaitForever waits indefinitely (see rebuildlock.go).
+	Wait time.Duration
 }
 
 // Build builds the terminal flake, injecting --override-input for
@@ -48,6 +52,7 @@ func (ws *Workspace) Build(ctx context.Context, out io.Writer, opts BuildOptions
 		OverridePaths:       opts.OverridePaths,
 		ShowNixCommandsOnly: opts.ShowNixCommandsOnly,
 		Builder:             opts.Builder,
+		Wait:                opts.Wait,
 	})
 }
 

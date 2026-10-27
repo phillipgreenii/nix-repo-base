@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/workspace"
 )
 
 // ExitCodeError carries a process exit code up to main(). cobra only
@@ -26,8 +27,8 @@ func (e ExitCodeError) Error() string {
 
 // ExitCode maps an error to a process exit code: 0 for nil, the carried
 // code for an ExitCodeError, the failed subprocess's own code for a
-// CommandError, exec.ToolNotFoundExitCode for a ToolNotFoundError, and 1 for
-// any other error.
+// CommandError, exec.ToolNotFoundExitCode for a ToolNotFoundError,
+// workspace.LockBusyExitCode for a LockBusyError, and 1 for any other error.
 func ExitCode(err error) int {
 	if err == nil {
 		return 0
@@ -42,6 +43,11 @@ func ExitCode(err error) int {
 	// distinct from the 127 a shell would report (bead pg2-sdbhh4.12).
 	if exec.IsToolNotFound(err) {
 		return exec.ToolNotFoundExitCode
+	}
+	// A build/apply that found the single-flight lock held (bead pg2-sdbhh4.11).
+	var lb *workspace.LockBusyError
+	if errors.As(err, &lb) {
+		return workspace.LockBusyExitCode
 	}
 	var ce *exec.CommandError
 	if errors.As(err, &ce) && ce.Result.ExitCode != 0 {
