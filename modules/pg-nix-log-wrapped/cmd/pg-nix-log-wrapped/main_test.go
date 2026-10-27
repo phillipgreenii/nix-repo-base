@@ -122,6 +122,13 @@ func newCollector(t *testing.T) *collector {
 	return c
 }
 
+// setRefuse sets how many leading /v1/traces POSTs are refused with 503.
+func (c *collector) setRefuse(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refuseTraces = n
+}
+
 func (c *collector) spansNamed(name string) []*tracepb.Span {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -269,6 +276,7 @@ func TestSigkilledChildGives137(t *testing.T) {
 // signalRun starts the wrapper around a fake that holds until signalled.
 type signalRun struct {
 	cmd             *exec.Cmd
+	col             *collector
 	signalLog, home string
 	done            chan struct{}
 	err             error
@@ -276,22 +284,27 @@ type signalRun struct {
 
 func startHeld(t *testing.T, spec fakecmd.Spec) *signalRun {
 	t.Helper()
+	return startHeldOn(t, spec, newCollector(t), "500ms")
+}
+
+// startHeldOn is startHeld against a caller-supplied collector and flush budget.
+func startHeldOn(t *testing.T, spec fakecmd.Spec, col *collector, flush string) *signalRun {
+	t.Helper()
 	fakes.Command(t, "fake-nix")
 	home := t.TempDir()
 	spec.Ready = filepath.Join(home, "ready")
 	spec.SignalLog = filepath.Join(home, "signals")
 	spec.HoldForMS = 20000
-	col := newCollector(t)
 	e := []string{
 		"PATH=" + fakes.Path() + ":/usr/bin:/bin", "HOME=" + home, "XDG_STATE_HOME=" + filepath.Join(home, "state"),
-		"OTEL_EXPORTER_OTLP_ENDPOINT=" + col.srv.URL, "PG_NIX_LOG_FLUSH_TIMEOUT=500ms", spec.Env(),
+		"OTEL_EXPORTER_OTLP_ENDPOINT=" + col.srv.URL, "PG_NIX_LOG_FLUSH_TIMEOUT=" + flush, spec.Env(),
 	}
 	cmd, _, _ := wrapperCmd(e, "fake-nix")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // own group: tests can signal "the terminal's" group
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	r := &signalRun{cmd: cmd, signalLog: spec.SignalLog, home: home, done: make(chan struct{})}
+	r := &signalRun{cmd: cmd, col: col, signalLog: spec.SignalLog, home: home, done: make(chan struct{})}
 	go func() { r.err = cmd.Wait(); close(r.done) }()
 	t.Cleanup(func() {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -397,6 +410,163 @@ func TestSIGINTToTheWrapperAloneIsNotForwarded(t *testing.T) {
 	if got := r.signals(); len(got) != 1 || got[0] != "TERM" {
 		t.Errorf("child saw %v", got)
 	}
+}
+
+// runningBuilds is the log a nix that is mid-build writes before it is killed:
+// n derivations started (activity type 105, fields [drv, machine, round,
+// rounds]) and none stopped. Nix prints no completion line for them and the
+// spans export only at the end of a run, so after a signal the abort path is
+// the only record of which derivations were running (pg2-sdbhh4.6).
+func runningBuilds(names ...string) (lines []string, want []string) {
+	for i, n := range names {
+		drv := fmt.Sprintf("/nix/store/%032d-%s.drv", i+1, n)
+		lines = append(lines, fmt.Sprintf(`{"action":"start","fields":[%q,"",1,1],"id":%d,"level":3,"parent":0,"text":"building '%s'","type":105}`, drv, 1000+i, drv))
+		want = append(want, n)
+	}
+	return lines, want
+}
+
+// assertAbortedExport checks what the collector must hold after a run that
+// was killed by signal sig (exit 128+sig) with the given builds still open:
+// one failed nix.invocation, and one aborted nix.build per open build.
+func assertAbortedExport(t *testing.T, col *collector, sig syscall.Signal, wantNames []string) {
+	t.Helper()
+	invs := col.spansNamed("nix.invocation")
+	if len(invs) != 1 {
+		t.Fatalf("collector received %d nix.invocation spans, want 1", len(invs))
+	}
+	inv, ia := invs[0], attrsOf(invs[0])
+	if inv.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR {
+		t.Errorf("nix.invocation status = %v, want error", inv.Status)
+	}
+	if got := ia["process.exit.code"].GetIntValue(); got != int64(128+int(sig)) {
+		t.Errorf("process.exit.code = %d, want %d", got, 128+int(sig))
+	}
+	if got := ia["error.type"].GetStringValue(); got != "signal" {
+		t.Errorf("nix.invocation error.type = %q, want signal", got)
+	}
+	got := map[string]int{}
+	for _, b := range col.spansNamed("nix.build") {
+		ba := attrsOf(b)
+		if v := ba["error.type"].GetStringValue(); v != "aborted" {
+			t.Errorf("nix.build %q error.type = %q, want aborted", ba["nix.drv.name"].GetStringValue(), v)
+		}
+		if b.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR {
+			t.Errorf("nix.build %q status = %v, want error", ba["nix.drv.name"].GetStringValue(), b.Status)
+		}
+		if hex.EncodeToString(b.TraceId) != hex.EncodeToString(inv.TraceId) {
+			t.Errorf("nix.build %q is not in the invocation's trace", ba["nix.drv.name"].GetStringValue())
+		}
+		got[ba["nix.drv.name"].GetStringValue()]++
+	}
+	if len(got) != len(wantNames) {
+		t.Errorf("aborted nix.build spans by drv name = %v, want exactly one each of %v", got, wantNames)
+	}
+	for _, n := range wantNames {
+		if got[n] != 1 {
+			t.Errorf("nix.build spans named %q = %d, want 1 (all: %v)", n, got[n], got)
+		}
+	}
+}
+
+// A killed run must still say which derivations were running: the wrapper
+// closes every open build as an aborted span and exports it, with the
+// invocation, inside the flush budget. SIGTERM goes to the wrapper alone (the
+// wrapper forwards it); SIGINT goes to the process GROUP, as a terminal
+// Ctrl-C does (the wrapper catches it and does not forward).
+func TestSignalledRunExportsAbortedBuildSpans(t *testing.T) {
+	cases := []struct {
+		name  string
+		sig   syscall.Signal
+		group bool
+		spec  fakecmd.Spec
+	}{
+		{"SIGTERM to the wrapper", syscall.SIGTERM, false, fakecmd.Spec{DieOnSignal: true}},
+		{"SIGINT to the process group", syscall.SIGINT, true, fakecmd.Spec{DieOnSignal: true, ExitOnINT: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines, want := runningBuilds("alpha-1.0", "beta-2.1", "gamma-3")
+			tc.spec.Lines = lines
+			col := newCollector(t)
+			r := startHeldOn(t, tc.spec, col, "500ms")
+			start := time.Now()
+			target := r.cmd.Process.Pid
+			if tc.group {
+				target = -target
+			}
+			if err := syscall.Kill(target, tc.sig); err != nil {
+				t.Fatal(err)
+			}
+			wantCode := 128 + int(tc.sig)
+			if code := r.wait(t); code != wantCode {
+				t.Errorf("exit = %d, want %d (the child died of the signal)", code, wantCode)
+			}
+			// Signal to exit covers the drain, the finish and the bounded flush
+			// (500ms budget plus the 500ms the shutdown context adds).
+			if d := time.Since(start); d > 3*time.Second {
+				t.Errorf("signal to wrapper exit took %v, want well inside the flush budget", d)
+			}
+			if got := r.signals(); len(got) != 1 || got[0] != map[syscall.Signal]string{syscall.SIGTERM: "TERM", syscall.SIGINT: "INT"}[tc.sig] {
+				t.Errorf("child saw %v, want exactly one %v", got, tc.sig)
+			}
+			assertAbortedExport(t, col, tc.sig, want)
+			r.assertLogsFinalized(t)
+		})
+	}
+}
+
+// The 503 behavior, pinned (README "Spans can be fewer than log files"): the
+// exporter retries a refusal inside the flush budget, so a refusal that ends
+// in time loses nothing even on the signal path, and a refusal that outlasts
+// the budget drops the WHOLE trace batch (the invocation and every aborted
+// build) without changing the exit status or delaying exit past the budget.
+func TestCollector503OnASignalledRun(t *testing.T) {
+	t.Run("one refusal is retried and nothing is lost", func(t *testing.T) {
+		lines, want := runningBuilds("alpha-1.0", "beta-2.1")
+		col := newCollector(t)
+		col.setRefuse(1)
+		r := startHeldOn(t, fakecmd.Spec{DieOnSignal: true, Lines: lines}, col, "2s")
+		if err := syscall.Kill(r.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		if code := r.wait(t); code != 143 {
+			t.Errorf("exit = %d, want 143", code)
+		}
+		col.mu.Lock()
+		posts := col.tracePosts
+		col.mu.Unlock()
+		if posts < 2 {
+			t.Errorf("collector saw %d /v1/traces POST(s), want >= 2 (a retry after the 503)", posts)
+		}
+		assertAbortedExport(t, col, syscall.SIGTERM, want)
+	})
+	t.Run("a refusal that outlasts the budget drops the whole trace batch", func(t *testing.T) {
+		lines, _ := runningBuilds("alpha-1.0", "beta-2.1")
+		col := newCollector(t)
+		col.setRefuse(1 << 30)
+		r := startHeldOn(t, fakecmd.Spec{DieOnSignal: true, Lines: lines}, col, "500ms")
+		start := time.Now()
+		if err := syscall.Kill(r.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		if code := r.wait(t); code != 143 {
+			t.Errorf("exit = %d, want 143 (a dropped export never changes the exit status)", code)
+		}
+		if d := time.Since(start); d > 3*time.Second {
+			t.Errorf("wrapper took %v to give up, want inside the flush budget", d)
+		}
+		col.mu.Lock()
+		posts := col.tracePosts
+		col.mu.Unlock()
+		if posts < 2 {
+			t.Errorf("collector saw %d /v1/traces POST(s), want >= 2 (retried until the budget ended)", posts)
+		}
+		if n := len(col.spansNamed("nix.invocation")) + len(col.spansNamed("nix.build")); n != 0 {
+			t.Errorf("collector holds %d spans, want 0: the refused batch is dropped whole", n)
+		}
+		r.assertLogsFinalized(t) // the retained log is then the only record
+	})
 }
 
 func TestChildDoesNotInheritIgnoredSIGINT(t *testing.T) {

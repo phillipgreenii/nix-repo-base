@@ -51,6 +51,11 @@ type Spec struct {
 	HoldForMS    int    `json:"hold_for_ms,omitempty"`
 	ExitOnSignal int    `json:"exit_on_signal,omitempty"`
 	ExitOnINT    bool   `json:"exit_on_int,omitempty"`
+	// DieOnSignal makes the fake die OF the signal (default disposition
+	// restored, then re-raised) instead of exiting with ExitOnSignal, the way
+	// a real nix killed by SIGTERM/SIGINT reports a signal death (128+n). It
+	// applies to the same signals as ExitOnSignal (SIGINT only with ExitOnINT).
+	DieOnSignal bool `json:"die_on_signal,omitempty"`
 }
 
 // Env returns the FAKE_SPEC assignment for spec.
@@ -124,6 +129,13 @@ func run(s Spec) int {
 				name := sigName(sig)
 				appendLine(s.SignalLog, name)
 				if sig == syscall.SIGTERM || sig == syscall.SIGHUP || (sig == syscall.SIGINT && s.ExitOnINT) {
+					if s.DieOnSignal {
+						if ss, ok := sig.(syscall.Signal); ok {
+							signal.Reset(ss)
+							_ = syscall.Kill(os.Getpid(), ss)
+							time.Sleep(5 * time.Second)
+						}
+					}
 					return s.ExitOnSignal
 				}
 			case <-deadline:

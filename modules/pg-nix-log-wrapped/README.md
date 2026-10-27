@@ -136,7 +136,12 @@ logs to `/var/log/pg-nix-log-wrapped`.
 - **Unmatched `--override-input` fails the run (exit 3).** See the next section; this is the only
   case where the wrapper's exit status differs from CMD's.
 - **Signals.** SIGTERM and SIGHUP are forwarded once. SIGINT is never forwarded: a terminal Ctrl-C
-  reaches CMD through the shared process group.
+  reaches CMD through the shared process group. After a signal the wrapper waits for CMD, then exports
+  as for any run: every build nix had started and not stopped becomes a `nix.build` span with
+  `error.type=aborted` and its `nix.drv.name`, and `nix.invocation` carries `process.exit.code` 128+n
+  (143 for SIGTERM, 130 for SIGINT) and `error.type=signal`, all inside the flush budget. This is the
+  only record of which derivations were running in a killed run (pinned by
+  `TestSignalledRunExportsAbortedBuildSpans`).
 - **No blocking.** Export is asynchronous with a 16384-span queue; a dead collector drops data.
 
 ## Unmatched `--override-input` guard
@@ -207,8 +212,13 @@ names the retained `.jsonl`, never the scratch file.
   (`PG_NIX_LOG_FLUSH_TIMEOUT`, 2 s). The wrapper asks the exporters for a short retry (first wait
   100 ms, total bounded by the flush budget), so one transient refusal (for example the collector's
   memory limiter answering 503) is retried inside the budget. A refusal that outlasts the budget
-  still drops the whole batch, including `nix.invocation`, and the exit code is unaffected; the
+  still drops the whole batch, including `nix.invocation` and, after a signal, every aborted
+  `nix.build` span, and the exit code is unaffected and the wrapper still exits inside the budget; the
   retained log is then the only record of the run. `PG_NIX_LOG_DEBUG=1` prints the export error.
+  What is retried: a refused (503) `/v1/traces` POST, repeatedly, from a 100 ms first wait until the
+  flush budget ends. What is dropped: the trace batch of the run, whole, once the budget ends (the
+  exporter keeps no spool and nothing is re-sent by a later run). Pinned by
+  `TestTransient503OnTracesIsRetriedInsideTheFlushBudget` and `TestCollector503OnASignalledRun`.
 
 Root-run logs in `/var/log/pg-nix-log-wrapped` (directory 0750, files 0600, owned by root) are read
 with `sudo`. Membership of the `admin` group is not enough on its own: the directory's group is
