@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,7 +21,14 @@ import (
 // work is a pipeline inside $(...) that bash never forwards a signal to. A
 // pn-initiated cancel must leave no descendant behind, and the run dir must be
 // removed. Everything else the apply runs (git, the root steps) is the fake.
+//
+// The script writes its own pid (the process group leader: the user build asks
+// for its own group) to "$pidfile.leader". A descendant is identified by being
+// alive AND in that group, never with `ps`, which the nix darwin build sandbox
+// refuses to exec ("/bin/ps: Operation not permitted", measured 2026-10-28 for
+// pg2-67p4di); kill(2) and getpgid(2) work there.
 const buildShapedScript = `pidfile="$1"; dur="$2"
+echo $$ > "$pidfile.leader"
 x=$(sh -c 'echo $$ > "$1"; exec sleep "$2"' sh "$pidfile" "$dur" | cat)
 echo "unreachable: $x"
 `
@@ -41,7 +47,7 @@ func TestAsUser_CancelDuringTheBuildLeavesNoDescendant(t *testing.T) {
 		return real.Run(ctx, "bash", []string{"-c", buildShapedScript, "bash", pidfile, dur}, opts)
 	}
 	t.Cleanup(func() { // never leave the long sleep behind, whatever the test did
-		if pid := readPid(pidfile); pid > 1 && ourSleeper(pid, dur) {
+		if pid := readPid(pidfile); pid > 1 && ourSleeper(pid, readPid(pidfile+".leader")) {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	})
@@ -50,19 +56,19 @@ func TestAsUser_CancelDuringTheBuildLeavesNoDescendant(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- e.apply(ctx, io.Discard) }()
 
-	var pid int
+	var pid, leader int
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if pid = readPid(pidfile); pid > 1 {
+		if pid, leader = readPid(pidfile), readPid(pidfile+".leader"); pid > 1 && leader > 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if pid <= 1 {
+	if pid <= 1 || leader <= 1 {
 		cancel()
 		t.Fatal("the build's long child never started")
 	}
-	if !ourSleeper(pid, dur) {
+	if !ourSleeper(pid, leader) {
 		cancel()
 		t.Fatalf("pid %d is not our sleeper", pid)
 	}
@@ -81,7 +87,7 @@ func TestAsUser_CancelDuringTheBuildLeavesNoDescendant(t *testing.T) {
 	}
 	gone := false
 	for i := 0; i < 200 && !gone; i++ {
-		gone = !ourSleeper(pid, dur)
+		gone = !ourSleeper(pid, leader)
 		if !gone {
 			time.Sleep(25 * time.Millisecond)
 		}
@@ -106,12 +112,13 @@ func readPid(path string) int {
 	return pid
 }
 
-// ourSleeper reports whether pid is alive AND is the `sleep <dur>` this test
-// started, so a recycled pid is never mistaken for, or signalled as, it.
-func ourSleeper(pid int, dur string) bool {
-	if syscall.Kill(pid, 0) != nil {
+// ourSleeper reports whether pid is alive AND a member of the process group led
+// by leader (the build script), so a recycled pid is never mistaken for, or
+// signalled as, the sleeper.
+func ourSleeper(pid, leader int) bool {
+	if pid <= 1 || leader <= 1 || syscall.Kill(pid, 0) != nil {
 		return false
 	}
-	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
-	return err == nil && strings.Contains(string(out), "sleep "+dur)
+	pgid, err := syscall.Getpgid(pid)
+	return err == nil && pgid == leader
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -24,6 +23,7 @@ import (
 // on the inherited pipe (as nix's is) or "detached" to point it at /dev/null.
 const darwinRebuildShaped = `
 pidfile="$1"; dur="$2"; mode="$3"
+echo $$ > "$pidfile.leader"
 if [ "$mode" = ignoreterm ]; then
   # the long child ignores SIGTERM (the disposition survives exec), so only
   # the SIGKILL escalation can end it
@@ -44,33 +44,54 @@ func uniqueSleepDuration() string {
 }
 
 // startedSleeper is the long-running grandchild a test started, identified by
-// the pid it wrote and the unique sleep duration on its command line.
+// the pid it wrote and the process group the test's own runner call created.
+//
+// Identity is the process GROUP, not `ps`: the runner is asked for its own
+// process group (OwnProcessGroup), so the script is that group's leader (its pid
+// is the pgid, written to "<pidfile>.leader") and the sleeper is a member. A
+// recycled pid is therefore never mistaken for, or signalled as, the sleeper
+// (it would also have to sit in that exact group). `ps` is not used because the
+// nix darwin build sandbox refuses to exec it ("/bin/ps: Operation not
+// permitted", measured 2026-10-28 for pg2-67p4di), which made every probe read
+// "not running"; kill(2) and getpgid(2) work there.
 type startedSleeper struct {
-	pid int
-	dur string
+	pid    int
+	leader int
+	dur    string
 }
 
-// isOurSleeper reports whether pid is still alive AND is the `sleep <dur>` this
-// test started (so a recycled pid is never mistaken for, or signalled as, it).
+// isOurSleeper reports whether pid is still alive AND is a member of the
+// script's process group.
 func (s startedSleeper) isOurSleeper() bool {
-	if syscall.Kill(s.pid, 0) != nil {
+	if s.pid <= 1 || s.leader <= 1 || syscall.Kill(s.pid, 0) != nil {
 		return false
 	}
-	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(s.pid)).Output()
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(out), "sleep "+s.dur)
+	pgid, err := syscall.Getpgid(s.pid)
+	return err == nil && pgid == s.leader
 }
 
-// waitForSleeper blocks until the script's long child has written its pid.
+// readPidFile returns the pid in path, or 0 when it is absent or incomplete.
+func readPidFile(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 1 {
+		return 0
+	}
+	return pid
+}
+
+// waitForSleeper blocks until the script's long child has written its pid (the
+// leader pid is written first, before the long child starts).
 func waitForSleeper(t *testing.T, pidfile, dur string) startedSleeper {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if b, err := os.ReadFile(pidfile); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 {
-				return startedSleeper{pid: pid, dur: dur}
+		if pid := readPidFile(pidfile); pid > 1 {
+			if leader := readPidFile(pidfile + ".leader"); leader > 1 {
+				return startedSleeper{pid: pid, leader: leader, dur: dur}
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -81,20 +102,13 @@ func waitForSleeper(t *testing.T, pidfile, dur string) startedSleeper {
 
 // guardSleeper registers the test's safety net: whatever happens, the one
 // process this test started is killed at cleanup, and only if it is verifiably
-// the test's own sleep.
+// in the test's own process group.
 func guardSleeper(t *testing.T, pidfile, dur string) {
 	t.Helper()
 	t.Cleanup(func() {
-		b, err := os.ReadFile(pidfile)
-		if err != nil {
-			return
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-		if err != nil || pid <= 1 {
-			return
-		}
-		if s := (startedSleeper{pid: pid, dur: dur}); s.isOurSleeper() {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+		s := startedSleeper{pid: readPidFile(pidfile), leader: readPidFile(pidfile + ".leader"), dur: dur}
+		if s.isOurSleeper() {
+			_ = syscall.Kill(s.pid, syscall.SIGKILL)
 		}
 	})
 }
@@ -163,15 +177,25 @@ func TestRealRunner_CancelReachesGrandchildInPipeline(t *testing.T) {
 // behaviour it has today; a call that asks leads a NEW group.
 func TestRealRunner_OwnProcessGroupIsOptIn(t *testing.T) {
 	r := NewRealRunnerWithKillGrace(300 * time.Millisecond)
+	// The pgid is read with getpgid(2) on the live child, not with `ps` (which
+	// the nix darwin sandbox refuses to exec): the script writes its pid, then
+	// becomes a long sleep that the test kills once it has read the pgid.
 	pgidOf := func(own bool) (pgid, pid int) {
 		t.Helper()
-		res, err := r.Run(context.Background(), "sh", []string{"-c", `echo "$(ps -o pgid= -p $$) $$"`},
-			RunOptions{OwnProcessGroup: own})
+		pidfile := filepath.Join(t.TempDir(), "pid")
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.Run(context.Background(), "sh", []string{"-c", `echo $$ > "$1.leader"; echo $$ > "$1"; exec sleep 30`, "sh", pidfile},
+				RunOptions{OwnProcessGroup: own})
+			done <- err
+		}()
+		pid = waitForSleeper(t, pidfile, "").pid
+		var err error
+		pgid, err = syscall.Getpgid(pid)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		<-done
 		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-		if n, _ := fmt.Sscanf(string(res.Stdout), "%d %d", &pgid, &pid); n != 2 {
-			t.Fatalf("unparseable output %q", res.Stdout)
+			t.Fatalf("Getpgid(%d): %v", pid, err)
 		}
 		return pgid, pid
 	}
