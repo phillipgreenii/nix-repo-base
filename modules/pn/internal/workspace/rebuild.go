@@ -368,8 +368,15 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 	}
 	defer releaseLock()
 
+	// A workforest set root carries a copy of its canonical workspace's id by
+	// construction (pn workspace workforest add copies pn-workspace.toml), so it
+	// is exempt: it must neither trip the uniqueness check against the canonical
+	// root nor register/overwrite a wsid entry (bead pg2-y683ln). The canonical
+	// root remains the single registry owner of the id; any OTHER non-set root
+	// reusing it is still refused. The step is recorded either way so the
+	// build/apply prelude parity (rebuild_parity_test.go) is unchanged.
 	step(stepCheckWsidUnique)
-	if id := ws.config.Workspace.Id; id != "" {
+	if id := ws.config.Workspace.Id; id != "" && !ws.inWorkforest() {
 		if err := checkWsidUnique(id, ws.root); err != nil {
 			return err
 		}
