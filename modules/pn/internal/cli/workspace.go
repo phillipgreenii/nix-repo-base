@@ -215,10 +215,10 @@ func (w waitFlag) String() string {
 	if w.d == nil {
 		return ""
 	}
-	switch {
-	case *w.d == workspace.WaitForever:
+	switch *w.d {
+	case workspace.WaitForever:
 		return "forever"
-	case *w.d == 0:
+	case 0:
 		return ""
 	}
 	return w.d.String()

@@ -93,7 +93,7 @@ func TestRebuild_MissingToolFailsFirst(t *testing.T) {
 			}
 			attrs := map[string]string{}
 			for _, kv := range spans[0].Attributes() {
-				attrs[string(kv.Key)] = kv.Value.Emit()
+				attrs[string(kv.Key)] = kv.Value.String()
 			}
 			if attrs["pn.exec.tool_not_found"] != "true" || attrs["process.executable.name"] != "darwin-rebuild" ||
 				attrs["process.exit.code"] != "69" {

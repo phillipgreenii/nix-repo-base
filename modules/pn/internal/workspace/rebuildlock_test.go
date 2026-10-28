@@ -220,7 +220,7 @@ func TestRebuildLock_SecondApply(t *testing.T) {
 
 			var out bytes.Buffer
 			err := runLockVerb(context.Background(), newLockWS(t, root2, nil), "apply", 0, &out)
-			wantBusy(t, err, "apply", "apply", root1)
+			_ = wantBusy(t, err, "apply", "apply", root1)
 
 			// --wait=<short> gives up and says how long it waited.
 			err = runLockVerb(context.Background(), newLockWS(t, root2, nil), "apply", 150*time.Millisecond, io.Discard)
@@ -265,7 +265,7 @@ func TestRebuildLock_BuildFailsWhileApplyHoldsApplyKey(t *testing.T) {
 	finish := startGated(t, canonical, "apply")
 
 	err := runLockVerb(context.Background(), newLockWS(t, workforest, nil), "build", 0, io.Discard)
-	wantBusy(t, err, "apply", "apply", canonical)
+	_ = wantBusy(t, err, "apply", "apply", canonical)
 
 	done := make(chan error, 1)
 	go func() {
@@ -289,7 +289,7 @@ func TestRebuildLock_Builds(t *testing.T) {
 		root := newLockRoot(t)
 		finish := startGated(t, root, "build")
 		err := runLockVerb(context.Background(), newLockWS(t, root, nil), "build", 0, io.Discard)
-		wantBusy(t, err, "build", "build", root)
+		_ = wantBusy(t, err, "build", "build", root)
 
 		done := make(chan error, 1)
 		go func() {
@@ -328,7 +328,7 @@ func TestRebuildLock_ApplyVersusBuildInSameRoot(t *testing.T) {
 	finish := startGated(t, root1, "build")
 
 	err := runLockVerb(context.Background(), newLockWS(t, root1, nil), "apply", 0, io.Discard)
-	wantBusy(t, err, "build", "build", root1)
+	_ = wantBusy(t, err, "build", "build", root1)
 
 	// The failed apply released the apply key it took first: an apply from
 	// another root is not blocked by the build and not by a leaked key.
@@ -435,10 +435,10 @@ func TestRebuildLockHelperProcess(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", os.Getenv(lockHelperStateEnv))
 	w := &Workspace{root: root, hostnameFn: func() string { return lockTestHost }}
 	if _, err := w.acquireRebuildLock(context.Background(), io.Discard, "apply", "leaf", 0); err != nil {
-		os.Stdout.WriteString("error: " + err.Error() + "\n")
+		_, _ = os.Stdout.WriteString("error: " + err.Error() + "\n")
 		os.Exit(3)
 	}
-	os.Stdout.WriteString("locked\n")
+	_, _ = os.Stdout.WriteString("locked\n")
 	_, _ = io.Copy(io.Discard, os.Stdin) // hold until the parent goes away
 	os.Exit(0)
 }
@@ -568,7 +568,8 @@ func TestRebuildLockNames(t *testing.T) {
 		t.Errorf("empty hostname: %q", applyLockName("leaf", ""))
 	}
 	r1, r2 := t.TempDir(), t.TempDir()
-	if buildLockName(r1, "leaf") != buildLockName(r1, "leaf") {
+	first, again := buildLockName(r1, "leaf"), buildLockName(r1, "leaf")
+	if first != again {
 		t.Error("build key must be stable")
 	}
 	if buildLockName(r1, "leaf") == buildLockName(r2, "leaf") {
