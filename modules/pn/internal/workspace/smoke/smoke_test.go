@@ -76,13 +76,13 @@ func getPNBin(t *testing.T) string {
 // channel (a value already present in the environment BEFORE this test
 // binary starts) — but NOT a channel where a test reintroduces one of these
 // vars into the process environment afterward (e.g. via t.Setenv); nothing
-// in *this* file's tests does that, but smoke_bare_remote.go's 19 git-exec
-// sites build their cmd.Env from a live os.Environ() read at call time, so a
-// var reintroduced after this unset would still reach them. See
-// hermeticInheritedEnv in smoke_bare_remote.go (pg2-9ctm4) for the per-call
-// defense-in-depth this gap requires — verified 2026-08-28 with a
-// t.Setenv("GIT_DIR", <decoy>) probe: pre-fix, a commit meant for the
-// intended fixture landed in the decoy repo instead.
+// in *this* file's tests does that, but buildScrubbedEnv (smoke_env.go) reads
+// a live os.Environ() at call time and hands the result to every scenario's
+// setup.sh, so it strips the same list (gitDirEnvVars) per call as
+// defense-in-depth. Every git call the Go side makes itself goes through
+// x/gitfixture or x/gitclient, whose environment is an allowlist.
+// TestSmoke_ScrubbedEnvStripsGitDirFamilyAfterTestMain proves the per-call
+// strip (pg2-9ctm4 / pg2-wsvch).
 func TestMain(m *testing.M) {
 	for _, k := range gitDirEnvVars {
 		_ = os.Unsetenv(k)

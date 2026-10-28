@@ -13,6 +13,25 @@ import (
 	"testing"
 )
 
+// gitDirEnvVars is the GIT_DIR-location family that git's own repo discovery
+// consults BEFORE -C, cmd.Dir, or an explicit path argument (pg2-kersl,
+// mechanism proven in pg2-67h4y's design field). It is the single list for this
+// package: smoke_test.go's TestMain unsets it process-wide, and buildScrubbedEnv
+// strips it from every environment it hands to a subprocess.
+//
+// The per-call strip in buildScrubbedEnv is NOT redundant with TestMain's
+// unset. TestMain only closes the channel where a variable is present BEFORE
+// the test binary starts (e.g. exported by a pre-commit hook running in a
+// linked worktree). It cannot close one reintroduced AFTER TestMain, such as by
+// t.Setenv, and buildScrubbedEnv reads a live os.Environ() at call time.
+// Every scenario's setup.sh (44 of them) inherits that environment and runs
+// bare `git init`/`git clone`, which is why the strip lives here (see
+// README.md, "Why setup.sh is exempt from the hermetic-git-fixture rule").
+var gitDirEnvVars = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES",
+	"GIT_COMMON_DIR", "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
+}
+
 // buildScrubbedEnv builds a deterministic, isolation-safe environment slice
 // for subprocess invocations. It starts from os.Environ() and overrides or
 // removes env vars that would cause non-determinism or cross-test pollution.
@@ -28,6 +47,8 @@ import (
 //   - GIT_SSH_COMMAND (BatchMode, StrictHostKeyChecking=accept-new)
 //   - GIT_AUTHOR_NAME/EMAIL, GIT_COMMITTER_NAME/EMAIL (fixed values)
 //   - PN_WORKSPACE_ROOT → wsRoot (the scenario temp dir)
+//   - the GIT_DIR family (gitDirEnvVars) is REMOVED on every call, so a variable
+//     set after TestMain (t.Setenv) still cannot reach a scenario's setup.sh or pn
 //   - OTEL_*, TRACEPARENT, TRACESTATE are REMOVED, so pn never exports telemetry
 //     or inherits a trace parent from the developer shell; with HOME pointed at a
 //     temp dir the real ~/.config/pn/telemetry.toml is never read either
@@ -90,6 +111,11 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 		"PN_SMOKE_STORE_DIR": filepath.Join(physRoot, "store"),
 	}
 
+	gitDirEnvKeys := make(map[string]bool, len(gitDirEnvVars))
+	for _, k := range gitDirEnvVars {
+		gitDirEnvKeys[k] = true
+	}
+
 	// Build a new env slice from os.Environ(), replacing overridden keys.
 	applied := make(map[string]bool, len(overrides))
 	var env []string
@@ -100,7 +126,7 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 			continue
 		}
 		key := kv[:idx]
-		if isTelemetryEnvKey(key) {
+		if isTelemetryEnvKey(key) || gitDirEnvKeys[key] {
 			continue
 		}
 		if val, ok := overrides[key]; ok {

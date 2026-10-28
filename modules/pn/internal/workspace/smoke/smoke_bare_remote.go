@@ -7,187 +7,129 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/phillipgreenii/x/gitclient"
+	"github.com/phillipgreenii/x/gitfixture"
 )
 
 // setupBareRemote initializes a bare git repo at <dir>/<name>.git seeded with
 // the given files (executable scripts get +x), and returns its file:// URL.
-// The function creates a temporary working clone, commits the files, pushes to
-// the bare repo, and cleans up the working clone.
+//
+// Both repositories come from x/gitfixture (hermetic by construction: an
+// allowlisted child environment, a fixture HOME, no system config, hooks
+// redirected to an empty directory), so no GIT_DIR-family variable in the test
+// process can reach them. The bare repository is built with Root=<dir> and
+// Name=<name>.git, which is what places it at <dir>/<name>.git; gitfixture
+// also creates its "home" and "hooks" infrastructure directories under <dir>.
+// The seed work tree lives in its own fixture root under t.TempDir(), is
+// pushed to the bare repository's file:// URL, and is removed at test end.
 func setupBareRemote(t *testing.T, dir, name string, files map[string]string) string {
 	t.Helper()
-	bareDir := filepath.Join(dir, name+".git")
-	if err := os.MkdirAll(bareDir, 0o755); err != nil {
-		t.Fatalf("setupBareRemote %s: mkdir bare: %v", name, err)
-	}
+	ctx := t.Context()
 
-	// Init bare repo.
-	if out, err := gitCmd(t, bareDir, "init", "--bare", "-b", "main"); err != nil {
-		t.Fatalf("setupBareRemote %s: git init --bare: %v\n%s", name, err, out)
-	}
-
-	// Create a temporary working clone to seed the initial commit.
-	workDir, err := os.MkdirTemp("", "pn-smoke-bare-work-*")
+	bare, err := gitfixture.NewRepo(ctx, dir, gitfixture.RepoOptions{
+		Suite: "pn-smoke-bare-remote",
+		Name:  name + ".git",
+		Bare:  true,
+	})
 	if err != nil {
-		t.Fatalf("setupBareRemote %s: create work dir: %v", name, err)
+		t.Fatalf("setupBareRemote %s: bare repo: %v", name, err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(workDir) })
+	bareURL := "file://" + bare.Dir
 
-	bareURL := fmt.Sprintf("file://%s", bareDir)
-
-	// Clone the (empty) bare repo.
-	if out, err := gitCmd(t, workDir, "clone", bareURL, workDir); err != nil {
-		// An empty bare repo clone may warn; that's okay as long as the dir exists.
-		_ = out
-	}
-	if out, err := gitCmd(t, workDir, "config", "user.email", "smoke@test.invalid"); err != nil {
-		t.Fatalf("setupBareRemote %s: git config email: %v\n%s", name, err, out)
-	}
-	if out, err := gitCmd(t, workDir, "config", "user.name", "smoke"); err != nil {
-		t.Fatalf("setupBareRemote %s: git config name: %v\n%s", name, err, out)
+	seed, err := gitfixture.NewRepo(ctx, t.TempDir(), gitfixture.RepoOptions{
+		Suite: "pn-smoke-bare-remote-seed",
+		Name:  "seed",
+	})
+	if err != nil {
+		t.Fatalf("setupBareRemote %s: seed repo: %v", name, err)
 	}
 
-	// Write and stage seed files.
+	// Write and stage seed files (executable scripts get +x).
 	for relPath, content := range files {
-		fullPath := filepath.Join(workDir, relPath)
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-			t.Fatalf("setupBareRemote %s: mkdir for %s: %v", name, relPath, err)
-		}
-		mode := os.FileMode(0o644)
-		if strings.HasSuffix(relPath, ".sh") {
-			mode = 0o755
-		}
-		if err := os.WriteFile(fullPath, []byte(content), mode); err != nil {
+		if err := seed.WriteFile(relPath, content); err != nil {
 			t.Fatalf("setupBareRemote %s: write %s: %v", name, relPath, err)
 		}
-		if out, err := gitCmd(t, workDir, "add", relPath); err != nil {
-			t.Fatalf("setupBareRemote %s: git add %s: %v\n%s", name, relPath, err, out)
+		if strings.HasSuffix(relPath, ".sh") {
+			if err := os.Chmod(filepath.Join(seed.Dir, relPath), 0o755); err != nil {
+				t.Fatalf("setupBareRemote %s: chmod %s: %v", name, relPath, err)
+			}
+		}
+		if _, err := seed.Client.Run(ctx, "add", "--", relPath); err != nil {
+			t.Fatalf("setupBareRemote %s: git add %s: %v", name, relPath, err)
 		}
 	}
 
 	// Commit and push.
-	if out, err := gitCmd(t, workDir, "commit", "-m", "init"); err != nil {
-		t.Fatalf("setupBareRemote %s: git commit: %v\n%s", name, err, out)
+	if _, err := seed.Client.Run(ctx, "commit", "-m", "init"); err != nil {
+		t.Fatalf("setupBareRemote %s: git commit: %v", name, err)
 	}
-	if out, err := gitCmd(t, workDir, "push", "-u", "origin", "main"); err != nil {
-		t.Fatalf("setupBareRemote %s: git push: %v\n%s", name, err, out)
+	if _, err := seed.Client.Run(ctx, "remote", "add", "origin", bareURL); err != nil {
+		t.Fatalf("setupBareRemote %s: git remote add: %v", name, err)
+	}
+	if _, err := seed.Client.Run(ctx, "push", "-u", "origin", "main"); err != nil {
+		t.Fatalf("setupBareRemote %s: git push: %v", name, err)
 	}
 
 	return bareURL
 }
 
-// gitDirEnvVars is the GIT_DIR-location family that git's own repo
-// discovery consults BEFORE -C, cmd.Dir, or an explicit path argument
-// (pg2-kersl, mechanism proven in pg2-67h4y's design field). It is the
-// single canonical list for this package: smoke_test.go's TestMain unsets
-// it process-wide, and hermeticInheritedEnv below strips it per-call from
-// every os.Environ()-derived cmd.Env this file builds, rather than each
-// site (or TestMain) keeping its own copy of the list. Defined here rather
-// than in smoke_test.go because this is a non-test file (go:build smoke,
-// but not _test.go) and hermeticInheritedEnv needs it at `go build` time,
-// not just `go test` time; smoke_test.go's TestMain still reads this same
-// var, since test files may reference non-test symbols in their package.
-var gitDirEnvVars = []string{
-	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES",
-	"GIT_COMMON_DIR", "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
-}
-
-// hermeticInheritedEnv returns a copy of os.Environ() with the GIT_DIR
-// family (gitDirEnvVars above) removed, for every git subprocess this file
-// spawns to build its cmd.Env from.
-//
-// TestMain's process-wide os.Unsetenv (pg2-kersl) already closes the leak
-// channel where a GIT_DIR-family var is present in the environment BEFORE
-// this test binary starts (e.g. inherited from a pre-commit hook running in
-// a linked worktree). It does NOT close a channel where such a var is
-// reintroduced into the process environment AFTER TestMain has already run
-// (e.g. t.Setenv, the idiom x/gitclient's own contract_envleak_test.go uses
-// to probe this exact defect class) -- every one of this file's 19 git-exec
-// sites builds cmd.Env from a live os.Environ() read at CALL time, so a
-// var reintroduced later would still reach them. Verified 2026-08-28
-// (pg2-9ctm4): a t.Setenv("GIT_DIR", <decoy repo's .git>) injected after
-// TestMain caused a commit meant for the intended fixture to land in the
-// decoy repo instead (the decisive signal here is `--git-dir` or an actual
-// mutation landing in the wrong place -- `rev-parse --show-toplevel` looks
-// isolated even under a real leak, per the original bug write-up, because
-// git falls back to the CURRENT DIRECTORY as the work-tree root when only
-// GIT_DIR, not GIT_WORK_TREE, is set).
-func hermeticInheritedEnv() []string {
-	blocked := make(map[string]bool, len(gitDirEnvVars))
-	for _, k := range gitDirEnvVars {
-		blocked[k] = true
-	}
-	base := os.Environ()
-	out := make([]string, 0, len(base))
-	for _, kv := range base {
-		if k, _, ok := strings.Cut(kv, "="); ok && blocked[k] {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
-
-// gitCmd runs a git command in dir and returns (combined output, error).
-func gitCmd(t *testing.T, dir string, args ...string) (string, error) {
+// gitRead runs a read-only git command in dir through x/gitclient and returns
+// its stdout. The child environment is gitclient's allowlist (PATH only, plus a
+// throwaway HOME and no system or global config), so nothing from the test
+// process's GIT_* environment can redirect it to another repository, even if a
+// test reintroduced one with t.Setenv after TestMain. Callers trim as needed.
+func gitRead(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	// Use a minimal but functional env for git setup commands (no GIT_CONFIG_GLOBAL
-	// override since we need the user config to set name/email via git config).
-	cmd.Env = append(
-		hermeticInheritedEnv(),
-		"GIT_AUTHOR_NAME=smoke",
-		"GIT_AUTHOR_EMAIL=smoke@test.invalid",
-		"GIT_COMMITTER_NAME=smoke",
-		"GIT_COMMITTER_EMAIL=smoke@test.invalid",
-		"LC_ALL=C",
+	ctx := t.Context()
+	c, err := gitclient.New(
+		ctx, dir,
+		gitclient.WithHome(t.TempDir()),
+		gitclient.WithEnv("GIT_CONFIG_NOSYSTEM", "1"),
+		gitclient.WithEnv("GIT_CONFIG_GLOBAL", "/dev/null"),
 	)
-	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	out, err := c.Run(ctx, args...)
 	return string(out), err
 }
 
 // bareRemoteHead returns the short SHA of HEAD in a bare git repo.
 func bareRemoteHead(t *testing.T, bareDir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", bareDir, "rev-parse", "HEAD")
-	cmd.Env = hermeticInheritedEnv()
-	out, err := cmd.Output()
+	out, err := gitRead(t, bareDir, "rev-parse", "HEAD")
 	if err != nil {
 		t.Errorf("bareRemoteHead %s: git rev-parse HEAD: %v", bareDir, err)
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 // workspaceHead returns the short SHA of HEAD in a workspace repo clone dir.
 func workspaceHead(t *testing.T, repoDir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
-	cmd.Env = hermeticInheritedEnv()
-	out, err := cmd.Output()
+	out, err := gitRead(t, repoDir, "rev-parse", "HEAD")
 	if err != nil {
 		t.Errorf("workspaceHead %s: git rev-parse HEAD: %v", repoDir, err)
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 // gitStashList returns the lines of git stash list in a repo dir.
 func gitStashList(t *testing.T, repoDir string) []string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repoDir, "stash", "list")
-	cmd.Env = hermeticInheritedEnv()
-	out, err := cmd.Output()
+	out, err := gitRead(t, repoDir, "stash", "list")
 	if err != nil {
 		t.Errorf("gitStashList %s: %v", repoDir, err)
 		return nil
 	}
-	trimmed := strings.TrimSpace(string(out))
+	trimmed := strings.TrimSpace(out)
 	if trimmed == "" {
 		return nil
 	}
@@ -356,14 +298,12 @@ func assertS24WorkforestAdd(t *testing.T, wsRoot string) {
 			t.Errorf("S24: set repo dir %s does not exist", repoDir)
 			continue
 		}
-		cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD")
-		cmd.Env = hermeticInheritedEnv()
-		out, err := cmd.Output()
+		out, err := gitRead(t, repoDir, "rev-parse", "--abbrev-ref", "HEAD")
 		if err != nil {
 			t.Errorf("S24: git rev-parse HEAD in %s: %v", repoDir, err)
 			continue
 		}
-		branch := strings.TrimSpace(string(out))
+		branch := strings.TrimSpace(out)
 		if branch != "feature-x" {
 			t.Errorf("S24: %s in set is on branch %q, want feature-x", repo, branch)
 		}
@@ -391,14 +331,12 @@ func assertS27WorkforestRemove(t *testing.T, wsRoot string) {
 	// 2. Branch feature-x must still exist in each canonical repo.
 	for _, repo := range []string{"producer", "consumer"} {
 		repoDir := filepath.Join(wsRoot, repo)
-		cmd := exec.Command("git", "-C", repoDir, "branch", "--list", "feature-x")
-		cmd.Env = hermeticInheritedEnv()
-		out, err := cmd.Output()
+		out, err := gitRead(t, repoDir, "branch", "--list", "feature-x")
 		if err != nil {
 			t.Errorf("S27: git branch --list feature-x in %s: %v", repoDir, err)
 			continue
 		}
-		if strings.TrimSpace(string(out)) == "" {
+		if strings.TrimSpace(out) == "" {
 			t.Errorf("S27: branch feature-x was deleted from canonical repo %s (remove should leave branches behind)", repo)
 		}
 	}
@@ -432,15 +370,13 @@ func assertS28WorkforestPrune(t *testing.T, wsRoot, pnBin string, env []string) 
 	// Step 4: Verify each canonical repo's git worktree list no longer shows the stale entry.
 	for _, repo := range []string{"producer", "consumer"} {
 		repoDir := filepath.Join(wsRoot, repo)
-		cmd := exec.Command("git", "-C", repoDir, "worktree", "list")
-		cmd.Env = hermeticInheritedEnv()
-		out, err := cmd.Output()
+		out, err := gitRead(t, repoDir, "worktree", "list")
 		if err != nil {
 			t.Errorf("S28: git worktree list in %s: %v", repoDir, err)
 			continue
 		}
-		if strings.Contains(string(out), "feature-z") {
-			t.Errorf("S28: git worktree list in %s still shows feature-z after prune:\n%s", repoDir, string(out))
+		if strings.Contains(out, "feature-z") {
+			t.Errorf("S28: git worktree list in %s still shows feature-z after prune:\n%s", repoDir, out)
 		}
 	}
 }
@@ -469,27 +405,23 @@ func setEnv(env []string, key, val string) []string {
 // gitHeadSHA returns the HEAD SHA of a repo dir (empty string + error on failure).
 func gitHeadSHA(t *testing.T, repoDir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
-	cmd.Env = hermeticInheritedEnv()
-	out, err := cmd.Output()
+	out, err := gitRead(t, repoDir, "rev-parse", "HEAD")
 	if err != nil {
 		t.Errorf("S29: git rev-parse HEAD in %s: %v", repoDir, err)
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 // gitStatusPorcelain returns the output of git status --porcelain in a repo dir.
 func gitStatusPorcelain(t *testing.T, repoDir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repoDir, "status", "--porcelain")
-	cmd.Env = hermeticInheritedEnv()
-	out, err := cmd.Output()
+	out, err := gitRead(t, repoDir, "status", "--porcelain")
 	if err != nil {
 		t.Errorf("S29: git status --porcelain in %s: %v", repoDir, err)
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 func assertS29VerbsInASet(t *testing.T, wsRoot, pnBin string, env []string) {
@@ -578,26 +510,22 @@ func assertS30PushSetUpstream(t *testing.T, wsRoot string) {
 		cloneDir := filepath.Join(wsRoot, repo)
 
 		// Determine which branch the clone is on.
-		branchCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "HEAD")
-		branchCmd.Env = hermeticInheritedEnv()
-		branchOut, err := branchCmd.Output()
+		branchOut, err := gitRead(t, cloneDir, "rev-parse", "--abbrev-ref", "HEAD")
 		if err != nil {
 			t.Errorf("S30: %s cannot determine current branch: %v", repo, err)
 			continue
 		}
-		branch := strings.TrimSpace(string(branchOut))
+		branch := strings.TrimSpace(branchOut)
 
 		// 1. Bare remote's ref for this branch must match workspace clone HEAD.
 		// (bare remote HEAD points to default branch; we check the feature branch ref)
 		bareRef := fmt.Sprintf("refs/heads/%s", branch)
-		bareCmd := exec.Command("git", "-C", bareDir, "rev-parse", bareRef)
-		bareCmd.Env = hermeticInheritedEnv()
-		bareOut, err := bareCmd.Output()
+		bareOut, err := gitRead(t, bareDir, "rev-parse", bareRef)
 		if err != nil {
 			t.Errorf("S30: %s bare remote has no ref %s after push --set-upstream: %v", repo, bareRef, err)
 			continue
 		}
-		bareHead := strings.TrimSpace(string(bareOut))
+		bareHead := strings.TrimSpace(bareOut)
 		cloneHead := workspaceHead(t, cloneDir)
 		if bareHead == "" || cloneHead == "" {
 			return
@@ -608,14 +536,12 @@ func assertS30PushSetUpstream(t *testing.T, wsRoot string) {
 		}
 
 		// 2. The workspace clone's branch must now track origin/<branch>.
-		upCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "@{u}")
-		upCmd.Env = hermeticInheritedEnv()
-		upOut, err := upCmd.Output()
+		upOut, err := gitRead(t, cloneDir, "rev-parse", "--abbrev-ref", "@{u}")
 		if err != nil {
 			t.Errorf("S30: %s branch %s has no upstream after push --set-upstream (git rev-parse @{u}: %v)", repo, branch, err)
 			continue
 		}
-		upstream := strings.TrimSpace(string(upOut))
+		upstream := strings.TrimSpace(upOut)
 		if !strings.HasPrefix(upstream, "origin/") {
 			t.Errorf("S30: %s upstream = %q, want origin/<branch>", repo, upstream)
 		}
@@ -651,13 +577,11 @@ func assertS31RebaseBranch(t *testing.T, wsRoot string) {
 		beforeN, _ := strconv.Atoi(before)
 
 		// Capture post-command reflog length.
-		cmd := exec.Command("git", "-C", bareDir, "reflog", "--all")
-		cmd.Env = hermeticInheritedEnv()
-		afterOut, afterErr := cmd.Output()
+		afterOut, afterErr := gitRead(t, bareDir, "reflog", "--all")
 		afterN := 0
 		if afterErr == nil {
-			afterN = len(strings.Split(strings.TrimSpace(string(afterOut)), "\n"))
-			if strings.TrimSpace(string(afterOut)) == "" {
+			afterN = len(strings.Split(strings.TrimSpace(afterOut), "\n"))
+			if strings.TrimSpace(afterOut) == "" {
 				afterN = 0
 			}
 		}
@@ -780,38 +704,29 @@ func assertRelockLandedLocallyOnly(t *testing.T, tag, primary, bare string) {
 	t.Helper()
 	const relockSubject = "update-locks: bump locked.txt"
 
-	primLogCmd := exec.Command("git", "-C", primary, "log", "--oneline", "-n", "5")
-	primLogCmd.Env = hermeticInheritedEnv()
-	primLog, err := primLogCmd.Output()
+	primLog, err := gitRead(t, primary, "log", "--oneline", "-n", "5")
 	if err != nil {
 		t.Fatalf("%s: git log primary: %v", tag, err)
 	}
-	if !strings.Contains(string(primLog), relockSubject) {
+	if !strings.Contains(primLog, relockSubject) {
 		t.Errorf("%s: primary main missing relock commit; log:\n%s", tag, primLog)
 	}
 
-	bareLogCmd := exec.Command("git", "-C", bare, "log", "--oneline", "-n", "5", "main")
-	bareLogCmd.Env = hermeticInheritedEnv()
-	bareLog, err := bareLogCmd.Output()
+	bareLog, err := gitRead(t, bare, "log", "--oneline", "-n", "5", "main")
 	if err != nil {
 		t.Fatalf("%s: git log remote: %v", tag, err)
 	}
-	if strings.Contains(string(bareLog), relockSubject) {
+	if strings.Contains(bareLog, relockSubject) {
 		t.Errorf("%s: relock commit reached the REMOTE — update must not push (ADR 0023); remote log:\n%s", tag, bareLog)
 	}
 
-	remoteHeadCmd := exec.Command("git", "-C", bare, "rev-parse", "main")
-	remoteHeadCmd.Env = hermeticInheritedEnv()
-	remoteHead, err := remoteHeadCmd.Output()
+	remoteHead, err := gitRead(t, bare, "rev-parse", "main")
 	if err != nil {
 		t.Fatalf("%s: git rev-parse remote: %v", tag, err)
 	}
-	ancestorCmd := exec.Command("git", "-C", primary, "merge-base", "--is-ancestor",
-		strings.TrimSpace(string(remoteHead)), "main")
-	ancestorCmd.Env = hermeticInheritedEnv()
-	if err := ancestorCmd.Run(); err != nil {
+	if _, err := gitRead(t, primary, "merge-base", "--is-ancestor", strings.TrimSpace(remoteHead), "main"); err != nil {
 		t.Errorf("%s: remote main %s is not an ancestor of primary main — the relock should be plain unpushed landing debt: %v",
-			tag, strings.TrimSpace(string(remoteHead)), err)
+			tag, strings.TrimSpace(remoteHead), err)
 	}
 }
 
@@ -881,14 +796,12 @@ func assertS34WorkforestSubset(t *testing.T, wsRoot string) {
 			t.Errorf("S34: member repo dir %s does not exist", repoDir)
 			continue
 		}
-		cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD")
-		cmd.Env = hermeticInheritedEnv()
-		out, err := cmd.Output()
+		out, err := gitRead(t, repoDir, "rev-parse", "--abbrev-ref", "HEAD")
 		if err != nil {
 			t.Errorf("S34: git rev-parse HEAD in %s: %v", repoDir, err)
 			continue
 		}
-		if branch := strings.TrimSpace(string(out)); branch != "feature-x" {
+		if branch := strings.TrimSpace(out); branch != "feature-x" {
 			t.Errorf("S34: %s in set is on branch %q, want feature-x", repo, branch)
 		}
 	}
@@ -969,12 +882,10 @@ func assertS35WorkforestAddRemoveRepo(t *testing.T, wsRoot, pnBin string, env []
 	}
 
 	// remove-repo must NOT delete the feature-x branch in canonical extra.
-	cmd := exec.Command("git", "-C", extraCanon, "branch", "--list", "feature-x")
-	cmd.Env = hermeticInheritedEnv()
-	out, err := cmd.Output()
+	out, err := gitRead(t, extraCanon, "branch", "--list", "feature-x")
 	if err != nil {
 		t.Errorf("S35: git branch --list feature-x in %s: %v", extraCanon, err)
-	} else if strings.TrimSpace(string(out)) == "" {
+	} else if strings.TrimSpace(out) == "" {
 		t.Errorf("S35: remove-repo deleted feature-x from canonical extra (must leave branch behind)")
 	}
 
