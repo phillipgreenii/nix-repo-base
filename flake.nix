@@ -2227,6 +2227,23 @@
                   throw "capability-framework assertions failed: ${toString failures}"
               );
 
+            # Eval-level check (bead pg2-y1z3fk): the flox overlay's default
+            # (floxPkgs = flox's own cacheable packages output) and its opt-in
+            # fallback (floxPkgsNoChecks = the doCheck = false chain) are both
+            # wired as documented in flake-modules/overlays/flox.nix. Stubbed flox
+            # input; no flox source, build or network.
+            flox-overlay-eval =
+              let
+                r = import ./tests/flox-overlay.nix { inherit pkgs; };
+                failures = builtins.attrNames (pkgs.lib.filterAttrs (_: v: v != true) r);
+              in
+              pkgs.runCommand "flox-overlay-eval" { } (
+                if failures == [ ] then
+                  "touch $out"
+                else
+                  throw "flox-overlay assertions failed: ${toString failures}"
+              );
+
             # Eval-time check: fixture files exist and lock declares all heavy inputs.
             consumer-fixture-eval =
               pkgs.runCommand "consumer-fixture-eval"
