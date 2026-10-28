@@ -59,7 +59,10 @@ ideally one colour-coded glyph) title, switched by a dropdown Title row and pers
 file, and its title MUST show only the primary state. The convention (contract, setting file and
 flag, refresh rate, test checklist, open decisions) is the page
 [`docs/swiftbar-title-width.md`](docs/swiftbar-title-width.md), decided in ADR
-[0036](docs/adr/0036-swiftbar-plugins-offer-wide-and-narrow-titles.md).
+[0036](docs/adr/0036-swiftbar-plugins-offer-wide-and-narrow-titles.md). A third setting value `auto`
+follows the primary display by reading the machine-wide class file
+(`<state base>/display-class/class`, written only by the display-class helper); it is decided in ADR
+[0039](docs/adr/0039-swiftbar-title-width-auto.md) and the Title row cycles wide, narrow, auto.
 
 ## Go packages (`mkGoApp` / `mkGoBinary`)
 
