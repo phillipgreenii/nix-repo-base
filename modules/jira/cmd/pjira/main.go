@@ -83,7 +83,28 @@ func newClient(cmd *cobra.Command) (*pjira.Client, pjira.Config, error) {
 	if err != nil {
 		return nil, cfg, err
 	}
-	return pjira.NewClient(cfg.BaseURL, cfg.Email, token), cfg, nil
+	return withRateLimitLine(cmd, pjira.NewClient(cfg.BaseURL, cfg.Email, token)), cfg, nil
+}
+
+// rateLimitPrefix starts every rate-limit line pjira writes to stderr; what
+// follows it is one compact JSON object (a pjira.RateLimit). Callers select the
+// lines by this prefix and ignore every other stderr line.
+const rateLimitPrefix = "pjira-ratelimit: "
+
+// withRateLimitLine makes c write one rateLimitPrefix line to stderr per HTTP
+// response that carried Atlassian rate-limit headers. It goes to stderr so the
+// stdout JSON contract stays untouched, and it is written as the response
+// arrives, so it precedes (and survives) a failure's own error message.
+func withRateLimitLine(cmd *cobra.Command, c *pjira.Client) *pjira.Client {
+	errOut := cmd.ErrOrStderr()
+	c.OnRateLimit = func(rl pjira.RateLimit) {
+		b, err := json.Marshal(rl)
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(errOut, "%s%s\n", rateLimitPrefix, b)
+	}
+	return c
 }
 
 func writeJSON(cmd *cobra.Command, v any) error {
@@ -262,7 +283,8 @@ func newAuthStatusCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), pjira.AuthMissing)
 				return exitCodeError{code: 3}
 			}
-			state, statusErr := pjira.NewClient(cfg.BaseURL, cfg.Email, token).AuthStatus(cmd.Context())
+			cl := withRateLimitLine(cmd, pjira.NewClient(cfg.BaseURL, cfg.Email, token))
+			state, statusErr := cl.AuthStatus(cmd.Context())
 			fmt.Fprintln(cmd.OutOrStdout(), state)
 			switch state {
 			case pjira.AuthOK:

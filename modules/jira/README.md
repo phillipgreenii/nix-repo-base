@@ -53,3 +53,48 @@ any existing config with `mv ~/.config/jira ~/.config/pjira`.
   result (`truncated:false`). Bounded by an internal safety cap; on a cap-hit the
   envelope is partial with `truncated:true` and a warning is written to stderr
   (exit 0). `--all` and `--cursor` are mutually exclusive.
+
+### Rate-limit headers
+
+Atlassian reports how much of the tenant's rate limit is left in response headers. pjira
+conveys them for EVERY invocation on **stderr** (stdout is untouched, so a caller that
+ignores the data sees exactly the output it saw before). For each HTTP response that
+carries at least one of the headers below, pjira writes one line, as the response arrives
+(so on a failure it comes before the error message):
+
+```
+pjira-ratelimit: {"status":200,"limit":100,"remaining":97,"near_limit":false}
+pjira-ratelimit: {"status":429,"limit":100,"remaining":0,"near_limit":true,"retry_after_seconds":11,"reset":"2026-10-27T12:00:11Z","reason":"jira-burst-based"}
+```
+
+- **Format.** The literal prefix `pjira-ratelimit: ` (colon, one space), then ONE compact JSON
+  object, then a newline. Select the lines by that prefix and ignore every other stderr line
+  (errors, the `--all` truncation warning).
+- **Fields.** Every field except `status` is omitted when its header is absent or
+  unparsable, so "absent" is never confused with `0`:
+
+  | JSON key              | Header                  | Type    | On                          |
+  | --------------------- | ----------------------- | ------- | --------------------------- |
+  | `status`              | (HTTP status code)      | integer | always                      |
+  | `limit`               | `X-RateLimit-Limit`     | integer | every response              |
+  | `remaining`           | `X-RateLimit-Remaining` | integer | every response              |
+  | `near_limit`          | `X-RateLimit-NearLimit` | boolean | every response              |
+  | `retry_after_seconds` | `Retry-After`           | integer | a 429 (some transient 5xx)  |
+  | `reset`               | `X-RateLimit-Reset`     | string  | a 429 (the header verbatim) |
+  | `reason`              | `RateLimit-Reason`      | string  | a 429 (the header verbatim) |
+
+  `near_limit` is true below 20% capacity. `retry_after_seconds` is a MINIMUM delay per
+  Atlassian; a fractional value is rounded up and an HTTP-date value is converted to seconds
+  from now (never negative). `reason` is one of `jira-burst-based`,
+  `jira-quota-tenant-based`, `jira-quota-global-based`, `jira-per-issue-on-write`.
+
+- **One line per response, not per invocation.** `transition` makes two requests and
+  `search --all` makes one per page, so they print several lines; the LAST line is the
+  freshest reading. All error statuses (including 429) are covered, not only 2xx.
+- **No headers, no line.** A tenant that sends none of them produces no `pjira-ratelimit:`
+  line at all.
+- **No secrets.** Only the headers above are copied; the line never carries the token,
+  email, URL or any other header.
+
+Library callers set `Client.OnRateLimit` (a `func(pjira.RateLimit)`) to receive the same
+reading per response; `pjira.ParseRateLimit` parses one from a status and headers.

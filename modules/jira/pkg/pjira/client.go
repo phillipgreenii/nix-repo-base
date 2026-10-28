@@ -23,6 +23,11 @@ type Client struct {
 	Email   string
 	Token   string
 	HTTP    *http.Client
+	// OnRateLimit, when set, is called once per HTTP response that carried at
+	// least one Atlassian rate-limit header -- including a 429 and any other
+	// error status -- before the response body is read. It is never called for a
+	// response with none, so a tenant that sends no headers yields no calls.
+	OnRateLimit func(RateLimit)
 }
 
 // NewClient constructs a Client. BaseURL trailing slashes are trimmed.
@@ -126,7 +131,13 @@ func (c *Client) mapIssue(key string, f rawFields) Issue {
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	req.Header.Set("Authorization", c.basicAuth())
 	req.Header.Set("Accept", "application/json")
-	return c.HTTP.Do(req)
+	resp, err := c.HTTP.Do(req)
+	if err == nil && c.OnRateLimit != nil {
+		if rl := ParseRateLimit(resp.StatusCode, resp.Header, time.Now()); !rl.Empty() {
+			c.OnRateLimit(rl)
+		}
+	}
+	return resp, err
 }
 
 // ExpandOpts selects optional per-item enrichment for Search. Changelog maps to

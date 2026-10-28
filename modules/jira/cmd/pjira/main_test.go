@@ -591,3 +591,156 @@ func TestCLI_SearchAll_capHitWarnsAndSucceeds(t *testing.T) {
 		t.Errorf("expected a stderr truncation warning, got: %q", errOut)
 	}
 }
+
+// rateLimitLines returns the decoded JSON object of every stderr line that
+// starts with the documented rate-limit prefix, in order.
+func rateLimitLines(t *testing.T, stderr string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(stderr, "\n") {
+		rest, ok := strings.CutPrefix(line, "pjira-ratelimit: ")
+		if !ok {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(rest), &m); err != nil {
+			t.Fatalf("rate-limit line is not JSON: %v\n%q", err, line)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+const rateLimitIssueBody = `{"key":"ENG-1","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Bug"},"labels":[]}}`
+
+// TestCLI_RateLimitLine_200 pins the conveyance on a success: one stderr line,
+// stdout byte-identical to a run against a tenant that sends no headers.
+func TestCLI_RateLimitLine_200(t *testing.T) {
+	sendHeaders := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if sendHeaders {
+			w.Header().Set("X-RateLimit-Limit", "100")
+			w.Header().Set("X-RateLimit-Remaining", "97")
+			w.Header().Set("X-RateLimit-NearLimit", "false")
+		}
+		_, _ = w.Write([]byte(rateLimitIssueBody))
+	}))
+	defer srv.Close()
+
+	out, errOut, err := runCLIOutErr(t, srv.URL, "issue", "ENG-1")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	lines := rateLimitLines(t, errOut)
+	if len(lines) != 1 {
+		t.Fatalf("want exactly one rate-limit line, got %d in %q", len(lines), errOut)
+	}
+	want := map[string]any{"status": 200.0, "limit": 100.0, "remaining": 97.0, "near_limit": false}
+	if len(lines[0]) != len(want) {
+		t.Errorf("line = %v, want exactly %v", lines[0], want)
+	}
+	for k, v := range want {
+		if lines[0][k] != v {
+			t.Errorf("line[%q] = %v, want %v", k, lines[0][k], v)
+		}
+	}
+	if strings.Contains(errOut, "tok") || strings.Contains(errOut, "u@x") {
+		t.Errorf("stderr must carry no credential: %q", errOut)
+	}
+
+	sendHeaders = false
+	baseOut, baseErr, err := runCLIOutErr(t, srv.URL, "issue", "ENG-1")
+	if err != nil {
+		t.Fatalf("issue (no headers): %v", err)
+	}
+	if out != baseOut {
+		t.Errorf("stdout changed by rate-limit headers:\n%q\nvs\n%q", out, baseOut)
+	}
+	if len(rateLimitLines(t, baseErr)) != 0 || strings.Contains(baseErr, "pjira-ratelimit") {
+		t.Errorf("a tenant sending no headers must yield no rate-limit line, got %q", baseErr)
+	}
+}
+
+// TestCLI_RateLimitLine_429 pins the conveyance on a failure: the 429 still
+// fails with its error, stdout stays empty, and the full header set is on stderr.
+func TestCLI_RateLimitLine_429(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "100")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-NearLimit", "true")
+		w.Header().Set("Retry-After", "11")
+		w.Header().Set("X-RateLimit-Reset", "2026-10-27T12:00:11Z")
+		w.Header().Set("RateLimit-Reason", "jira-burst-based")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	out, errOut, err := runCLIOutErr(t, srv.URL, "search", "--jql", "project = ENG")
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("want a 429 error, got %v", err)
+	}
+	if out != "" {
+		t.Errorf("stdout must stay empty on failure: %q", out)
+	}
+	lines := rateLimitLines(t, errOut)
+	if len(lines) != 1 {
+		t.Fatalf("want exactly one rate-limit line, got %d in %q", len(lines), errOut)
+	}
+	want := map[string]any{
+		"status": 429.0, "limit": 100.0, "remaining": 0.0, "near_limit": true,
+		"retry_after_seconds": 11.0, "reset": "2026-10-27T12:00:11Z", "reason": "jira-burst-based",
+	}
+	if len(lines[0]) != len(want) {
+		t.Errorf("line = %v, want exactly %v", lines[0], want)
+	}
+	for k, v := range want {
+		if lines[0][k] != v {
+			t.Errorf("line[%q] = %v, want %v", k, lines[0][k], v)
+		}
+	}
+}
+
+// TestCLI_RateLimitLine_perResponse pins that a multi-request invocation emits
+// one line per response, in order (the last line is the freshest reading).
+func TestCLI_RateLimitLine_perResponse(t *testing.T) {
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		w.Header().Set("X-RateLimit-Remaining", map[int]string{1: "50", 2: "49"}[n])
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"transitions":[{"id":"31","to":{"name":"Done"}}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	_, errOut, err := runCLIOutErr(t, srv.URL, "transition", "ENG-1", "Done")
+	if err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	lines := rateLimitLines(t, errOut)
+	if len(lines) != 2 || lines[0]["remaining"] != 50.0 || lines[1]["remaining"] != 49.0 {
+		t.Errorf("want two ordered lines (50 then 49), got %v", lines)
+	}
+}
+
+// TestCLI_RateLimitLine_authStatus pins that auth-status (which builds its own
+// client) conveys the reading too, without disturbing its stdout state line.
+func TestCLI_RateLimitLine_authStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "88")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	out, errOut, err := runCLIOutErr(t, srv.URL, "auth-status")
+	if err != nil {
+		t.Fatalf("auth-status: %v", err)
+	}
+	if strings.TrimSpace(out) != "OK" {
+		t.Errorf("stdout = %q, want OK", out)
+	}
+	if lines := rateLimitLines(t, errOut); len(lines) != 1 || lines[0]["remaining"] != 88.0 {
+		t.Errorf("lines = %v", lines)
+	}
+}
