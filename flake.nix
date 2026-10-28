@@ -2328,29 +2328,6 @@
                   touch $out
                 '';
 
-            # Bead pg2-csfvi acceptance: the rendered pg-test-runner config (the
-            # exact JSON pg-test-runner bakes in as its default and this repo's
-            # own repo config extends) reports a 900s cap for the df-survey
-            # project path suffix, while the global default stays 300s.
-            pg-test-runner-config-df-survey-timeout =
-              pkgs.runCommand "check-pg-test-runner-config-df-survey-timeout"
-                {
-                  nativeBuildInputs = [ pkgs.jq ];
-                }
-                ''
-                  set -euo pipefail
-                  cfg=${pgTestRunnerRepoConfigJson}
-                  jq -e '.timeoutSeconds == 300' "$cfg" >/dev/null || {
-                    echo "FAIL: default timeoutSeconds is not 300" >&2
-                    exit 1
-                  }
-                  jq -e '.projectTimeouts["modules/daily-focus/df-survey"] == 900' "$cfg" >/dev/null || {
-                    echo "FAIL: projectTimeouts has no 900s cap for modules/daily-focus/df-survey" >&2
-                    exit 1
-                  }
-                  touch $out
-                '';
-
             # Bead pg2-fvejk acceptance: the rendered pg-test-runner config reports a
             # 900s cap for the modules/pn project path suffix, while the global
             # default stays 300s.

@@ -64,20 +64,12 @@
   # tests are NOT skipped or weakened; the cap is 3x the default so a loaded
   # machine still passes while a genuinely hung suite is still killed.
   #
-  # modules/daily-focus/df-survey (phillipg-nix-ziprecruiter; pg2-csfvi): its
-  # bats suite (147-155 tests) needs ~390s on an idle machine and 447s under
-  # load (pg2-rzr08 evidence, 2026-10-07) against the 300s default, so any
-  # branch touching it timed out the pre-land hook. The tests are NOT skipped
-  # or weakened; 900s is ~2x the loaded run so a loaded machine still passes
-  # while a genuinely hung suite is still killed. (Operator ruling, Phillip,
-  # 2026-10-08: "ok, raise the cap.")
-  #
   # modules/pn (pg2-fvejk): its Go suite (internal/workspace alone is ~250s)
   # hit the 300s cap on 3 of 4 pre-commit/pre-land runs under load average
   # 23-187 (observed 2026-10-09 landing pg2-y59kf), every listed package
   # passing. The tests are NOT skipped or weakened; 900s is a ~2x+ loaded run
   # so a loaded machine passes while a genuinely hung suite is still killed.
-  # (900 is the orchestrator's default by the df-survey precedent; the bead
+  # (900 is the orchestrator's default by the pn precedent; the bead
   # left the value operator-chosen, so it is reversible.)
   #
   # packages/pg-desk (phillipgreenii-nix-agent-support, bead tc-fz1vr): its
@@ -91,7 +83,7 @@
   # The tests and -race are NOT skipped or weakened; 900s keeps the same
   # ~3x-the-loaded-run margin as the entries above while a genuinely hung
   # suite is still killed. A timeout still reports as a failure (exit 10),
-  # never as a pass. (900 by the df-survey/pn precedent; the bead left the
+  # never as a pass. (900 by the pn precedent; the bead left the
   # value to the orchestrator, so it is reversible.)
   #
   # packages/pg-router (phillipgreenii-nix-agent-support, bead pg2-o2owg): its
@@ -101,7 +93,7 @@
   # TestCompactLiveShapedReplayPerf compacts a 181,900-record log) with every
   # package printing ok, and passed on a rerun at lower load. The tests are NOT
   # skipped or weakened; 900s keeps the same ~3x margin as the entries above
-  # while a genuinely hung suite is still killed. (900 by the df-survey/pn
+  # while a genuinely hung suite is still killed. (900 by the pn
   # precedent; the bead left the value operator-chosen, so it is reversible.)
   #
   # packages/pg-connector (phillipgreenii-nix-agent-support, bead pg2-uqs4h): its
@@ -112,7 +104,7 @@
   # and 259s on the branch, before compilation and the other packages. The
   # tests are NOT skipped or weakened; 900s keeps the same ~3x margin as the
   # entries above while a genuinely hung suite is still killed. (900 by the
-  # df-survey/pn/pg-router precedent; the bead left the value operator-chosen,
+  # pn/pg-router precedent; the bead left the value operator-chosen,
   # so it is reversible.)
   #
   # packages/pg-router-handlers (phillipgreenii-nix-agent-support, bead
@@ -121,11 +113,10 @@
   # default killed two pre-land runs. The tests are NOT skipped or weakened;
   # 900s keeps the same ~2x+ margin over the loaded run as the entries above
   # while a genuinely hung suite is still killed. A timeout still reports as a
-  # failure (exit 10), never as a pass. (900 by the df-survey/pn/pg-router
+  # failure (exit 10), never as a pass. (900 by the pn/pg-router
   # precedent; reversible.)
   projectTimeouts = {
     "packages/claude-extended-tool-approver" = 900;
-    "modules/daily-focus/df-survey" = 900;
     "modules/pn" = 900;
     "packages/pg-desk" = 900;
     "packages/pg-router" = 900;
