@@ -81,6 +81,31 @@
                 touch $out
               '';
 
+            # Bead pg2-y1z3fk: against the REAL flox input, the default
+            # (floxPkgs) is flox's own packages output, and the opt-in fallback
+            # (floxPkgsNoChecks, the doCheck = false chain) still evaluates to a
+            # different flox derivation with nix's check phases off. Eval only:
+            # booleans are computed in Nix, so the check derivation does not
+            # depend on (or build) flox.
+            flox-overlay =
+              let
+                ov = self.overlays.flox pkgs pkgs;
+                own = inputs.flox.packages.${system}.flox;
+                results = {
+                  defaultIsFloxPackagesOutput = ov.floxPkgs.flox.drvPath == own.drvPath;
+                  fallbackIsDistinctDerivation = ov.floxPkgsNoChecks.flox.drvPath != own.drvPath;
+                  fallbackDisablesNixChecks =
+                    ov.floxPkgsNoChecks.nix.doCheck == false && ov.floxPkgsNoChecks.nix.doInstallCheck == false;
+                };
+                failures = builtins.attrNames (pkgs.lib.filterAttrs (_: v: v != true) results);
+              in
+              pkgs.runCommand "fixture-flox-overlay" { } (
+                if failures == [ ] then
+                  "touch $out"
+                else
+                  throw "flox-overlay assertions failed: ${toString failures}"
+              );
+
             lib-version-helpers = pkgs.runCommand "fixture-lib-version-helpers" { } ''
               test "${phillipgreenii-nix-base.lib.mkGitHash "abcdef1234567890"}" = "abcdef1"
               touch $out
