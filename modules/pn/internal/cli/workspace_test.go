@@ -877,6 +877,22 @@ func TestWorkspaceWorkforestAdd_FlagTerminalFlows(t *testing.T) {
 	}
 }
 
+func TestWorkspaceWorkforestAdd_NoHooksFlagDocumentedAndAccepted(t *testing.T) {
+	// --no-hooks (bead pg2-wu21kf) must appear in --help and parse on `add`.
+	withFakeWorkspace(t, minimalToml)
+	stdout, _, err := runCobraCmd(t, []string{"workforest", "add", "--help"})
+	if err != nil {
+		t.Fatalf("workforest add --help: %v", err)
+	}
+	if !strings.Contains(stdout, "--no-hooks") || !strings.Contains(stdout, "post-clone hooks") {
+		t.Errorf("workforest add --help must document --no-hooks; got:\n%s", stdout)
+	}
+	_, _, err = runCobraCmd(t, []string{"workforest", "add", "--no-hooks", "my-branch"})
+	if err != nil && strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("workforest add --no-hooks: flag not registered: %v", err)
+	}
+}
+
 func TestWorkspaceWorkforestAdd_OpenFailurePropagates(t *testing.T) {
 	orig := openWorkspace
 	openWorkspace = func() (*workspace.Workspace, error) { return nil, os.ErrNotExist }

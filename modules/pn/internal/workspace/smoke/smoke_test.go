@@ -514,6 +514,14 @@ func TestSmoke_S42_BuildAsUserApply(t *testing.T) {
 	runScenario(t, "s42-build-as-user-apply")
 }
 
+// TestSmoke_S43_WorkforestNoHooks: two real local git repos each declare a plain
+// post-clone hook. `workforest add with-hooks` runs it in both members; `workforest
+// add --no-hooks no-hooks` runs it in none, and the two sets are otherwise
+// identical (same members, branches, config and lock) (pg2-wu21kf).
+func TestSmoke_S43_WorkforestNoHooks(t *testing.T) {
+	runScenario(t, "s43-workforest-no-hooks")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -739,6 +747,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertUnwrappedBuild(t, "S40", wsRoot)
 	case "s42-build-as-user-apply":
 		assertS42BuildAsUserApply(t, wsRoot, env)
+	case "s43-workforest-no-hooks":
+		assertS43WorkforestNoHooks(t, wsRoot)
 	}
 }
 

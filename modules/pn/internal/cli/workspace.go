@@ -804,6 +804,7 @@ func workspaceWorkforestCmd() *cobra.Command {
 
 func workspaceWorkforestAddCmd() *cobra.Command {
 	var repos []string
+	var noHooks bool
 	cmd := &cobra.Command{
 		Use:   "add <branch> [<commit-ish>]",
 		Short: "Create a coordinated workforest set on <branch> (all repos, or a subset via --repos)",
@@ -813,7 +814,13 @@ Without --repos the set contains every repo in pn-workspace.toml. With --repos
 the set contains only the named subset; the set's own pn-workspace.toml records
 that membership (the canonical config is untouched). A workspace dependency that
 is excluded from the subset resolves against its locked flake input rather than a
-set-internal override, and a notice names each such consumer->dependency edge.`,
+set-internal override, and a notice names each such consumer->dependency edge.
+
+By default each member's post-clone hooks run in its new worktree (typically the
+per-repo "nix run .#install-pre-commit-hooks" installer). With --no-hooks no
+member's post-clone hook runs, so a throwaway set is cheap; the worktrees,
+branches and set config are otherwise identical. The set's repos then have no
+private hook bundle until their install hook is run by hand.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
@@ -822,8 +829,9 @@ set-internal override, and a notice names each such consumer->dependency edge.`,
 			}
 			defer w.Close()
 			opts := workspace.WorkforestAddOptions{
-				Branch: args[0],
-				Repos:  repos,
+				Branch:  args[0],
+				Repos:   repos,
+				NoHooks: noHooks,
 			}
 			if len(args) == 2 {
 				opts.CommitIsh = args[1]
@@ -832,6 +840,7 @@ set-internal override, and a notice names each such consumer->dependency edge.`,
 		},
 	}
 	cmd.Flags().StringSliceVar(&repos, "repos", nil, "subset of repo keys to include (comma-separated or repeated); default: all repos")
+	cmd.Flags().BoolVar(&noHooks, "no-hooks", false, "skip every member's post-clone hooks (cheap throwaway set); worktrees and branches are otherwise identical")
 	return cmd
 }
 

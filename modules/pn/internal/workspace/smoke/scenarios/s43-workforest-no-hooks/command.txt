@@ -1,0 +1,9 @@
+# Bootstrap a trusted workspace whose two repos both declare a plain post-clone
+# hook that logs its cwd, then add one default set and one --no-hooks set.
+# The comparison (hook log, worktrees, branches, set files) is in assertS43.
+workspace init
+workspace allow
+workspace clone
+workspace lock
+workspace workforest add with-hooks
+workspace workforest add --no-hooks no-hooks

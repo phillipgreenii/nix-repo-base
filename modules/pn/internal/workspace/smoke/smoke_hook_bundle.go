@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -232,6 +233,102 @@ func assertS37HookBundleMatrix(t *testing.T, wsRoot, pnBin string, env []string)
 		cmd.Env = env
 		if out, err := cmd.Output(); err == nil {
 			t.Errorf("S37: %s has core.hooksPath set to %q", what, strings.TrimSpace(string(out)))
+		}
+	}
+}
+
+// --- S43: workforest add --no-hooks (pg2-wu21kf) ---
+//
+// setup.sh gives both repos a plain post-clone hook that appends its cwd to
+// <wsRoot>/hooklog; command.txt adds the set "with-hooks" (default) and the set
+// "no-hooks" (--no-hooks) over real git repositories.
+
+// s43SetShape lists a set's top-level entries and, per member repo, the branch
+// checked out in its worktree, so the two sets compare structurally.
+func s43SetShape(t *testing.T, setDir string) (entries []string, branches map[string]string) {
+	t.Helper()
+	des, err := os.ReadDir(setDir)
+	if err != nil {
+		t.Fatalf("S43: read set dir %s: %v", setDir, err)
+	}
+	branches = map[string]string{}
+	for _, de := range des {
+		entries = append(entries, de.Name())
+		if !de.IsDir() {
+			continue
+		}
+		out, err := gitRead(t, filepath.Join(setDir, de.Name()), "rev-parse", "--abbrev-ref", "HEAD")
+		if err != nil {
+			t.Fatalf("S43: branch of %s/%s: %v", setDir, de.Name(), err)
+		}
+		branches[de.Name()] = strings.TrimSpace(out)
+	}
+	return entries, branches
+}
+
+func assertS43WorkforestNoHooks(t *testing.T, wsRoot string) {
+	t.Helper()
+	sets := filepath.Join(wsRoot, ".workforests")
+	withDir := filepath.Join(sets, "with-hooks")
+	noDir := filepath.Join(sets, "no-hooks")
+	members := []string{"consumer", "producer"}
+
+	// 1. Hook log: the default set ran the hook in BOTH members' worktrees; the
+	// --no-hooks set ran it in none. Lines for other directories (e.g. the
+	// canonical clone's own post-clone) are ignored.
+	logged, err := readLines(filepath.Join(wsRoot, "hooklog"))
+	if err != nil {
+		t.Fatalf("S43: read hooklog: %v", err)
+	}
+	// Compare physical paths: the hook's $PWD may be the symlink-resolved form.
+	resolve := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return p
+	}
+	ranIn := map[string]int{}
+	for _, l := range logged {
+		ranIn[resolve(strings.TrimSpace(l))]++
+	}
+	for _, m := range members {
+		if n := ranIn[resolve(filepath.Join(withDir, m))]; n != 1 {
+			t.Errorf("S43: default add must run %s's post-clone hook once; ran %d times (hooklog: %v)", m, n, logged)
+		}
+		if n := ranIn[resolve(filepath.Join(noDir, m))]; n != 0 {
+			t.Errorf("S43: --no-hooks add must not run %s's post-clone hook; ran %d times (hooklog: %v)", m, n, logged)
+		}
+	}
+	for dir := range ranIn {
+		if strings.HasPrefix(dir, resolve(noDir)) {
+			t.Errorf("S43: a post-clone hook ran under the --no-hooks set: %s", dir)
+		}
+	}
+
+	// 2. Otherwise identical: same entries (members, config, lock) and one
+	// worktree per member on the set's own branch.
+	withEntries, withBranches := s43SetShape(t, withDir)
+	noEntries, noBranches := s43SetShape(t, noDir)
+	if !slices.Equal(withEntries, noEntries) {
+		t.Errorf("S43: set contents differ: default %v, --no-hooks %v", withEntries, noEntries)
+	}
+	for _, m := range members {
+		if withBranches[m] != "with-hooks" {
+			t.Errorf("S43: default set %s on branch %q, want with-hooks", m, withBranches[m])
+		}
+		if noBranches[m] != "no-hooks" {
+			t.Errorf("S43: --no-hooks set %s on branch %q, want no-hooks", m, noBranches[m])
+		}
+	}
+	for _, f := range []string{"pn-workspace.toml", "pn-workspace.lock.json"} {
+		a, errA := os.ReadFile(filepath.Join(withDir, f))
+		b, errB := os.ReadFile(filepath.Join(noDir, f))
+		if errA != nil || errB != nil {
+			t.Errorf("S43: read set %s: %v / %v", f, errA, errB)
+			continue
+		}
+		if !bytes.Equal(a, b) {
+			t.Errorf("S43: set %s differs between default and --no-hooks sets", f)
 		}
 	}
 }

@@ -3,10 +3,14 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
 
 // shCalls filters a FakeRunner's recorded calls to the `sh` invocations (how
@@ -260,5 +264,101 @@ run = ["{nix_run install-pre-commit-hooks}"]
 	}
 	if !fileExists(filepath.Join(setDir, ConfigFileName)) {
 		t.Errorf("set config should still be written")
+	}
+}
+
+// addOutcome is what one WorkforestAdd run produced, with every path made
+// relative to its set dir so two runs in different roots compare directly.
+type addOutcome struct {
+	shDirs          []string // Dir of each hook `sh` call, set-relative
+	createWorktrees []string // "<set-relative path>@<branch>" per member, in order
+	setFiles        []string // set-dir entries (config, lock, member dirs)
+	trusted         bool     // set dir trusted after the add
+}
+
+// runAddTwoHookRepos runs WorkforestAdd for a workspace whose two repos (bar
+// and foo) BOTH declare a post-clone install hook, with the given noHooks.
+func runAddTwoHookRepos(t *testing.T, noHooks bool) addOutcome {
+	t.Helper()
+	root := t.TempDir()
+	hook := "\n[[repos.%s.hooks]]\nwhen = [\"post-clone\"]\nrun = [\"{nix_run install-pre-commit-hooks}\"]\n"
+	writeFile(t, filepath.Join(root, ConfigFileName),
+		"[repos.foo]\nurl = \"github:owner/foo\""+strings.ReplaceAll(hook, "%s", "foo")+
+			"\n[repos.bar]\nurl = \"github:owner/bar\""+strings.ReplaceAll(hook, "%s", "bar"))
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["bar","foo"],
+  "repos": {"foo": {"remote_url": "github:owner/foo"}, "bar": {"remote_url": "github:owner/bar"}},
+  "edges": []
+}`)
+	f := exec.NewFakeRunner()
+	makeFakeCanonicalRepos(t, root, "bar", "foo")
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	trustWS(t, root)
+
+	setDir := filepath.Join(w.WorkforestsDir(), "feature")
+	muts := map[string]*fakeGitMutator{}
+	for _, repo := range []string{"bar", "foo"} {
+		canonical := filepath.Join(root, repo)
+		addWorktreeListClean(f, canonical, repo)
+		addBranchNotExists(t, canonical, "feature")
+		muts[canonical] = &fakeGitMutator{}
+		f.AddResponse("sh", []string{"-c", nixRunHookCmd(filepath.Join(setDir, repo))}, exec.Result{}, nil)
+	}
+	stubGitMutatorOpener(t, muts)
+
+	var out, errOut bytes.Buffer
+	if err := w.WorkforestAdd(context.Background(), &out, &errOut, WorkforestAddOptions{Branch: "feature", NoHooks: noHooks}); err != nil {
+		t.Fatalf("WorkforestAdd(NoHooks=%v): %v", noHooks, err)
+	}
+
+	var o addOutcome
+	for _, c := range shCalls(f) {
+		o.shDirs = append(o.shDirs, strings.TrimPrefix(c.Opts.Dir, setDir))
+	}
+	for _, repo := range []string{"bar", "foo"} {
+		for _, cw := range muts[filepath.Join(root, repo)].createWorktrees {
+			o.createWorktrees = append(o.createWorktrees, strings.TrimPrefix(cw, setDir))
+		}
+	}
+	entries, err := os.ReadDir(setDir)
+	if err != nil {
+		t.Fatalf("read set dir: %v", err)
+	}
+	for _, e := range entries {
+		o.setFiles = append(o.setFiles, e.Name())
+	}
+	o.trusted, _ = trust.IsAllowed(setDir)
+	return o
+}
+
+// TestWorkforestAdd_NoHooksSkipsEveryMemberHook proves --no-hooks (NoHooks)
+// runs no post-clone hook command for any member, that the default still runs
+// one per hook-declaring member, and that the set is otherwise identical: the
+// same worktrees on the same branch, the same set files, and the same trust
+// propagation (bead pg2-wu21kf).
+func TestWorkforestAdd_NoHooksSkipsEveryMemberHook(t *testing.T) {
+	withHooks := runAddTwoHookRepos(t, false)
+	noHooks := runAddTwoHookRepos(t, true)
+
+	if len(withHooks.shDirs) != 2 {
+		t.Fatalf("default must still run both members' hooks; got %v", withHooks.shDirs)
+	}
+	if len(noHooks.shDirs) != 0 {
+		t.Errorf("NoHooks must run no member's post-clone hook; got sh calls in %v", noHooks.shDirs)
+	}
+	if len(withHooks.createWorktrees) != 2 {
+		t.Fatalf("expected a worktree per member; got %v", withHooks.createWorktrees)
+	}
+	if !slices.Equal(withHooks.createWorktrees, noHooks.createWorktrees) {
+		t.Errorf("worktrees differ: default %v, NoHooks %v", withHooks.createWorktrees, noHooks.createWorktrees)
+	}
+	if !slices.Equal(withHooks.setFiles, noHooks.setFiles) {
+		t.Errorf("set contents differ: default %v, NoHooks %v", withHooks.setFiles, noHooks.setFiles)
+	}
+	if !withHooks.trusted || !noHooks.trusted {
+		t.Errorf("trust must propagate to the set either way; default=%v NoHooks=%v", withHooks.trusted, noHooks.trusted)
 	}
 }

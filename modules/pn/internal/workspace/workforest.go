@@ -27,6 +27,13 @@ type WorkforestAddOptions struct {
 	// When empty, the set contains every repo in pn-workspace.toml (the default).
 	// Each entry must be a configured repo key; unknown keys are an error.
 	Repos []string
+	// NoHooks skips every member's post-clone hooks (the per-repo
+	// `nix run .#install-pre-commit-hooks` that workforest add otherwise fires),
+	// so a throwaway set is cheap. The worktrees, branches and set config/lock
+	// are created exactly as without it, and trust is still propagated to the
+	// set (it is not a hook), so later hook-gated verbs run in the set behave
+	// as they do for a default set.
+	NoHooks bool
 }
 
 // WorkforestAddRepoOptions configures WorkforestAddRepo.
@@ -138,10 +145,29 @@ func (w *Workspace) WorkforestAdd(ctx context.Context, out io.Writer, errOut io.
 	}
 
 	// Fire post-clone hooks in each new worktree (set-rooted, so {nix_run}
-	// overrides resolve to the set's worktrees — P1-safe). Warn-only.
+	// overrides resolve to the set's worktrees — P1-safe). Warn-only. With
+	// NoHooks no hook runs for any member; trust is still propagated so the set
+	// is otherwise identical.
+	if opts.NoHooks {
+		propagateSetTrust(w, setDir, errOut)
+		return nil
+	}
 	installSetHooks(ctx, w, setDir, names, out, errOut)
 
 	return nil
+}
+
+// propagateSetTrust propagates trust from an already-trusted canonical to the
+// pn-authored set so its hooks are not warn-skipped by the trust gate. Never
+// grants trust to a set derived from an untrusted canonical (fail closed).
+// Covers both full-set (copyFile) and subset (writeConfigTOMLTo) sets, since
+// the set config is already on disk when this is called. (bead pg2-oymai)
+func propagateSetTrust(w *Workspace, setDir string, errOut io.Writer) {
+	if ok, _ := trust.IsAllowed(w.root); ok {
+		if aerr := trust.Allow(setDir); aerr != nil {
+			fmt.Fprintf(errOut, "warning: workforest hooks: propagate trust to %s: %v\n", setDir, aerr)
+		}
+	}
 }
 
 // installSetHooks fires the post-clone event for the given repos against a
@@ -155,16 +181,7 @@ func installSetHooks(ctx context.Context, w *Workspace, setDir string, repos []s
 		return
 	}
 	defer setWs.Close()
-	// Propagate trust from an already-trusted canonical to the pn-authored set so
-	// its post-clone hooks are not warn-skipped by the trust gate. Never grant
-	// trust to a set derived from an untrusted canonical (fail closed). Covers
-	// both full-set (copyFile) and subset (writeConfigTOMLTo) sets, since the set
-	// config is already on disk here. (bead pg2-oymai)
-	if ok, _ := trust.IsAllowed(w.root); ok {
-		if aerr := trust.Allow(setDir); aerr != nil {
-			fmt.Fprintf(errOut, "warning: workforest hooks: propagate trust to %s: %v\n", setDir, aerr)
-		}
-	}
+	propagateSetTrust(w, setDir, errOut)
 	if err := setWs.RunEventHooks(ctx, HookPhasePost, "clone", repos, out, errOut); err != nil {
 		fmt.Fprintf(errOut, "warning: workforest hooks: %v\n", err)
 	}
