@@ -139,9 +139,11 @@ changes in seconds; a slower interval is fine when the data changes more slowly.
 
 ## Setting file and flag
 
-The mechanism below is the DEFAULT for NEW plugins, and it is the mechanism of the reference
-implementation. Where the convention is not yet ruled (see [Open decisions](#open-decisions)), a new
-plugin MUST use this default.
+The mechanism below is the DEFAULT a NEW plugin SHOULD use, and it is the mechanism of the reference
+implementation. It is not a mandatory interface: the operator has not formalized any rules or best
+practices for the interface of a SwiftBar plugin (ruling of 2026-10-29, quoted under
+[Open decisions](#open-decisions)), so until that happens no plugin is an exception to it. What this
+page does require is the behavior above: the widths, the Title row and the persisted setting.
 
 - **State file.** `$XDG_STATE_HOME/<plugin>/title-width`, where `XDG_STATE_HOME` defaults to
   `~/.local/state` and `<plugin>` is the plugin's own name. The file holds the word `wide`,
@@ -228,16 +230,16 @@ other value as `wide`.
 | ------------------------ | ------------------------------------ | --------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `pa-monitor-swiftbar`    | `pa-monitor-swiftbar/title-width`    | `--set-title-width wide\|narrow`                    | Not yet. Tracked in `pg2-ogkx1x`. | Conforms. The reference.                                                                                                                                                 |
 | attention-items plugin   | `lat-menubar/title-width`            | `--set-title-width wide\|narrow`                    | Not yet. Tracked in `pg2-vs90xh`. | Conforms in kind (wide: a dot and count per severity; narrow: one dot). Conformance check: `pg2-wpk91`.                                                                  |
-| `host-activity`          | `host-activity/title-width`          | `host-activity action run title-width-narrow\|wide` | Not yet. Tracked in `pg2-hzqqv1`. | Conforms with a divergent switch (an action, not a flag). Recorded as conforming; see open decision c3. `pg2-hpfsb` closed.                                              |
+| `host-activity`          | `host-activity/title-width`          | `host-activity action run title-width-narrow\|wide` | Not yet. Tracked in `pg2-hzqqv1`. | Conforms. Its switch is an action rather than the new-plugin default flag, which is not a rule (open decision c3 is closed as not applicable). `pg2-hpfsb` closed.       |
 | `pg-task-focus-swiftbar` | `pg-task-focus-swiftbar/title-width` | `--set-title-width wide\|narrow`                    | Not yet. Tracked in `pg2-7qj1yd`. | Conforms, and is a streaming plugin (it re-reads the setting each tick). It has wide and narrow, a setting file, the flag and a Title row. Rework `pg2-incbn` is closed. |
 
 ```mermaid
 flowchart TD
   P["Plugin"] --> Q1{"Wide and narrow title, persisted setting, Title row?"}
   Q1 -->|"no"| NC["Does not conform: open a conformance bead"]
-  Q1 -->|"yes"| Q2{"Flag --set-title-width and file under the plugin's own name?"}
-  Q2 -->|"yes"| C["Conforms: the default mechanism"]
-  Q2 -->|"no"| D["Conforms with a divergent mechanism: see Open decisions c2, c3"]
+  Q1 -->|"yes"| Q2{"Uses the default flag and file under the plugin's own name?"}
+  Q2 -->|"yes"| C["Conforms: uses the default for a new plugin"]
+  Q2 -->|"no"| D["Conforms: the interface is not yet a rule, see Open decisions c2"]
 ```
 
 ## Test checklist
@@ -296,23 +298,23 @@ alone.
 
 ## Open decisions
 
-These are recorded, not decided. They await the operator (Phillip). Until each is ruled, a NEW
-plugin MUST use the default stated here, which is the `pa-monitor-swiftbar` mechanism: the flag
-`--set-title-width` and the state file `$XDG_STATE_HOME/<plugin>/title-width` where `<plugin>` is
-the plugin's own name.
+These are recorded, not decided, except c3, which is closed. c1 and c2 await the operator (Phillip).
+Until they are ruled, a NEW plugin SHOULD use the default stated here, which is the
+`pa-monitor-swiftbar` mechanism: the flag `--set-title-width` and the state file
+`$XDG_STATE_HOME/<plugin>/title-width` where `<plugin>` is the plugin's own name.
 
-| Id  | Question                                                                                                                                                                                                                                                                          | Default for a NEW plugin until ruled                                                |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| c1  | What does `<plugin>` mean in the state-dir path `$XDG_STATE_HOME/<plugin>/title-width`: the script name, the package name, or a fixed per-plugin id? The three plugins differ today (the script name, the package name and the plugin file name are not the same string).         | The plugin's own name.                                                              |
-| c2  | Is the `--set-title-width wide\|narrow` flag MANDATORY for every plugin, or is the contract only "a dropdown Title row persisting the setting"? `host-activity` uses an action instead of a flag.                                                                                 | The flag, as in the reference.                                                      |
-| c3  | Ratify the `host-activity` mechanism (action `title-width-narrow\|wide`) as conforming, or ask for a rename or alias to the `--set-title-width` flag contract? This is a decision under bead `pg2-np92m`; the plugin is already recorded as conforming and `pg2-hpfsb` is closed. | A NEW plugin uses the flag; `host-activity` is left as is until the operator rules. |
+| Id  | Question                                                                                                                                                                                                                                                                                                                                | Default for a NEW plugin until ruled                                |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| c1  | What does `<plugin>` mean in the state-dir path `$XDG_STATE_HOME/<plugin>/title-width`: the script name, the package name, or a fixed per-plugin id? The three plugins differ today (the script name, the package name and the plugin file name are not the same string).                                                               | The plugin's own name.                                              |
+| c2  | Is the `--set-title-width wide\|narrow` flag MANDATORY for every plugin, or is the contract only "a dropdown Title row persisting the setting"? `host-activity` uses an action instead of a flag.                                                                                                                                       | The flag, as in the reference.                                      |
+| c3  | CLOSED, not applicable (operator ruling, Phillip, 2026-10-29, verbatim: "i don' think we have formalized any consisten rules or best practices on the interface for swiftbar plugins. until we do that, then there is no \"exception\" because there is no rule."). `host-activity` is recorded as conforming, with no exception label. | A NEW plugin SHOULD use the flag, as the default and not as a rule. |
 
 ```mermaid
 flowchart TD
   C1["c1: what is plugin in the state path"] --> M["Mechanism for every plugin"]
   C2["c2: is the flag mandatory"] --> M
-  C3["c3: ratify host-activity or require an alias"] --> M
-  M --> D["Until ruled: a NEW plugin follows the pa-monitor-swiftbar default"]
+  C3["c3: closed, not applicable (2026-10-29 ruling)"] -.-> M
+  M --> D["Until ruled: a NEW plugin SHOULD follow the pa-monitor-swiftbar default"]
 ```
 
 ## Overridable rulings
@@ -340,4 +342,4 @@ beads.
 - The `auto` plugin beads: `pg2-ogkx1x` (`pa-monitor-swiftbar`), `pg2-7qj1yd`
   (`pg-task-focus-swiftbar`), `pg2-vs90xh` (attention-items plugin) and `pg2-hzqqv1`
   (`host-activity`); the helper is `pg2-ijejjy`.
-- Bead `pg2-np92m`: the convention bead, and the home of open decisions c1 to c3.
+- Bead `pg2-np92m`: the convention bead, and the home of open decisions c1 and c2 (c3 is closed).

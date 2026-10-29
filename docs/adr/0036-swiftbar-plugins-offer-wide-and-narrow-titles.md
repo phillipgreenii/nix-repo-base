@@ -20,7 +20,7 @@ A survey of the installed plugins on 2026-10-22, read from their source, found f
   state file under its own name.
 - `host-activity` also offers both widths and a Title row, but its state file is
   `$XDG_STATE_HOME/host-activity/title-width` and its switch is the action
-  `host-activity action run title-width-narrow|wide`, not a flag. An earlier survey that called it
+  `host-activity action run title-width-narrow|wide`, not a flag; this is not an exception, because no rule on the plugin interface exists (see c3 below). An earlier survey that called it
   non-conforming was wrong (commit `28dcdb6d` of the support-apps repo, 2026-10-08).
 - `pg-task-focus-swiftbar` offers neither a narrow title nor a setting, and its title carries
   housekeeping prompts (for example "New day: roll over") that are not the primary state.
@@ -57,19 +57,21 @@ coarse clock, not seconds-by-second.
 
 ### Default mechanism for new plugins, with the open choices recorded
 
-The reference implementation is `pa-monitor-swiftbar`. Until the operator rules, a NEW plugin MUST
-use its mechanism: the flag `--set-title-width wide|narrow`, and the state file
-`$XDG_STATE_HOME/<plugin>/title-width` with `<plugin>` the plugin's own name. Three questions are
-recorded as OPEN and are not decided here:
+The reference implementation is `pa-monitor-swiftbar`. Until the operator rules, a NEW plugin SHOULD
+use its mechanism as the default (it is not a mandatory interface): the flag `--set-title-width wide|narrow`, and the state file
+`$XDG_STATE_HOME/<plugin>/title-width` with `<plugin>` the plugin's own name. Two questions are
+recorded as OPEN and are not decided here, and a third is closed:
 
 | Id  | Question                                                                                   |
 | --- | ------------------------------------------------------------------------------------------ |
 | c1  | What `<plugin>` means in the state-file path (script name, package name, per-plugin id).   |
 | c2  | Whether the flag is MANDATORY, or the contract is only "a Title row persisting a setting". |
-| c3  | Whether to ratify the `host-activity` action as conforming or require a rename or alias.   |
+| c3  | CLOSED, not applicable (2026-10-29 ruling, below).                                         |
 
-`host-activity` is recorded as conforming with a divergent mechanism, and nothing here requires it to
-change.
+`host-activity` is recorded as conforming, and nothing here requires it to change. Operator ruling
+2026-10-29 (Phillip, verbatim): "i don' think we have formalized any consisten rules or best
+practices on the interface for swiftbar plugins. until we do that, then there is no \"exception\"
+because there is no rule."
 
 ```mermaid
 flowchart LR
@@ -99,7 +101,7 @@ workspace-root change takes effect for sessions only after the operator runs `pn
 
 - `pg-task-focus-swiftbar` MUST be reworked (`pg2-incbn`), and the attention-items plugin needs a
   conformance check (`pg2-wpk91`). This standard does not enforce either by itself.
-- The mechanism is not yet uniform: until c1 to c3 are ruled, one plugin keeps a divergent switch.
+- The mechanism is not yet uniform: until c1 and c2 are ruled, plugins MAY differ in the switch they use, and that is not a violation.
 
 ### Neutral
 
@@ -121,7 +123,7 @@ and the operator wants a deliberate switch he controls.
 ### Rule the mechanism now
 
 Make the flag mandatory and rename the `host-activity` action. Not taken: the operator has not ruled
-it (c1 to c3), so the page states a default for new plugins and leaves the choice open.
+it (c1 and c2; c3 is closed), so the page states a default for new plugins and leaves the choice open.
 
 ## Related Decisions
 
