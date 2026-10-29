@@ -31,4 +31,33 @@ in
     '';
     expected = false;
   };
+
+  # (d) the old fallback assignment (pg2-pwfqqn): rev-less NRB_REF -> flagged,
+  # even though the resolver call itself goes through ${NRB_REF}.
+  testOldFallbackDetected = {
+    expr = isUnpinnedUpdateLocks ''
+      if [ -n "$NRB_REV" ]; then
+        NRB_REF="github:phillipgreenii/nix-repo-base/''${NRB_REV}"
+      else
+        NRB_REF="github:phillipgreenii/nix-repo-base"
+      fi
+      UL_LIB_DIR="''${UL_LIB_DIR:-$(nix run "''${NRB_REF}#determine-ul-lib-dir")}"
+    '';
+    expected = true;
+  };
+
+  # (e) rev-less ref at end of content / followed by a quote -> flagged.
+  testRevlessRefAtEndDetected = {
+    expr = isUnpinnedUpdateLocks "NRB_REF=github:phillipgreenii/nix-repo-base";
+    expected = true;
+  };
+
+  # (f) helper-based caller (fail-closed resolve-nrb-ref) -> NOT flagged.
+  testHelperCallerNotDetected = {
+    expr = isUnpinnedUpdateLocks ''
+      NRB_REF=$(resolve-nrb-ref --lock "''${SCRIPT_DIR}/flake.lock")
+      UL_LIB_DIR="''${UL_LIB_DIR:-$(nix run "''${NRB_REF}#determine-ul-lib-dir")}"
+    '';
+    expected = false;
+  };
 }

@@ -266,7 +266,7 @@ in
             # No update-locks.sh to guard — trivially compliant.
             pkgs.runCommand "update-locks-pinned" { } "touch $out"
           else if isUnpinnedUpdateLocks (builtins.readFile ulPath) then
-            throw "phillipgreenii.checks.update-locks-pinned: ${toString ulPath} calls the nix-repo-base resolver at UNPINNED HEAD (nix run github:phillipgreenii/nix-repo-base#determine-ul-lib-dir). In token-bearing CI this builds and runs whatever is at nix-repo-base's default branch — an arbitrary code-execution hole (bead pg2-o784p). Pin it to the locked rev: resolve NRB_REV via 'nix flake metadata' and nix run the rev-pinned ref. Reference implementation: phillipgreenii-nix-overlay/update-locks.sh."
+            throw "phillipgreenii.checks.update-locks-pinned: ${toString ulPath} references nix-repo-base at UNPINNED HEAD (a github:phillipgreenii/nix-repo-base ref with no /<rev>, e.g. nix run github:phillipgreenii/nix-repo-base#determine-ul-lib-dir or an NRB_REF fallback). In token-bearing CI this builds and runs whatever is at nix-repo-base's default branch — an arbitrary code-execution hole (bead pg2-o784p). Fail closed instead: obtain the rev-pinned ref from the shared resolve-nrb-ref helper (exits non-zero when the lock has no nix-repo-base node; no unpinned fallback; bead pg2-sdmk0y). Reference implementation: phillipgreenii-nix-overlay/update-locks.sh."
           else
             pkgs.runCommand "update-locks-pinned" { } "touch $out";
       };

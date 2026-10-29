@@ -341,6 +341,10 @@
             # Update-locks resolver
             determine-ul-lib-dir = ulScripts.determine-ul-lib-dir.script;
 
+            # Fail-closed pinned nix-repo-base ref resolver for consumer update-locks.sh
+            # (bead pg2-sdmk0y).
+            resolve-nrb-ref = ulScripts.resolve-nrb-ref.script;
+
             # pnwf: deterministic helper for the workforest work-cycle.
             pnwf = pnwfScripts.pnwf.script;
 
