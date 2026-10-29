@@ -1,7 +1,7 @@
 # ADR-0030: `pg-nix-log-wrapped` — a fail-open nix telemetry wrapper
 
 **Date:** 2026-10-01
-**Status:** Proposed
+**Status:** Accepted 2026-10-29 (amended 2026-10-27 inline; root-apply statements superseded by [ADR 0038](0038-apply-builds-as-the-user-and-runs-only-profile-set-and-activate-as-root.md); body-vs-code drift recorded in "Amendment 2026-10-29")
 **Deciders:** phillipgreenii
 
 ## Context
@@ -189,9 +189,60 @@ complete (normal exit and forwarded signals); the sweep finalizes the `.raw` of 
 cap without ever evicting them. Statements above that the log is "raw" or that the file nix appends
 to is the retained one describe the original design. Details: wrapper README "Retained logs".
 
-## Not verified here
+## Amendment 2026-10-29: accepted after a body-vs-code check (`pg2-89ny4y`)
 
-- Behaviour under a real `sudo` (the root path is verified by injecting the euid, not by being root).
-- A live collector, Tempo, Prometheus: the acceptance criteria that read those (`nix.invocation` and
-  `nix.build` in Tempo, `increase(nix_derivations{outcome="built"})`, a killed collector mid-run)
-  need the applied stack and are post-apply checks.
+Every design claim above was checked against `modules/pg-nix-log-wrapped` at the commit this ADR
+is accepted in. The design ships; the places where the body no longer matches are:
+
+- **Retry inside the flush budget (supersedes the last Consequences bullet).** "The wrapper cannot
+  retry inside the 2 s budget because the exporter's first retry wait is longer" is no longer true.
+  `internal/app/app.go:55-58` sets `RetryInitialInterval = 100 * time.Millisecond` and `app.go:337`
+  passes `otelsetup.WithRetry(RetryInitialInterval, r.flushTimeout())` (commits `4411df4` and
+  `0b7e896`, 2026-10-14, `pg2-sfp7i`). One transient refusal (HTTP 503 from the collector's memory
+  limiter) is retried inside `PG_NIX_LOG_FLUSH_TIMEOUT` and no longer drops the batch; a collector
+  that stays down still costs at most the flush budget and never the exit code.
+- **Unmatched `--override-input` guard (a bounded exception to "fail open").** Commit `af2449c`
+  (2026-10-26, `pg2-jvzmgf`) added `internal/app/overrideguard.go`: when CMD carries
+  `--override-input` and nix's json log says the name matches no flake input, a run that would
+  have exited 0 exits `ExitUnmatchedOverride = 3` (`PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` turns it
+  off). Runs without that flag, and runs that already fail, are untouched. The same commit makes
+  such a run observed (log tailed, no export) even when telemetry is off or unresolved
+  (`app.go:215-230`, `setupGuardOnly`); every other run keeps the exact `exec` passthrough.
+- **Root reads flags only: scope of the statement.** It holds for the telemetry inputs (endpoint,
+  traceparent, `telemetry.toml`: `config.Resolve` returns after the flag when `Euid == 0`,
+  `internal/config/config.go`). The escape-hatch variables `PG_NIX_LOG_DISABLE`, `OTEL_SDK_DISABLED`,
+  `PG_NIX_LOG_DEBUG` and `PG_NIX_LOG_FLUSH_TIMEOUT` are honored for any euid (`config.Disabled`,
+  `app.go:156,277`); sudo normally drops them, so this only matters under `sudo -E`.
+- **Root logs, F14 (confirmed, not drifted).** `logdir.Select` and `logdir.Prepare`
+  (`internal/logdir/logdir.go:52-110`): euid 0 always uses `/var/log/pg-nix-log-wrapped`, ignores
+  `--log-dir`, creates it 0750, and rejects a non-directory, a directory not owned by the euid, or a
+  group/world-writable one (the wrapper then fails open). On this machine the directory exists as
+  `drwxr-x--- root wheel` (observed 2026-10-29). ADR 0038 only narrows WHICH applies reach it (see
+  the note in Consequences), not the mechanism.
+- **Confirmed unchanged:** packaging as a sibling module with no `runtimeDeps`
+  (`modules/pg-nix-log-wrapped/default.nix`, `flake.nix:371`) plus the three checks
+  (`flake.nix:1756,1799,1811`); the shipped tldr page and no man page or completions (`default.nix`);
+  signal handling and exit codes 126/127/128+n (`app.go:196-208,407-443,577-590`); 20 ms polling
+  (`internal/tailer/tailer.go:26`); the failure-kind closed set and `nix.derivations{outcome}` with
+  `failed` (`nixlog.go:64-82`, `recorder.go:28,130-143`); `nix.subcommand`, `nix.eval.duration`,
+  the aggregate-progress attributes and `nix.substitute.bytes` (`app.go:343-548`,
+  `recorder.go:110`); `--check` exit codes (`app.go:597-640`); the `enabled`/`endpoint` config schema
+  with malformed-file-as-absent (`config.go:fileConfig`, `Resolve`); the filtered retained copy
+  (`nixlog.RetainDrop`, `internal/retain`); the golden-file drift test
+  (`internal/nixlog/nixlog_test.go`) and the real-nix canary
+  (`cmd/pg-nix-log-wrapped/main_test.go:756`).
+
+## Not verified here (resolved 2026-10-29)
+
+- Behaviour under a real `sudo`: resolved by the machine's own root runs. The root directory
+  `/var/log/pg-nix-log-wrapped` exists as `drwxr-x--- root wheel` and holds root-run logs from the
+  legacy apply flow (observed 2026-10-29), which matches the F14 section.
+- A live collector, Tempo, Prometheus: resolved by the Phase 8 observation review
+  (`docs/reviews/2026-10-14-pn-nix-telemetry-observation-findings.md`): `nix.invocation` and
+  `nix.build` spans in Tempo (999 `nix.invocation` spans from 2026-10-07T02:28Z, with
+  `nix.tailer.lag`), and the delta counters in Prometheus. That review also found the Prometheus
+  counter pipeline undercounts (collector side, not the wrapper); that finding is tracked
+  separately and does not change this design.
+- A killed collector mid-run: pinned by tests, not by a live-stack check:
+  `TestDeadCollectorNeverChangesExitCodeOrStderrAndIsBounded` (`internal/app/app_test.go:929`) and
+  `TestTransient503OnTracesIsRetriedInsideTheFlushBudget` (`cmd/pg-nix-log-wrapped/main_test.go:708`).

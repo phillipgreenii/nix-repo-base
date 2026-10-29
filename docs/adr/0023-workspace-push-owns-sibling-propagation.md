@@ -59,7 +59,7 @@ push-then-propagate loop moves to the existing `pn workspace push` subcommand.**
 
 ### Relationship to ADR 0009
 
-This **amends** [ADR 0009](0009-pn-workspace-update-worktree-isolation.md) (`Proposed`); it does not
+This **amends** [ADR 0009](0009-pn-workspace-update-worktree-isolation.md) (`Proposed` when this ADR was written; `Accepted` since 2026-10-29); it does not
 reverse it.
 
 - **Reinforced.** ADR 0009's Context argues at length that update must relock against **pushed

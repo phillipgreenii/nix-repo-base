@@ -1,6 +1,6 @@
 # `pn workspace update` isolates per-repo work in ephemeral git worktrees
 
-**Status**: Proposed (push + sibling propagation amended by [ADR-0023](0023-workspace-push-owns-sibling-propagation.md): both move out of `update` to `pn workspace push`; worktree isolation and `--in-place` unchanged)
+**Status**: Accepted 2026-10-29 (push + sibling propagation amended by [ADR-0023](0023-workspace-push-owns-sibling-propagation.md): both move out of `update` to `pn workspace push`; worktree isolation and `--in-place` unchanged; body-vs-code drift recorded in "Amendment 2026-10-29" below)
 **Date**: 2026-06-24
 **Deciders**: Phillip Green II
 
@@ -203,3 +203,47 @@ state (updated, pushed `main`) _plus_ isolation, so it is the better default;
 - Implementation tracked in
   `docs/superpowers/specs/2026-06-24-pn-workspace-update-worktree-isolation-design.md`
   and its follow-up beads.
+
+## Amendment 2026-10-29: accepted after a body-vs-code check (`pg2-89ny4y`)
+
+The decision (per-repo ephemeral worktrees, local-`main` fast-forward integration, `--in-place`
+escape hatch, leave-on-failure) ships: `updateViaWorktree` and `updateRepoViaWorktree` in
+`modules/pn/internal/workspace/update_worktree.go`, `--in-place` in `update.go` (`UpdateOptions.InPlace`,
+`updateInPlace`) and `upgrade.go:24`. The ADR is therefore Accepted. The body above is left as
+written (it is the 2026-06-24 record); where it no longer matches the code, THIS section governs:
+
+- **No push, no push-before-downstream (ADR 0023).** Decision items 2 and 3 and the Context
+  paragraph on "push-before-downstream" describe a step 6 push that no longer exists:
+  `updateRepoViaWorktree` ends its sync with `fetch origin` plus `rebase origin/main` and says
+  "There is NO push step" (`update_worktree.go`, comment above the primary-state switch). Steps are
+  now: 1 worktree add, 2 sync to `origin/main`, 3 relock, 4 rebase onto local `main`, 5 re-fetch and
+  rebase onto `origin/main`, 6 advance the primary's local `main`, 7 cleanup. The local-before-remote
+  rebase order of item 3 is unchanged (steps 4 then 5).
+- **"Asymmetric defer state" no longer arises.** With no push, remote `main` cannot advance ahead
+  of local `main` because of `update`. A deferred ff now leaves local `main` BEHIND the relocked
+  branch, and the recovery is `git reset --hard <branch>` (or `git branch -f main <branch>` when
+  `main` is not checked out), NOT a reset to `origin/main` (that would discard the relock).
+- **"Concurrent runs" consequence.** The distinct-branch-name part holds
+  (`updateRunStampFn`: sub-second timestamp plus PID, `update_worktree.go:34`). The claim that the
+  second run's step-6 push is rejected does not: there is no push. Two concurrent runs now race on
+  the local `main` fast-forward instead; they are still unsupported.
+- **Worktree location.** The ephemeral worktrees live under `WorkforestsDir()` (the configured
+  `workforests_dir`, default `.workforests`), at `<workforests_dir>/.pn-update/<repo>-<run-ts>`
+  (`update_worktree.go:236`, `updateWorktreesSubdir`), not under `{root}/.worktrees/`. The residue
+  cleanup command is `pn workspace workforest prune` (`internal/cli/workspace.go:934`), not
+  `pn workspace worktree prune`. The dot-skip that keeps `.pn-update/` out of the set list is in
+  `WorkforestList` (`workforest.go:498`).
+- **New guard.** The worktree flow refuses to run inside a coordinated workforest set
+  (`update_worktree.go:118`) and points at `--in-place`.
+- **`--siblings-only` and `SiblingsOnly`** (ADR 0023) are an addition to both flows: they skip
+  `update-locks.sh` and relock only the sibling inputs, still local-only.
+- **fsmonitor.** The consequence about `update-locks.sh` disabling fsmonitor through git's
+  environment config is verified: `lib/scripts/update-locks-lib.bash` (`ul_setup-fsmonitor-disable`,
+  `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`). Step 7 additionally stops the worktree's fsmonitor daemon
+  before `worktree remove` (`stopFsmonitorDaemon`).
+- **Verified unchanged:** `UL_LIB_DIR` hard error on an empty resolve (`update_worktree.go:137`,
+  skipped only for `--siblings-only`); the three-way integration (`merge --ff-only` on clean
+  `main`, `fetch . <branch>:main` otherwise, ff-first then autostash on dirty `main`, hard defer on
+  autostash-pop conflict: `update_worktree.go:353-413`); `--in-place` keeps the dirty-repo skip and
+  `pull --rebase --autostash` (`update.go:167-250`); failures leave worktree plus branch and the
+  sweep continues, a resource abort (exit 77) stops it; success force-deletes the branch with `-D`.
