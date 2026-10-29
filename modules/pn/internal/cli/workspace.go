@@ -358,7 +358,8 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/pn/flake-check-no-build.jsonl (ts, repo,
 caller, duration_s, outcome, nix_exit, failed_sets, first_error). --caller
 labels the line: manual (default) or ff-1c. An unwritable state directory only
 prints a warning. Exit 2 means a bad invocation (unknown repo, unresolvable
---rev), 1 means a check failed.
+--rev), 10 means a check ran and reported failures, and 1 is any other
+error (a generic, unplanned failure).
 
 Without --no-build the command is a plain 'nix flake check' per repo, which
 builds the checks.`,
@@ -724,14 +725,16 @@ func workspaceDoctorCmd(terminal *string) *cobra.Command {
 			}
 			report, derr := workspace.Doctor(cmd.Context(), root, exec.NewRealRunner(), opts)
 			if derr != nil {
-				// doctor itself failed -> exit 2
-				return ExitCodeError{Code: 2, Msg: derr.Error()}
+				// doctor itself failed -> generic exit 1
+				return derr
 			}
 			if rerr := workspace.RenderDoctor(cmd.OutOrStdout(), report, opts); rerr != nil {
 				return rerr
 			}
-			if code := report.ExitCode(strict); code != 0 {
-				return ExitCodeError{Code: code}
+			if report.ExitCode(strict) != 0 {
+				// Findings: the check ran and reported failures (exit 10);
+				// the report is already rendered.
+				return &workspace.CheckFailedError{}
 			}
 			return nil
 		},

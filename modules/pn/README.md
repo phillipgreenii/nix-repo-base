@@ -367,7 +367,7 @@ gives the same verdict on a cold and a warm store.
 `<repo-or-path>` selects one repo: a workspace repo key (the canonical clone), or a path to the repo or
 one of its git worktrees (that directory is evaluated, against the canonical siblings). `--rev <rev>`
 evaluates that commit of the selected repo instead of its working tree. A failure is a failure: no
-retry and no inconclusive class. Exit 0 all evaluated, 1 a repo failed, 2 a bad invocation. Every run
+retry and no inconclusive class. Exit 0 all evaluated, 10 a check ran and a repo failed, 2 a bad invocation, 1 any other (generic) error. Every run
 appends one JSON line per repo to `${XDG_STATE_HOME:-$HOME/.local/state}/pn/flake-check-no-build.jsonl`
 (`ts`, `repo`, `caller`, `duration_s`, `outcome`, `nix_exit`, `failed_sets`, `first_error`); an unwritable
 state directory only warns. `docs/hooks.md` ("The eval-only pre-land check") has the full contract and
@@ -395,8 +395,8 @@ describes `pre-land-eval`, the land step's caller of this command.
 ### Exit Codes
 
 - `0` — No errors (and, under `--strict`, no warnings). Local and remote builds will match.
-- `1` — Errors present (or any finding under `--strict`).
-- `2` — Doctor itself failed (e.g., `ls-remote` unreachable without `--offline`).
+- `10` — Errors present (or any finding under `--strict`): the check ran and reported failures.
+- `1` — Doctor itself failed (e.g., `ls-remote` unreachable without `--offline`): a generic error, not a finding.
 
 ### Important Note: flake-lock-fresh Fix
 

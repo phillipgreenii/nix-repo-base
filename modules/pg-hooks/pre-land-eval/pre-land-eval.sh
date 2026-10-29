@@ -17,7 +17,9 @@
 # 0/10/2/127 exit codes.
 #
 # There is no retry and no inconclusive class (operator ruling, 2026-10-23): every
-# failure of the check, environmental or not, is eval-failed.
+# failure of the check, environmental or not, is eval-failed. pn reports a check
+# that ran and failed as exit 10 (CheckFailedError); pn exit 1 is a generic pn
+# failure and maps to "could not run" (bead pg2-wrujsm).
 #
 # stdout is exactly ONE word; everything else, pn's output included, is stderr.
 # Exit codes: 0 ok or not-enabled, 10 eval-failed, 2 usage error (including an
@@ -57,9 +59,10 @@ stderr: pn's output (the reproduce commands, timings, the first lines of nix's e
 
 Exit codes:
   0   ok, or not-enabled
-  10  eval-failed (pn reported a failed evaluation; there is no retry)
+  10  eval-failed (pn exited 10: a failed evaluation; there is no retry)
   2   usage error, including a ref that does not resolve and a repo that is no
-      workspace member
+      workspace member, and a check that could not run (pn exited 1 or any
+      code other than 0, 2 and 10)
   127 pn is not installed
 
 Runs 1 to 3 minutes: run it through bgrun and bgwait.
@@ -146,7 +149,7 @@ case "$RC" in
   printf 'ok\n'
   exit 0
   ;;
-1)
+10)
   say "eval failed: pn workspace flake-check --no-build reported a failure (see its output above)"
   printf 'eval-failed\n'
   exit 10
@@ -155,6 +158,8 @@ case "$RC" in
   die_usage "pn rejected the invocation (a ref that does not resolve, or a repo that is no workspace member); see its message above"
   ;;
 *)
+  # 1 is pn's generic, unplanned error (a lock error, an untrusted hook), never
+  # a failed check: the check could not run, which is not agent-fixable eval-failed.
   die_usage "pn workspace flake-check --no-build exited $RC; the check could not run"
   ;;
 esac

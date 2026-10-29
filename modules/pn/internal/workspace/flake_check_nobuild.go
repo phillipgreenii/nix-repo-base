@@ -61,6 +61,21 @@ type UsageError struct{ Msg string }
 
 func (e *UsageError) Error() string { return e.Msg }
 
+// CheckFailedExitCode is the process exit status of a check that ran and
+// reported failures (flake-check --no-build with a failed evaluation, doctor
+// with findings). Exit 1 stays the generic, unplanned error and carries no
+// branchable meaning; 2 is a bad invocation (operator ruling 2026-10-28 on
+// pg2-9jk3g5, bead pg2-wrujsm). pre-land-eval's own eval-failed code is the same
+// number.
+const CheckFailedExitCode = 10
+
+// CheckFailedError marks a check that ran to completion and reported failures,
+// as opposed to a pn failure of its own (a lock error, an untrusted hook) or a
+// bad invocation (UsageError). cli.ExitCode maps it to CheckFailedExitCode.
+type CheckFailedError struct{ Msg string }
+
+func (e *CheckFailedError) Error() string { return e.Msg }
+
 var (
 	errorLineRE  = regexp.MustCompile(`^\s*error: .+`)
 	absentErrRE  = regexp.MustCompile(`^\s*error: flake '.*' does not provide attribute `)
@@ -283,7 +298,7 @@ func (ws *Workspace) flakeCheckNoBuild(ctx context.Context, out io.Writer, errOu
 		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("flake check --no-build failed in %d project(s): %s", len(failed), strings.Join(failed, ", "))
+		return &CheckFailedError{Msg: fmt.Sprintf("flake check --no-build failed in %d project(s): %s", len(failed), strings.Join(failed, ", "))}
 	}
 	return nil
 }

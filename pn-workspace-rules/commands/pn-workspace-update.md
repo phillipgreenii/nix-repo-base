@@ -203,7 +203,7 @@ flowchart TD
      with the same `cd <SETDIR> && export PN_WORKSPACE_ROOT="$PWD" &&` prefix, and
      classify its findings as `validate-workforest` step 5 specifies, with
      `BRANCH = pn-workspace-update`. Doctor's exit status is NOT the verdict: it
-     still exits `1` on drift this run itself caused (an in-set `flake-lock-fresh`
+     still exits `10` on drift this run itself caused (an in-set `flake-lock-fresh`
      on a sibling this run is about to land, which the POST step converges), and
      the skill's classifier is what separates that `EXEMPT` drift from a
      `BLOCKING` finding. **No `BLOCKING` line** → validate is CLEAR: go to step 3,

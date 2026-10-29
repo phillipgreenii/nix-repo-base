@@ -22,7 +22,11 @@ func main() {
 		// commands have already rendered their own report to stdout.
 		var ec cli.ExitCodeError
 		if !errors.As(err, &ec) {
-			fmt.Fprintln(os.Stderr, err)
+			// A doctor run with findings carries no message (its report is
+			// already rendered).
+			if err.Error() != "" {
+				fmt.Fprintln(os.Stderr, err)
+			}
 		} else if ec.Msg != "" {
 			fmt.Fprintln(os.Stderr, ec.Msg)
 		}

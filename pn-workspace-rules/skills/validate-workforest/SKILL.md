@@ -95,7 +95,7 @@ flake-check`, or `pn workspace build`), then `pn workspace doctor` as the
      warning. Target absent → the drift is NOT this run's to clear, so it stays an
      ERROR and validate FAILS.
    - **Doctor's exit status is NOT the verdict here.** Doctor knows nothing of this
-     carve-out and still exits `1` on a downgraded-only report, so read the
+     carve-out and still exits `10` on a downgraded-only report, so read the
      findings. Validate MUST NOT pass `--strict` in-set — it re-promotes warnings to
      errors and re-creates the very failure this step removes.
    - The exemption is gated on `.mode == "worktree"`, so it can never reach a

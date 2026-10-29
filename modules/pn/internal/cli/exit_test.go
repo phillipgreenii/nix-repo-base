@@ -77,3 +77,21 @@ func TestExitCode_LockBusyIsDistinct(t *testing.T) {
 		}
 	}
 }
+
+// A check that ran and reported failures exits CheckFailedExitCode (10), also
+// when wrapped; a plain error stays the generic 1 (bead pg2-wrujsm).
+func TestExitCode_CheckFailedError(t *testing.T) {
+	cf := &workspace.CheckFailedError{Msg: "flake check --no-build failed in 1 project(s): x"}
+	if got := ExitCode(cf); got != 10 {
+		t.Errorf("CheckFailedError exit = %d, want 10", got)
+	}
+	if got := ExitCode(fmt.Errorf("wrapped: %w", cf)); got != 10 {
+		t.Errorf("wrapped CheckFailedError exit = %d, want 10", got)
+	}
+	if got := ExitCode(errors.New("lock error")); got != 1 {
+		t.Errorf("plain error exit = %d, want 1", got)
+	}
+	if got := ExitCode(ExitCodeError{Code: 2, Msg: "usage"}); got != 2 {
+		t.Errorf("usage exit = %d, want 2", got)
+	}
+}

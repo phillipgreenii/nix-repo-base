@@ -263,8 +263,8 @@ pre-land-eval [--no-ifd] <repo-path> <ref>
 | ------------------------- | ---- | ---------------------------------------------------------------------------------------------------- |
 | `ok`                      | 0    | every evaluated set evaluated cleanly                                                                |
 | `not-enabled`             | 0    | the clone has not opted in (or the key is absent)                                                    |
-| `eval-failed`             | 10   | pn reported a failed evaluation                                                                      |
-| (nothing)                 | 2    | usage error: a repo path, ref or workspace repo that does not resolve, or pn failed to run           |
+| `eval-failed`             | 10   | pn exited 10: a failed evaluation (pn exit 1 is a generic pn failure, reported as exit 2 below)      |
+| (nothing)                 | 2    | usage error: a repo path, ref or workspace repo that does not resolve, or pn failed to run (exit 1)  |
 | (nothing)                 | 127  | pn is not installed (`pn not installed on this machine; ask the operator to run pn workspace apply`) |
 
 - stderr carries pn's output: the command to reproduce, the timings and the first error of each

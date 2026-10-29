@@ -22,11 +22,11 @@ func TestReportExitCode(t *testing.T) {
 	if warn.ExitCode(false) != 0 {
 		t.Fatal("warn (non-strict) -> 0")
 	}
-	if warn.ExitCode(true) != 1 {
-		t.Fatal("warn (strict) -> 1")
+	if warn.ExitCode(true) != CheckFailedExitCode {
+		t.Fatal("warn (strict) -> 10")
 	}
-	if err.ExitCode(false) != 1 {
-		t.Fatal("error -> 1")
+	if err.ExitCode(false) != CheckFailedExitCode {
+		t.Fatal("error -> 10")
 	}
 }
 

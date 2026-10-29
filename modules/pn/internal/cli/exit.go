@@ -28,7 +28,8 @@ func (e ExitCodeError) Error() string {
 // ExitCode maps an error to a process exit code: 0 for nil, the carried
 // code for an ExitCodeError, the failed subprocess's own code for a
 // CommandError, exec.ToolNotFoundExitCode for a ToolNotFoundError,
-// workspace.LockBusyExitCode for a LockBusyError, and 1 for any other error.
+// workspace.LockBusyExitCode for a LockBusyError,
+// workspace.CheckFailedExitCode for a CheckFailedError, and 1 for any other error.
 func ExitCode(err error) int {
 	if err == nil {
 		return 0
@@ -48,6 +49,12 @@ func ExitCode(err error) int {
 	var lb *workspace.LockBusyError
 	if errors.As(err, &lb) {
 		return workspace.LockBusyExitCode
+	}
+	// A check that ran and reported failures (bead pg2-wrujsm): 1 stays the
+	// generic, unplanned error.
+	var cf *workspace.CheckFailedError
+	if errors.As(err, &cf) {
+		return workspace.CheckFailedExitCode
 	}
 	var ce *exec.CommandError
 	if errors.As(err, &ce) && ce.Result.ExitCode != 0 {

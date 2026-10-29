@@ -453,7 +453,7 @@ func TestFlakeCheckNoBuild_RealNix_SiblingDriftFailsAgainstTheLockAndPassesWithP
 	}
 }
 
-func TestFlakeCheckNoBuild_RealNix_AFailureExitsOneAndTheLogLinesHaveTheDocumentedShape(t *testing.T) {
+func TestFlakeCheckNoBuild_RealNix_AFailureExitsTenAndTheLogLinesHaveTheDocumentedShape(t *testing.T) {
 	e := newNBEnv(t)
 	// A check whose evaluation throws: the evaluation of the derivation path fails.
 	e.lone(t, `(throw "boom-from-the-fixture")`, "", nil)
@@ -462,8 +462,8 @@ func TestFlakeCheckNoBuild_RealNix_AFailureExitsOneAndTheLogLinesHaveTheDocument
 	// One passing run (a different, healthy repo is not needed: --rev of the broken repo fails, so
 	// use the healthy sibling flake from the drift fixture below). First, the failing run.
 	out, se, code := e.pn(t, repoDir, "flake-check", "--no-build", "--caller", "ff-1c", "lone")
-	if code != 1 {
-		t.Fatalf("a failing check exits 1, got %d\nstdout:\n%s\nstderr:\n%s", code, out, se)
+	if code != 10 {
+		t.Fatalf("a failing check exits 10 (1 is the generic error), got %d\nstdout:\n%s\nstderr:\n%s", code, out, se)
 	}
 	if !strings.Contains(out+se, "boom-from-the-fixture") {
 		t.Errorf("the nix error must be shown:\n%s\n%s", out, se)
@@ -508,8 +508,8 @@ func TestFlakeCheckNoBuild_RealNix_AFailureExitsOneAndTheLogLinesHaveTheDocument
 	}
 	env := append(append([]string{}, e.env...), "XDG_STATE_HOME="+blocker)
 	_, se, code = runIn(t, repoDir, env, pnBinary, "workspace", "flake-check", "--no-build", "lone")
-	if code != 1 {
-		t.Errorf("an unwritable state dir must not change the verdict (still 1 for the failing repo), got %d", code)
+	if code != 10 {
+		t.Errorf("an unwritable state dir must not change the verdict (still 10 for the failing repo), got %d", code)
 	}
 	if !strings.Contains(se, "cannot log the run") {
 		t.Errorf("an unwritable state dir should be reported on stderr:\n%s", se)
@@ -561,7 +561,7 @@ func TestFlakeCheckNoBuild_RealNix_TheRepoUnderTestIsTheWorkingTreeAWorktreePath
 	}
 
 	// By default the WORKING TREE is evaluated: the dirty edit fails the check.
-	if out, se, code := e.pn(t, consumer.Dir, "flake-check", "--no-build", "consumer"); code != 1 {
+	if out, se, code := e.pn(t, consumer.Dir, "flake-check", "--no-build", "consumer"); code != 10 {
 		t.Errorf("the dirty working tree must be what is evaluated: exit %d\n%s\n%s", code, out, se)
 	}
 	// --rev evaluates the COMMIT; the dirty edit is ignored: passes (what the land step wants).
@@ -589,7 +589,7 @@ func TestFlakeCheckNoBuild_RealNix_TheRepoUnderTestIsTheWorkingTreeAWorktreePath
 	if err := os.WriteFile(filepath.Join(wt, "flake.nix"), []byte(wtBroken), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out, se, code := e.pn(t, consumer.Dir, "flake-check", "--no-build", wt); code != 1 {
+	if out, se, code := e.pn(t, consumer.Dir, "flake-check", "--no-build", wt); code != 10 {
 		t.Errorf("a worktree PATH evaluates that worktree (broken): exit %d\n%s\n%s", code, out, se)
 	}
 	if out, se, code := e.pn(t, consumer.Dir, "flake-check", "--no-build", "consumer"); code != 0 {

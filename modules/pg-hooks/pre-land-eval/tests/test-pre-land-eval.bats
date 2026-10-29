@@ -281,9 +281,9 @@ _pn_rc() {
   [[ $stderr == *"pn says hello"* ]]
 }
 
-@test "pn exit 1 (a failed check) is eval-failed, exit 10, with pn's output on stderr" {
+@test "pn exit 10 (a failed check) is eval-failed, exit 10, with pn's output on stderr" {
   _enable
-  _pn_rc 1
+  _pn_rc 10
   printf '  checks.aarch64-darwin: FAILED\n' >"$SHIM_DIR/pn.out"
   printf 'error: The option `x.dockerState'"'"' does not exist.\n' >"$SHIM_DIR/pn.err"
   run --separate-stderr sut "$REPO" HEAD
@@ -303,10 +303,21 @@ _pn_rc() {
   [[ $stderr == *"ref does not resolve"* ]]
 }
 
+@test "pn exit 1 (a generic pn failure) is NOT eval-failed: the check could not run, exit 2" {
+  _enable
+  _pn_rc 1
+  printf 'pn: untrusted hooks\n' >"$SHIM_DIR/pn.err"
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ $stderr == *"exited 1"* ]]
+  [[ $stderr == *"could not run"* ]]
+}
+
 @test "any other pn exit status means the check could not run: exit 2, no verdict word" {
   _enable
   local rc
-  for rc in 3 127 130 143; do
+  for rc in 3 11 127 130 143; do
     _pn_rc "$rc"
     run --separate-stderr sut "$REPO" HEAD
     [ "$status" -eq 2 ]
@@ -317,7 +328,7 @@ _pn_rc() {
 
 @test "there is no retry: pn runs exactly once, even on failure" {
   _enable
-  _pn_rc 1
+  _pn_rc 10
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 10 ]
   [ "$(grep -c '^workspace$' "$SHIM_DIR/argv")" -eq 1 ]
@@ -326,7 +337,7 @@ _pn_rc() {
 @test "there is no inconclusive outcome: no verdict word but ok, eval-failed or not-enabled is ever printed" {
   _enable
   local rc
-  for rc in 0 1 2 3 130; do
+  for rc in 0 1 2 3 10 130; do
     _pn_rc "$rc"
     run --separate-stderr sut "$REPO" HEAD
     case "$output" in ok | eval-failed | "") ;; *) false ;; esac

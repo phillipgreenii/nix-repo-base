@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// A repo that is no workspace member is a bad invocation: exit 2, not the exit 1
-// that means a check ran and failed. pre-land-eval relies on the difference.
+// A repo that is no workspace member is a bad invocation: exit 2, not the exit 10
+// that means a check ran and failed (1 is the generic error). pre-land-eval relies on the difference.
 func TestWorkspaceFlakeCheckNoBuild_UnknownRepoExitsTwo(t *testing.T) {
 	withFakeWorkspace(t, terminalToml)
 	_, _, err := runCobraCmd(t, []string{"flake-check", "--no-build", "no-such-repo"})
@@ -59,6 +59,7 @@ func TestWorkspaceFlakeCheck_HelpDocumentsNoBuild(t *testing.T) {
 		"--rev",
 		"flake-check-no-build.jsonl",
 		"no retry and no inconclusive class",
+		"10 means a check ran and reported failures",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("flake-check --help should mention %q:\n%s", want, stdout)

@@ -502,7 +502,7 @@ rev); the main session's land + publish steps are what converge it. So a
 **warning**, not a `validate-failed` halt — `validate-workforest` step 5 owns this
 rule and this is its runner-side application.
 
-Doctor knows nothing of the exemption and still exits `1`, so **its exit status is
+Doctor knows nothing of the exemption and still exits `10`, so **its exit status is
 NOT the verdict.** Classify the findings instead of reading `$?`:
 
 ```bash

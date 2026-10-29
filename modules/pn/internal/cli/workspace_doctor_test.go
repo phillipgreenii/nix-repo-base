@@ -18,7 +18,9 @@ func TestDoctorCmd_BrokenTomlExitsNonZero(t *testing.T) {
 
 	var out, errBuf bytes.Buffer
 	err := executeWithVersion("test", []string{"workspace", "doctor"}, &out, &errBuf)
-	if ExitCode(err) == 0 {
-		t.Fatalf("broken toml should exit non-zero; out=%s err=%s", out.String(), errBuf.String())
+	// A report with findings is exit 10 (a check that ran and failed); 1 is
+	// reserved for doctor's own failure.
+	if got := ExitCode(err); got != 10 {
+		t.Fatalf("broken toml: doctor reports findings, want exit 10, got %d; out=%s err=%s", got, out.String(), errBuf.String())
 	}
 }

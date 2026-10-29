@@ -65,8 +65,9 @@ func (r *DoctorReport) hasAny() bool {
 	return false
 }
 
-// ExitCode maps the report to 0 (clean), 1 (errors, or any finding under strict).
-// Code 2 (doctor itself failed) is returned by Doctor's error path, not here.
+// ExitCode maps the report to 0 (clean), CheckFailedExitCode (errors, or any
+// finding under strict). A doctor that itself failed returns an error from
+// Doctor (generic exit 1), not a code here.
 //
 // GAP 3 ruling (bd tc-atsmj): a Skipped finding (e.g. branch-synced's "remote
 // comparison skipped" / "remote rev unresolved") NEVER fails the exit code,
@@ -91,10 +92,10 @@ func (r *DoctorReport) hasAny() bool {
 // pipeline on `pn workspace doctor`.
 func (r *DoctorReport) ExitCode(strict bool) int {
 	if r.HasErrors() {
-		return 1
+		return CheckFailedExitCode
 	}
 	if strict && r.hasAny() {
-		return 1
+		return CheckFailedExitCode
 	}
 	return 0
 }
