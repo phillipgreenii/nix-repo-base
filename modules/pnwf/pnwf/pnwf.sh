@@ -78,8 +78,26 @@ Options:
   -v, --version     Show version information
 
 --set (on resolve/repos/stage/sync-fetch/update-relock): guard — exit
-non-zero unless the resolved workspace is inside a coordinated workforest set
+13 unless the resolved workspace is inside a coordinated workforest set
 (in_workforest=true).
+
+Exit codes:
+  0    success
+  1    generic / unplanned failure (a failed `pn workspace info` probe, a
+       missing lock file, an unresolvable primary branch, ...). Carries no
+       branchable meaning: read stderr, do not branch on it.
+  2    usage error: unknown option, argument or subcommand; a missing or
+       extra <branch>; a bare `pnwf` with no subcommand
+  3-9  sync-fetch only: 3 rebase stopped mid-way, 4 rebase refused, 5 rebase
+       state indeterminate, 6 member worktree dirty, 7 dirtiness unknown, 8
+       canonical clone anomaly, 9 canonical ahead-status unknown
+  10   sync-fetch only: canonical push failed
+  11   sync-fetch only: a canonical is ahead AND behind origin (halts the run)
+  12   sync-fetch only: `git fetch origin` failed
+  13   --set guard: not inside a coordinated workforest set
+  (the per-code recovery for 3-12 is listed in the sync-fetch recovery
+  table in pnwf.sh's header comment and in pn-workspace-rules/agents/
+  pnwf-runner.md)
 
 fork-preflight/land-plan/cleanup/status take <branch> explicitly and derive
 the set directory from canonical_root + workforests_dir — they work whether
@@ -100,9 +118,22 @@ Examples:
 HELP
 }
 
+# Exit-code contract (code-file-standards "Exit Codes"; base F-23, bead
+# pg2-w4vs4s): 1 is the GENERIC / UNPLANNED failure and carries no branchable
+# meaning; 2 is a usage error (die_usage); every specific, branchable
+# condition has its own distinct code >= 3 (table in show_help).
+PNWF_EXIT_SET_GUARD=13
+
 die() {
   echo "pnwf: error: $1" >&2
   exit "${2:-1}"
+}
+
+# Usage error (unknown argument/option/subcommand, missing or extra operand,
+# bare invocation): always exit 2, never 1.
+die_usage() {
+  echo "pnwf: error: $1" >&2
+  exit 2
 }
 
 # Runs `pn workspace info --json` with any inherited PN_WORKSPACE_ROOT
@@ -122,7 +153,7 @@ _pnwf_info_json() {
 _pnwf_require_set_guard() {
   local subcommand="$1" require_set="$2" in_workforest="$3" root="$4"
   if [[ $require_set -eq 1 && $in_workforest != "true" ]]; then
-    die "$subcommand --set: expected to be inside a workforest set, but the resolved root ($root) is not in_workforest"
+    die "$subcommand --set: expected to be inside a workforest set, but the resolved root ($root) is not in_workforest" "$PNWF_EXIT_SET_GUARD"
   fi
 }
 
@@ -163,7 +194,7 @@ HELP
       exit 0
       ;;
     *)
-      die "resolve: unknown argument: $1"
+      die_usage "resolve: unknown argument: $1"
       ;;
     esac
     shift
@@ -216,7 +247,7 @@ HELP
       exit 0
       ;;
     *)
-      die "repos: unknown argument: $1"
+      die_usage "repos: unknown argument: $1"
       ;;
     esac
     shift
@@ -259,7 +290,7 @@ HELP
       exit 0
       ;;
     *)
-      die "stage: unknown argument: $1"
+      die_usage "stage: unknown argument: $1"
       ;;
     esac
     shift
@@ -334,7 +365,7 @@ cmd_fork_preflight() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --repos)
-      [[ $# -ge 2 ]] || die "fork-preflight: --repos requires a value"
+      [[ $# -ge 2 ]] || die_usage "fork-preflight: --repos requires a value"
       repos_csv="$2"
       shift
       ;;
@@ -376,16 +407,16 @@ HELP
       exit 0
       ;;
     --*)
-      die "fork-preflight: unknown argument: $1"
+      die_usage "fork-preflight: unknown argument: $1"
       ;;
     *)
-      [[ -z $branch ]] || die "fork-preflight: unexpected extra argument: $1"
+      [[ -z $branch ]] || die_usage "fork-preflight: unexpected extra argument: $1"
       branch="$1"
       ;;
     esac
     shift
   done
-  [[ -n $branch ]] || die "fork-preflight: <branch> is required"
+  [[ -n $branch ]] || die_usage "fork-preflight: <branch> is required"
 
   local info in_workforest canonical_root workforests_dir
   info=$(_pnwf_info_json) || die "'pn workspace info --json' failed"
@@ -598,16 +629,16 @@ HELP
       exit 0
       ;;
     --*)
-      die "land-plan: unknown argument: $1"
+      die_usage "land-plan: unknown argument: $1"
       ;;
     *)
-      [[ -z $branch ]] || die "land-plan: unexpected extra argument: $1"
+      [[ -z $branch ]] || die_usage "land-plan: unexpected extra argument: $1"
       branch="$1"
       ;;
     esac
     shift
   done
-  [[ -n $branch ]] || die "land-plan: <branch> is required"
+  [[ -n $branch ]] || die_usage "land-plan: <branch> is required"
 
   local resolved canonical_root setdir lock_file
   resolved=$(_pnwf_resolve_set_dir "$branch")
@@ -654,16 +685,16 @@ HELP
       exit 0
       ;;
     --*)
-      die "status: unknown argument: $1"
+      die_usage "status: unknown argument: $1"
       ;;
     *)
-      [[ -z $branch ]] || die "status: unexpected extra argument: $1"
+      [[ -z $branch ]] || die_usage "status: unexpected extra argument: $1"
       branch="$1"
       ;;
     esac
     shift
   done
-  [[ -n $branch ]] || die "status: <branch> is required"
+  [[ -n $branch ]] || die_usage "status: <branch> is required"
 
   local resolved canonical_root setdir lock_file
   resolved=$(_pnwf_resolve_set_dir "$branch")
@@ -724,7 +755,7 @@ HELP
       exit 0
       ;;
     *)
-      die "residue: unknown argument: $1"
+      die_usage "residue: unknown argument: $1"
       ;;
     esac
     shift
@@ -926,16 +957,16 @@ HELP
       exit 0
       ;;
     --*)
-      die "cleanup: unknown argument: $1"
+      die_usage "cleanup: unknown argument: $1"
       ;;
     *)
-      [[ -z $branch ]] || die "cleanup: unexpected extra argument: $1"
+      [[ -z $branch ]] || die_usage "cleanup: unexpected extra argument: $1"
       branch="$1"
       ;;
     esac
     shift
   done
-  [[ -n $branch ]] || die "cleanup: <branch> is required"
+  [[ -n $branch ]] || die_usage "cleanup: <branch> is required"
 
   local resolved canonical_root setdir lock_file
   resolved=$(_pnwf_resolve_set_dir "$branch")
@@ -1082,7 +1113,7 @@ Stops on the FIRST failure, reporting which member and worktree/canonical
 path stopped it, then exits non-zero WITH THE EXIT CODE THAT IDENTIFIES THE
 CASE. Recovery is agent-owned and depends on which step failed and, for a
 failed rebase, on whether a rebase is actually in progress afterwards:
-  2  fetch failed        check the remote/network/auth, then re-run `pnwf
+  12 fetch failed        check the remote/network/auth, then re-run `pnwf
                           sync-fetch` -- no rebase was started.
   3  rebase mid-way      a conflict left the worktree mid-rebase: resolve
                           it there, run `git rebase --continue`, then
@@ -1154,7 +1185,7 @@ HELP
       exit 0
       ;;
     *)
-      die "sync-fetch: unknown argument: $1"
+      die_usage "sync-fetch: unknown argument: $1"
       ;;
     esac
     shift
@@ -1296,7 +1327,7 @@ Resolve the ahead-and-behind member(s) by hand in their own canonical clone (e.g
     case "$rc" in
     0) : ;;
     2)
-      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git fetch origin' failed there; check the remote/network/auth, then re-run 'pnwf sync-fetch'" "$rc"
+      die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- 'git fetch origin' failed there; check the remote/network/auth, then re-run 'pnwf sync-fetch'" 12
       ;;
     3)
       die "sync-fetch: stopped on member '$member' (worktree: $member_setpath) -- a rebase conflict left it mid-rebase; resolve it there, run 'git -C $member_setpath rebase --continue', then re-run 'pnwf sync-fetch'" "$rc"
@@ -1409,7 +1440,7 @@ HELP
       exit 0
       ;;
     *)
-      die "update-relock: unknown argument: $1"
+      die_usage "update-relock: unknown argument: $1"
       ;;
     esac
     shift
@@ -1567,7 +1598,7 @@ while [[ $# -gt 0 ]]; do
     break
     ;;
   --*)
-    die "unknown option: $1"
+    die_usage "unknown option: $1"
     ;;
   *)
     break
@@ -1578,7 +1609,7 @@ done
 
 if [[ $# -eq 0 ]]; then
   show_help
-  exit 1
+  exit 2
 fi
 
 SUBCOMMAND="$1"
@@ -1600,6 +1631,6 @@ sync-fetch) cmd_sync_fetch "$@" ;;
 update-relock) cmd_update_relock "$@" ;;
 residue) cmd_residue "$@" ;;
 *)
-  die "unknown subcommand: $SUBCOMMAND"
+  die_usage "unknown subcommand: $SUBCOMMAND"
   ;;
 esac

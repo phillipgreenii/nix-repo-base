@@ -57,10 +57,12 @@ The envelope always carries version, outcome, shape, reason, steps and display:
   display    free text for humans; display-only, sanitized, never parsed
 
 Exit codes: 0 whenever an envelope was emitted, INCLUDING refuse and stopped —
-those are honest answers, not failures. Non-zero (with a diagnostic on stderr
-and NO envelope) only for a usage error: --root missing, relative or not an
-existing directory, an unknown flag, or a --root that is inside a pn workspace
-but is neither the workspace root nor inside any member repo.
+those are honest answers, not failures. Exit 2 (with a diagnostic on stderr
+and NO envelope) for a usage error: --root missing, relative or not an
+existing directory, an unknown flag or subcommand, a bare `wsplan`, or a --root
+that is inside a pn workspace but is neither the workspace root nor inside any
+member repo. Exit 1 is a generic/unplanned failure (e.g. git or pn could not be
+read) and carries no branchable meaning.
 
 Examples:
   wsplan land-plan --root /Users/me/workspace
@@ -69,9 +71,16 @@ Examples:
 HELP
 }
 
+# Exit-code contract (code-file-standards "Exit Codes"; bd pg2-w4vs4s): 1 is a
+# generic/unplanned failure with no branchable meaning; 2 is a usage error.
 die() {
   echo "wsplan: error: $1" >&2
   exit "${2:-1}"
+}
+
+die_usage() {
+  echo "wsplan: error: $1" >&2
+  exit 2
 }
 
 # --- state shared across the routers ----------------------------------------
@@ -666,7 +675,7 @@ cmd_land_plan() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --root)
-      [[ $# -ge 2 ]] || die "land-plan: --root requires a value"
+      [[ $# -ge 2 ]] || die_usage "land-plan: --root requires a value"
       root="$2"
       shift
       ;;
@@ -674,7 +683,7 @@ cmd_land_plan() {
       root="${1#--root=}"
       ;;
     --set-branch)
-      [[ $# -ge 2 ]] || die "land-plan: --set-branch requires a value"
+      [[ $# -ge 2 ]] || die_usage "land-plan: --set-branch requires a value"
       set_branch="$2"
       have_set_branch=1
       shift
@@ -688,10 +697,10 @@ cmd_land_plan() {
       exit 0
       ;;
     --*)
-      die "land-plan: unknown argument: $1"
+      die_usage "land-plan: unknown argument: $1"
       ;;
     *)
-      die "land-plan: unexpected positional argument: $1"
+      die_usage "land-plan: unexpected positional argument: $1"
       ;;
     esac
     shift
@@ -700,11 +709,11 @@ cmd_land_plan() {
   # §4's preconditions, checked BEFORE any shape routing, so identical
   # malformed input yields the identical usage error with AND without
   # --set-branch. These are the four non-zero, NO-envelope cases of §6.2.
-  [[ -n $root ]] || die "land-plan: --root is required"
-  [[ $root == /* ]] || die "land-plan: --root must be an absolute path: $root"
-  [[ -d $root ]] || die "land-plan: --root must name an existing directory: $root"
+  [[ -n $root ]] || die_usage "land-plan: --root is required"
+  [[ $root == /* ]] || die_usage "land-plan: --root must be an absolute path: $root"
+  [[ -d $root ]] || die_usage "land-plan: --root must name an existing directory: $root"
   if [[ $have_set_branch -eq 1 && -z $set_branch ]]; then
-    die "land-plan: --set-branch requires a non-empty value"
+    die_usage "land-plan: --set-branch requires a non-empty value"
   fi
 
   ROOT=$(_normalize_dir "$root") ||
@@ -790,7 +799,7 @@ cmd_land_plan() {
     _route_single_repo "$mname" "$mpath"
   fi
 
-  die "land-plan: --root ($ROOT) is inside the pn workspace at $canonical_root but is neither the workspace root nor inside any member repo"
+  die_usage "land-plan: --root ($ROOT) is inside the pn workspace at $canonical_root but is neither the workspace root nor inside any member repo"
 }
 
 # --- top-level arg parsing + dispatch ---------------------------------------
@@ -806,7 +815,7 @@ while [[ $# -gt 0 ]]; do
     break
     ;;
   --*)
-    die "unknown option: $1"
+    die_usage "unknown option: $1"
     ;;
   *)
     break
@@ -817,7 +826,7 @@ done
 
 if [[ $# -eq 0 ]]; then
   show_help
-  exit 1
+  exit 2
 fi
 
 SUBCOMMAND="$1"
@@ -826,6 +835,6 @@ shift
 case "$SUBCOMMAND" in
 land-plan) cmd_land_plan "$@" ;;
 *)
-  die "unknown subcommand: $SUBCOMMAND"
+  die_usage "unknown subcommand: $SUBCOMMAND"
   ;;
 esac

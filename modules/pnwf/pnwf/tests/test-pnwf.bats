@@ -330,7 +330,7 @@ _stage_init_member() {
 @test "resolve --set exits non-zero on a guard violation (asked in-set, info says not)" {
   cd "$CANONICAL_DIR"
   run "$SCRIPT_UNDER_TEST" resolve --set
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 13 ]
   [[ "$output" == *"not in_workforest"* ]]
 }
 
@@ -368,10 +368,76 @@ _stage_init_member() {
   [[ "$output" == *"residue"* ]]
 }
 
-@test "unknown subcommand exits non-zero with a message" {
+@test "unknown subcommand exits 2 (usage) with a message" {
   run "$SCRIPT_UNDER_TEST" bogus-subcommand
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [[ "$output" == *"unknown subcommand"* ]]
+}
+
+# --- exit-code contract (bd pg2-w4vs4s, base F-23): 1 is generic/unplanned,
+# 2 is usage, the --set guard is 13, every other specific code is >= 3. -------
+
+@test "bare invocation exits 2 and prints usage" {
+  run "$SCRIPT_UNDER_TEST"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"Usage: pnwf"* ]]
+}
+
+@test "unknown top-level option exits 2" {
+  run "$SCRIPT_UNDER_TEST" --bogus
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unknown option"* ]]
+}
+
+@test "unknown argument exits 2 for every subcommand that parses arguments" {
+  local sub
+  for sub in resolve repos stage fork-preflight land-plan cleanup status residue sync-fetch update-relock; do
+    run "$SCRIPT_UNDER_TEST" "$sub" --bogus-flag
+    [ "$status" -eq 2 ] || { echo "$sub: got $status: $output" >&3; return 1; }
+    [[ "$output" == *"unknown argument"* ]]
+  done
+}
+
+@test "a missing <branch> exits 2 for fork-preflight, land-plan, status and cleanup" {
+  local sub
+  for sub in fork-preflight land-plan status cleanup; do
+    run "$SCRIPT_UNDER_TEST" "$sub"
+    [ "$status" -eq 2 ] || { echo "$sub: got $status: $output" >&3; return 1; }
+    [[ "$output" == *"<branch> is required"* ]]
+  done
+}
+
+@test "an extra positional exits 2 for land-plan, status and cleanup" {
+  local sub
+  for sub in fork-preflight land-plan status cleanup; do
+    run "$SCRIPT_UNDER_TEST" "$sub" one two
+    [ "$status" -eq 2 ] || { echo "$sub: got $status: $output" >&3; return 1; }
+    [[ "$output" == *"unexpected extra argument"* ]]
+  done
+}
+
+@test "fork-preflight --repos without a value exits 2" {
+  run "$SCRIPT_UNDER_TEST" fork-preflight my-branch --repos
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--repos requires a value"* ]]
+}
+
+@test "an unplanned internal error (pn workspace info fails) exits 1, not a usage or guard code" {
+  # Run from a directory with no .mock-pn-info.json: the pn mock exits 1.
+  cd "$TEST_DIR"
+  run "$SCRIPT_UNDER_TEST" resolve
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"'pn workspace info --json' failed"* ]]
+}
+
+@test "--help documents every exit code (0, 1, 2, 3-9, 10, 11, 12, 13)" {
+  run "$SCRIPT_UNDER_TEST" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Exit codes:"* ]]
+  local code
+  for code in "  0 " "  1 " "  2 " "  3-9 " "  10 " "  11 " "  12 " "  13 "; do
+    [[ "$output" == *"$code"* ]] || { echo "missing: $code" >&3; return 1; }
+  done
 }
 
 # --- repos -------------------------------------------------------------------
@@ -404,7 +470,7 @@ _stage_init_member() {
   _stage_write_lock repoA
   cd "$CANONICAL_DIR"
   run "$SCRIPT_UNDER_TEST" repos --set
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 13 ]
   [[ "$output" == *"not in_workforest"* ]]
 }
 
@@ -476,7 +542,7 @@ _stage_init_member() {
   _stage_write_lock repoA
   cd "$CANONICAL_DIR"
   run "$SCRIPT_UNDER_TEST" stage --set
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 13 ]
   [[ "$output" == *"not in_workforest"* ]]
 }
 
@@ -1625,8 +1691,8 @@ _sync_fetch_init_members() {
 
   cd "$SET_DIR"
   run "$SCRIPT_UNDER_TEST" sync-fetch --set
-  # 2: the FETCH-step status, distinct from both rebase statuses (3 and 4).
-  [ "$status" -eq 2 ]
+  # 12: the FETCH-step status (2 is a usage error), distinct from both rebase statuses (3 and 4).
+  [ "$status" -eq 12 ]
   [[ "$output" == *"repoB"* ]]
   [[ "$output" == *"$SET_DIR/repoB"* ]]
 
@@ -1729,7 +1795,7 @@ _sync_fetch_init_members() {
   _stage_write_lock repoA
   cd "$CANONICAL_DIR"
   run "$SCRIPT_UNDER_TEST" sync-fetch --set
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 13 ]
   [[ "$output" == *"not in_workforest"* ]]
 }
 
@@ -2086,7 +2152,7 @@ _ur_set_upstream() {
   _stage_write_lock repoA
   cd "$CANONICAL_DIR"
   run "$SCRIPT_UNDER_TEST" update-relock --set
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 13 ]
   [[ "$output" == *"not in_workforest"* ]]
 }
 
@@ -2424,7 +2490,7 @@ _residue_leave_member_mid_rebase() {
   _stage_write_lock repoA
   cd "$CANONICAL_DIR"
   run "$SCRIPT_UNDER_TEST" residue --set
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 13 ]
   [[ "$output" == *"not in_workforest"* ]]
 }
 

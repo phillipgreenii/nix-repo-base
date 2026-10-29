@@ -304,8 +304,9 @@ faithfully propagated the claim (bd `pg2-k3s0x`). Read stderr only for the
 - **exit 0 — clean** → classify the set per
   [Nothing to sync](#nothing-to-sync--return-noop-must) below, then proceed to
   Stage 3 unless that classification says the run is a no-op.
-- **exit 2 — `git fetch` failure** (a network/remote/auth problem; no rebase was
-  started) → you MUST return `halt` with `stage: "sync-fetch"` and
+- **exit 12 — `git fetch` failure** (a network/remote/auth problem; no rebase was
+  started; this was exit 2 before bd `pg2-w4vs4s`, which made 2 the
+  usage-error code) → you MUST return `halt` with `stage: "sync-fetch"` and
   `reason: "fetch-failed"`. You MUST NOT include a rebase hint.
 - **exit 3 — rebase STOPPED MID-WAY** (a conflict; `pnwf` observed git's own
   rebase-in-progress state still present in that worktree) → you MUST return

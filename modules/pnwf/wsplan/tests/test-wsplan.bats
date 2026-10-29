@@ -1011,21 +1011,21 @@ _ws_simple() {
     # (1) --root missing
     # shellcheck disable=SC2086  # deliberate splitting of the flag pair under test
     run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan $args
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 2 ]
     [ -z "$output" ]
     [[ $stderr == *"--root is required"* ]]
 
     # (2) --root relative
     # shellcheck disable=SC2086  # deliberate splitting of the flag pair under test
     run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan --root relative/path $args
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 2 ]
     [ -z "$output" ]
     [[ $stderr == *"absolute path"* ]]
 
     # (3) --root nonexistent
     # shellcheck disable=SC2086  # deliberate splitting of the flag pair under test
     run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan --root "$TEST_DIR/no-such-dir" $args
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 2 ]
     [ -z "$output" ]
     [[ $stderr == *"existing directory"* ]]
   done
@@ -1036,7 +1036,7 @@ _ws_simple() {
   mkdir -p "$WS/not-a-member"
 
   run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan --root "$WS/not-a-member"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [ -z "$output" ]
   [[ $stderr == *"neither the workspace root nor inside any member repo"* ]]
 }
@@ -1061,19 +1061,19 @@ _ws_simple() {
 
 @test "usage: an unknown flag, an unknown subcommand and a stray positional all fail" {
   run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan --root "$TEST_DIR" --nope
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [ -z "$output" ]
 
   run --separate-stderr "$SCRIPT_UNDER_TEST" frobnicate
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [ -z "$output" ]
 
   run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan --root "$TEST_DIR" extra
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [ -z "$output" ]
 
   run --separate-stderr "$SCRIPT_UNDER_TEST" --bogus
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [ -z "$output" ]
 }
 
@@ -1102,8 +1102,8 @@ _ws_simple() {
   [[ $output == *"Usage:"* ]]
 }
 
-@test "help: no arguments prints help and exits non-zero" {
+@test "help: no arguments prints help and exits 2 (usage)" {
   run --separate-stderr "$SCRIPT_UNDER_TEST"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [[ $output == *"Usage:"* ]]
 }
