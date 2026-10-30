@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -212,8 +213,11 @@ type Plan struct {
 
 // RecordPlan records one run's plan: pn.plan.build / pn.plan.fetch (and
 // pn.plan.download_mib when the fetch message carried a size) on the span in ctx
-// (the pn.repo span), and ONE pn.plan.builds observation labelled with verb
-// (build or apply) only. Call it once per run that reached the build step.
+// (the pn.repo span), and ONE pn.plan.builds observation labelled with the pn.verb
+// only. The label carries the same full verb as pn.command.duration
+// ("workspace build" / "workspace apply"): a bare "build" / "apply" is normalized
+// by PlanVerbLabel, so one pn_verb value means one verb across every pn metric.
+// Call it once per run that reached the build step.
 func RecordPlan(ctx context.Context, verb string, p Plan) {
 	attrs := []attribute.KeyValue{
 		attribute.Int(AttrPlanBuild, p.Builds),
@@ -224,7 +228,17 @@ func RecordPlan(ctx context.Context, verb string, p Plan) {
 	}
 	trace.SpanFromContext(ctx).SetAttributes(attrs...)
 	From(ctx).planBuilds.Record(context.WithoutCancel(ctx), int64(p.Builds),
-		metric.WithAttributes(attribute.String(AttrVerb, verb)))
+		metric.WithAttributes(attribute.String(AttrVerb, PlanVerbLabel(verb))))
+}
+
+// PlanVerbLabel returns the pn.verb label value for a rebuild verb: the full
+// "workspace <verb>" form pn.command.duration uses. A verb that already starts
+// with "workspace " is returned unchanged.
+func PlanVerbLabel(verb string) string {
+	if strings.HasPrefix(verb, "workspace ") {
+		return verb
+	}
+	return "workspace " + verb
 }
 
 // RebuildContext is what a build or apply run records about itself on its

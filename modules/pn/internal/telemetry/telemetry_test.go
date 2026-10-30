@@ -3,6 +3,7 @@ package telemetry_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -391,5 +392,32 @@ func TestMetricNamesAreInTheSharedCatalog(t *testing.T) {
 		if m.Name == telemetry.MetricPlanBuilds && !slices.Contains(m.Buckets, 400.0) {
 			t.Errorf("catalog buckets for %s = %v, want an exact 400 edge", m.Name, m.Buckets)
 		}
+	}
+}
+
+// pn.plan.builds MUST use the same pn.verb values as pn.command.duration
+// ("workspace build" / "workspace apply"): no bare build/apply series may sit
+// beside them.
+func TestRecordPlan_VerbLabelIsFullWorkspaceVerb(t *testing.T) {
+	tel, rec := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	for _, verb := range []string{"build", "apply", "workspace build", "workspace apply"} {
+		telemetry.RecordPlan(ctx, verb, telemetry.Plan{Builds: 1})
+	}
+	got := map[string]bool{}
+	for _, sm := range rec.Metrics(t).ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != telemetry.MetricPlanBuilds {
+				continue
+			}
+			for _, dp := range m.Data.(metricdata.Histogram[int64]).DataPoints {
+				v, _ := dp.Attributes.Value("pn.verb")
+				got[v.AsString()] = true
+			}
+		}
+	}
+	want := map[string]bool{"workspace build": true, "workspace apply": true}
+	if !maps.Equal(got, want) {
+		t.Errorf("pn.verb values = %v, want exactly %v", got, want)
 	}
 }

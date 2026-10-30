@@ -229,7 +229,7 @@ from the data; bead `pg2-sdbhh4.21`).
   run prints several plan messages their counts add up.
 - **Metric** `pn.plan.builds`: a histogram (unit `{derivation}`), one observation per build or apply
   run that reached the build step (0 when no plan was printed), labelled only by `pn.verb`
-  (`build` or `apply`). Its bucket boundaries (0, 25, 50, 100, 200, 300, 400, 600, 1000, 2000) are in
+  (`workspace build` or `workspace apply`, the same values as `pn.command.duration`). Its bucket boundaries (0, 25, 50, 100, 200, 300, 400, 600, 1000, 2000) are in
   the shared catalog (`x/otelsetup/metrics.go`, `PlanBuildsBuckets`) so that 400, the alert point, is an
   exact edge; a Prometheus bucket is `le`-inclusive, so a plan of exactly 400 counts in `le="400"`.
 - **Known limit**: pn's delta metrics undercount (pn runs were 67.6% of the Tempo count in

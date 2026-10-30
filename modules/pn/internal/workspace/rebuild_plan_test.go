@@ -235,8 +235,9 @@ func planHistogram(t *testing.T, rec *telemetrytest.Recorder) metricdata.Histogr
 	return metricdata.Histogram[int64]{}
 }
 
-// pn.plan.builds: one observation per run, labelled with the verb only, with
-// 400 an exact bucket edge.
+// pn.plan.builds: one observation per run, labelled with the full
+// "workspace <verb>" pn.verb only (the same value pn.command.duration uses),
+// with 400 an exact bucket edge.
 func TestRebuildPlan_HistogramOncePerRunVerbLabelOnly(t *testing.T) {
 	for _, verb := range planVerbs {
 		t.Run(verb, func(t *testing.T) {
@@ -257,8 +258,8 @@ func TestRebuildPlan_HistogramOncePerRunVerbLabelOnly(t *testing.T) {
 			if got := dp.Attributes.Len(); got != 1 {
 				t.Errorf("labels = %d, want only the verb", got)
 			}
-			if v, ok := dp.Attributes.Value("pn.verb"); !ok || v.AsString() != verb {
-				t.Errorf("verb label = %v, want %q", v, verb)
+			if v, ok := dp.Attributes.Value("pn.verb"); !ok || v.AsString() != "workspace "+verb {
+				t.Errorf("verb label = %v, want %q", v, "workspace "+verb)
 			}
 			found := false
 			for _, b := range dp.Bounds {
