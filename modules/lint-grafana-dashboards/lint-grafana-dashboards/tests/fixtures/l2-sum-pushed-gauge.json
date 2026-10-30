@@ -1,0 +1,11 @@
+{
+  "panels": [
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Summed pushed gauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum by (state) (ccpool_session_states)" }]
+    }
+  ]
+}

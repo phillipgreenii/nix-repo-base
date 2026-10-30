@@ -1,0 +1,11 @@
+{
+  "panels": [
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Stat over range",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "rate(requests_total[$__rate_interval])" }]
+    }
+  ]
+}

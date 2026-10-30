@@ -248,6 +248,12 @@
           pgCheckGrafanaAlertUidsScripts = import ./modules/pg-check-grafana-alert-uids/scripts.nix {
             inherit pkgs bashBuilders;
           };
+          # lint-grafana-dashboards: the shared Grafana dashboard JSON lint (bead
+          # pg2-rkgr6e). Not a prek hook; exported as a package so the dashboard
+          # packages in other repos wire it into their own checks.
+          lintGrafanaDashboardsScripts = import ./modules/lint-grafana-dashboards/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
           # This repo's OWN repo-specific pg-test-runner configuration: the
           # shared default registry (modules/pg-test-runner/config.nix) plus
           # an `ignore` entry for lib/bash-builders-tests/ -- the mkBashBuilders
@@ -413,6 +419,10 @@
             # Surfaced here so overlays.default (below) can expose it as
             # pkgs.pg-git-check-identity.
             pg-git-check-identity = pgGitCheckIdentityScripts.pg-git-check-identity.script;
+
+            # lint-grafana-dashboards: shared dashboard JSON lint; consumers read
+            # phillipgreenii-nix-base.packages.${system}.lint-grafana-dashboards.
+            lint-grafana-dashboards = lintGrafanaDashboardsScripts.lint-grafana-dashboards.script;
 
             # This repo's own rendered pg-test-runner config (pgTestRunnerRepoConfig
             # above), exposed as a package SOLELY so the `run-unit-tests` prek hook
@@ -2476,6 +2486,7 @@
           // pgTempoSearchScripts.checks
           // pgGitCheckIdentityScripts.checks
           // pgCheckGrafanaAlertUidsScripts.checks
+          // lintGrafanaDashboardsScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
           # assertion across mkBashLibrary/mkBashScript/mkBashModule). Was dead code —
           # never imported by any .nix (bead pg2-fqar3 / prior deep-dive T1).

@@ -1,0 +1,15 @@
+{
+  "panels": [
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Guarded gauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(last_over_time(some_gauge{job=\"a\"}[15m])) + sum(rate(x[$__rate_interval]))"
+        }
+      ]
+    }
+  ]
+}

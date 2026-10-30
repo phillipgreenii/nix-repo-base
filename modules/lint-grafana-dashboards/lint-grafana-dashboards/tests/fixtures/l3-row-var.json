@@ -1,0 +1,11 @@
+{
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Host $host",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    }
+  ]
+}

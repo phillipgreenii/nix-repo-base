@@ -1,0 +1,12 @@
+{
+  "panels": [
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Fixed window panel",
+      "description": "Deliberate. window: fixed",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "rate(requests_total[5m])" }]
+    }
+  ]
+}

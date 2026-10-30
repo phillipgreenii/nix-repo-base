@@ -1,0 +1,13 @@
+{
+  "panels": [
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Per instance",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum by (instance) (rate(requests_total[$__rate_interval]))" }
+      ]
+    }
+  ]
+}

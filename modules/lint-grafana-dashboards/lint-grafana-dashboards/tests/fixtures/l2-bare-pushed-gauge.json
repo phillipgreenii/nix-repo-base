@@ -1,0 +1,11 @@
+{
+  "panels": [
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Bare pushed gauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "pa_monitor_week_cost_usd{model=\"x\"}" }]
+    }
+  ]
+}

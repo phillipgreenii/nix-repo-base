@@ -1,0 +1,17 @@
+# Metric families that are pushed gauges: every pushing process reports the whole
+# value, so a bare selector or a plain sum over them double counts across
+# processes (use sum(max by (...) (F))). One FULL metric name per line.
+pg_connector_github_budget_remaining
+pg_connector_github_queue_depth
+pg_connector_github_tracked_entities
+pg_connector_github_watched_entities
+pg_connector_github_governor_backlog
+pg_connector_github_change_settle_pending
+ccpool_pool_capacity
+ccpool_sessions_preserved_for_human
+ccpool_session_states
+ccpool_session_info
+pa_monitor_session_tokens
+pa_monitor_session_cost_usd
+pa_monitor_block_cost_usd
+pa_monitor_week_cost_usd

@@ -1,0 +1,8 @@
+#compdef lint-grafana-dashboards
+
+_arguments -s \
+  '--error[treat rule L1 findings as errors]:rule:(L1)' \
+  '--list[list unmarked literal windows]:rule:(L1)' \
+  '(-h --help)'{-h,--help}'[show help]' \
+  '(-v --version)'{-v,--version}'[show version information]' \
+  '*:dashboard JSON:_files -g "*.json"'

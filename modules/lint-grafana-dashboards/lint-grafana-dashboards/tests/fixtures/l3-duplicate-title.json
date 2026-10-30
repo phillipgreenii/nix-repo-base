@@ -1,0 +1,18 @@
+{
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Same title",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "up" }]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Same title",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "up" }]
+    }
+  ]
+}
