@@ -2241,6 +2241,43 @@
                   throw "capability-framework assertions failed: ${toString failures}"
               );
 
+            # Eval + run check (bead tc-w1iu3): phillipgreenii.pn.enable emits an
+            # activation WARNING (stderr, exit 0) when pn-workspace.toml is absent,
+            # stays silent when present, is absent entirely when pn is disabled, and
+            # never writes the toml via home.file. Runs the real script in tmp dirs.
+            pn-workspace-toml-warning =
+              let
+                r = import ./tests/pn-workspace-toml-warning.nix { inherit pkgs; };
+              in
+              pkgs.runCommand "pn-workspace-toml-warning" { } (
+                if r.onWritesToml || r.offHasActivation then
+                  throw "pn-workspace-toml-warning: toml written via home.file, or activation present when pn disabled"
+                else
+                  ''
+                    set -eu
+                    script=${pkgs.writeText "pn-warn.sh" r.data}
+                    run() { env -i PATH="${pkgs.coreutils}/bin" "$@" ${pkgs.bash}/bin/bash -eu -o pipefail "$script"; }
+                    absent=$(mktemp -d); present=$(mktemp -d); touch "$present/pn-workspace.toml"
+                    mkdir -p "$present/a/b"
+                    # absent: warning on stderr, exit 0
+                    err=$(cd "$absent" && run 2>&1 >/dev/null)
+                    case "$err" in *"pn-workspace.toml was not found"*) ;; *) echo "FAIL: no warning when absent: $err"; exit 1;; esac
+                    # PN_WORKSPACE_ROOT at an empty dir overrides a present cwd toml: warning
+                    err=$(cd "$present" && run PN_WORKSPACE_ROOT="$absent" 2>&1 >/dev/null)
+                    case "$err" in *"was not found"*) ;; *) echo "FAIL: env-root absent not warned: $err"; exit 1;; esac
+                    # present in cwd: silent
+                    err=$(cd "$present" && run 2>&1)
+                    [ -z "$err" ] || { echo "FAIL: warned when present: $err"; exit 1; }
+                    # present via ancestor walk-up: silent
+                    err=$(cd "$present/a/b" && run 2>&1)
+                    [ -z "$err" ] || { echo "FAIL: warned for ancestor toml: $err"; exit 1; }
+                    # present via PN_WORKSPACE_ROOT: silent
+                    err=$(cd "$absent" && run PN_WORKSPACE_ROOT="$present" 2>&1)
+                    [ -z "$err" ] || { echo "FAIL: warned with env root present: $err"; exit 1; }
+                    touch $out
+                  ''
+              );
+
             # Eval-level check (bead pg2-y1z3fk): the flox overlay's default
             # (floxPkgs = flox's own cacheable packages output) and its opt-in
             # fallback (floxPkgsNoChecks = the doCheck = false chain) are both

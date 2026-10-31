@@ -70,6 +70,28 @@ let
     }
   );
 
+  # Activation check for a missing pn-workspace.toml (bead tc-w1iu3). pn REWRITES
+  # that file (`pn workspace init` / `doctor --fix`), so Nix MUST NOT own it
+  # (a home.file symlink would be read-only): this only WARNS, never fails and
+  # never writes. Root resolution mirrors pn's own (internal/cli/workspace.go):
+  # PN_WORKSPACE_ROOT first, else the nearest ancestor of the CWD holding
+  # pn-workspace.toml. The script is exposed as
+  # `config.home.activation.pnWorkspaceTomlWarn.data` so
+  # tests/pn-workspace-toml-warning.nix can run the real script.
+  workspaceTomlWarnScript = ''
+    pn_root="''${PN_WORKSPACE_ROOT:-}"
+    if [ -z "$pn_root" ]; then
+      pn_dir="$PWD"
+      while [ "$pn_dir" != "/" ] && [ ! -f "$pn_dir/pn-workspace.toml" ]; do
+        pn_dir="$(dirname "$pn_dir")"
+      done
+      pn_root="$pn_dir"
+    fi
+    if [ ! -f "$pn_root/pn-workspace.toml" ]; then
+      echo "warning: phillipgreenii.pn.enable is set but pn-workspace.toml was not found (PN_WORKSPACE_ROOT=\"''${PN_WORKSPACE_ROOT:-}\", searched up from $PWD); run 'pn workspace init' to create it" >&2
+    fi
+  '';
+
   storeToml = tomlFormat.generate "pn-store.toml" {
     search_dirs = cfg.store.searchDirs;
     keep_days = cfg.store.keepDays;
@@ -170,21 +192,30 @@ in
   config = mkIf cfg.enable {
     # Always built to emit: the wrapper is installed on every system, enabled or
     # not (ADR 0028); whether it emits is the runtime `enabled` key.
-    home.packages = [
-      cfg.package
-      pkgs.pg-nix-log-wrapped
-    ];
+    home = {
+      packages = [
+        cfg.package
+        pkgs.pg-nix-log-wrapped
+      ];
 
-    # Install store config when searchDirs or any post-GC hook is set
-    # (keepDays/keepCount default to the tool's prior hardcoded 14/3).
-    home.file =
-      lib.optionalAttrs
-        (cfg.store.searchDirs != [ ] || cfg.store.postGcClearDirs != [ ] || cfg.store.postGcCommands != [ ])
-        {
-          ".config/pn/store.toml".source = storeToml;
-        }
-      // {
-        ".config/pn/telemetry.toml".source = telemetryToml;
+      # Warn (never fail, never write) when pn-workspace.toml is absent.
+      activation.pnWorkspaceTomlWarn = {
+        after = [ "writeBoundary" ];
+        before = [ ];
+        data = workspaceTomlWarnScript;
       };
+
+      # Install store config when searchDirs or any post-GC hook is set
+      # (keepDays/keepCount default to the tool's prior hardcoded 14/3).
+      file =
+        lib.optionalAttrs
+          (cfg.store.searchDirs != [ ] || cfg.store.postGcClearDirs != [ ] || cfg.store.postGcCommands != [ ])
+          {
+            ".config/pn/store.toml".source = storeToml;
+          }
+        // {
+          ".config/pn/telemetry.toml".source = telemetryToml;
+        };
+    };
   };
 }
