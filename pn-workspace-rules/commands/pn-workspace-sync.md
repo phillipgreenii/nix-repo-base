@@ -47,6 +47,17 @@ flowchart TD
     C --> P["Step 5 POST - pn workspace push"]
 ```
 
+0. **Publish canonical ahead commits (background, MUST).** Before dispatching,
+   run `cd <CANONICAL_ROOT> && pnwf publish-canonical` as a BACKGROUND job
+   (`run_in_background`, then watch it with Monitor until it exits; bd
+   `tc-3rz5o`). It pushes any canonical clone's locally-landed primary to origin,
+   running that repo's pre-push hooks, which can take longer than the 600000 ms
+   foreground ceiling the runner is bound by. Exit 0 → dispatch the runner (it
+   runs `pnwf sync-fetch --set --no-publish`). Exit 11 (a canonical both ahead
+   AND behind origin) or 8/9/10 (canonical anomaly / ahead-status unknown /
+   push failed) → STOP and report pnwf's message; the canonical needs a human
+   reconcile. Do not dispatch the runner past a failed publish.
+
 1. **Dispatch the runner.** Dispatch the subagent
    `pn-workspace-rules:pnwf-runner` via the Task tool with NO model override (its
    frontmatter pins Sonnet), passing the absolute `CANONICAL_ROOT`,

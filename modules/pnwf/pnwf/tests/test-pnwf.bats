@@ -391,7 +391,7 @@ _stage_init_member() {
 
 @test "unknown argument exits 2 for every subcommand that parses arguments" {
   local sub
-  for sub in resolve repos stage fork-preflight land-plan cleanup status residue sync-fetch update-relock; do
+  for sub in resolve repos stage fork-preflight land-plan cleanup status residue sync-fetch publish-canonical update-relock; do
     run "$SCRIPT_UNDER_TEST" "$sub" --bogus-flag
     [ "$status" -eq 2 ] || { echo "$sub: got $status: $output" >&3; return 1; }
     [[ "$output" == *"unknown argument"* ]]
@@ -2518,4 +2518,104 @@ _residue_leave_member_mid_rebase() {
   [ -d "$HOME" ]
   # Empty, i.e. nothing of the developer's is reachable through $HOME.
   [ -z "$(ls -A "$HOME")" ]
+}
+
+# --- publish-canonical / sync-fetch --no-publish (bd tc-3rz5o) ------------
+# A /pn-workspace-sync runner subagent is bound to a 600000 ms foreground
+# ceiling, but a canonical clone's pre-push hook can legitimately run longer.
+# The publish half is therefore its own verb the MAIN session can background.
+# These tests use REAL git (a bare origin, a real pre-push hook, a real linked
+# worktree) and the real pnwf script; only `pn` and integrate-branch-support
+# are the suite's usual mocks.
+
+_publish_fixture() {
+  _stage_write_lock repoA
+  _stage_init_member repoA
+  local canon="$CANONICAL_DIR/repoA"
+  ORIGIN_DIR="$TEST_DIR/origin-repoA.git"
+  command git init -q --bare "$ORIGIN_DIR"
+  command git -C "$canon" remote add origin "$ORIGIN_DIR"
+  command git -C "$canon" push -q origin main
+  command git -C "$canon" fetch -q origin
+  # Canonical lands a commit locally and does not push it (ahead-only).
+  echo two >"$canon/file.txt"
+  command git -C "$canon" commit -q -am "local canonical commit"
+  # A deliberately slow pre-push hook (the incident's shape, scaled down).
+  PREPUSH_MARKER="$TEST_DIR/prepush-ran"
+  # The hermetic harness disables hooks globally; point THIS throwaway
+  # fixture repo (under TEST_DIR) at a hooks dir of its own so the hook runs.
+  local hooks_dir="$TEST_DIR/fixture-hooks"
+  mkdir -p "$hooks_dir"
+  cat >"$hooks_dir/pre-push" <<HOOK
+#!/usr/bin/env bash
+sleep 1
+touch "$PREPUSH_MARKER"
+HOOK
+  chmod +x "$hooks_dir/pre-push"
+  command git -C "$canon" config core.hooksPath "$hooks_dir"
+}
+
+@test "publish-canonical --set: pushes an ahead canonical through a slow pre-push hook, without fetching or rebasing the member" {
+  _publish_fixture
+  local member_before
+  member_before=$(command git -C "$SET_DIR/repoA" rev-parse HEAD)
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" publish-canonical --set
+  [ "$status" -eq 0 ]
+  [ -f "$PREPUSH_MARKER" ]
+  [ "$(command git -C "$ORIGIN_DIR" rev-parse main)" = "$(command git -C "$CANONICAL_DIR/repoA" rev-parse main)" ]
+  # The member's worktree was not rebased.
+  [ "$(command git -C "$SET_DIR/repoA" rev-parse HEAD)" = "$member_before" ]
+}
+
+@test "publish-canonical --set: outside a set exits 13" {
+  _publish_fixture
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" publish-canonical --set
+  [ "$status" -eq 13 ]
+}
+
+@test "sync-fetch --set --no-publish: refuses (exit 14) while a canonical is still ahead, pushing and rebasing nothing" {
+  _publish_fixture
+  local origin_before
+  origin_before=$(command git -C "$ORIGIN_DIR" rev-parse main)
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set --no-publish
+  [ "$status" -eq 14 ]
+  [[ "$output" == *"pnwf publish-canonical"* ]]
+  [ ! -f "$PREPUSH_MARKER" ]
+  [ "$(command git -C "$ORIGIN_DIR" rev-parse main)" = "$origin_before" ]
+}
+
+@test "publish-canonical then sync-fetch --no-publish: the two-step sequence succeeds and never pushes in the second step" {
+  _publish_fixture
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" publish-canonical --set
+  [ "$status" -eq 0 ]
+  rm -f "$PREPUSH_MARKER"
+
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set --no-publish
+  [ "$status" -eq 0 ]
+  [ ! -f "$PREPUSH_MARKER" ]
+}
+
+@test "sync-fetch --set (default, no --no-publish): still publishes an ahead canonical itself (unchanged behaviour)" {
+  _publish_fixture
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" sync-fetch --set
+  [ "$status" -eq 0 ]
+  [ -f "$PREPUSH_MARKER" ]
+  [ "$(command git -C "$ORIGIN_DIR" rev-parse main)" = "$(command git -C "$CANONICAL_DIR/repoA" rev-parse main)" ]
+}
+
+@test "publish-canonical and sync-fetch --no-publish are documented in --help" {
+  run "$SCRIPT_UNDER_TEST" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"publish-canonical"* ]]
+  [[ "$output" == *"--no-publish"* ]]
+  [[ "$output" == *"14"* ]]
+  run "$SCRIPT_UNDER_TEST" publish-canonical --help
+  [ "$status" -eq 0 ]
 }

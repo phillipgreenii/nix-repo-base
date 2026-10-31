@@ -47,7 +47,14 @@ Subcommands (read-only, implemented):
                      mid-rebase.
 
 Subcommands (mutating WORK-recipe helpers, not read-only probes):
-  sync-fetch [--set]
+  publish-canonical [--set]
+                     The publish half of sync-fetch on its own: pushes each
+                     member's CANONICAL clone primary to origin if locally
+                     ahead (same divergence pre-flight and exit codes). Lets a
+                     caller that survives long commands (the main session, in
+                     the background) absorb a slow pre-push hook; follow with
+                     `sync-fetch --no-publish`.
+  sync-fetch [--set] [--no-publish]
                      Per present member (topo order): first publishes the
                      member's CANONICAL clone's primary branch to origin if
                      it is locally ahead (never --force; no-op for the
@@ -60,7 +67,9 @@ Subcommands (mutating WORK-recipe helpers, not read-only probes):
                      on, git would NOT refuse but could leave a conflicted
                      autostash behind while reporting success. Stops on the
                      FIRST failure, reporting the member + worktree/
-                     canonical path; recovery is agent-owned.
+                     canonical path; recovery is agent-owned. --no-publish skips the
+                     canonical push and refuses (exit 14) a member whose
+                     canonical is still ahead (run publish-canonical first).
   update-relock [--set]
                      Relock every present member's flake inputs (nixpkgs +
                      third-party + workspace siblings) IN PLACE, by shelling
@@ -77,7 +86,7 @@ Options:
   -h, --help        Show this help message
   -v, --version     Show version information
 
---set (on resolve/repos/stage/sync-fetch/update-relock): guard — exit
+--set (on resolve/repos/stage/sync-fetch/publish-canonical/update-relock): guard — exit
 13 unless the resolved workspace is inside a coordinated workforest set
 (in_workforest=true).
 
@@ -94,6 +103,7 @@ Exit codes:
   10   sync-fetch only: canonical push failed
   11   sync-fetch only: a canonical is ahead AND behind origin (halts the run)
   12   sync-fetch only: `git fetch origin` failed
+  14   sync-fetch --no-publish only: a canonical is still ahead (unpublished)
   13   --set guard: not inside a coordinated workforest set
   (the per-code recovery for 3-12 is listed in the sync-fetch recovery
   table in pnwf.sh's header comment and in pn-workspace-rules/agents/
@@ -112,7 +122,9 @@ Examples:
   pnwf land-plan my-branch
   pnwf cleanup my-branch
   pnwf status my-branch
+  pnwf publish-canonical --set
   pnwf sync-fetch --set
+  pnwf sync-fetch --set --no-publish
   pnwf update-relock --set
   pnwf residue --set
 HELP
@@ -1049,13 +1061,69 @@ HELP
   printf '%s\n' "${report_lines[@]}"
 }
 
-# Mutating WORK-recipe helper (task 5) -- unlike resolve/repos/stage/
-# fork-preflight/land-plan/cleanup/status above, this one changes each
-# member's branch tip (git fetch + rebase), so it is deliberately NOT
-# idempotent-safe the way the read-only probes are: re-running it after a
-# stop-and-report resumes exactly where the agent left off (§5 -- WORK-time
-# conflicts are the expected case for sync).
-cmd_sync_fetch() {
+# Shared by sync-fetch and publish-canonical (bd tc-3rz5o). Args: root
+# canonical_root member... ; dies 11 if any canonical is ahead AND behind.
+_pnwf_divergence_preflight() {
+  local root="$1" canonical_root="$2"
+  shift 2
+  local members=("$@")
+  local div_report=() any_ahead_and_behind=0
+  local member member_canonical primary div_line div_state div_detail
+  for member in "${members[@]}"; do
+    pnwf_worktree_present "$root" "$member" || continue
+
+    member_canonical="$canonical_root/$member"
+    primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
+      die "could not resolve primary branch for member '$member'"
+
+    # Only state (1st field) and detail (last field) are needed here -- the
+    # ahead/behind/merge-base fields in between are already folded into
+    # detail's own wording (see pnwf_canonical_divergence's header), so
+    # extracting them separately here would be dead assignments.
+    div_line=$(pnwf_canonical_divergence "$member_canonical" "$primary")
+    div_state="${div_line%%$'\t'*}"
+    div_detail="${div_line##*$'\t'}"
+    div_report+=("$member	$div_state	$div_detail")
+    if [[ $div_state == "ahead-and-behind" ]]; then
+      any_ahead_and_behind=1
+    fi
+  done
+
+  if [[ $any_ahead_and_behind -eq 1 ]]; then
+    die "sync-fetch: stopped BEFORE touching ANY member -- at least one member's CANONICAL clone is BOTH ahead of AND behind 'origin/<primary>', so a plain push is impossible there (git rejects it non-fast-forward by construction) and reconciling it needs a HUMAN rebase/merge decision: pnwf will NOT reset, check out, stash, or rebase the canonical clone on its own (R-3/R-8). Divergence for every present member (member, state, detail):
+$(printf '%s\n' "${div_report[@]}")
+Resolve the ahead-and-behind member(s) by hand in their own canonical clone (e.g. 'git -C <canonical> log --oneline <primary>...origin/<primary>' to see both sides, decide how to reconcile -- typically rebasing local <primary> onto 'origin/<primary>' and pushing the result -- then push it yourself), then re-run 'pnwf sync-fetch'. Nothing was pushed, fetched, or rebased for ANY member." "11"
+  fi
+}
+
+# Publishes one member's canonical primary if ahead; dies with the per-cause
+# exit code (8/9/10) on failure. Shared by sync-fetch and publish-canonical.
+_pnwf_publish_member_canonical() {
+  local member="$1" member_canonical="$2" primary="$3"
+  local push_rc=0
+  pnwf_push_canonical_primary_if_ahead "$member_canonical" "$primary" || push_rc=$?
+  case "$push_rc" in
+  0) : ;;
+  2)
+    die "sync-fetch: stopped on member '$member' -- its CANONICAL clone ($member_canonical) is not in the steady state required before publishing its unpushed commits (must be confirmed as a working-tree root, checked out on '$primary', and clean). This is a Tier R anomaly (R-3/R-8): pnwf will NOT reset, check out, or stash the canonical clone to fix it -- see the diagnostic above for which check failed. Inspect 'git -C $member_canonical status' and 'git -C $member_canonical rev-parse --abbrev-ref HEAD', resolve it by hand, then re-run 'pnwf sync-fetch'. Nothing was pushed and nothing was fetched/rebased for this member." "8"
+    ;;
+  3)
+    die "sync-fetch: stopped on member '$member' -- whether its canonical clone's '$primary' ($member_canonical) is ahead of 'origin/$primary' could not be determined ('origin' is configured there but 'origin/$primary' does not resolve -- it may never have been fetched, or '$primary' may never have been published under this name). Nothing was pushed and nothing was fetched/rebased for this member. Run 'git -C $member_canonical fetch origin' to establish it, then re-run 'pnwf sync-fetch'." "9"
+    ;;
+  4)
+    die "sync-fetch: stopped on member '$member' -- publishing its canonical clone's '$primary' ($member_canonical) to origin failed (see git's own message above); nothing was fetched/rebased for this member. The pre-flight sweep above already confirmed this member's canonical was ahead-ONLY (not also behind) using its local knowledge of 'origin/$primary', so a non-fast-forward rejection here means a peer's push landed in the narrow window since -- a genuine, RETRYABLE race, distinct from the ahead-and-behind case (exit 11): fetch and inspect (e.g. 'git -C $member_canonical fetch origin && git -C $member_canonical status') before retrying; other causes (auth, network) need their own fix. Re-run 'pnwf sync-fetch' once resolved." "10"
+    ;;
+  *)
+    die "sync-fetch: stopped on member '$member' -- pnwf_push_canonical_primary_if_ahead returned the UNRECOGNISED code $push_rc for canonical clone $member_canonical, so this subcommand cannot say which check stopped it; inspect 'git -C $member_canonical status' rather than acting on a guessed cause." "$push_rc"
+    ;;
+  esac
+}
+
+# Publishes every present member's canonical primary to origin if ahead -- the
+# publish half of sync-fetch split out (bd tc-3rz5o) so the MAIN session can
+# run it in the background: a slow pre-push hook can outlast the 600000 ms
+# foreground ceiling a pnwf-runner subagent is bound by.
+cmd_publish_canonical() {
   local require_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1064,7 +1132,81 @@ cmd_sync_fetch() {
       ;;
     -h | --help)
       cat <<'HELP'
-Usage: pnwf sync-fetch [--set]
+Usage: pnwf publish-canonical [--set]
+
+Runs sync-fetch's PRE-FLIGHT divergence sweep (exit 11 if any member's
+canonical clone is both ahead of AND behind origin/<primary>), then, per
+present member in topo order, pushes the member's CANONICAL clone's primary
+branch to origin if it is locally ahead (never --force; a no-op when not
+ahead or when there is no remote). Nothing is fetched or rebased.
+
+This is exactly sync-fetch's publish step, runnable on its own so a caller
+that survives long commands (the main session, in the background) can absorb
+a slow pre-push hook; follow it with 'pnwf sync-fetch --no-publish --set'.
+Exit codes are sync-fetch's: 8 canonical anomaly, 9 ahead-status unknown,
+10 push failed, 11 ahead-and-behind, 13 --set guard.
+
+--set: exit non-zero unless the resolved workspace is inside a set.
+HELP
+      exit 0
+      ;;
+    *)
+      die_usage "publish-canonical: unknown argument: $1"
+      ;;
+    esac
+    shift
+  done
+
+  local info in_workforest root canonical_root lock_file
+  info=$(_pnwf_info_json) || die "'pn workspace info --json' failed"
+  in_workforest=$(printf '%s' "$info" | jq -r '.in_workforest')
+  root=$(printf '%s' "$info" | jq -r '.root')
+  canonical_root=$(printf '%s' "$info" | jq -r '.canonical_root')
+
+  _pnwf_require_set_guard publish-canonical "$require_set" "$in_workforest" "$root"
+
+  lock_file="$root/pn-workspace.lock.json"
+  [[ -f $lock_file ]] || die "lock file not found: $lock_file"
+
+  local members=()
+  mapfile -t members < <(pnwf_topo_order "$lock_file")
+  [[ ${#members[@]} -gt 0 ]] || die "no members found in $lock_file"
+
+  _pnwf_divergence_preflight "$root" "$canonical_root" "${members[@]}"
+
+  local member member_canonical primary
+  for member in "${members[@]}"; do
+    pnwf_worktree_present "$root" "$member" || continue
+    member_canonical="$canonical_root/$member"
+    primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
+      die "could not resolve primary branch for member '$member'"
+    _pnwf_publish_member_canonical "$member" "$member_canonical" "$primary"
+  done
+}
+
+# Mutating WORK-recipe helper (task 5) -- unlike resolve/repos/stage/
+# fork-preflight/land-plan/cleanup/status above, this one changes each
+# member's branch tip (git fetch + rebase), so it is deliberately NOT
+# idempotent-safe the way the read-only probes are: re-running it after a
+# stop-and-report resumes exactly where the agent left off (§5 -- WORK-time
+# conflicts are the expected case for sync).
+cmd_sync_fetch() {
+  local require_set=0 no_publish=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --set)
+      require_set=1
+      ;;
+    --no-publish)
+      no_publish=1
+      ;;
+    -h | --help)
+      cat <<'HELP'
+Usage: pnwf sync-fetch [--set] [--no-publish]
+
+--no-publish: skip step 0 (the canonical push); a member whose canonical is
+still ahead of origin is then refused (exit 14) instead of rebased. Pair it
+with a prior 'pnwf publish-canonical --set' (bd tc-3rz5o).
 
 PRE-FLIGHT (bd tc-p08nv): before touching ANY member, probes every present
 member's CANONICAL clone divergence against 'origin/<primary>' (read-only --
@@ -1232,34 +1374,9 @@ HELP
   # pre-step below independently re-establishes and fails closed on it
   # (unchanged, its own code-9 sentinel) when the mutating loop reaches that
   # member. Only a POSITIVELY-confirmed ahead-and-behind state halts here.
-  local div_report=() any_ahead_and_behind=0
-  local member member_canonical primary div_line div_state div_detail
-  for member in "${members[@]}"; do
-    pnwf_worktree_present "$root" "$member" || continue
+  _pnwf_divergence_preflight "$root" "$canonical_root" "${members[@]}"
 
-    member_canonical="$canonical_root/$member"
-    primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
-      die "could not resolve primary branch for member '$member'"
-
-    # Only state (1st field) and detail (last field) are needed here -- the
-    # ahead/behind/merge-base fields in between are already folded into
-    # detail's own wording (see pnwf_canonical_divergence's header), so
-    # extracting them separately here would be dead assignments.
-    div_line=$(pnwf_canonical_divergence "$member_canonical" "$primary")
-    div_state="${div_line%%$'\t'*}"
-    div_detail="${div_line##*$'\t'}"
-    div_report+=("$member	$div_state	$div_detail")
-    if [[ $div_state == "ahead-and-behind" ]]; then
-      any_ahead_and_behind=1
-    fi
-  done
-
-  if [[ $any_ahead_and_behind -eq 1 ]]; then
-    die "sync-fetch: stopped BEFORE touching ANY member -- at least one member's CANONICAL clone is BOTH ahead of AND behind 'origin/<primary>', so a plain push is impossible there (git rejects it non-fast-forward by construction) and reconciling it needs a HUMAN rebase/merge decision: pnwf will NOT reset, check out, stash, or rebase the canonical clone on its own (R-3/R-8). Divergence for every present member (member, state, detail):
-$(printf '%s\n' "${div_report[@]}")
-Resolve the ahead-and-behind member(s) by hand in their own canonical clone (e.g. 'git -C <canonical> log --oneline <primary>...origin/<primary>' to see both sides, decide how to reconcile -- typically rebasing local <primary> onto 'origin/<primary>' and pushing the result -- then push it yourself), then re-run 'pnwf sync-fetch'. Nothing was pushed, fetched, or rebased for ANY member." "11"
-  fi
-
+  local member member_canonical primary
   local member_setpath rc
   for member in "${members[@]}"; do
     # Skip an absent worktree, consistent with every other member-iterating
@@ -1292,23 +1409,19 @@ Resolve the ahead-and-behind member(s) by hand in their own canonical clone (e.g
     # `*)` asserts NO cause, and the exit code it maps to is chosen to NOT
     # collide with pnwf_fetch_and_rebase's own 2-7 range below (this
     # subcommand's exit-code contract is per-cause across BOTH steps).
-    local push_rc=0
-    pnwf_push_canonical_primary_if_ahead "$member_canonical" "$primary" || push_rc=$?
-    case "$push_rc" in
-    0) : ;;
-    2)
-      die "sync-fetch: stopped on member '$member' -- its CANONICAL clone ($member_canonical) is not in the steady state required before publishing its unpushed commits (must be confirmed as a working-tree root, checked out on '$primary', and clean). This is a Tier R anomaly (R-3/R-8): pnwf will NOT reset, check out, or stash the canonical clone to fix it -- see the diagnostic above for which check failed. Inspect 'git -C $member_canonical status' and 'git -C $member_canonical rev-parse --abbrev-ref HEAD', resolve it by hand, then re-run 'pnwf sync-fetch'. Nothing was pushed and nothing was fetched/rebased for this member." "8"
-      ;;
-    3)
-      die "sync-fetch: stopped on member '$member' -- whether its canonical clone's '$primary' ($member_canonical) is ahead of 'origin/$primary' could not be determined ('origin' is configured there but 'origin/$primary' does not resolve -- it may never have been fetched, or '$primary' may never have been published under this name). Nothing was pushed and nothing was fetched/rebased for this member. Run 'git -C $member_canonical fetch origin' to establish it, then re-run 'pnwf sync-fetch'." "9"
-      ;;
-    4)
-      die "sync-fetch: stopped on member '$member' -- publishing its canonical clone's '$primary' ($member_canonical) to origin failed (see git's own message above); nothing was fetched/rebased for this member. The pre-flight sweep above already confirmed this member's canonical was ahead-ONLY (not also behind) using its local knowledge of 'origin/$primary', so a non-fast-forward rejection here means a peer's push landed in the narrow window since -- a genuine, RETRYABLE race, distinct from the ahead-and-behind case (exit 11): fetch and inspect (e.g. 'git -C $member_canonical fetch origin && git -C $member_canonical status') before retrying; other causes (auth, network) need their own fix. Re-run 'pnwf sync-fetch' once resolved." "10"
-      ;;
-    *)
-      die "sync-fetch: stopped on member '$member' -- pnwf_push_canonical_primary_if_ahead returned the UNRECOGNISED code $push_rc for canonical clone $member_canonical, so this subcommand cannot say which check stopped it; inspect 'git -C $member_canonical status' rather than acting on a guessed cause." "$push_rc"
-      ;;
-    esac
+    if [[ $no_publish -eq 1 ]]; then
+      # --no-publish: the caller already ran `pnwf publish-canonical` (tc-3rz5o).
+      # Rebasing while canonical is still ahead would replay its unpushed
+      # commits with new shas (the pg2-xl9ez hazard), so refuse instead.
+      local nd_line nd_state
+      nd_line=$(pnwf_canonical_divergence "$member_canonical" "$primary")
+      nd_state="${nd_line%%$'\t'*}"
+      if [[ $nd_state == "ahead-only" || $nd_state == "ahead-and-behind" ]]; then
+        die "sync-fetch: stopped on member '$member' -- --no-publish was given but its CANONICAL clone ($member_canonical) is still ahead of 'origin/$primary' (unpublished). Run 'pnwf publish-canonical --set' first (it may be run in the background), then re-run 'pnwf sync-fetch --no-publish'. Nothing was fetched/rebased for this member." "14"
+      fi
+    else
+      _pnwf_publish_member_canonical "$member" "$member_canonical" "$primary"
+    fi
 
     # Guarded (never a bare call): a dirtiness refusal, a fetch failure, or
     # any rebase failure exits nonzero, and MUST NOT abort this loop via
@@ -1628,6 +1741,7 @@ land-plan) cmd_land_plan "$@" ;;
 cleanup) cmd_cleanup "$@" ;;
 status) cmd_status "$@" ;;
 sync-fetch) cmd_sync_fetch "$@" ;;
+publish-canonical) cmd_publish_canonical "$@" ;;
 update-relock) cmd_update_relock "$@" ;;
 residue) cmd_residue "$@" ;;
 *)

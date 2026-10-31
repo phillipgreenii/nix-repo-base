@@ -67,7 +67,7 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   moved out of its runner into the main session's background because it runs
   `nix flake update` plus each repo's `update-locks.sh` across every member —
   unbounded, evaluation-heavy work. `pnwf sync-fetch` does none of that: per
-  member it is a `git fetch origin`, a `git rebase`, and at most a canonical
+  member it is a `git fetch origin`, a `git rebase`, and (only when the main session did not already publish) at most a canonical
   `git push` (`pnwf_fetch_and_rebase` / `pnwf_push_canonical_primary_if_ahead` in
   `modules/pnwf/lib/pnwf-lib.bash` invoke no `nix` and no `pn`; the git hooks they
   trigger are barred from invoking nix, HK-2), so it is bounded by network and
@@ -75,7 +75,7 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   anomaly (a hung fetch, an auth prompt) that the `incomplete-sync` halt and its
   residue probe are the right response to, not a healthy job to be awaited. If
   `sync-fetch` is ever OBSERVED to outlast the ceiling while healthy, apply the
-  same split used in `/pn-workspace-update`.
+  same split used in `/pn-workspace-update`. That was observed for the canonical push (slow pre-push hooks, bd `tc-3rz5o`) and is now applied: `pnwf publish-canonical` runs in the main session's background and Stage 2 passes `--no-publish`.
 
   **Stage 3 IS exposed to the same ceiling, and is judged but NOT restructured
   here (bd `pg2-td9zo`).** This paragraph used to say the exposure this runner
@@ -178,7 +178,7 @@ You run exactly three stages, in order, and stop at the first gate, halt, or
 no-op:
 
 1. **FORK** — `pnwf fork-preflight` then `pn workspace workforest add`.
-2. **SYNC-FETCH** — `pnwf sync-fetch --set`, then the `pnwf status`
+2. **SYNC-FETCH** — `pnwf sync-fetch --set --no-publish`, then the `pnwf status`
    classification that decides whether Stage 3 has anything to validate.
 3. **VALIDATE** — `pn workspace build` then `pn workspace doctor`.
 
@@ -286,8 +286,14 @@ an explicit `timeout` of `600000` ms per
 [R2](#constraint-one-turn-foreground-only); you MUST NOT background it.
 
 ```bash
-cd <SETDIR> && pnwf sync-fetch --set
+cd <SETDIR> && pnwf sync-fetch --set --no-publish
 ```
+
+`--no-publish` is MANDATORY (bd `tc-3rz5o`): the canonical-publish half of
+sync-fetch runs a repo's pre-push hooks, which can legitimately outlast this
+runner's foreground ceiling, so the MAIN session runs `pnwf publish-canonical`
+in the background BEFORE dispatching you. If a canonical is somehow still ahead,
+sync-fetch refuses with exit 14 instead of publishing.
 
 `pnwf sync-fetch` fetches and rebases each member in topo order and stops on the
 FIRST failing member, naming that single worktree path and identifying the failure
@@ -398,6 +404,11 @@ faithfully propagated the claim (bd `pg2-k3s0x`). Read stderr only for the
     network — git's own message is in `pnwf`'s stderr) → `halt` with
     `stage: "sync-fetch"`, `reason: "canonical-push-failed"`, quoting git's
     message verbatim in `detail`.
+- **exit 14 — canonical still unpublished** (`--no-publish` was given but a
+  member's canonical clone is ahead of origin; nothing was fetched/rebased for
+  it) → `halt` with `stage: "sync-fetch"`, `reason: "canonical-unpublished"`,
+  quoting `pnwf`'s stderr in `detail`. You MUST NOT push it yourself; the main
+  session runs `pnwf publish-canonical` and re-dispatches.
 - **any other non-zero exit** → you MUST return `halt` with
   `stage: "sync-fetch"`, `reason: "sync-fetch-unrecognised"`, the exit status and
   `pnwf`'s stderr in `detail`. Do NOT map it onto the nearest gate above.
@@ -610,6 +621,7 @@ after it. Use exactly one of these shapes:
 `reason` is one of `fetch-failed`, `rebase-indeterminate`,
 `dirtiness-indeterminate`, `sync-fetch-unrecognised`, `incomplete-sync`,
 `canonical-anomaly`, `canonical-ahead-indeterminate`, `canonical-push-failed`,
+`canonical-unpublished`,
 `validate-failed`, `permission-denied`, or the `pnwf fork-preflight` reason
 line for a `stage: "fork"` halt.
 
@@ -644,7 +656,7 @@ in-memory state, then continue from the stage that bailed:
 - After a resolved `resume-vs-discard` gate, re-run Stage 1's `resolve --set`
   confirmation, then continue.
 - After a resolved `rebase-conflict`, `rebase-refused`, **or `worktree-dirty`** gate,
-  re-run Stage 2 (`cd <SETDIR> && pnwf sync-fetch --set`) — it resumes from where
+  re-run Stage 2 (`cd <SETDIR> && pnwf sync-fetch --set --no-publish`) — it resumes from where
   it stopped — then re-run the `pnwf status` no-op classification and continue to
   Stage 3 unless it is a no-op. Re-deriving it is MANDATORY on a resume: the
   resolved conflict means a member DID move, so a pre-conflict reading would be

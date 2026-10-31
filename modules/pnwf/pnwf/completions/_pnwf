@@ -11,6 +11,7 @@ _pnwf_subcommands() {
     'cleanup:Best-effort teardown of a workforest set from the canonical clone'
     'status:Print a per-repo status table (landed/not-started/blocked/kept)'
     'sync-fetch:Fetch + rebase every member onto the remote primary (refuses a dirty member; stops on the first failure)'
+    'publish-canonical:Push each member'\''s canonical clone primary to origin if ahead (the publish half of sync-fetch; safe to background)'
     'update-relock:Relock every member in place via pn workspace update --in-place (refuses upstream/dirty/unreadable/skips)'
   )
   _describe 'pnwf subcommand' subcommands
@@ -25,7 +26,13 @@ _arguments -C \
 case $state in
 args)
   case ${words[1]} in
-  resolve | repos | stage | sync-fetch | update-relock)
+  sync-fetch)
+    _arguments \
+      '--set[Guard: fail unless the resolved workspace is inside a set]' \
+      '--no-publish[Skip the canonical push; refuse (exit 14) if a canonical is still ahead]' \
+      '(-h --help)'{-h,--help}'[Show help message]'
+    ;;
+  resolve | repos | stage | publish-canonical | update-relock)
     _arguments \
       '--set[Guard: fail unless the resolved workspace is inside a set]' \
       '(-h --help)'{-h,--help}'[Show help message]'

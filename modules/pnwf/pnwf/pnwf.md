@@ -47,6 +47,10 @@
 
 `pnwf sync-fetch --set`
 
+- Publish only each member's canonical clone primary to origin if ahead (sync-fetch's publish step; run it in the background when a pre-push hook is slow), then sync without publishing (exit 14 if a canonical is still ahead):
+
+`pnwf publish-canonical --set && pnwf sync-fetch --set --no-publish`
+
 - Relock every member of the current set in place via `pn workspace update --in-place` (refuses any member with an upstream, a dirty tree, or a git state it cannot read, and refuses a relock that skipped repos):
 
 `pnwf update-relock --set`
