@@ -104,8 +104,21 @@ Bundles and subscriptions set `mkDefault true` **only**. This is load-bearing:
   `enableFeatureIf`) and MUST NOT use a bare `mkDefault` of the development flag:
   that would emit `mkDefault false` when development is off, which collides with
   any other bundle's `mkDefault true` on the same capability and crashes
-  evaluation. A machine enables `bundles.development.enable = true` once and receives the
-  union of every input's dev tooling; each child stays individually vetoable.
+  evaluation. A machine enables `bundles.development.enable = true` once and receives
+  only the capabilities that subscribe; it is NOT the union of every input's dev
+  tooling. Each child stays individually vetoable.
+  - Language-bound leaves (nix-personal: shell, golang, python, nodejs, nix,
+    java, lua, yaml, json, markdown, protobuf, toml, dockerfile) MUST NOT set
+    `subscribesToDevelopment`. Each account picks its languages explicitly with
+    `phillipgreenii.capabilities.<lang>.enable` (or `programs.<lang>.enable`).
+  - The `dev-base` leaf (feature `programs.dev-base`, `subscribesToDevelopment =
+true`) is a marker that installs nothing; a feature that needs to know
+    "development is on" MUST read `programs.dev-base.enable`, not `bundles.*`.
+  - Non-language subscribers (terraform, kubernetes, aws, vault, ...) still
+    subscribe. Whether to trim them is an open operator decision on homelab epic
+    tc-ys2l8; do not assume either outcome.
+  - The leaf-by-leaf subscription table lives in the header of nix-personal
+    `home/capabilities/default.nix`; consult it rather than copying it.
 
 ## 4. Where things live (single ownership)
 

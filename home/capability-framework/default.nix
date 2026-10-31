@@ -17,7 +17,8 @@
 #     `capabilities.<name>.enable` (a leaf) so the option path reveals the layer.
 #     `bundles.development` is the open dev-machine aggregate: capabilities in any
 #     repo self-subscribe via `mkDefault`, so a machine opts in once and receives
-#     the union of every input's dev tooling, each child still vetoable.
+#     whatever subscribes (see the option description for what does NOT), each
+#     child still vetoable.
 { lib, ... }:
 {
   options.phillipgreenii = {
@@ -43,9 +44,20 @@
       off). A hand-written subscriber MUST use that form (or `enableFeatureIf`),
       never a bare `mkDefault` of the development flag, which would emit `mkDefault
       false` and crash evaluation against another bundle's `mkDefault true`. Enabling
-      this pulls in the union of every input's development tooling. A new tool flows automatically
-      once its capability subscribes; any individual child stays vetoable with a
-      bare `capabilities.<x>.enable = false`
+      this turns on exactly the capabilities that subscribe; it is NOT the union
+      of every input's development tooling. Language-bound leaves (shell, golang,
+      python, nodejs, nix, java, lua, yaml, json, markdown, protobuf, toml,
+      dockerfile in nix-personal) do NOT subscribe: each account chooses its
+      languages explicitly via `phillipgreenii.programs.<lang>.enable` or
+      `phillipgreenii.capabilities.<lang>.enable`. A `dev-base` marker
+      capability (feature `programs.dev-base`, `subscribesToDevelopment = true`,
+      installs nothing) expresses "development is on"; a feature MUST read that
+      feature flag rather than gate on `bundles.*`. Non-language subscribers
+      (terraform, kubernetes, aws, vault, and similar) still subscribe; whether
+      to trim them is an open operator decision (homelab epic tc-ys2l8). The
+      leaf-by-leaf subscription table is the header of nix-personal
+      `home/capabilities/default.nix`. Any individual child stays vetoable with
+      a bare `capabilities.<x>.enable = false`
     '';
   };
 }
