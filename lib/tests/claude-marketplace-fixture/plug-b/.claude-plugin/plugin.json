@@ -5,5 +5,7 @@
   "description": "Fixture plugin B",
   "version": "2.3.4",
   "type": "rules",
-  "content": "CLAUDE.md"
+  "content": "CLAUDE.md",
+  "requires": ["feat-x", "feat-y"],
+  "uses": ["feat-z"]
 }

@@ -1,0 +1,5 @@
+{
+  "name": "uses-empty-elem",
+  "version": "1.0.0",
+  "uses": [""]
+}

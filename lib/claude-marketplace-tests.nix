@@ -10,9 +10,15 @@ let
   inherit (pkgs) lib;
   versionLib = import ./version.nix;
   builders = import ./claude-marketplace.nix { inherit pkgs lib; };
-  inherit (builders) mkClaudePlugin mkClaudeMarketplace mkDirectoryMarketplaceSettings;
+  inherit (builders)
+    mkClaudePlugin
+    mkClaudeMarketplace
+    mkDirectoryMarketplaceSettings
+    parseFeatureDeps
+    ;
 
   fixture = ./tests/claude-marketplace-fixture;
+  badPlugin = n: mkClaudePlugin { src = ./tests/claude-marketplace-bad-plugins + "/${n}"; };
 
   marketplace = mkClaudeMarketplace { src = fixture; };
   marketplaceCustomSuffix = mkClaudeMarketplace {
@@ -97,6 +103,70 @@ in
   testMkClaudePluginDefaultEnabledAbsentFalse = {
     expr = pluginB.defaultEnabled;
     expected = false;
+  };
+
+  # --- requires / uses export (feature-id lists; absent => [ ]) ---
+  testRequiresExported = {
+    expr = (pluginByName "plug-b").requires;
+    expected = [
+      "feat-x"
+      "feat-y"
+    ];
+  };
+  testUsesExported = {
+    expr = (pluginByName "plug-b").uses;
+    expected = [ "feat-z" ];
+  };
+  testRequiresUsesAbsentDefaultEmpty = {
+    expr = {
+      inherit ((pluginByName "plug-a")) requires uses;
+    };
+    expected = {
+      requires = [ ];
+      uses = [ ];
+    };
+  };
+  testMkClaudePluginRequiresUses = {
+    expr = {
+      inherit (pluginB) requires uses;
+    };
+    expected = {
+      requires = [
+        "feat-x"
+        "feat-y"
+      ];
+      uses = [ "feat-z" ];
+    };
+  };
+
+  # --- requires / uses validation: malformed manifests MUST throw ---
+  testRequiresNotListRejected = {
+    expr = (builtins.tryEval (badPlugin "requires-not-list").requires).success;
+    expected = false;
+  };
+  testRequiresNonStringRejected = {
+    expr = (builtins.tryEval (badPlugin "requires-nonstring").requires).success;
+    expected = false;
+  };
+  testUsesEmptyElementRejected = {
+    expr = (builtins.tryEval (badPlugin "uses-empty-elem").uses).success;
+    expected = false;
+  };
+  testUsesDuplicateRejected = {
+    expr = (builtins.tryEval (badPlugin "uses-dup").uses).success;
+    expected = false;
+  };
+  # A bad `requires` must not poison an unrelated well-formed key lookup path:
+  # the validator itself accepts a good manifest.
+  testParseFeatureDepsAccepts = {
+    expr = parseFeatureDeps {
+      pluginName = "x";
+      manifest = {
+        uses = [ "a" ];
+      };
+      key = "uses";
+    };
+    expected = [ "a" ];
   };
 
   # --- passthru plugin key shape ---

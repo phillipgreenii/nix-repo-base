@@ -1,0 +1,5 @@
+{
+  "name": "uses-dup",
+  "version": "1.0.0",
+  "uses": ["a", "a"]
+}

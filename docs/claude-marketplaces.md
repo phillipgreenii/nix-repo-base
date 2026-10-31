@@ -33,6 +33,11 @@ the manifest or invent a `-<digest>` fallback.
    - one dir per plugin, each with `.claude-plugin/plugin.json` + content.
    - Set `"defaultEnabled": true` in a plugin's `plugin.json` to have it on by
      default. **Absent ⇒ off** — so every plugin you want loaded must declare it.
+   - Optional `"requires"` / `"uses"` in `plugin.json`: lists of feature ids
+     (`phillipgreenii.programs.<f>`) whose binaries the plugin needs (hard) or
+     merely uses (soft). Absent ⇒ `[ ]`. The builders validate them (non-list,
+     non-string/empty or duplicate entries throw at eval) and export both in the
+     plugin `passthru` (`requires`, `uses`) for consumers to gate on.
 
    **Plugin content must be a skill/agent/hook — NOT a root `CLAUDE.md`.**
    Verified on Claude Code 2.1.186: a plugin-root `CLAUDE.md` is **not** injected

@@ -44,6 +44,33 @@ let
     in
     "${declared}+${digest}";
 
+  # parseFeatureDeps — read and validate a plugin.json `requires` / `uses` key.
+  #
+  # Both are OPTIONAL lists of feature ids (the `<f>` in
+  # `phillipgreenii.programs.<f>`): `requires` = features whose binaries the plugin
+  # needs (hard deps), `uses` = soft deps. Absent => [ ]. A non-list value, a
+  # non-string or empty element, or a duplicate element throws at eval time so a
+  # malformed manifest fails the build instead of being silently ignored.
+  parseFeatureDeps =
+    {
+      pluginName,
+      manifest,
+      key,
+    }:
+    let
+      value = manifest.${key} or [ ];
+      where = "plugin '${pluginName}' plugin.json `${key}`";
+      validElem = e: builtins.isString e && e != "";
+    in
+    if !(builtins.isList value) then
+      throw "${where} must be a list of feature-id strings, got ${builtins.typeOf value}"
+    else if !(builtins.all validElem value) then
+      throw "${where} must contain only non-empty strings"
+    else if lib.unique value != value then
+      throw "${where} must not contain duplicates"
+    else
+      value;
+
   # mkClaudePlugin — bundle a single plugin directory into the store, stamping its
   # plugin.json version to `<declared>+<digest>`.
   #
@@ -60,6 +87,14 @@ let
       pluginName = manifest.name;
       declared = manifest.version;
       defaultEnabled = manifest.defaultEnabled or false;
+      requires = parseFeatureDeps {
+        inherit pluginName manifest;
+        key = "requires";
+      };
+      uses = parseFeatureDeps {
+        inherit pluginName manifest;
+        key = "uses";
+      };
       version = stampVersion {
         name = pluginName;
         inherit src declared;
@@ -69,7 +104,13 @@ let
           {
             nativeBuildInputs = [ pkgs.jq ];
             passthru = {
-              inherit pluginName version defaultEnabled;
+              inherit
+                pluginName
+                version
+                defaultEnabled
+                requires
+                uses
+                ;
             };
           }
           ''
@@ -102,7 +143,8 @@ let
   # version overwritten. Carries
   #   passthru = {
   #     marketplaceName;
-  #     plugins = [ { name; version; key = "<name>@<marketplaceName>"; defaultEnabled; } … ];
+  #     plugins = [ { name; version; key = "<name>@<marketplaceName>"; defaultEnabled;
+  #                   requires; uses; } … ];   # requires/uses: feature-id lists, default [ ]
   #   }.
   # The marketplace derivation itself carries NO repo-rev-dependent version.
   mkClaudeMarketplace =
@@ -140,6 +182,16 @@ let
           inherit name version path;
           inherit (entry) source;
           defaultEnabled = pluginManifest.defaultEnabled or false;
+          requires = parseFeatureDeps {
+            pluginName = name;
+            manifest = pluginManifest;
+            key = "requires";
+          };
+          uses = parseFeatureDeps {
+            pluginName = name;
+            manifest = pluginManifest;
+            key = "uses";
+          };
         }
       ) manifest.plugins;
 
@@ -175,7 +227,13 @@ let
         passthru = {
           inherit marketplaceName;
           plugins = map (info: {
-            inherit (info) name version defaultEnabled;
+            inherit (info)
+              name
+              version
+              defaultEnabled
+              requires
+              uses
+              ;
             key = "${info.name}@${marketplaceName}";
           }) pluginInfos;
         };
@@ -618,5 +676,6 @@ in
     mkClaudeMarketplace
     mkDirectoryMarketplaceSettings
     mkClaudeHookRouterPlugin
+    parseFeatureDeps
     ;
 }
