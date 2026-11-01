@@ -450,6 +450,36 @@ _gfh_plant_decoy_and_target() {
   [ $(((end_us - start_us) / 1000)) -lt 4000 ]
 }
 
+# Tighter guard for the trap-lifted scan: with the DEBUG trap suspended, 500 extra
+# variables cost ~0.15s (measured); the single-pass loop WITH the trap cost ~1.7s
+# for the same population. 1500 ms separates the two while leaving ~10x headroom
+# for a loaded host. In-process on purpose, see the guard above.
+@test "gfh_reset_env: 500 extra exported vars cost well under what the DEBUG-trapped loop did" {
+  source "$GFH_LIB"
+  local i start_us end_us
+  for i in $(seq 1 500); do
+    export "FIXTURE_COST_GUARD2_JUNK_$i"=x
+  done
+  start_us=${EPOCHREALTIME/./}
+  gfh_reset_env
+  end_us=${EPOCHREALTIME/./}
+  [ -z "${FIXTURE_COST_GUARD2_JUNK_500+x}" ]
+  echo "gfh_reset_env (trap lifted) took $(((end_us - start_us) / 1000)) ms" >&3
+  [ $(((end_us - start_us) / 1000)) -lt 1500 ]
+}
+
+@test "gfh_reset_env: puts the caller's DEBUG trap back exactly as it found it" {
+  source "$GFH_LIB"
+  local before after
+  before="$(trap -p DEBUG)"
+  # Under bats a DEBUG trap is always installed; if a runner ever stops doing so
+  # this test would assert nothing, so fail loudly instead of passing vacuously.
+  [ -n "$before" ]
+  gfh_reset_env
+  after="$(trap -p DEBUG)"
+  [ "$before" = "$after" ]
+}
+
 # --- gfh_teardown ------------------------------------------------------------
 
 @test "gfh_teardown removes GFH_ROOT entirely" {

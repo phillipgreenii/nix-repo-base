@@ -188,6 +188,17 @@ gfh_reset_env() {
   # earlier per-variable inner allowlist loop cost ~2.5s per gfh_setup on a
   # ~180-variable environment, i.e. ~2.5s x every test in a suite. Keep the
   # per-variable work to a couple of `[[ ]]` tests and do ONE `unset` at the end.
+  #
+  # Even at a couple of commands per variable, the trap still dominated: ~0.45s
+  # per call on a ~180-variable environment (measured under bats), x every test's
+  # setup(). Nothing in this function needs bats' per-command bookkeeping (the
+  # trap only records the stack trace for failure output), so lift the DEBUG
+  # trap for the duration of the scan and put it back unchanged afterwards:
+  # ~0.05s per call. `trap -p DEBUG` is empty outside bats, so this is a no-op
+  # there (e.g. inside a nix build sandbox).
+  local saved_debug_trap
+  saved_debug_trap="$(trap -p DEBUG)"
+  trap - DEBUG
   local line var allow=" ${_gfh_allow_exact[*]} "
   local -a doomed=()
   while IFS= read -r line; do
@@ -202,6 +213,10 @@ gfh_reset_env() {
   if [[ ${#doomed[@]} -gt 0 ]]; then
     unset -v "${doomed[@]}"
   fi
+  if [[ -n $saved_debug_trap ]]; then
+    eval "$saved_debug_trap"
+  fi
+  return 0
 }
 # Print the EMAIL half of the per-suite fixture identity.
 gfh_identity_email() {
