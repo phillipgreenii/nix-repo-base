@@ -429,6 +429,27 @@ _gfh_plant_decoy_and_target() {
   [ "$GFH_SUITE" = "$suite_before" ]
 }
 
+# Cost guard. Under bats every simple command in a function runs bats' DEBUG
+# trap, so gfh_reset_env's cost is (exported vars) x (commands per iteration);
+# a per-variable inner loop once made every gfh_setup cost ~2.5s and pushed the
+# lib bats project past pg-test-runner's 300s cap. In-process on purpose (a
+# `run bash -c` child has no DEBUG trap and would not see the cost). The bound
+# is several times the cost measured for the single-pass loop and below what
+# the old per-variable loop took for the same population.
+@test "gfh_reset_env: scrubs 500 extra exported vars inside bats within the DEBUG-trap-bound budget" {
+  source "$GFH_LIB"
+  local i start_us end_us
+  for i in $(seq 1 500); do
+    export "FIXTURE_COST_GUARD_JUNK_$i"=x
+  done
+  start_us=${EPOCHREALTIME/./}
+  gfh_reset_env
+  end_us=${EPOCHREALTIME/./}
+  [ -z "${FIXTURE_COST_GUARD_JUNK_500+x}" ]
+  echo "gfh_reset_env took $(((end_us - start_us) / 1000)) ms" >&3
+  [ $(((end_us - start_us) / 1000)) -lt 4000 ]
+}
+
 # --- gfh_teardown ------------------------------------------------------------
 
 @test "gfh_teardown removes GFH_ROOT entirely" {

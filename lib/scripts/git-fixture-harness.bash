@@ -182,32 +182,27 @@ _gfh_allow_exact=(
 # exactly because it built under `nix build`, not a plain interactive shell.
 # Shell functions and unexported locals are never matched by `export -p`.
 gfh_reset_env() {
-  local line var keep allowed
+  # Perf note (bead filed for the tc-3dyvp pre-land timeout): under bats every
+  # simple command in a function runs the DEBUG trap (bats sets functrace), so
+  # this loop's cost is (#exported vars) x (#commands per iteration). The
+  # earlier per-variable inner allowlist loop cost ~2.5s per gfh_setup on a
+  # ~180-variable environment, i.e. ~2.5s x every test in a suite. Keep the
+  # per-variable work to a couple of `[[ ]]` tests and do ONE `unset` at the end.
+  local line var allow=" ${_gfh_allow_exact[*]} "
+  local -a doomed=()
   while IFS= read -r line; do
     # bash's `export -p` prints lines like `declare -x NAME=value`,
     # `declare -ax NAME=(...)` (exported array), or a bare `declare -x NAME`
     # for an exported-but-unset variable. Match any `-*x*` flag combination.
-    if [[ $line =~ ^declare\ -[a-zA-Z]*x[a-zA-Z]*\ ([A-Za-z_][A-Za-z0-9_]*)(=|$) ]]; then
-      var="${BASH_REMATCH[1]}"
-    else
-      continue
-    fi
-    case "$var" in
-    BATS_* | GFH_*) continue ;;
-    esac
-    keep=0
-    for allowed in "${_gfh_allow_exact[@]}"; do
-      if [[ $var == "$allowed" ]]; then
-        keep=1
-        break
-      fi
-    done
-    if [[ $keep -eq 0 ]]; then
-      unset "$var"
-    fi
+    [[ $line =~ ^declare\ -[a-zA-Z]*x[a-zA-Z]*\ ([A-Za-z_][A-Za-z0-9_]*)(=|$) ]] || continue
+    var="${BASH_REMATCH[1]}"
+    [[ $var == BATS_* || $var == GFH_* || $allow == *" $var "* ]] && continue
+    doomed+=("$var")
   done < <(export -p)
+  if [[ ${#doomed[@]} -gt 0 ]]; then
+    unset -v "${doomed[@]}"
+  fi
 }
-
 # Print the EMAIL half of the per-suite fixture identity.
 gfh_identity_email() {
   local suite="$1"
