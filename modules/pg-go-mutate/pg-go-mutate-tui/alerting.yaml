@@ -2,7 +2,7 @@ apiVersion: 1
 groups:
   - orgId: 1
     name: pg-go-mutate-tui
-    folder: pg-go-mutate-tui
+    folder: Work
     interval: 1m
     rules:
       # uid MUST stay <= 40 chars -- Grafana's alert provisioning rejects a longer
