@@ -2146,6 +2146,15 @@
                             type = pkgs.lib.types.listOf pkgs.lib.types.package;
                             default = [ ];
                           };
+                          # pg2-s2xgyu: home/pn/default.nix defines
+                          # home.activation.pnWorkspaceTomlWarn (3946872), so
+                          # this narrow stub MUST declare the option or eval
+                          # (and pre-land-eval) fails. Regression guard: this
+                          # check itself.
+                          activation = pkgs.lib.mkOption {
+                            type = pkgs.lib.types.attrsOf pkgs.lib.types.anything;
+                            default = { };
+                          };
                         };
                       }
                       ./home/pn/default.nix
