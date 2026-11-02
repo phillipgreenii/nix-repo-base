@@ -6,7 +6,7 @@
 mkBashScript {
   name = "pg-check-grafana-alert-uids";
   src = ./.;
-  description = "Reject a Grafana alerting provisioning file with an alert-rule or receiver uid over 40 characters, or a duplicate alert-rule uid";
+  description = "Reject a Grafana alerting provisioning file with an alert-rule or receiver uid over 40 characters, a duplicate alert-rule uid, or a group folder outside the allowed list";
   # Internal: only ever executed by the check-grafana-alert-uids prek hook that
   # flake-modules/pre-commit.nix defines. Not a PATH command.
   public = false;
@@ -16,6 +16,7 @@ mkBashScript {
   runtimeDeps = [
     pkgs.yq-go
     pkgs.coreutils
+    pkgs.gnugrep
   ];
   testDeps = [
     pkgs.yq-go

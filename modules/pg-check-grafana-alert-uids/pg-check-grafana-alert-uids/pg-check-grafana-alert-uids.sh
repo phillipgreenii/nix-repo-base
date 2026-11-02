@@ -26,9 +26,14 @@ For every FILE (a Grafana alerting provisioning YAML) it fails when:
   - an alert-rule uid is declared twice within the same file;
   - a contact-point receiver uid (.contactPoints[].receivers[].uid) is longer
     than 40 characters;
+  - a group's `folder:` is not one of the allowed Grafana folder titles (ADR
+    0040 of this repo; the list is grafana-folders.txt, one title per line,
+    read from the file named by GRAFANA_ALLOWED_FOLDERS_FILE, which the hook
+    entry sets);
   - the file cannot be parsed as YAML.
 
-Each violation is printed on stderr with the file, the uid and its length.
+Each violation is printed on stderr with the file and the uid and its length,
+or the folder title.
 Length is counted in bytes, which is how Grafana counts it.
 
 Meant to run as the check-grafana-alert-uids prek hook over
@@ -41,7 +46,8 @@ Options:
 Exit codes:
   0  every uid is within the limit and no rule uid repeats
   1  a violation was found, or a file could not be parsed
-  2  usage error (no FILE, unknown option)
+  2  usage error (no FILE, unknown option, GRAFANA_ALLOWED_FOLDERS_FILE unset
+     or unreadable)
 HELP
 }
 
@@ -78,6 +84,20 @@ receivers_query='(.contactPoints // [])[] | (.receivers // [])[] | .uid | select
 
 status=0
 
+# The allowed folder titles: ONE list, grafana-folders.txt (ADR 0040), read from
+# the file the hook entry names. No built-in copy of the titles lives here.
+if [[ -z ${GRAFANA_ALLOWED_FOLDERS_FILE:-} || ! -r ${GRAFANA_ALLOWED_FOLDERS_FILE} ]]; then
+  echo "pg-check-grafana-alert-uids: GRAFANA_ALLOWED_FOLDERS_FILE must name the readable allowed-folder list (grafana-folders.txt)" >&2
+  exit 2
+fi
+allowed_folders="$(cat "$GRAFANA_ALLOWED_FOLDERS_FILE")"
+allowed_list=""
+while IFS= read -r title; do
+  [[ -n $title ]] || continue
+  allowed_list="$allowed_list'$title' "
+done <<<"$allowed_folders"
+folders_query='(.groups // [])[] | .folder | select(. != null)'
+
 # check_length FILE KIND UIDS: print one line per uid over the cap.
 check_length() {
   local file=$1 kind=$2 uids=$3 uid
@@ -101,6 +121,19 @@ for file in "$@"; do
     status=1
     continue
   fi
+
+  if ! folders="$(yq "$folders_query" "$file" 2>&1)"; then
+    echo "ERROR: $file: cannot parse as Grafana alerting provisioning YAML: $folders" >&2
+    status=1
+    continue
+  fi
+  while IFS= read -r folder; do
+    [[ -n $folder ]] || continue
+    if ! printf '%s\n' "$allowed_folders" | grep -qxF -- "$folder"; then
+      echo "ERROR: $file: folder '$folder' is not an allowed Grafana folder (allowed: $allowed_list). Choose an existing folder; never add one per daemon (nix-repo-base ADR 0040, nix-support-apps ADR 0055)" >&2
+      status=1
+    fi
+  done <<<"$folders"
 
   check_length "$file" alert-rule "$rule_uids"
   check_length "$file" "contact-point receiver" "$receiver_uids"

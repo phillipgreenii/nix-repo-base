@@ -25,6 +25,10 @@ setup() {
     chmod +x "$SUT"
   fi
 
+  # The REAL allowed-folder list (the single source, ADR 0040): in the nix check
+  # SCRIPTS_DIR is the module src, otherwise the sibling of tests/.
+  export GRAFANA_ALLOWED_FOLDERS_FILE="${SCRIPTS_DIR:-${BATS_TEST_DIRNAME}/..}/grafana-folders.txt"
+
   # uid_of N: a uid of exactly N characters.
   uid_of() {
     local n=$1 s=""
@@ -44,7 +48,7 @@ rules_file() {
   local f="$TEST_DIR/$1" uid
   shift
   {
-    printf 'apiVersion: 1\ngroups:\n  - orgId: 1\n    name: g\n    folder: f\n    interval: 1m\n    rules:\n'
+    printf 'apiVersion: 1\ngroups:\n  - orgId: 1\n    name: g\n    folder: Work\n    interval: 1m\n    rules:\n'
     for uid in "$@"; do
       printf '      - uid: %s\n        title: t\n        condition: A\n' "$uid"
     done
@@ -217,4 +221,54 @@ YAML
   run --separate-stderr "$SUT" "$f"
   [ "$status" -eq 1 ]
   [[ $stderr == *"is 42 bytes long"* ]]
+}
+
+# folder_file <name> <folder>: a rules file whose one group has the given folder.
+folder_file() {
+  local f="$TEST_DIR/$1"
+  printf 'apiVersion: 1\ngroups:\n  - orgId: 1\n    name: g\n    folder: "%s"\n    interval: 1m\n    rules:\n      - uid: r1\n        title: t\n' "$2" >"$f"
+  printf '%s' "$f"
+}
+
+@test "each of the five allowed folder titles passes" {
+  local t
+  while IFS= read -r t; do
+    f="$(folder_file ok.yaml "$t")"
+    run --separate-stderr "$SUT" "$f"
+    [ "$status" -eq 0 ]
+  done <"$GRAFANA_ALLOWED_FOLDERS_FILE"
+  [ "$(grep -c . "$GRAFANA_ALLOWED_FOLDERS_FILE")" -eq 5 ]
+  grep -qxF 'Build & Nix' "$GRAFANA_ALLOWED_FOLDERS_FILE"
+}
+
+@test "a folder outside the allowed list is rejected, naming file and folder" {
+  f="$(folder_file bad.yaml "Pg Newthing")"
+  run --separate-stderr "$SUT" "$f"
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"$f"* ]]
+  [[ $stderr == *"folder 'Pg Newthing' is not an allowed Grafana folder"* ]]
+  [[ $stderr == *"'Build & Nix'"* ]]
+}
+
+@test "a near-miss title (case or trailing text) is rejected" {
+  f="$(folder_file case.yaml "host")"
+  run --separate-stderr "$SUT" "$f"
+  [ "$status" -eq 1 ]
+  f="$(folder_file extra.yaml "Host Metrics")"
+  run --separate-stderr "$SUT" "$f"
+  [ "$status" -eq 1 ]
+}
+
+@test "a group without a folder key is not a folder violation" {
+  f="$TEST_DIR/nofolder.yaml"
+  printf 'apiVersion: 1\ngroups:\n  - name: g\n    rules:\n      - uid: r1\n' >"$f"
+  run --separate-stderr "$SUT" "$f"
+  [ "$status" -eq 0 ]
+}
+
+@test "a missing allowed-folder list is a usage error with exit 2" {
+  f="$(folder_file ok.yaml Host)"
+  GRAFANA_ALLOWED_FOLDERS_FILE="$TEST_DIR/absent.txt" run --separate-stderr "$SUT" "$f"
+  [ "$status" -eq 2 ]
+  [[ $stderr == *"GRAFANA_ALLOWED_FOLDERS_FILE"* ]]
 }

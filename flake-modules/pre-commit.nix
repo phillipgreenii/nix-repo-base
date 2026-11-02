@@ -275,6 +275,12 @@ in
         inherit pkgs;
         bashBuilders = pgGitCheckIdentityBashBuilders;
       };
+      # The hook entry: the script plus the single allowed-folder list (ADR 0040),
+      # which flake.lib.grafanaFoldersFile exports for support-apps' folders.nix.
+      pgCheckGrafanaAlertUidsEntry = pkgs.writeShellScript "check-grafana-alert-uids" ''
+        export GRAFANA_ALLOWED_FOLDERS_FILE=${../modules/pg-check-grafana-alert-uids/pg-check-grafana-alert-uids/grafana-folders.txt}
+        exec ${pgCheckGrafanaAlertUidsScripts.pg-check-grafana-alert-uids.script}/bin/pg-check-grafana-alert-uids "$@"
+      '';
       # The base fixer hooks' entries, shared with the bundle's default fixers
       # (fixers.json) so `pg-hooks fix` and the prek check hooks run the same tools.
       trailingWhitespaceEntry = "${pkgs.python3Packages.pre-commit-hooks}/bin/trailing-whitespace-fixer";
@@ -353,8 +359,8 @@ in
           check-grafana-alert-uids = {
             enable = true;
             name = "check-grafana-alert-uids";
-            description = "Reject Grafana alert-rule uids over 40 characters or duplicated, and receiver uids over 40 characters";
-            entry = "${pgCheckGrafanaAlertUidsScripts.pg-check-grafana-alert-uids.script}/bin/pg-check-grafana-alert-uids";
+            description = "Reject Grafana alert-rule uids over 40 characters or duplicated, receiver uids over 40 characters, and group folders outside the allowed list";
+            entry = "${pgCheckGrafanaAlertUidsEntry}";
             files = "(^|/)grafana/alerting/.*\\.ya?ml$";
             excludes = [
               "(^|/)rule-tests[^/]*/"

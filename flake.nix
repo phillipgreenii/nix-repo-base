@@ -887,6 +887,8 @@
                     printf 'apiVersion: 1\ngroups:\n  - orgId: 1\n    name: g\n    rules:\n'
                     for u in "$@"; do printf '      - uid: %s\n' "$u"; done
                   }
+                  printf 'apiVersion: 1\ngroups:\n  - orgId: 1\n    name: g\n    folder: Sixth Folder\n    rules:\n      - uid: r1\n' >pkg/grafana/alerting/badfolder.yaml
+                  printf 'apiVersion: 1\ngroups:\n  - orgId: 1\n    name: g\n    folder: Build & Nix\n    rules:\n      - uid: r1\n' >pkg/grafana/alerting/okfolder.yaml
                   rules "$uid40" >pkg/grafana/alerting/ok40.yaml
                   rules "$uid41" >pkg/grafana/alerting/long41.yaml
                   rules dup dup >pkg/grafana/alerting/dup.yml
@@ -914,6 +916,8 @@
                   }
 
                   expect 0 pkg/grafana/alerting/ok40.yaml ""
+                  expect 0 pkg/grafana/alerting/okfolder.yaml ""
+                  expect 10 pkg/grafana/alerting/badfolder.yaml "folder 'Sixth Folder' is not an allowed"
                   expect 10 pkg/grafana/alerting/long41.yaml "$uid41"
                   expect 10 pkg/grafana/alerting/dup.yml "more than once"
                   expect 10 pkg/grafana/alerting/receiver41.yaml "contact-point receiver uid"
@@ -2629,7 +2633,20 @@
           // (import ./lib/activation.nix { })
           # Capability-authoring helpers for the Light capability model (Plan 5):
           # mkCapability / mkBundle / enableFeatureIf.
-          // (import ./lib/capabilities.nix { lib = inputs.nixpkgs.lib; });
+          // (import ./lib/capabilities.nix { lib = inputs.nixpkgs.lib; })
+          # The ONE list of allowed Grafana folder titles (ADR 0040): consumed by the
+          # check-grafana-alert-uids hook here and by nix-support-apps' folders.nix.
+          // (
+            let
+              grafanaFoldersFile = ./modules/pg-check-grafana-alert-uids/pg-check-grafana-alert-uids/grafana-folders.txt;
+            in
+            {
+              inherit grafanaFoldersFile;
+              grafanaFolders = inputs.nixpkgs.lib.filter (t: t != "") (
+                inputs.nixpkgs.lib.splitString "\n" (builtins.readFile grafanaFoldersFile)
+              );
+            }
+          );
       };
     };
 }

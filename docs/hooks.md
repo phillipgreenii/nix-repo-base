@@ -582,6 +582,7 @@ aborted `pn workspace apply`).
 | an alert-rule uid longer than 40 characters                             | `.groups[].rules[].uid`            |
 | an alert-rule uid declared twice within one file                        | `.groups[].rules[].uid`            |
 | a contact-point receiver uid longer than 40 characters                  | `.contactPoints[].receivers[].uid` |
+| a group `folder:` outside the allowed list (ADR 0040)                   | `.groups[].folder`                 |
 | a selected file that does not parse as YAML (Grafana could not load it) |                                    |
 
 Policies:
@@ -599,7 +600,11 @@ Policies:
 - The YAML MUST be read with a real parser (`yq-go`), never a regex. The hook invokes no nix (HK-2):
   the script and `yq-go` come from the bundle's store closure.
 
-Each violation is printed on stderr with the file, the uid and its length, for example
+The allowed folder titles are the single list `modules/pg-check-grafana-alert-uids/pg-check-grafana-alert-uids/grafana-folders.txt`
+(one title per line, exported as `lib.grafanaFolders` / `lib.grafanaFoldersFile`; ADR 0040). The hook
+entry passes it through `GRAFANA_ALLOWED_FOLDERS_FILE`; the script holds no copy of the titles.
+
+Each violation is printed on stderr with the file, the uid and its length (or the folder title), for example
 `ERROR: pkg/grafana/alerting/alerts.yaml: alert-rule uid '<uid>' is 41 bytes long (limit 40); Grafana rejects uids longer than 40 and fails to start`,
 and the hook exits 1 (`pg-hooks run` then exits 10). Source: `modules/pg-check-grafana-alert-uids/`.
 Tests: the bats suite, flake check `test-pg-check-grafana-alert-uids` (the script against the real `yq`:
