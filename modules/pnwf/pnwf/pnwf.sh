@@ -27,18 +27,23 @@ Subcommands (read-only, implemented):
                      as unreadable rather than called off-primary or dirty.
   land-plan <branch>
                      Print the topo-ordered member repos of <branch>'s set
-                     that still need landing (present worktree, not an
-                     ancestor of primary), one per line. Absent worktrees
-                     (already landed) are skipped.
+                     that still need landing (present worktree, neither an
+                     ancestor of primary nor patch-equivalent to it), one per
+                     line. Absent worktrees (already landed) are skipped; a
+                     landed-equivalent member is skipped and named on stderr.
   cleanup <branch> [--force-dirty-worktree-removal] [--force-unlanded-branch-removal]
                      Best-effort teardown of <branch>'s set from the
                      canonical clone: removes worktree + branch (via
                      `wtdone`, guarded against a blocking process still
-                     anchored inside the worktree) for every landed member, keeps
-                     (and reports) the rest. Removes the set directory
-                     itself only when nothing was kept.
+                     anchored inside the worktree) for every landed member
+                     (ancestor of primary, or patch-equivalent to it with no
+                     merge commit; the latter branch is deleted by
+                     compare-and-swap on its tip), keeps (and reports) the
+                     rest. Removes the set directory itself only when nothing
+                     was kept.
   status <branch>    Print a per-repo table for <branch>'s set: member,
-                     label (landed/not-started/blocked/kept), reason.
+                     label (landed/landed-equivalent/not-started/blocked/
+                     kept), reason.
   residue [--set]   Print JSON: an array of {repo, paths, mid_rebase} for
                      each member of the resolved workspace's own lock that
                      is dirty (uncommitted changes, tracked or untracked) or
@@ -295,7 +300,8 @@ Print the resolved set's lifecycle stage, derived from git:
                  branch is ahead of primary
   resuming-land  some member worktrees are absent AND >=1 member branch
                  (present or absent) is not landed
-  landed         every member branch is an ancestor of primary, or gone
+  landed         every member branch is an ancestor of primary, patch-
+                 equivalent to it (rebased and landed), or gone
 
 --set: exit non-zero unless the resolved workspace is inside a set.
 HELP
@@ -352,8 +358,8 @@ HELP
       any_worktree_absent=1
     fi
 
-    status=$(pnwf_is_ancestor_of_primary "$member_canonical" "$branch" "$primary") ||
-      die "could not resolve ancestor status for member '$member'"
+    status=$(pnwf_landed_state "$member_canonical" "$branch" "$primary") ||
+      die "could not resolve landed status for member '$member'"
     if [[ $status == "not-landed" ]]; then
       any_unlanded=1
     fi
@@ -634,8 +640,11 @@ Usage: pnwf land-plan <branch>
 Print the topo-ordered member repos of <branch>'s set that still need
 landing, one per line, from the SET's OWN pn-workspace.lock.json (subset
 sets only enumerate their own members). A member is included when its
-worktree is present AND it is not (yet) an ancestor of its primary branch.
-An absent worktree is skipped (FF-4 already removed it — already landed).
+worktree is present AND it is neither an ancestor of its primary branch nor
+patch-equivalent to it (git cherry prints no + line and the branch has no
+merge commit: rebased and already landed). An absent worktree is skipped
+(FF-4 already removed it — already landed). A landed-equivalent member is
+skipped from stdout and named on stderr.
 Never aborts on an absent member branch (guarded).
 HELP
       exit 0
@@ -669,11 +678,17 @@ HELP
     member_canonical="$canonical_root/$member"
     primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
       die "could not resolve primary branch for member '$member'"
-    status=$(pnwf_is_ancestor_of_primary "$member_canonical" "$branch" "$primary") ||
-      die "could not resolve ancestor status for member '$member'"
-    if [[ $status != "landed" ]]; then
+    status=$(pnwf_landed_state "$member_canonical" "$branch" "$primary") ||
+      die "could not resolve landed status for member '$member'"
+    case "$status" in
+    landed) ;;
+    landed-equivalent)
+      echo "$member: landed-equivalent (patch-equivalent to $primary; nothing to land)" >&2
+      ;;
+    *)
       echo "$member"
-    fi
+      ;;
+    esac
   done
 }
 
@@ -688,6 +703,8 @@ Usage: pnwf status <branch>
 Print a per-repo table for <branch>'s set (member, label, reason), one line
 per member, tab-separated. label is one of:
   landed        worktree already removed (FF-4 completed), or nothing to do.
+  landed-equivalent  worktree present, clean, branch not an ancestor of
+                primary but patch-equivalent to it (rebased and landed).
   not-started   worktree present, clean, no commits ahead of primary yet.
   blocked       worktree present, but dirty, or its branch ref is missing.
   kept          worktree present, clean, ahead of primary, not yet landed.
@@ -804,16 +821,47 @@ HELP
   printf '%s\n' "${entries[@]}" | jq -s '[.[] | select(.affected) | del(.affected)]'
 }
 
+# Compare-and-swap delete of a patch-equivalent member's branch. Prints ONE
+# line "<removed 0|1>\t<reason>" and returns 0. Args: canonical_dir branch
+# expected_tip primary worktree_note
+_pnwf_cas_delete_branch() {
+  local canonical_dir="$1" branch="$2" expected_tip="$3" primary="$4" note="$5"
+  local rc=0 out
+  out=$(git -C "$canonical_dir" update-ref -d "refs/heads/$branch" "$expected_tip" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '%s\t%s\n' "0" "$note, but the branch was kept: its tip moved before the compare-and-swap delete (git update-ref -d rc=$rc: $out)"
+    return 0
+  fi
+  printf '%s\t%s\n' "1" "branch is patch-equivalent to $primary (not an ancestor); $note, branch deleted by compare-and-swap on tip $expected_tip"
+}
+
 # Removes one member's worktree + branch as part of `cmd_cleanup`. Guarded
 # end to end: git failures are reported, never allowed to abort the caller's
 # best-effort loop (every path below explicitly `return`s 0). Prints ONE
 # line: "<removed 0|1>\t<reason>".
 #
 # Args: setdir member canonical_dir branch primary force_dirty forced_unlanded
+#       [expected_tip]
+#
+# expected_tip (optional) marks a patch-equivalent member (landed by patch, not
+# by ancestry): the branch tip sha recorded when it was judged landed. Its
+# branch is deleted by compare-and-swap (`git update-ref -d` with that sha as
+# the expected old value, which fails if the tip moved), never by a bare
+# `branch -d`/`-D`, and the tip is re-verified before the worktree is removed
+# too, because the worktree goes first and the branch delete comes after.
 _pnwf_cleanup_remove_member() {
   local setdir="$1" member="$2" canonical_dir="$3" branch="$4" primary="$5" \
-    force_dirty="$6" forced_unlanded="$7"
+    force_dirty="$6" forced_unlanded="$7" expected_tip="${8:-}"
   local member_setpath="$setdir/$member"
+
+  if [[ -n $expected_tip ]]; then
+    local cur_tip=""
+    cur_tip=$(git -C "$canonical_dir" rev-parse --verify -q "refs/heads/$branch" 2>/dev/null) || cur_tip=""
+    if [[ $cur_tip != "$expected_tip" ]]; then
+      printf '%s\t%s\n' "0" "branch tip moved since it was judged patch-equivalent to $primary; nothing removed"
+      return 0
+    fi
+  fi
 
   # The common/default path (neither force flag set): delegate the actual
   # worktree-remove + branch--d + prune MECHANICS to `wtdone` (bead
@@ -863,7 +911,18 @@ _pnwf_cleanup_remove_member() {
     local wt_out wt_rc=0
     wt_out=$(wtdone "$branch" --cc "$canonical_dir" 2>&1) || wt_rc=$?
     if [[ $wt_rc -ne 0 ]]; then
-      printf '%s\t%s\n' "0" "wtdone refused (rc=$wt_rc): $wt_out"
+      # wtdone removes the worktree first and then runs a plain `git branch
+      # -d`, which refuses a patch-equivalent (rebased) branch. For such a
+      # member the removed worktree is the expected half-success; any other
+      # refusal (a blocking process, a dirty tree) leaves the worktree in
+      # place and is reported as before.
+      if [[ -z $expected_tip ]] || pnwf_worktree_present "$setdir" "$member"; then
+        printf '%s\t%s\n' "0" "wtdone refused (rc=$wt_rc): $wt_out"
+        return 0
+      fi
+    fi
+    if [[ -n $expected_tip ]]; then
+      _pnwf_cas_delete_branch "$canonical_dir" "$branch" "$expected_tip" "$primary" "worktree removed (via wtdone)"
       return 0
     fi
     printf '%s\t%s\n' "1" "branch was an ancestor of $primary; worktree + branch removed (via wtdone)"
@@ -906,6 +965,11 @@ _pnwf_cleanup_remove_member() {
       printf '%s\t%s\n' "0" "git worktree remove failed (rc=$wt_rc): $wt_out"
       return 0
     fi
+  fi
+
+  if [[ -n $expected_tip ]]; then
+    _pnwf_cas_delete_branch "$canonical_dir" "$branch" "$expected_tip" "$primary" "worktree removed"
+    return 0
   fi
 
   # Landed members use plain -d (git itself confirms it's merged); a forced
@@ -954,6 +1018,21 @@ pn-workspace.lock.json — subset-aware):
                        server, `caffeinate`) are ignored. pnwf has no
                        liveness check of its own: the guard, its list and
                        its override (WTDONE_BLOCKING_COMMANDS) are wtdone's.
+  - landed-equivalent  the branch is NOT an ancestor but is patch-equivalent
+                       to primary (`git cherry` prints no + line AND the
+                       branch has no merge commit): rebased and already
+                       landed. Same removal as an ancestor member, except the
+                       branch is deleted by compare-and-swap on the tip sha
+                       recorded when it was judged landed (`git update-ref
+                       -d`; a moved tip keeps the branch). Removed ONLY when
+                       every other member is landed, landed-equivalent or
+                       absent; if any member is not landed, the WHOLE set is
+                       kept and the report names that member. pnwf knows
+                       nothing about beads: whether the work's bead is closed
+                       is the caller's check. Accepted limits: a
+                       squash-merged branch shows + and stays kept; a patch
+                       landed and later reverted on primary is still
+                       equivalent.
   - not landed         kept by default (incl. pull-request repos); report
                        names the two force flags.
 Processes EVERY member and never aborts on one un-removable repo — the
@@ -964,7 +1043,10 @@ only when nothing was kept; otherwise it is left in place and reported.
 --force-dirty-worktree-removal   force `git worktree remove` on a dirty
                                   worktree (landed or forced-unlanded).
 --force-unlanded-branch-removal  remove worktree + `git branch -D` for a
-                                  member that is NOT landed.
+                                  member that is neither landed nor
+                                  landed-equivalent; it applies to EVERY such
+                                  member with no patch-equivalence check, so
+                                  prefer the landed-equivalent route above.
 HELP
       exit 0
       ;;
@@ -995,6 +1077,29 @@ HELP
   local report_lines=()
 
   local member member_canonical primary status_rc status result removed reason
+
+  # Pre-pass: a patch-equivalent member is removed only when no member of the
+  # set is plainly not landed (unless --force-unlanded-branch-removal already
+  # accepted that). Otherwise the whole set is kept and the report names the
+  # blocking member.
+  local blocker=""
+  if [[ $force_unlanded -ne 1 ]]; then
+    for member in "${members[@]}"; do
+      member_canonical="$canonical_root/$member"
+      primary=$(pnwf_resolve_primary_branch "$member_canonical") ||
+        die "could not resolve primary branch for member '$member'"
+      status_rc=0
+      status=$(pnwf_landed_state "$member_canonical" "$branch" "$primary") || status_rc=$?
+      if [[ $status_rc -ne 0 ]]; then
+        die "could not resolve landed status for member '$member' (rc=$status_rc)"
+      fi
+      if [[ $status == "not-landed" ]]; then
+        blocker="$member"
+        break
+      fi
+    done
+  fi
+
   for member in "${members[@]}"; do
     member_canonical="$canonical_root/$member"
 
@@ -1002,12 +1107,31 @@ HELP
       die "could not resolve primary branch for member '$member'"
 
     status_rc=0
-    status=$(pnwf_is_ancestor_of_primary "$member_canonical" "$branch" "$primary") || status_rc=$?
+    status=$(pnwf_landed_state "$member_canonical" "$branch" "$primary") || status_rc=$?
     if [[ $status_rc -ne 0 ]]; then
-      die "could not resolve ancestor status for member '$member' (rc=$status_rc)"
+      die "could not resolve landed status for member '$member' (rc=$status_rc)"
     fi
 
     case "$status" in
+    landed-equivalent)
+      if [[ -n $blocker ]]; then
+        any_kept=1
+        report_lines+=("$member	kept	patch-equivalent to $primary, but set member '$blocker' is not landed, so the whole set is kept")
+      else
+        local tip
+        tip=$(git -C "$member_canonical" rev-parse --verify -q "refs/heads/$branch") ||
+          die "could not read the tip of '$branch' in $member_canonical"
+        result=$(_pnwf_cleanup_remove_member "$setdir" "$member" "$member_canonical" "$branch" "$primary" "$force_dirty" "0" "$tip")
+        removed="${result%%$'\t'*}"
+        reason="${result#*$'\t'}"
+        if [[ $removed -eq 1 ]]; then
+          report_lines+=("$member	removed	$reason")
+        else
+          any_kept=1
+          report_lines+=("$member	kept	$reason")
+        fi
+      fi
+      ;;
     absent)
       report_lines+=("$member	landed	branch '$branch' not found in $member_canonical (already landed/removed)")
       ;;

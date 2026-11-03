@@ -45,8 +45,8 @@ action it takes is executed by a skill or tool that already implements that acti
   subagent executes it). The action subagent itself invokes the highest-level existing mechanism
   that does the job — `wtdone`, `integrate-branch`, `land-workforest`/`cleanup-workforest` — and
   MAY fall through to direct git plumbing (`git worktree add`, `git worktree remove`) only as
-  that mechanism's own documented low-level step, never as a substitute for it (see Step 3's
-  "no force-delete" policy below for the one place this matters).
+  that mechanism's own documented low-level step, never as a substitute for it (see Step 3a's
+  patch-equivalent route below for the one place a branch is deleted outside `wtdone`).
 
 ## Safety contract (MUST)
 
@@ -79,10 +79,24 @@ action it takes is executed by a skill or tool that already implements that acti
   filesystem walk-up, and a token extracted from a branch name resolved against the wrong
   tracker context could coincidentally hit an unrelated bead. Prefer the `bd search`/`bd list
 --label <repo-label>` fallback's title match to corroborate a bare id-token hit.
-- MUST NOT force-delete a branch (`git branch -D`) anywhere in this skill, even when a bead
-  confirms the work is abandoned. `wtdone` deliberately only ever does a plain `-d` (refuses an
-  unmerged branch) — see Step 3's removal policy. This skill does not reintroduce a force path
-  `wtdone` itself declined to provide.
+- MUST NOT force-delete a branch (`git branch -D`, or `pnwf cleanup --force-unlanded-branch-removal`)
+  anywhere in this skill, even when a bead confirms the work is abandoned: `wtdone` deliberately
+  only ever does a plain `-d` (refuses an unmerged branch), and this skill does not reintroduce a
+  force path `wtdone` itself declined to provide. MUST NEVER pass `--force-dirty-worktree-removal`.
+  The ONE carve-out (operator rulings, Phillip, 2026-10-09 and 2026-11-03, verbatim: "if a
+  branch/worktree is patch-equivalent to main and the bead is closed, then the branch/worktree can
+  be removed"): a candidate that is patch-equivalent to the primary (see Step 3a's patch-equivalent
+  route) MAY be removed, and its branch deleted by compare-and-swap (`git update-ref -d
+refs/heads/<branch> <expected-tip-sha>`, never a bare `-D`), only when ALL of these hold: its
+  correlated bead exists and is `closed`; the drain-claim guard (Step 3a items 1, 2, 4) passes
+  (the guard still wins for a zero-commit candidate with a non-closed bead); `git status
+--porcelain` is empty in every worktree being removed; the Step 2a liveness probe found no
+  blocking process (the force-free `pnwf` path has no liveness check of its own, so this condition
+  lives only here); and the branch tip sha is unchanged between the check and the delete. Any `+`
+  line, a merge commit, a dirty tree, an open or missing bead, an anchored process or a moved tip
+  means do NOT remove. Accepted limits, not to be re-litigated: a squash-merged branch shows `+`
+  and stays kept; a patch that landed and was later reverted on the primary still shows `-` and
+  is removed (its content was on the primary once).
 - MUST serialize action-subagent dispatches (land/remove) within a single repo — at most one
   in-flight per repo — but MAY run them concurrently across different repos. Research
   (read-only) MAY be parallelized freely across candidates.
@@ -113,7 +127,7 @@ flowchart TD
     SG -->|yes| LIVE
     SG -->|no, or lookup finds no bead| SCU["dispatch: cleanup-workforest"]
     SLP -->|non-empty| CLS
-    SET -->|no| M{"Merged into primary?\n(merge-base --is-ancestor)"}
+    SET -->|no| M{"Landed in primary?\n(ancestor, merge-base --is-ancestor)"}
     M -->|yes| G{"Drain-claim guard (3a):\nbead not closed and in_progress or has\nassignee or lease, or lookup failed?"}
     G -->|yes| LIVE["Skip, report: claimed by live drain session\nor isolated and not yet worked"]
     G -->|no, or lookup finds no bead| Z{"Zero own commits\nwhile bead not closed?"}
@@ -121,13 +135,17 @@ flowchart TD
     Z -->|yes| WC{"Worktree exists and is clean?\n(git status --porcelain empty)"}
     WC -->|no: dirty or no worktree| LIVE
     WC -->|yes| RC["dispatch: wtdone, then note the bead\n(reclaimed, clean, no changes)"]
-    M -->|no| CLS["Bead correlation +\nexisting worktree-review check"]
+    M -->|no| PE{"Patch-equivalent to primary?\n(git cherry: no + line, and no merge commit)"}
+    PE -->|no| CLS["Bead correlation +\nexisting worktree-review check"]
+    PE -->|yes| PG{"Bead exists and is closed, drain-claim guard passes,\nclean tree, nothing anchored?"}
+    PG -->|no| PK["Keep, report which condition failed"]
+    PG -->|yes| RE["dispatch: wtdone, then update-ref -d with the\nrecorded tip (compare-and-swap):\nremoved (patch-equivalent to main, bead closed)"]
     CLS --> RV{"Already\nworktree-review?"}
     RV -->|yes| PEND["Report: pending human review, skip"]
     RV -->|no| G3{"Drain-claim guard (3c):\nbead claimed, or lookup failed?"}
     G3 -->|yes| LIVE
     G3 -->|no, or lookup finds no bead| C{"Classify"}
-    C -->|"bead says abandoned"| RM2["dispatch: wtdone\n(worktree removed; unmerged branch\nrefused by design, left dangling)"]
+    C -->|"bead says abandoned"| RM2["dispatch: wtdone\n(worktree removed; a branch with + lines\nrefused by design, left dangling)"]
     C -->|"open bead vouches for this work"| LB["dispatch: validate-workforest (sets) then\nland-workforest/cleanup-workforest, or\nintegrate-branch (standalone)"]
     C -->|"no usable bead"| BEAD["create/reopen a bead\ncapturing findings; leave candidate as-is"]
     C -->|"genuinely ambiguous"| HUMAN["apply human + worktree-review; ask"]
@@ -181,10 +199,19 @@ fast path.** Do not skip straight to landing.
    write: report it under the same "claimed by live drain session / isolated, not yet worked"
    line and move on. Step 3a's clean-worktree reclaim (step 3) is for a standalone worktree only
    and does NOT extend to sets: a not-yet-worked set whose bead is unclaimed is still skipped here.
-1. `pnwf land-plan <branch>`. **Empty** (every member already an ancestor of its primary, or its
-   worktree already gone) → this set is fully landed with nothing left to do — dispatch an action
-   subagent to run `cleanup-workforest` alone. **No approval, no bead needed** beyond closing one
-   if it was already open for this set.
+1. `pnwf land-plan <branch>`. **Empty** (every member already an ancestor of its primary, patch-
+   equivalent to it, or its worktree already gone) → this set is fully landed with nothing left to
+   do — dispatch an action subagent to run `cleanup-workforest` alone. **No approval, no bead
+   needed** beyond closing one if it was already open for this set, EXCEPT when `land-plan`'s
+   stderr names a `landed-equivalent` member: that set is landed by patch, not by ancestry, so it
+   additionally needs the patch-equivalent conditions of the Safety contract (a correlated bead
+   that exists and is `closed`, a clean `git status --porcelain` in every member worktree, no
+   blocking process per Step 2a). If any fails, keep the whole set and report which condition
+   failed; no bead and no closed bead means keep and report. `pnwf cleanup` itself removes a
+   `landed-equivalent` member only when EVERY member is landed or landed-equivalent (any
+   not-landed member keeps the whole set, and the report names that member) and deletes each
+   such branch by compare-and-swap on its tip; do NOT pass `--force-unlanded-branch-removal` or
+   `--force-dirty-worktree-removal`.
 2. **Non-empty** → real unlanded work exists. Run the same bead-correlation-and-classification as
    Step 3b/3c below (branch-id extraction from the set's branch name, existing-`worktree-review`
    short-circuit, abandoned/vouched/no-bead/ambiguous). Only on the **vouched** branch does this
@@ -196,13 +223,19 @@ fast path.** Do not skip straight to landing.
    do not force anything, do not run `cleanup-workforest` (a partially-landed set must not be torn
    down — `land-workforest`'s own partial-block policy already refuses this). On **abandoned**,
    dispatch `cleanup-workforest` with no force flags — it keeps any member with real unlanded
-   commits and reports it, which is the correct, non-destructive outcome (this skill does not pass
-   `--force-unlanded-branch-removal`; that flag is reserved for an operator's own explicit call).
+   commits and reports it, which is the correct, non-destructive outcome (this skill never passes
+   `--force-unlanded-branch-removal` or `--force-dirty-worktree-removal`; the patch-equivalent route
+   above is the only way a rebased-but-landed set is cleared).
 
 ## Step 3 — Standalone worktree / dangling branch: classify and act
 
-**3a. Merged check, then drain-claim guard.** `git merge-base --is-ancestor <branch> <primary>`
-(exit 0), or the branch is already absent from `git branch --list` (already torn down elsewhere).
+**3a. Landed check, then drain-claim guard.** A candidate counts as landed when EITHER (1) its
+tip is an ancestor of the primary, `git merge-base --is-ancestor <branch> <primary>` (exit 0), or
+the branch is already absent from `git branch --list` (already torn down elsewhere); this path,
+which handles a candidate with no bead as before, is the rest of this step; OR (2) it is
+patch-equivalent: `git cherry <primary> <branch>` prints zero `+` lines AND `git rev-list --merges
+<primary>..<branch>` is empty (`git cherry` ignores merge commits, so an evil merge carrying
+unique content would otherwise be invisible); that route is Step 3a-2 below and adds conditions.
 "Is an ancestor of the primary" alone is NOT proof that nothing is using the branch: a freshly
 isolated `drain/<bead-id>` worktree has zero commits of its own, so it is vacuously an ancestor of
 the primary while its bead is claimed and an implementer is working in it, and Step 2a's `lsof`
@@ -280,13 +313,37 @@ _Drain-claim guard (MUST; run from inside the candidate's own repo, read-only)._
    to the branch delete). **No approval; no bead write needed** unless a bead was already open for
    it, in which case close it with a landed reason.
 
+**3a-2. Patch-equivalent route (not an ancestor, `git cherry` shows no `+` line, no merge commit).**
+A rebased-but-landed standalone worktree or dangling branch. Operator rulings (Phillip, 2026-10-09
+and 2026-11-03, verbatim: "if a branch/worktree is patch-equivalent to main and the bead is closed,
+then the branch/worktree can be removed"). It is removed only when ALL hold; otherwise keep it and
+report which condition failed:
+
+1. The correlated bead (Step 3a item 1's lookup) exists and is `closed`. A patch-equivalent
+   candidate with no bead is kept and reported; a failed lookup fails closed.
+2. The drain-claim guard (items 1, 2 and 4) passes. A zero-commit candidate with a non-closed bead
+   is still governed by that guard and item 3, not by this route.
+3. `git -C <worktree-path> status --porcelain` is empty in every worktree being removed.
+4. Step 2a found no blocking process anchored in it (a dangling branch has no worktree to probe).
+5. The branch tip sha is unchanged between the check and the delete.
+
+Dispatch an action subagent that records `tip=$(git rev-parse refs/heads/<branch>)` at check time
+and, as the LAST commands, re-reads the bead (closed), the porcelain status and the tip, in the
+same shell step as the removal. It then runs `wtdone <branch>` (removes the worktree; its plain
+`-d` refuses the rebased branch, which is expected here), re-verifies the tip again (`wtdone`
+removes the worktree first and the branch delete comes after), and deletes the branch with the
+compare-and-swap `git update-ref -d refs/heads/<branch> <tip>` (fails if the tip moved; then keep
+the branch and report). Never `git branch -D`, never a force flag. Report "removed
+(patch-equivalent to main, bead closed)". `wtdone` itself is unchanged. For a coordinated set the
+same rule is applied by `pnwf cleanup` (Step 2b).
+
 Known limitation: `drain-one`'s own landing retirement runs `wtdone` before its bead is closed,
 but that path does not go through this skill, so this guard belongs here only. `wtdone` and
 `drain-one` are unchanged by it. Whether `wtdone` should grow a defence-in-depth
 `--require-unclaimed` flag is analysed in
 `docs/design/pg2-des38-wtdone-require-unclaimed.md` (recommendation: not now).
 
-**3b. Not merged — research (parallelizable across candidates, read-only, run from inside the
+**3b. Not landed — research (parallelizable across candidates, read-only, run from inside the
 candidate's own repo per the Safety contract's `bd`-cwd rule).**
 
 - Extract a bead-id-shaped token from the branch/directory name; validate it with `bd show
@@ -322,11 +379,13 @@ candidate's own repo per the Safety contract's `bd`-cwd rule).**
   deciding against it (in the spirit of `beads-lifecycle`'s `decided-against?` probe, though that
   probe's own runnable form is designed for an absent-artifact check across _all_ beads, not
   strictly this bead's own history — treat this as the same kind of check, not a literal
-  citation) — dispatch an action subagent to run `wtdone <branch>`. If the branch turns out to be
-  genuinely unmerged, `wtdone` removes the worktree and then refuses the branch delete (exit
-  non-zero) **by design** — that is the expected, correct outcome here, not a failure to recover
-  from: report "worktree reclaimed, branch `<name>` left dangling (unmerged; not force-deleted per
-  policy)." If the bead is still open, close it with that reason first. **No approval.**
+  citation) — dispatch an action subagent to run `wtdone <branch>`. This route is reached only
+  for a branch that is neither an ancestor of the primary nor patch-equivalent to it (those were
+  decided in Step 3a/3a-2), i.e. it has `+` lines or a merge commit. `wtdone` removes the worktree
+  and then refuses the branch delete (exit non-zero) **by design** — that is the expected, correct
+  outcome here, not a failure to recover from: report "worktree reclaimed, branch `<name>` left
+  dangling (has commits not on the primary; not force-deleted)." If the bead is still open, close
+  it with that reason first. **No approval.**
 - **An open bead already vouches for this exact work** — its title/description plausibly matches
   what's actually in the worktree (not merely present; drifted-and-no-longer-matching counts as
   "no usable bead" below) — dispatch an action subagent to invoke `integrate-branch`. For a
@@ -337,7 +396,7 @@ candidate's own repo per the Safety contract's `bd`-cwd rule).**
   - `stopped:<reason>`, or `integrate-branch` itself reaches an unresolvable "ask the user" (null
     strategy) — treat both identically: never let the subagent block on a live prompt. Re-run the drain-claim
     guard (claim state can change while `integrate-branch` runs), then run
-    `wtdone <branch>` — its expected outcome here (worktree removed, unmerged branch refused, per
+    `wtdone <branch>` — its expected outcome here (worktree removed, branch with unlanded commits refused, per
     3a above) is exactly what's wanted: the throwaway worktree is reclaimed and the branch's real
     work is preserved untouched. Refresh the _same_ bead with the concrete stop reason so a
     `/drain-beads` session can pick it up next. **No approval.**
@@ -357,16 +416,17 @@ candidate's own repo per the Safety contract's `bd`-cwd rule).**
 remove a worktree, and what protects a live drain worktree on it. A new route MUST be added here
 with a guard or a reason before it ships.
 
-| route                                                                | protection                                                                                                                                                                                                                               |
-| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 3a merged standalone worktree or dangling branch → `wtdone`          | drain-claim guard steps 1-5 (claim check; zero-commit candidates reclaimed only per the next row)                                                                                                                                        |
-| 3a zero-commit worktree, bead unclaimed → `wtdone`, then bead note   | guard items 1, 2, 4 (claimed or failed lookup skips) plus a clean `git status --porcelain` and an existing worktree, both re-run by the dispatched subagent as the last commands before `wtdone`; the note is written only after removal |
-| 2b set, `land-plan` empty → `cleanup-workforest`                     | set variant of the guard (2b step 0), run before the fast path                                                                                                                                                                           |
-| 2b set, vouched → `land-workforest`/`cleanup-workforest`; abandoned  | the same 2b step 0 guard, run before either branch                                                                                                                                                                                       |
-| 3c abandoned → `wtdone`                                              | 3c guard steps 1, 2, 4 (closed bead proceeds; open and claimed skips)                                                                                                                                                                    |
-| 3c vouched → `integrate-branch` (FF-4 runs `wtdone` on `landed`)     | 3c guard, before dispatch                                                                                                                                                                                                                |
-| 3c vouched, `stopped`/null strategy → `wtdone` on the throwaway tree | 3c guard, re-run immediately before this `wtdone`                                                                                                                                                                                        |
-| 3c already `worktree-review`, no usable bead, genuinely ambiguous    | no `wtdone` or `integrate-branch` dispatch exists on these routes; they only report, label or file                                                                                                                                       |
+| route                                                                     | protection                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 3a merged standalone worktree or dangling branch → `wtdone`               | drain-claim guard steps 1-5 (claim check; zero-commit candidates reclaimed only per the next row)                                                                                                                                        |
+| 3a-2 patch-equivalent worktree or branch → `wtdone`, then `update-ref -d` | bead exists and is `closed`, drain-claim guard items 1, 2, 4, clean `git status --porcelain`, Step 2a liveness clear, tip unchanged (compare-and-swap), all re-run by the dispatched subagent as the last commands                       |
+| 3a zero-commit worktree, bead unclaimed → `wtdone`, then bead note        | guard items 1, 2, 4 (claimed or failed lookup skips) plus a clean `git status --porcelain` and an existing worktree, both re-run by the dispatched subagent as the last commands before `wtdone`; the note is written only after removal |
+| 2b set, `land-plan` empty → `cleanup-workforest`                          | set variant of the guard (2b step 0), run before the fast path                                                                                                                                                                           |
+| 2b set, vouched → `land-workforest`/`cleanup-workforest`; abandoned       | the same 2b step 0 guard, run before either branch                                                                                                                                                                                       |
+| 3c abandoned → `wtdone`                                                   | 3c guard steps 1, 2, 4 (closed bead proceeds; open and claimed skips)                                                                                                                                                                    |
+| 3c vouched → `integrate-branch` (FF-4 runs `wtdone` on `landed`)          | 3c guard, before dispatch                                                                                                                                                                                                                |
+| 3c vouched, `stopped`/null strategy → `wtdone` on the throwaway tree      | 3c guard, re-run immediately before this `wtdone`                                                                                                                                                                                        |
+| 3c already `worktree-review`, no usable bead, genuinely ambiguous         | no `wtdone` or `integrate-branch` dispatch exists on these routes; they only report, label or file                                                                                                                                       |
 
 Residual gap, disclosed: a candidate with NO correlated bead has nothing for the guard to read.
 That is acceptable because a drain worktree is always created for a bead, so a live one always
@@ -390,7 +450,8 @@ Audit-worktrees — <N> candidates (<sets>, <standalone worktrees>, <dangling br
 | pg2-9k2ab (repo-base)            | worktree  | landed                      | pg2-9k2ab closed     |
 | drain/pg2-4f1qz (support-apps)   | worktree  | stopped (rebase-conflict)   | pg2-4f1qz refreshed  |
 | old-spike (personal)             | dangling  | bead created                 | pg2-new1 (P3)        |
-| stale-try (personal)             | worktree  | reclaimed (abandoned, unmerged branch left dangling) | pg2-old3 closed |
+| stale-try (personal)             | worktree  | reclaimed (abandoned, branch with unlanded commits left dangling) | pg2-old3 closed |
+| rebased-x (personal)             | worktree  | removed (patch-equivalent to main, bead closed) | pg2-old4 closed |
 | drain/pg2-5kq1x (repo-base)      | worktree  | reclaimed (clean, no changes) | pg2-5kq1x noted      |
 | mystery-wt (ziprecruiter)        | worktree  | flagged for review          | pg2-new2 (human)     |
 
@@ -417,22 +478,24 @@ would make it unreachable outright, not just less discoverable.
 
 ## Command quick reference
 
-| need                                             | command                                                                                        |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| coordinated sets                                 | `pn workspace workforest list`                                                                 |
-| standalone worktrees per repo                    | `git worktree list --porcelain`                                                                |
-| dangling branches per repo                       | `git for-each-ref --format='%(refname:short)' refs/heads/`, diffed against the above           |
-| merged check                                     | `git merge-base --is-ancestor <branch> <primary>`                                              |
-| liveness check (primary)                         | `lsof -a -d cwd +D <worktree-path> -F pcn`, then keep only allow-listed names (Step 2a)        |
-| liveness check (informational only)              | `pa-monitor status` / `info path:<worktree-path>` — exact-match cwd, not subdirectory-aware    |
-| set fast path                                    | `pnwf land-plan <branch>` (empty → already fully landed)                                       |
-| drain-claim guard (before every `wtdone` route)  | `bd show <token> --json` + `git rev-list --count <primary>..<branch>` (Steps 2b, 3a, 3c, 3d)   |
-| clean-worktree check (3a zero-commit reclaim)    | `git -C <worktree-path> status --porcelain` (empty = clean); note via `bd comment <id> --file` |
-| remove a worktree and/or branch (uniform)        | `wtdone <branch> [--cc <canonical>]` — handles no-worktree case natively, never force-deletes  |
-| land a standalone branch                         | invoke `integrate-branch:integrate-branch` (Skill tool)                                        |
-| validate + land + cleanup a set                  | invoke `validate-workforest`, then `land-workforest`, then `cleanup-workforest` (Skill tool)   |
-| bead correlation (run from candidate's own repo) | `bd show <token>`, `bd search`, `bd list --label <repo-label>`                                 |
-| existing-review short-circuit                    | check `bd show <id> --json`'s labels for `worktree-review` before classifying                  |
-| abandoned-ruling probe                           | in the spirit of `beads-lifecycle`'s `decided-against?` (F-9)                                  |
-| landed-claim verification                        | `beads-lifecycle`'s `landed?` (F-3)                                                            |
-| doubt path                                       | `beads-lifecycle`'s `worktree-review` lifecycle (W-1..W-8)                                     |
+| need                                             | command                                                                                                  |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| coordinated sets                                 | `pn workspace workforest list`                                                                           |
+| standalone worktrees per repo                    | `git worktree list --porcelain`                                                                          |
+| dangling branches per repo                       | `git for-each-ref --format='%(refname:short)' refs/heads/`, diffed against the above                     |
+| landed check, path 1 (ancestor)                  | `git merge-base --is-ancestor <branch> <primary>`                                                        |
+| landed check, path 2 (patch-equivalent)          | `git cherry <primary> <branch>` has no `+` line AND `git rev-list --merges <primary>..<branch>` is empty |
+| liveness check (primary)                         | `lsof -a -d cwd +D <worktree-path> -F pcn`, then keep only allow-listed names (Step 2a)                  |
+| liveness check (informational only)              | `pa-monitor status` / `info path:<worktree-path>` — exact-match cwd, not subdirectory-aware              |
+| set fast path                                    | `pnwf land-plan <branch>` (empty → already fully landed; stderr names landed-equivalent members)         |
+| drain-claim guard (before every `wtdone` route)  | `bd show <token> --json` + `git rev-list --count <primary>..<branch>` (Steps 2b, 3a, 3c, 3d)             |
+| clean-worktree check (3a zero-commit reclaim)    | `git -C <worktree-path> status --porcelain` (empty = clean); note via `bd comment <id> --file`           |
+| remove a worktree and/or branch (uniform)        | `wtdone <branch> [--cc <canonical>]` — handles no-worktree case natively, plain `-d` only                |
+| delete a patch-equivalent branch (3a-2 only)     | `git update-ref -d refs/heads/<branch> <expected-tip-sha>` (compare-and-swap; never `branch -D`)         |
+| land a standalone branch                         | invoke `integrate-branch:integrate-branch` (Skill tool)                                                  |
+| validate + land + cleanup a set                  | invoke `validate-workforest`, then `land-workforest`, then `cleanup-workforest` (Skill tool)             |
+| bead correlation (run from candidate's own repo) | `bd show <token>`, `bd search`, `bd list --label <repo-label>`                                           |
+| existing-review short-circuit                    | check `bd show <id> --json`'s labels for `worktree-review` before classifying                            |
+| abandoned-ruling probe                           | in the spirit of `beads-lifecycle`'s `decided-against?` (F-9)                                            |
+| landed-claim verification                        | `beads-lifecycle`'s `landed?` (F-3)                                                                      |
+| doubt path                                       | `beads-lifecycle`'s `worktree-review` lifecycle (W-1..W-8)                                               |

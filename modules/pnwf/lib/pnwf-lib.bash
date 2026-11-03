@@ -50,6 +50,57 @@ pnwf_is_ancestor_of_primary() {
   esac
 }
 
+# Is <branch> patch-equivalent to <primary>? Prints "yes" or "no" and returns
+# 0 for both (an expected answer, never an abort under set -e). "yes" needs BOTH:
+#
+#   - `git cherry <primary> <branch>` prints zero "+" lines (every commit of
+#     the branch has a patch-id twin on primary, e.g. after a rebase-and-land);
+#   - `git rev-list --merges <primary>..<branch>` is empty. `git cherry`
+#     ignores merge commits, so an evil merge carrying unique content would
+#     otherwise be invisible and judged landed.
+#
+# Accepted limits (operator rulings: 2026-10-09 and 2026-11-03): a squash-merged
+# branch shows "+" and is judged NOT equivalent (kept); a patch that landed and
+# was later reverted on primary still shows "-" and IS judged equivalent (its
+# content was on primary once).
+#
+# Any git failure (e.g. an absent branch) is reported as "no": the caller never
+# removes anything on an answer git could not establish.
+pnwf_patch_equivalent() {
+  local repo_dir="$1" branch="$2" primary="$3" cherry merges
+  cherry=$(git -C "$repo_dir" cherry "$primary" "$branch" 2>/dev/null) || {
+    echo "no"
+    return 0
+  }
+  if printf '%s\n' "$cherry" | grep -q '^+'; then
+    echo "no"
+    return 0
+  fi
+  merges=$(git -C "$repo_dir" rev-list --merges "${primary}..${branch}" 2>/dev/null) || {
+    echo "no"
+    return 0
+  }
+  if [ -n "$merges" ]; then
+    echo "no"
+    return 0
+  fi
+  echo "yes"
+}
+
+# Prints: landed | landed-equivalent | not-landed | absent  (never aborts under
+# set -e). landed = the branch tip is an ancestor of primary (the unchanged
+# test, pnwf_is_ancestor_of_primary); landed-equivalent = not an ancestor but
+# patch-equivalent to primary (pnwf_patch_equivalent).
+pnwf_landed_state() {
+  local repo_dir="$1" branch="$2" primary="$3" status
+  status=$(pnwf_is_ancestor_of_primary "$repo_dir" "$branch" "$primary") || return $?
+  if [ "$status" = "not-landed" ] &&
+    [ "$(pnwf_patch_equivalent "$repo_dir" "$branch" "$primary")" = "yes" ]; then
+    status="landed-equivalent"
+  fi
+  echo "$status"
+}
+
 # Is repo_dir the ROOT of a git working tree git can actually read? Prints
 # exactly ONE line, "<state><TAB><detail>", and always returns 0 -- both states
 # are EXPECTED answers, not errors, so no caller can be aborted under set -e by
@@ -528,6 +579,8 @@ pnwf_classify_member() {
   0)
     if [ "$ahead" -eq 0 ]; then
       printf '%s\t%s\n' "not-started" "no commits ahead of $primary"
+    elif [ "$(pnwf_patch_equivalent "$canonical_dir" "$branch" "$primary")" = "yes" ]; then
+      printf '%s\t%s\n' "landed-equivalent" "$ahead commit(s) not ancestors of $primary but patch-equivalent to it (git cherry shows no + line, no merge commit)"
     else
       printf '%s\t%s\n' "kept" "$ahead commit(s) ahead of $primary, not yet landed"
     fi

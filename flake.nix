@@ -1179,7 +1179,26 @@
                 'MUST NOT write the note when nothing was removed' \
                 'reclaimed (clean, no changes)' \
                 '| 3a zero-commit worktree, bead unclaimed → `wtdone`, then bead note ' \
-                '**3a. Merged check, then drain-claim guard.**' \
+                '**3a. Landed check, then drain-claim guard.**' \
+                'MUST NEVER pass `--force-dirty-worktree-removal`' \
+                'A candidate counts as landed when EITHER (1) its' \
+                'patch-equivalent: `git cherry <primary> <branch>` prints zero `+` lines AND `git rev-list --merges' \
+                'unique content would otherwise be invisible); that route is Step 3a-2 below' \
+                'compare-and-swap `git update-ref -d refs/heads/<branch> <tip>`' \
+                '1. The correlated bead (Step 3a item 1' \
+                '2. The drain-claim guard (items 1, 2 and 4) passes. A zero-commit candidate with a non-closed bead' \
+                'is still governed by that guard and item 3, not by this route.' \
+                '3. `git -C <worktree-path> status --porcelain` is empty in every worktree being removed.' \
+                'squash-merged branch shows `+`' \
+                'later reverted on the primary still shows `-`' \
+                'PE -->|yes| PG{' \
+                'PG -->|no| PK[' \
+                'PG -->|yes| RE["dispatch: wtdone, then update-ref -d with the' \
+                '**3a-2. Patch-equivalent route' \
+                '| 3a-2 patch-equivalent worktree or branch → `wtdone`, then `update-ref -d` ' \
+                'that exists and is `closed`, a clean `git status --porcelain` in every member worktree, no' \
+                'removed (patch-equivalent to main, bead closed)' \
+                'this skill never passes' \
                 'MUST NOT dispatch `wtdone`, and MUST NOT write or close any bead.' \
                 'ZERO commits of its own' \
                 'git rev-list --count <primary>..<branch>' \

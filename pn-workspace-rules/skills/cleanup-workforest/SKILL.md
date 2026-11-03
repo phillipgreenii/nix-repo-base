@@ -7,8 +7,9 @@ description: >-
   the workforest after landing", the cleanup step of `/pn-workspace-sync` or `/pn-workspace-update`, and
   the final step of the ad-hoc bead work-cycle. This is the CLEANUP stage of the
   workforest work-cycle (fork → WORK+validate → land → cleanup). It removes only
-  what has actually landed and keeps un-landed / pull-request repos with a
-  report. Do NOT use it to land work (`land-workforest`), and do NOT use it as a
+  what has actually landed (an ancestor of the primary, or patch-equivalent to
+  it after a rebase) and keeps un-landed / pull-request repos with a report. Do
+  NOT use it to land work (`land-workforest`), and do NOT use it as a
   force-delete of unmerged work — it deliberately preserves un-landed branches
   unless you pass the explicit force flags.
 ---
@@ -25,13 +26,16 @@ of repos that actually landed, and **keep** (with a report) any repo that did
 not — including `pull-request` repos and un-landed clean work.
 
 **Disambiguation.** This tears down a whole coordinated SET. It is not a landing
-step and not a force-delete; by default it never discards unmerged work.
+step and not a force-delete; by default it never discards unmerged work (a
+branch that is patch-equivalent to the primary is not unmerged work: see the
+landed-test).
 
 **Precondition: the land transaction must be COMPLETE, not merely progressed
 (MUST — bd `pg2-fxj57`).** Do not run this (or bare `pnwf cleanup`) while
 `land-workforest`'s own land-plan for the set is non-empty, or while its last
 attempt ended in `stopped:<reason>` / `pr-opened` / `pr-updated`. The
-landed-test below is purely per-member (branch-absent or ancestor-of-primary)
+landed-test below is purely per-member (branch-absent, ancestor-of-primary or
+patch-equivalent-to-primary)
 — it has no way to see a cross-repo **filesystem** dependency (e.g. a
 gitignored dev symlink from one member into a sibling's set-worktree), so it
 will happily remove an already-landed member's worktree even while a
@@ -73,11 +77,26 @@ they MUST NOT be used to get past an anchored-process refusal.)
    landed, nothing to do.
 2. Otherwise `git merge-base --is-ancestor <branch> <primary>`, distinguishing
    **exit 0** (landed → remove worktree + `git branch -d`) from **exit 1** (not
-   landed → keep) from **exit 128** (absent ref → handled as (1)). It **NEVER**
-   uses `git branch -d` _as the test_ — `git branch -d`'s upstream-aware "merged"
-   check would delete an open PR's branch.
-3. **Not landed** (incl. `pull-request` repos and un-landed clean work) → keep
-   the worktree + branch and report it.
+   an ancestor → go to (3)) from **exit 128** (absent ref → handled as (1)). It
+   **NEVER** uses `git branch -d` _as the test_ — `git branch -d`'s
+   upstream-aware "merged" check would delete an open PR's branch.
+3. **Patch-equivalent (landed-equivalent).** A branch that is not an ancestor
+   but is patch-equivalent to the primary — `git cherry <primary> <branch>`
+   prints zero `+` lines AND `git rev-list --merges <primary>..<branch>` is
+   empty (the merge check matters because `git cherry` ignores merge commits) —
+   was rebased and already landed. `pnwf cleanup` removes its worktree and
+   deletes its branch by compare-and-swap (`git update-ref -d
+refs/heads/<branch> <expected-tip-sha>`, which fails if the tip moved; a
+   plain `branch -d` would refuse a rebased branch). A set is torn down this
+   way only when EVERY member is landed or landed-equivalent: if any member is
+   not landed, the whole set is kept and the report names that member.
+   `pnwf` knows nothing about beads, so the caller (e.g. `audit-worktrees`)
+   owns the closed-bead requirement and the drain-claim guard before it
+   dispatches this. Accepted limits: a squash-merged branch shows `+` and stays
+   kept; a patch that landed and was later reverted on the primary still shows
+   `-` and is removed (its content was on the primary once).
+4. **Not landed** (incl. `pull-request` repos and un-landed clean work, any `+`
+   line, any merge commit) → keep the worktree + branch and report it.
 
 ## Behavior
 
@@ -91,9 +110,11 @@ they MUST NOT be used to get past an anchored-process refusal.)
   place and reported.
 - **Force flags** (only when the operator intends to discard):
   `--force-dirty-worktree-removal` forces removal of a dirty worktree;
-  `--force-unlanded-branch-removal` removes the worktree and `git branch -D`s a
-  **non-landed** branch. The report names these flags for any kept repo so the
-  operator can choose.
+  `--force-unlanded-branch-removal` removes the worktree and `git branch -D`s
+  EVERY member that is neither landed nor landed-equivalent, with no
+  patch-equivalence check, so it MUST NOT be used as the way to clear a rebased
+  set (the landed-equivalent route above does that safely). The report names
+  these flags for any kept repo so the operator can choose.
 
 ## Judgment the skill owns
 

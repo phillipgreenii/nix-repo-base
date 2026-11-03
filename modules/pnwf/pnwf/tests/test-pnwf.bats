@@ -1129,6 +1129,254 @@ MOCK
   [ "$status" -ne 0 ]
 }
 
+# --- cleanup: patch-equivalent (rebased and landed) members -------------------
+
+# Commit one change on the member's set branch, then land the SAME patch on the
+# canonical main under a different SHA (an unrelated main commit first, so the
+# cherry-pick cannot reproduce the identical commit object). Afterwards the
+# branch tip is NOT an ancestor of main but `git cherry main <branch>` prints
+# only "-" lines.
+_stage_rebased_land() {
+  local member="$1"
+  echo two >"$SET_DIR/$member/file.txt"
+  command git -C "$SET_DIR/$member" commit -q -am second
+  echo other >"$CANONICAL_DIR/$member/other.txt"
+  command git -C "$CANONICAL_DIR/$member" add other.txt
+  command git -C "$CANONICAL_DIR/$member" commit -q -m unrelated
+  command git -C "$CANONICAL_DIR/$member" cherry-pick "$BRANCH" >/dev/null
+}
+
+_branch_exists() {
+  command git -C "$CANONICAL_DIR/$1" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null
+}
+
+@test "patch-equivalent: the staged member is not an ancestor yet git cherry shows only - lines" {
+  _stage_init_member repoA
+  _stage_rebased_land repoA
+  run command git -C "$CANONICAL_DIR/repoA" merge-base --is-ancestor "$BRANCH" main
+  [ "$status" -eq 1 ]
+  run command git -C "$CANONICAL_DIR/repoA" cherry main "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "- "* ]]
+}
+
+@test "land-plan: a rebased-and-landed member is reported landed-equivalent and not listed for landing" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _stage_rebased_land repoA
+
+  cd "$CANONICAL_DIR"
+  run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"repoA: landed-equivalent"* ]]
+}
+
+@test "status: a rebased-and-landed member is labelled landed-equivalent" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _stage_rebased_land repoA
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "repoA"$'\t'"landed-equivalent"$'\t'* ]]
+}
+
+@test "stage: a set whose only member was rebased and landed is landed" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _stage_rebased_land repoA
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" stage
+  [ "$status" -eq 0 ]
+  [ "$output" = "landed" ]
+}
+
+@test "cleanup: removes a patch-equivalent member's worktree and deletes its branch by compare-and-swap" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _stage_rebased_land repoA
+  local tip
+  tip=$(command git -C "$CANONICAL_DIR/repoA" rev-parse "refs/heads/$BRANCH")
+
+  local real_git
+  real_git="$(command -v git)"
+  cat >"$MOCK_BIN/git" <<SHIM
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$TEST_DIR/git-calls.log"
+exec "$real_git" "\$@"
+SHIM
+  chmod +x "$MOCK_BIN/git"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"removed"*"patch-equivalent"* ]]
+  [[ "$output" == *"(set)"$'\t'"removed"* ]]
+  [ ! -e "$SET_DIR" ]
+  run ! _branch_exists repoA
+  # The delete was a compare-and-swap carrying the expected tip, never -D.
+  grep -qF -- "update-ref -d refs/heads/$BRANCH $tip" "$TEST_DIR/git-calls.log"
+  run ! grep -qE -- "branch -D" "$TEST_DIR/git-calls.log"
+}
+
+@test "cleanup: a patch-equivalent member with a + commit is kept and named" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _stage_rebased_land repoA
+  echo three >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am third
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"* ]]
+  [ -e "$SET_DIR/repoA" ]
+  _branch_exists repoA
+}
+
+@test "cleanup: a branch carrying a merge commit is kept even though git cherry shows no + line" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _stage_rebased_land repoA
+  # A side commit that also lands on main as a patch, merged into the branch
+  # with a merge commit (invisible to git cherry).
+  command git -C "$SET_DIR/repoA" switch -q --detach main~2
+  echo side >"$SET_DIR/repoA/side.txt"
+  command git -C "$SET_DIR/repoA" add side.txt
+  command git -C "$SET_DIR/repoA" commit -q -m side
+  command git -C "$SET_DIR/repoA" branch side
+  command git -C "$SET_DIR/repoA" switch -q "$BRANCH"
+  command git -C "$CANONICAL_DIR/repoA" cherry-pick side >/dev/null
+  command git -C "$SET_DIR/repoA" merge -q --no-ff -m "merge side" side
+  run bash -c "command git -C '$CANONICAL_DIR/repoA' cherry main '$BRANCH' | grep -c '^+'"
+  [ "$output" = "0" ]
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"* ]]
+  [ -e "$SET_DIR/repoA" ]
+  _branch_exists repoA
+
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [[ "$output" != *"landed-equivalent"* ]]
+}
+
+@test "cleanup: a patch-equivalent member with a dirty worktree is kept without --force-dirty-worktree-removal" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _stage_rebased_land repoA
+  echo untracked >"$SET_DIR/repoA/extra.txt"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"*"--force-dirty-worktree-removal"* ]]
+  [ -e "$SET_DIR/repoA/extra.txt" ]
+  _branch_exists repoA
+}
+
+@test "cleanup: a branch tip that moves between the check and the delete keeps the branch" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  _stage_rebased_land repoA
+
+  # wtdone stand-in: removes the worktree like the real one, then another
+  # actor advances the branch tip before the compare-and-swap delete runs,
+  # and the (refusing) plain branch -d leg fails as it does for a rebased
+  # branch.
+  cat >"$MOCK_BIN/wtdone" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+branch="$1"
+cc="$3"
+wt=$(git -C "$cc" worktree list --porcelain | awk -v b="$branch" '
+  /^worktree / { path=$2 }
+  /^branch refs\/heads\// && $0 == "branch refs/heads/"b { print path; exit }
+')
+git -C "$cc" worktree remove "$wt"
+old=$(git -C "$cc" rev-parse "refs/heads/$branch")
+new=$(git -C "$cc" commit-tree "$old^{tree}" -p "$old" -m moved)
+git -C "$cc" update-ref "refs/heads/$branch" "$new"
+echo "wtdone: error: the branch is not fully merged" >&2
+exit 1
+MOCK
+  chmod +x "$MOCK_BIN/wtdone"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"*"tip moved"* ]]
+  _branch_exists repoA
+  [ "$(command git -C "$CANONICAL_DIR/repoA" log -1 --format=%s "$BRANCH")" = "moved" ]
+}
+
+@test "cleanup: a set whose members are all patch-equivalent is removed in full including the set directory" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  _stage_write_lock repoA repoB
+  _stage_rebased_land repoA
+  _stage_rebased_land repoB
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"removed"* ]]
+  [[ "$output" == *"repoB"$'\t'"removed"* ]]
+  [[ "$output" == *"(set)"$'\t'"removed"* ]]
+  [ ! -e "$SET_DIR" ]
+  run ! _branch_exists repoA
+  run ! _branch_exists repoB
+}
+
+@test "cleanup: one member with a + commit keeps the whole set and the report names it" {
+  _stage_init_member repoA
+  _stage_init_member repoB
+  _stage_write_lock repoA repoB
+  _stage_rebased_land repoA
+  echo two >"$SET_DIR/repoB/file.txt"
+  command git -C "$SET_DIR/repoB" commit -q -am second
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"*"'repoB'"* ]]
+  [[ "$output" == *"repoB"$'\t'"kept"* ]]
+  [[ "$output" == *"(set)"$'\t'"kept"* ]]
+  [ -e "$SET_DIR/repoA" ]
+  [ -e "$SET_DIR/repoB" ]
+  _branch_exists repoA
+  _branch_exists repoB
+}
+
+@test "cleanup: an ancestor-landed member still goes through wtdone and branch -d, with no compare-and-swap delete" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+
+  local real_git
+  real_git="$(command -v git)"
+  cat >"$MOCK_BIN/git" <<SHIM
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$TEST_DIR/git-calls.log"
+exec "$real_git" "\$@"
+SHIM
+  chmod +x "$MOCK_BIN/git"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"removed"*"ancestor"*"via wtdone"* ]]
+  [ ! -e "$SET_DIR" ]
+  grep -qF -- "branch -d $BRANCH" "$TEST_DIR/git-calls.log"
+  run ! grep -qF -- "update-ref -d" "$TEST_DIR/git-calls.log"
+}
+
 @test "cleanup: subset lock excludes a physically-present member from processing" {
   _stage_init_member repoA
   _stage_init_member repoX
