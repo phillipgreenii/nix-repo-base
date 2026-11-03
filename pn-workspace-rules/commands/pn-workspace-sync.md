@@ -181,34 +181,15 @@ flowchart TD
      CASE, not an exception: a canonical clone sitting locally ahead of a moved
      `origin` — commits landed here but never pushed — is the expected starting
      state for this command, not an anomaly to escalate. Reconcile it yourself
-     in the named canonical clone:
-     1. `git fetch origin`.
-     2. Confirm the local-only commits are genuinely new — a commit already
-        landed upstream under a different sha needs no replay:
-        ```bash
-        git -C <CC> log --format='%H' origin/<primary>..<primary> | while read -r sha; do
-          git -C <CC> show --no-ext-diff "$sha" | git -C <CC> patch-id --stable
-        done
-        ```
-        compared against the same patch-id computed for each commit in
-        `<primary>..origin/<primary>` — a match means that local commit already
-        landed upstream (under a different sha) and does not need to be
-        replayed as new work.
-     3. `git rebase origin/<primary>`, resolving any conflict per the
-        `rebase-conflict` discipline above.
-     4. Run the repo's checks (pre-commit hooks, `nix flake check` where
-        applicable) against the rebased tree.
-     5. Push.
-        A "fix breakage" step is bounded, not a license to patch over a
-        regression: in scope is a MECHANICAL fix only — regenerating a generated
-        file (lock file, formatting), a one-line reference/import fix the rebase
-        itself broke, or re-running a codegen step. Rewriting logic, silencing or
-        skipping a failing check, or adding exception handling around the
-        failure is OUT of scope regardless of how small it looks — stop and ask
-        the user instead. Likewise stop and ask when the rebase lands a real
-        conflict in hand-authored code you're not confident resolving. Once
-        reconciled, continue the SAME runner (re-run `pnwf sync-fetch --set` — it
-        resumes the sweep from where the canonical anomaly stopped it).
+     by invoking the `reconcile-repo` skill of this plugin on the named
+     canonical clone `<CC>`, with the publish step ENABLED (this command pushes,
+     as the skill's final step). The skill is the single home of the reconcile
+     procedure: fetch, the `patch-id` check, rebase, the rebase-conflict
+     discipline, the repo's checks, the push, and the bounded fix-breakage rule
+     (mechanical fixes only; anything else, stop and ask the user). Do not copy
+     or paraphrase its steps here. Once reconciled, continue the SAME runner
+     (re-run `pnwf sync-fetch --set` — it resumes the sweep from where the
+     canonical anomaly stopped it).
    - **`halt` / `sync-fetch` / `canonical-anomaly`** → the canonical clone
      itself is off its primary branch, dirty, or otherwise not in the steady
      state Tier R requires (R-3/R-8) — a genuinely different problem from
