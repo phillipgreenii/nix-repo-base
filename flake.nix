@@ -1136,125 +1136,103 @@
               touch $out
             '';
 
-            # Regression guard for the audit-worktrees drain-claim guard (beads
-            # pg2-gdzr8, pg2-des38; pg2-des38 extended it from Step 3a to every
-            # wtdone route: sets in 2b, abandoned/vouched/stopped in 3c, and the
-            # Step 3d path audit table). The skill once removed two LIVE drain worktrees because
-            # Step 3a read "branch tip is an ancestor of the primary" as "merged,
-            # nothing is using it": a freshly isolated `drain/<bead-id>` worktree
-            # has zero commits of its own (vacuously an ancestor) while its bead
-            # is claimed, and the Step 2a `lsof` probe cannot see a drain-pool
-            # session (cwd is the workspace root). The skill is prose, so nothing
-            # else validates it (treefmt only formats it): assert the three places
-            # that must agree - the flowchart (a guard node between the merged
-            # check and the `wtdone` dispatch), the Step 3a text, and the Safety
-            # contract - all still carry the load-bearing wording, and that the
-            # flowchart no longer routes a merged candidate straight to removal. Bead
-            # pg2-ptmoi (operator ruling 2026-10-22) added the clean-worktree reclaim:
-            # a zero-commit worktree of an UNCLAIMED bead is removed (and the bead
-            # noted) only past the claim guard AND a clean-tree check.
+            # Regression guard for the audit-worktrees skill after it was rebuilt
+            # around wtaudit (the tested scan/remove command). The skill is prose, so
+            # nothing else validates it (treefmt only formats it): assert the load-
+            # bearing wording of the scan and remove steps, the never-second-guess-
+            # keep rule, the stop rules, the exit-code handling table, the reclaim
+            # note, the update-ref -d compare-and-swap carve-out in the Safety
+            # contract and the removal-route audit rows. The old claim guard (a freshly
+            # isolated drain worktree is vacuously an ancestor of the primary while its
+            # bead is claimed) now lives in the tool and its bats tests; the skill must
+            # not grow a hand-run probe back, so the negative needles below fail on
+            # the old instructions.
             audit-worktrees-drain-claim-guard = pkgs.runCommand "check-audit-worktrees-drain-claim-guard" { } ''
               set -euo pipefail
               f=${./pn-workspace-rules/skills/audit-worktrees/SKILL.md}
 
               for needle in \
-                'M -->|yes| G{"Drain-claim guard (3a):' \
-                'G -->|yes| LIVE["Skip, report: claimed by live drain session' \
-                'G -->|no, or lookup finds no bead| Z{"Zero own commits' \
-                'Z -->|no| RM["dispatch: wtdone"]' \
-                'Z -->|yes| WC{' \
-                'or lookup failed?"}' \
-                'The dispatched action subagent MUST re-run guard items 1, 2 and 4' \
-                'commands before `wtdone`, in the same shell step as `wtdone`' \
-                'Only after the worktree is confirmed gone' \
-                "MUST NOT change the bead's status" \
-                'does NOT extend to sets' \
-                'both re-run by the dispatched subagent as the last commands before `wtdone`' \
-                'because `wtdone` stays bead-free by design' \
-                'non-closed bead never reaches item 5' \
-                'WC -->|no: dirty or no worktree| LIVE' \
-                'WC -->|yes| RC["dispatch: wtdone, then note the bead' \
-                'Reclaim (clean).' \
-                'git -C <worktree-path> status --porcelain' \
+                '## Step 1 — Scan (read-only)' \
+                'Run `wtaudit scan > <fresh scratch file>`' \
+                "jq -e '.schema_version == 1'" \
+                'a schema mismatch' \
+                'MUST NEVER second-guess a `keep` row' \
+                'do not remove, relabel or otherwise act on it' \
+                'MUST NOT re-derive its facts by hand' \
+                'MUST stop and report, without falling back to manual removal' \
+                'when `wtaudit scan` exits 2 or 3' \
+                'The `action` field is a closed enum (`keep`, `remove`, `reclaim`, `agent`)' \
+                '**2a. `keep` — report, never act.**' \
+                '**2b. `remove` and `reclaim` — dispatch `wtaudit remove`.**' \
+                'wtaudit remove --repo <repo_path> --branch <branch> --expect-tip <tip>' \
+                'and none of them is ever retried' \
+                '| 0    | the worktree (if any) and the branch are gone' \
+                '| 10   | refused before acting' \
+                '| 11   | the worktree is gone but the branch remains' \
+                '| 12   | the candidate is a set member' \
+                '| 13   | the tool' \
+                '| 2    | usage error' \
+                '**Reclaim note.**' \
+                'only then, the orchestrator MUST add one note' \
+                'choose "was' \
+                'removed with it, as it held nothing" when `removed_branch` is true' \
                 'MUST NOT write the note when nothing was removed' \
-                'reclaimed (clean, no changes)' \
-                '| 3a zero-commit worktree, bead unclaimed → `wtdone`, then bead note ' \
-                '**3a. Landed check, then drain-claim guard.**' \
-                'MUST NEVER pass `--force-dirty-worktree-removal`' \
-                'A candidate counts as landed when EITHER (1) its' \
-                'patch-equivalent: `git cherry <primary> <branch>` prints zero `+` lines AND `git rev-list --merges' \
-                'unique content would otherwise be invisible); that route is Step 3a-2 below' \
-                'compare-and-swap `git update-ref -d refs/heads/<branch> <tip>`' \
-                '1. The correlated bead (Step 3a item 1' \
-                '2. The drain-claim guard (items 1, 2 and 4) passes. A zero-commit candidate with a non-closed bead' \
-                'is still governed by that guard and item 3, not by this route.' \
-                '3. `git -C <worktree-path> status --porcelain` is empty in every worktree being removed.' \
-                'squash-merged branch shows `+`' \
-                'later reverted on the primary still shows `-`' \
-                'PE -->|yes| PG{' \
-                'PG -->|no| PK[' \
-                'PG -->|yes| RE["dispatch: wtdone, then update-ref -d with the' \
-                '**3a-2. Patch-equivalent route' \
-                '| 3a-2 patch-equivalent worktree or branch → `wtdone`, then `update-ref -d` ' \
-                'that exists and is `closed`, a clean `git status --porcelain` in every member worktree, no' \
-                'removed (patch-equivalent to main, bead closed)' \
-                'this skill never passes' \
-                'MUST NOT dispatch `wtdone`, and MUST NOT write or close any bead.' \
-                'ZERO commits of its own' \
-                'git rev-list --count <primary>..<branch>' \
-                'bd show <token> --json' \
-                'fail closed' \
-                '- MUST run the drain-claim guard (Step 3a) before dispatching `wtdone`' \
-                'SG{"Drain-claim guard (2b, set bead):' \
-                'SG -->|no, or lookup finds no bead| SCU["dispatch: cleanup-workforest"]' \
-                'RV -->|no| G3{"Drain-claim guard (3c):' \
-                'G3 -->|yes| LIVE' \
-                'G3 -->|no, or lookup finds no bead| C{"Classify"}' \
-                '0. **Drain-claim guard for a set (MUST, before anything in this step dispatches).**' \
-                '- **Drain-claim guard first (MUST, before any disposition below that mutates git state).**' \
-                'MUST NOT dispatch `wtdone`' \
-                'or `integrate-branch`, MUST NOT write or close any bead' \
-                'A `closed` bead is never claimed' \
-                'Re-run the drain-claim' \
-                '**3d. `wtdone` dispatch path audit (the complete list).**' \
-                '| 3c abandoned → `wtdone` ' \
-                '| 3c vouched → `integrate-branch` (FF-4 runs `wtdone` on `landed`) ' \
-                '| 2b set, `land-plan` empty → `cleanup-workforest` ' \
-                'no `wtdone` or `integrate-branch` dispatch exists on these routes' \
-                'Step 3d' ; do
+                'audit-worktrees clean-up pass ran on <date>.' \
+                "MUST NOT change the bead's status, assignee or labels" \
+                '**2c. Sets — use the `sets[]` entry; sets go through `pnwf cleanup`.**' \
+                '`remove-via-pnwf`' \
+                'report the set only as "isolated, not yet worked"' \
+                'MUST NOT research, land or reclaim it' \
+                '**2d. `agent` — research and classify (Step 3).**' \
+                'is NEVER removed by this skill' \
+                '`bead-match-weak`' \
+                're-run `wtaudit scan --repo <repo_path>`' \
+                'MUST NEVER pass' \
+                '`--force-dirty-worktree-removal`' \
+                'compare-and-swap `git update-ref -d refs/heads/<branch> <expected-tip-sha>`' \
+                'and never a bare `-D`' \
+                'never runs `update-ref -d` itself' \
+                'if a branch/worktree is patch-equivalent to main and the' \
+                'Already `worktree-review`-labeled' \
+                'MUST serialize action-subagent dispatches' \
+                'MUST NOT use `subagent_type: "fork"`' \
+                '**3d. Removal route audit (the complete list).**' \
+                '| `remove` row (landed ancestor or patch-equivalent) → `wtaudit remove`' \
+                '| `reclaim` row (zero commits, unclaimed bead) → `wtaudit remove`' \
+                '| set, `remove-via-pnwf` → `pnwf cleanup <set>`' \
+                '| `agent` abandoned → worktree reclaim through `wtdone`' \
+                '| `agent` vouched → `integrate-branch`' \
+                'no removal or `integrate-branch` dispatch exists on these routes' \
+                'A dirty worktree is reported `keep`' \
+                '| remove or reclaim a `remove`/`reclaim` row' \
+                'K -->|keep| KP' ; do
                 grep -qF -- "$needle" "$f" || {
                   echo "$f: missing required text: $needle" >&2
                   exit 1
                 }
               done
 
-              # The complete set of flowchart edges into the two wtdone dispatch
-              # nodes (RM, RC) must be exactly the guarded ones: a merged candidate
-              # reaches RM only through Z (zero own commits? no) and RC only
-              # through WC (worktree clean). Any added or rewired edge fails here.
-              edges=$(grep -E -- '-->[[:space:]]*(\|[^|]*\|)?[[:space:]]*(RM|RC)([[:space:]]|\[|$)' "$f" | sed 's/\[.*//; s/^[[:space:]]*//')
-              expected=$(printf '%s\n' 'Z -->|no| RM' 'WC -->|yes| RC')
-              if [ "$edges" != "$expected" ]; then
-                echo "$f: edges into the wtdone dispatch nodes RM/RC are not exactly the guarded pair; got:" >&2
-                echo "$edges" >&2
-                exit 1
-              fi
-
-              # The merged check must never feed removal directly again.
-              if grep -qF -- 'M -->|yes| RM' "$f"; then
-                echo "$f: flowchart routes a merged candidate straight to wtdone, bypassing the drain-claim guard" >&2
-                exit 1
-              fi
-
-              # Neither the unmerged classification nor the set fast path may feed
-              # an action dispatch without passing a guard node (bead pg2-des38):
-              # every `wtdone` route is audited in Step 3d.
-              for bypass in 'RV -->|no| C{' 'SLP -->|empty: fully landed| SCU' 'G -->|no, or lookup finds no bead| RM'; do
-                if grep -qF -- "$bypass" "$f"; then
-                  echo "$f: flowchart bypasses a drain-claim guard node: $bypass" >&2
+              # The old hand-run probes MUST NOT come back as agent instructions.
+              for banned in \
+                'lsof -a' \
+                'git cherry <primary>' \
+                'merge-base --is-ancestor' \
+                'rev-list --count' \
+                'Drain-claim guard (3a)' \
+                'git worktree list --porcelain' \
+                'status --porcelain'; do
+                if grep -qF -- "$banned" "$f"; then
+                  echo "$f: hand-run probe is back in the skill: $banned" >&2
                   exit 1
                 fi
               done
+
+              # Removal edges must go through the tool's two routes only, never
+              # straight from a scan row to a hand-run remover.
+              if grep -qE -- 'K -->\|(keep|agent)\| *(RM|RC)' "$f"; then
+                echo "$f: a keep or agent row is wired to a wtaudit remove node" >&2
+                exit 1
+              fi
 
               touch $out
             '';
