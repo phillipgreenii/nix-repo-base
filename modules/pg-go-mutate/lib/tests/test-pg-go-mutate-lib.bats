@@ -1242,7 +1242,7 @@ pgm_metric() {
 # pgm_require_ps BEFORE this so that probe is not logged at all.
 pgm_install_ps_shim() {
   local real
-  real="$(command -v ps)"
+  real="$(command -v ps || true)" # empty in the nix sandbox, where only the fail shim is used
   mkdir -p "$TEST_DIR/shim"
   export PGM_TEST_PS_LOG="$TEST_DIR/ps.log"
   : >"$PGM_TEST_PS_LOG"
