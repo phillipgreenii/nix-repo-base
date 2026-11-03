@@ -1682,6 +1682,15 @@
               inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
             };
 
+            # Fail-loud NEGATIVE (ADR 0022): a missing / unparseable uv.lock must
+            # FAIL the build attempt with a clear error, never fall back silently.
+            # Tier-2/3 build-attempt (passes only because the attempt fails); see
+            # the test file header.
+            python-lock-fail-loud = import ./lib/python-package-negative-tests.nix {
+              inherit pkgs;
+              inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+            };
+
             # Full Go test gate for pn: runs `go test ./...` UNSCOPED over the whole
             # module (cmd/* + internal/*). The pn *package* build pins
             # subPackages=[cmd/pn], which scopes gomod2nix's check hook and would

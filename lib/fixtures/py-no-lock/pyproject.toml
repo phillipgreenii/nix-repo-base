@@ -1,0 +1,14 @@
+# TEST FIXTURE — fail-loud NEGATIVE input (ADR 0022). Deliberately has NO usable
+# uv.lock; see lib/python-package-negative-tests.nix. Do NOT add or fix a lock.
+[project]
+name = "py-neg"
+version = "0.0.0"
+requires-python = ">=3.11"
+dependencies = ["six==1.16.0"]
+
+[project.scripts]
+py-neg = "py_neg:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

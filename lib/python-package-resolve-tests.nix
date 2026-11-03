@@ -9,7 +9,7 @@
 # and running python.
 #
 # NOTE: the complementary NEGATIVE (fail-loud on an unresolvable lock / missing
-# lock) is DEFERRED to the Tier-2/3 consumer follow-up. Empirically, uv2nix
+# lock) is covered by the Tier-2/3 build-attempt check in python-package-negative-tests.nix. Empirically, uv2nix
 # surfaces those as build-time or non-tryEval-catchable eval errors, so they
 # cannot be expressed as a green Tier-1 flake check hermetically (a build-attempt
 # harness — `pn workspace build` asserting failure — is the right tool).
