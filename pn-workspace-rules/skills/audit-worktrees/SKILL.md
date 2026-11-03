@@ -2,7 +2,7 @@
 name: audit-worktrees
 description: >-
   Use to sweep every branch and worktree across the pn-workspace and dispose of the ones nothing
-  is actively using: remove what's merged, remove what a bead already ruled abandoned, land what
+  is actively using: remove what's merged, report what a bead already ruled abandoned, land what
   an open bead already vouches for, and otherwise file or refresh a bead so a later drain session
   can pick the work up. Fires on: "audit worktrees", "clean up stale branches", "check for
   abandoned worktrees", "sweep the workspace for leftover branches", a periodic worktree/branch
@@ -125,7 +125,7 @@ flowchart TD
     RES --> RV{"Already\nworktree-review?"}
     RV -->|yes| PEND["Report: pending human review, skip"]
     RV -->|no| C{"Classify"}
-    C -->|"bead says abandoned"| AB["Re-scan the row, then reclaim\nthe worktree (3c)"]
+    C -->|"bead says abandoned"| AB["Report as abandoned; worktree and\nbranch left in place (3c)"]
     C -->|"open bead vouches for this work"| LB["Re-scan the row, then validate-workforest (sets) and\nland-workforest/cleanup-workforest, or integrate-branch"]
     C -->|"no usable bead"| BEAD["create/reopen a bead\ncapturing findings; leave candidate as-is"]
     C -->|"genuinely ambiguous"| HUMAN["apply human + worktree-review; ask"]
@@ -208,8 +208,8 @@ removes a set member (exit 12). Per set, by the entry's `action`:
   `validate-workforest` immediately precedes landing per its own contract, never skip it). On
   `stopped:<reason>`/`pr-opened`/`pr-updated` from `land-workforest`, handle it like Step 3c's
   `stopped` case: refresh the bead, force nothing, and do not run `cleanup-workforest` (a
-  partially-landed set must not be torn down). On **abandoned**, dispatch `cleanup-workforest` with
-  no force flags: it keeps any member with real unlanded commits and reports it.
+  partially-landed set must not be torn down). On **abandoned**, report the set as
+  abandoned and leave every member in place (same rule as a standalone abandoned row).
 
 **2d. `agent` — research and classify (Step 3).** Every remaining row, including a detached-HEAD
 worktree (`detached-worktree`: it has no branch to compare, so it is NEVER removed by this skill;
@@ -247,7 +247,7 @@ The scan's row already carries the facts: `bead` (id, status, labels, title), `b
 
 **3c. Classify from the research and act.**
 
-- **Before any disposition that mutates git state** (the abandoned and vouched routes below),
+- **Before any disposition that mutates git state** (the vouched route below),
   re-run `wtaudit scan --repo <repo_path>` and require that the row (same `id`) is still
   `action: agent` with the same `tip`; a row that turned `keep` (for example a bead claim, a new
   anchored process, a dirty tree) means: report the new reason and do nothing else. Claim state can
@@ -256,13 +256,12 @@ The scan's row already carries the facts: `bead` (id, status, labels, title), `b
   re-classify, re-promote, or touch the worktree/branch (W-3/W-4).
 - **Bead evidence rules this abandoned** — closed wontfix/moot, or a comment/note explicitly
   deciding against it (in the spirit of `beads-lifecycle`'s `decided-against?` probe) — close the
-  bead with that reason first if it is still open, then dispatch an action subagent to reclaim the
-  row's worktree. `wtaudit remove` refuses this row (its branch has commits not on the primary), so
-  this is the one route that uses the existing remover directly: the action subagent runs
-  `wtdone <branch> --cc <repo_path>`, which removes the worktree and then refuses the branch delete
-  **by design** (a plain `-d`); that refusal is the expected outcome, not a failure. Report
-  "worktree reclaimed, branch `<name>` left dangling (has commits not on the primary; not
-  force-deleted)." **No approval.**
+  bead with that reason first if it is still open, then **report** the row as "abandoned (bead
+  `<id>` ruled it abandoned; worktree and branch `<name>` left in place)". MUST NOT remove the
+  worktree or branch by any means: `wtaudit remove` refuses a branch with commits not on the
+  primary, and this skill carries no hand-run remover. A future `wtaudit` mode could reclaim such
+  rows (remove the worktree and leave the unlanded branch), with the same re-verification as
+  `remove`; until it exists, a person or that mode disposes of them. **No approval.**
 - **An open bead already vouches for this exact work** — its title/description plausibly matches
   what is actually in the branch (drifted-and-no-longer-matching counts as "no usable bead") —
   dispatch an action subagent to invoke `integrate-branch`. For a dangling branch it creates a
@@ -270,9 +269,8 @@ The scan's row already carries the facts: `bead` (id, status, labels, title), `b
   - `landed` / `pr-opened` / `pr-updated` → close or annotate the bead accordingly. **No
     approval.**
   - `stopped:<reason>`, or `integrate-branch` itself reaches an unresolvable "ask the user" (null
-    strategy) — treat both identically: never let the subagent block on a live prompt. Re-scan the
-    repo as above, then reclaim only the throwaway worktree the same way as the abandoned route (its expected outcome: worktree
-    removed, branch with unlanded commits kept). Refresh the _same_ bead with the concrete stop
+    strategy) — treat both identically: never let the subagent block on a live prompt. Leave the worktree (including a throwaway one) and
+    branch in place; no removal by hand. Refresh the _same_ bead with the concrete stop
     reason so a `/drain-beads` session can pick it up next. **No approval.**
 - **No usable bead** — none found, or a found bead is closed as done/landed while the branch is
   provably unmerged (a premise-freshness violation per `beads-lifecycle` F-1's `landed?` probe),
@@ -291,16 +289,16 @@ worktree, and what protects a live drain worktree on it. A new route MUST be add
 guard or a reason before it ships. The tool's own mechanism is named in the right-hand column only
 to say what is protected; none of it is an instruction to run by hand.
 
-| route                                                                    | protection                                                                                                                                                                                                                           |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `remove` row (landed ancestor or patch-equivalent) → `wtaudit remove`    | the tool re-runs its classification and the tip compare as the guard immediately before acting: claim, dirty tree and anchored-process (`lsof`) checks, then its pinned `wtdone` teardown, then the `update-ref -d` compare-and-swap |
-| `reclaim` row (zero commits, unclaimed bead) → `wtaudit remove`          | the same guard re-run; the tool refuses a claimed or dirty worktree; the bead note is written only after the worktree is confirmed gone                                                                                              |
-| set, `remove-via-pnwf` → `pnwf cleanup <set>`                            | the scan classified every member and `pnwf land-plan` as the final parity check; a claimed, dirty, anchored or unlanded member makes the set `keep` or `agent`, never `remove-via-pnwf`                                              |
-| set, vouched → `land-workforest`/`cleanup-workforest`; abandoned         | the re-scan in 3c, then those skills' own landing guards                                                                                                                                                                             |
-| `agent` abandoned → worktree reclaim through `wtdone`                    | the re-scan in 3c (a claim, anchored process or dirty tree turns the row into `keep`); `wtdone` itself refuses a dirty tree or an anchored allow-listed process and does a plain `-d` only                                           |
-| `agent` vouched → `integrate-branch` (its FF-4 runs `wtdone` on land)    | the re-scan in 3c before dispatch                                                                                                                                                                                                    |
-| `agent` vouched, `stopped`/null strategy → reclaim of the throwaway tree | the re-scan in 3c, re-run immediately before this removal                                                                                                                                                                            |
-| `keep`, already `worktree-review`, no usable bead, genuinely ambiguous   | no removal or `integrate-branch` dispatch exists on these routes; they only report, label or file                                                                                                                                    |
+| route                                                                  | protection                                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `remove` row (landed ancestor or patch-equivalent) → `wtaudit remove`  | the tool re-runs its classification and the tip compare as the guard immediately before acting: claim, dirty tree and anchored-process (`lsof`) checks, then its pinned `wtdone` teardown, then the `update-ref -d` compare-and-swap |
+| `reclaim` row (zero commits, unclaimed bead) → `wtaudit remove`        | the same guard re-run; the tool refuses a claimed or dirty worktree; the bead note is written only after the worktree is confirmed gone                                                                                              |
+| set, `remove-via-pnwf` → `pnwf cleanup <set>`                          | the scan classified every member and `pnwf land-plan` as the final parity check; a claimed, dirty, anchored or unlanded member makes the set `keep` or `agent`, never `remove-via-pnwf`                                              |
+| set, vouched → `land-workforest`/`cleanup-workforest`                  | the re-scan in 3c, then those skills' own landing guards                                                                                                                                                                             |
+| `agent` abandoned (standalone or set) → report only                    | no removal route exists: worktree and branch stay in place until a future wtaudit mode reclaims such rows                                                                                                                            |
+| `agent` vouched → `integrate-branch` (its FF-4 runs `wtdone` on land)  | the re-scan in 3c before dispatch                                                                                                                                                                                                    |
+| `agent` vouched, `stopped`/null strategy → report only                 | no removal route exists: the worktree stays in place and the bead is refreshed                                                                                                                                                       |
+| `keep`, already `worktree-review`, no usable bead, genuinely ambiguous | no removal or `integrate-branch` dispatch exists on these routes; they only report, label or file                                                                                                                                    |
 
 Residual gap, disclosed: a candidate with NO correlated bead has nothing for the claim guard to
 read. That is acceptable because a drain worktree is always created for a bead, so a live one always
@@ -340,7 +338,7 @@ Audit-worktrees — <N> candidates (<sets>, <standalone worktrees>, <dangling br
 | pg2-9k2ab (repo-base)            | worktree  | landed                      | pg2-9k2ab closed     |
 | drain/pg2-4f1qz (support-apps)   | worktree  | stopped (rebase-conflict)   | pg2-4f1qz refreshed  |
 | old-spike (personal)             | dangling  | bead created                 | pg2-new1 (P3)        |
-| stale-try (personal)             | worktree  | reclaimed (abandoned, branch with unlanded commits left dangling) | pg2-old3 closed |
+| stale-try (personal)             | worktree  | abandoned (reported; worktree and branch left in place) | pg2-old3 closed |
 | rebased-x (personal)             | worktree  | removed (patch-equivalent to main, bead closed) | pg2-old4 closed |
 | drain/pg2-5kq1x (repo-base)      | worktree  | reclaimed (clean, no changes) | pg2-5kq1x noted      |
 | mystery-wt (ziprecruiter)        | worktree  | flagged for review          | pg2-new2 (human)     |

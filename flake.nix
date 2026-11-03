@@ -1200,7 +1200,9 @@
                 '| `remove` row (landed ancestor or patch-equivalent) → `wtaudit remove`' \
                 '| `reclaim` row (zero commits, unclaimed bead) → `wtaudit remove`' \
                 '| set, `remove-via-pnwf` → `pnwf cleanup <set>`' \
-                '| `agent` abandoned → worktree reclaim through `wtdone`' \
+                '| `agent` abandoned (standalone or set) → report only' \
+                'A future `wtaudit` mode could reclaim such' \
+                'MUST NOT remove the' \
                 '| `agent` vouched → `integrate-branch`' \
                 'no removal or `integrate-branch` dispatch exists on these routes' \
                 'A dirty worktree is reported `keep`' \
@@ -1215,6 +1217,7 @@
               # The old hand-run probes MUST NOT come back as agent instructions.
               for banned in \
                 'lsof -a' \
+                'wtdone <branch>' \
                 'git cherry <primary>' \
                 'merge-base --is-ancestor' \
                 'rev-list --count' \
