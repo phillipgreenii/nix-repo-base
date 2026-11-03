@@ -245,6 +245,11 @@
           # script (bead pg2-hlxmkk). Wired only through flake-modules/pre-commit.nix
           # (self-contained there); bound here for its bats check and the
           # real-bundle check pg-hooks-grafana-alert-uids-real-tools.
+          # pg-reconcile-repo: the reconcile-repo skill diverged procedure (rebase in a
+          # worktree, swap the primary branch by compare-and-swap). Nothing threaded in.
+          pgReconcileRepoScripts = import ./modules/pg-reconcile-repo/scripts.nix {
+            inherit pkgs bashBuilders;
+          };
           pgCheckGrafanaAlertUidsScripts = import ./modules/pg-check-grafana-alert-uids/scripts.nix {
             inherit pkgs bashBuilders;
           };
@@ -419,6 +424,10 @@
             # Surfaced here so overlays.default (below) can expose it as
             # pkgs.pg-git-check-identity.
             pg-git-check-identity = pgGitCheckIdentityScripts.pg-git-check-identity.script;
+
+            # pg-reconcile-repo: rebase-in-worktree plus compare-and-swap of the
+            # canonical clone primary branch (reconcile-repo skill).
+            pg-reconcile-repo = pgReconcileRepoScripts.pg-reconcile-repo.script;
 
             # lint-grafana-dashboards: shared dashboard JSON lint; consumers read
             # phillipgreenii-nix-base.packages.${system}.lint-grafana-dashboards.
@@ -2535,6 +2544,7 @@
           // gogateScripts.checks
           // pgTempoSearchScripts.checks
           // pgGitCheckIdentityScripts.checks
+          // pgReconcileRepoScripts.checks
           // pgCheckGrafanaAlertUidsScripts.checks
           // lintGrafanaDashboardsScripts.checks
           # Light the foundational bash-builder contract suite (18 bats + module-shape
@@ -2604,6 +2614,7 @@
             gogate
             pg-tempo-search
             pg-git-check-identity
+            pg-reconcile-repo
             ;
         };
 
