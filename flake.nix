@@ -2210,6 +2210,8 @@
                 throw "telemetry.enable = false must still install pg-nix-log-wrapped (always built to emit)"
               else if !(pkgs.lib.elem "pg-nix-log-wrapped" (pkgNames defaults)) then
                 throw "default telemetry options must still install pg-nix-log-wrapped"
+              else if !(pkgs.lib.elem "pg-reconcile-repo" (pkgNames defaults)) then
+                throw "phillipgreenii.pn must install pg-reconcile-repo (reconcile-repo skill step 4)"
               else if !(off.config.home.file ? ".config/pn/telemetry.toml") then
                 throw "telemetry.enable = false must still render ~/.config/pn/telemetry.toml (runtime switch)"
               else

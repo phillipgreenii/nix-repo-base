@@ -196,6 +196,9 @@ in
       packages = [
         cfg.package
         pkgs.pg-nix-log-wrapped
+        # The reconcile-repo skill's step 4 runs this; it is exported by
+        # overlays.default but nothing else puts it on the agent PATH.
+        pkgs.pg-reconcile-repo
       ];
 
       # Warn (never fail, never write) when pn-workspace.toml is absent.
