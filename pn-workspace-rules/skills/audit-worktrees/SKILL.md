@@ -256,12 +256,18 @@ The scan's row already carries the facts: `bead` (id, status, labels, title), `b
   re-classify, re-promote, or touch the worktree/branch (W-3/W-4).
 - **Bead evidence rules this abandoned** — closed wontfix/moot, or a comment/note explicitly
   deciding against it (in the spirit of `beads-lifecycle`'s `decided-against?` probe) — close the
-  bead with that reason first if it is still open, then **report** the row as "abandoned (bead
-  `<id>` ruled it abandoned; worktree and branch `<name>` left in place)". MUST NOT remove the
-  worktree or branch by any means: `wtaudit remove` refuses a branch with commits not on the
-  primary, and this skill carries no hand-run remover. A future `wtaudit` mode could reclaim such
-  rows (remove the worktree and leave the unlanded branch), with the same re-verification as
-  `remove`; until it exists, a person or that mode disposes of them. **No approval.**
+  bead with that reason first if it is still open, then, for a standalone row, re-run
+  `wtaudit scan --repo <repo_path>` (the row must still be `action: agent` with the same `tip`) and
+  dispatch an action subagent to run
+  `wtaudit remove --repo <repo_path> --branch <branch> --expect-tip <tip> --keep-branch`. It removes
+  the worktree only and leaves the unlanded branch: exit 0 means the worktree is gone and the
+  branch is intact (`removed_branch` is false), report it as "abandoned (bead `<id>` ruled it
+  abandoned; worktree removed, branch `<name>` kept)". Exit 10, 12 and 13 mean report the `reason`
+  and do nothing else; exit 11 means the worktree is gone but the branch tip is not as expected:
+  report it. None is retried. MUST NOT delete the branch by any means and MUST NOT remove the
+  worktree any other way: `--keep-branch` re-runs the tool's classification, so a dirty, claimed or
+  anchored worktree is refused. A set member is NOT reclaimed this way (exit 12): report the set as
+  abandoned and leave every member in place. **No approval.**
 - **An open bead already vouches for this exact work** — its title/description plausibly matches
   what is actually in the branch (drifted-and-no-longer-matching counts as "no usable bead") —
   dispatch an action subagent to invoke `integrate-branch`. For a dangling branch it creates a
@@ -295,7 +301,8 @@ to say what is protected; none of it is an instruction to run by hand.
 | `reclaim` row (zero commits, unclaimed bead) → `wtaudit remove`        | the same guard re-run; the tool refuses a claimed or dirty worktree; the bead note is written only after the worktree is confirmed gone                                                                                              |
 | set, `remove-via-pnwf` → `pnwf cleanup <set>`                          | the scan classified every member and `pnwf land-plan` as the final parity check; a claimed, dirty, anchored or unlanded member makes the set `keep` or `agent`, never `remove-via-pnwf`                                              |
 | set, vouched → `land-workforest`/`cleanup-workforest`                  | the re-scan in 3c, then those skills' own landing guards                                                                                                                                                                             |
-| `agent` abandoned (standalone or set) → report only                    | no removal route exists: worktree and branch stay in place until a future wtaudit mode reclaims such rows                                                                                                                            |
+| `agent` abandoned, standalone → `wtaudit remove --keep-branch`         | the re-scan in 3c, then the tool's own re-run of the classification and tip compare (claim, dirty tree and anchored-process refusals, set members refused); only the worktree goes, the unlanded branch is kept, never deleted       |
+| `agent` abandoned, set → report only                                   | no removal route exists: every member stays in place                                                                                                                                                                                 |
 | `agent` vouched → `integrate-branch` (its FF-4 runs `wtdone` on land)  | the re-scan in 3c before dispatch                                                                                                                                                                                                    |
 | `agent` vouched, `stopped`/null strategy → report only                 | no removal route exists: the worktree stays in place and the bead is refreshed                                                                                                                                                       |
 | `keep`, already `worktree-review`, no usable bead, genuinely ambiguous | no removal or `integrate-branch` dispatch exists on these routes; they only report, label or file                                                                                                                                    |
@@ -366,17 +373,18 @@ would make it unreachable outright, not just less discoverable.
 
 ## Command quick reference
 
-| need                                          | command                                                                                              |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| classify every candidate and set              | `wtaudit scan > <fresh scratch file>`, then `jq -e '.schema_version == 1'` on it                     |
-| re-check one repo before a git-mutating route | `wtaudit scan --repo <repo_path>` (row must still be `agent`, same `tip`)                            |
-| remove or reclaim a `remove`/`reclaim` row    | `wtaudit remove --repo <repo_path> --branch <branch> --expect-tip <tip>` (exit 0, 10, 11, 12, 13, 2) |
-| remove a fully landed set                     | `pnwf cleanup <set>` for a `remove-via-pnwf` entry of `sets[]`, no force flags                       |
-| reclaim note (after `removed_worktree: true`) | `bd comment <bead id> --file <scratch-file>` from the row's `repo_path`                              |
-| land a standalone branch                      | invoke `integrate-branch:integrate-branch` (Skill tool)                                              |
-| validate + land + cleanup a set               | invoke `validate-workforest`, then `land-workforest`, then `cleanup-workforest` (Skill tool)         |
-| bead research for an `agent` row              | `bd show <id> --json`, `bd search`, `bd list --label <repo-label>` (from the row's `repo_path`)      |
-| existing-review short-circuit                 | check `bd show <id> --json`'s labels for `worktree-review` before classifying                        |
-| abandoned-ruling probe                        | in the spirit of `beads-lifecycle`'s `decided-against?` (F-9)                                        |
-| landed-claim verification                     | `beads-lifecycle`'s `landed?` (F-3)                                                                  |
-| doubt path                                    | `beads-lifecycle`'s `worktree-review` lifecycle (W-1..W-8)                                           |
+| need                                              | command                                                                                                  |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| classify every candidate and set                  | `wtaudit scan > <fresh scratch file>`, then `jq -e '.schema_version == 1'` on it                         |
+| re-check one repo before a git-mutating route     | `wtaudit scan --repo <repo_path>` (row must still be `agent`, same `tip`)                                |
+| remove or reclaim a `remove`/`reclaim` row        | `wtaudit remove --repo <repo_path> --branch <branch> --expect-tip <tip>` (exit 0, 10, 11, 12, 13, 2)     |
+| reclaim an abandoned `agent` row, keep its branch | `wtaudit remove --repo <repo_path> --branch <branch> --expect-tip <tip> --keep-branch` (same exit codes) |
+| remove a fully landed set                         | `pnwf cleanup <set>` for a `remove-via-pnwf` entry of `sets[]`, no force flags                           |
+| reclaim note (after `removed_worktree: true`)     | `bd comment <bead id> --file <scratch-file>` from the row's `repo_path`                                  |
+| land a standalone branch                          | invoke `integrate-branch:integrate-branch` (Skill tool)                                                  |
+| validate + land + cleanup a set                   | invoke `validate-workforest`, then `land-workforest`, then `cleanup-workforest` (Skill tool)             |
+| bead research for an `agent` row                  | `bd show <id> --json`, `bd search`, `bd list --label <repo-label>` (from the row's `repo_path`)          |
+| existing-review short-circuit                     | check `bd show <id> --json`'s labels for `worktree-review` before classifying                            |
+| abandoned-ruling probe                            | in the spirit of `beads-lifecycle`'s `decided-against?` (F-9)                                            |
+| landed-claim verification                         | `beads-lifecycle`'s `landed?` (F-3)                                                                      |
+| doubt path                                        | `beads-lifecycle`'s `worktree-review` lifecycle (W-1..W-8)                                               |
