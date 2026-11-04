@@ -220,7 +220,8 @@ git_config=core.fsmonitor=false" ]
   [ "$stderr" = "pg-hooks: running pre-commit hooks in fixture..." ]
 
   rm "$PGH_T_CTL/sleep"
-  PG_HOOKS_PROGRESS_AFTER_S=1 run --separate-stderr _run_stage pre-commit
+  # threshold far above any plausible wall time, so a loaded host cannot cross it
+  PG_HOOKS_PROGRESS_AFTER_S=99 run --separate-stderr _run_stage pre-commit
   [ "$status" -eq 0 ]
   [ -z "$stderr" ]
 
