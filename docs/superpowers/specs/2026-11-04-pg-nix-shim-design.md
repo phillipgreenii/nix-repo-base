@@ -334,8 +334,14 @@ Order: 1, then 2, then 3; 4 needs 2 and 3; 4b needs 1; 5 needs 3; 6 needs 4 and 
 ## Open items to resolve before or during implementation
 
 1. `sudo -i` root `PATH`, and whether root can reach the collector on loopback (phase 6).
-2. How nix-darwin orders `environment.systemPath` in the generated environment, and whether
-   `environment.etc` entries are store symlinks rather than copies (phase 3 assertions and checks).
+2. RESOLVED (phase 3, pinned nix-darwin-26.05): `environment.systemPath` is a list option whose
+   `apply` joins it with `:` into one string (derivations as `${p}/bin`), so the final order is
+   observable only as that string; profile directories sit at the default order and the system
+   directories at order 1200, so `lib.mkBefore` puts the shim directory before
+   `$HOME/.nix-profile/bin` and `/run/current-system/sw/bin`, and the module asserts on that
+   effective string. `environment.etc` entries are always store symlinks (`ln -s <source>` in
+   `system.build.etc`, `text` realised by `writeText`); a copy can arise only from a `source` outside
+   the store or a disabled entry, which the second assertion rejects. The module uses `text`.
 3. Whether every consuming machine has `nix.enable = true` so a real `bin/nix` exists in the system
    profile, and whether any uses a Determinate install (phase 5).
 4. Whether any script in the workspace parses `nix run` or `nix fmt` output, which matters only if

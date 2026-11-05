@@ -7,5 +7,6 @@
   imports = [
     ./modules/pn
     ./modules/pg-go-mutate-tui
+    ./modules/pg-nix-shim
   ];
 }

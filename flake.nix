@@ -2050,6 +2050,203 @@
                 touch $out
               '';
 
+            # Eval checks for the pg-nix-shim modules (home-manager and nix-darwin),
+            # both off by default. Proves: each evaluates with enable on and off;
+            # the package default resolves through overlays.default; the generated
+            # environment.etc."pg-nix-shim.json" source is a store path; the
+            # generated systemPath lists the shim directory before
+            # /run/current-system/sw/bin; the shim is not in systemPackages; and
+            # each module assertion trips (the failing assertion list carries the
+            # expected message AND forcing the assertions, as nix-darwin's
+            # toplevel does, throws) when the bad case is forced. Narrow stubs
+            # stand in for nix-darwin and home-manager (tests/pg-nix-shim-darwin-stubs.nix).
+            pg-nix-shim-modules =
+              let
+                inherit (pkgs) lib;
+                pkgsO = pkgs.extend self.overlays.default;
+                shim = pkgsO.pg-nix-shim;
+                shimBin = "${shim}/bin";
+                sw = "/run/current-system/sw/bin";
+
+                darwinEval =
+                  extra:
+                  lib.evalModules {
+                    specialArgs = {
+                      pkgs = pkgsO;
+                    };
+                    modules = [
+                      (import ./tests/pg-nix-shim-darwin-stubs.nix {
+                        inherit lib;
+                        pkgs = pkgsO;
+                      })
+                      ./darwin/modules/pg-nix-shim
+                    ]
+                    ++ extra;
+                  };
+                failed = e: map (a: a.message) (lib.filter (a: !a.assertion) e.config.assertions);
+                # What nix-darwin's system.build.toplevel does with failed assertions.
+                forced =
+                  e:
+                  if failed e == [ ] then
+                    true
+                  else
+                    throw "Failed assertions:\n${lib.concatMapStringsSep "\n" (m: "- ${m}") (failed e)}";
+                throws = e: !(builtins.tryEval (builtins.deepSeq (forced e) true)).success;
+                hasMsg = sub: e: lib.any (m: lib.hasInfix sub m) (failed e);
+                enableOn = {
+                  phillipgreenii.pg-nix-shim = {
+                    enable = true;
+                    rootEndpoint = "http://127.0.0.1:4318";
+                  };
+                };
+
+                off = darwinEval [ ];
+                on = darwinEval [ enableOn ];
+                onVerbs = darwinEval [
+                  enableOn
+                  { phillipgreenii.pg-nix-shim.extraVerbs = [ "eval" ]; }
+                ];
+                onNoEndpoint = darwinEval [ { phillipgreenii.pg-nix-shim.enable = true; } ];
+                badOrder = darwinEval [
+                  enableOn
+                  {
+                    environment.systemPath = lib.mkForce [
+                      sw
+                      shimBin
+                    ];
+                  }
+                ];
+                noShim = darwinEval [
+                  enableOn
+                  { environment.systemPath = lib.mkForce [ sw ]; }
+                ];
+                badEtcSource = darwinEval [
+                  enableOn
+                  { environment.etc."pg-nix-shim.json".source = lib.mkForce "/tmp/pg-nix-shim.json"; }
+                ];
+                badEtcDisabled = darwinEval [
+                  enableOn
+                  { environment.etc."pg-nix-shim.json".enable = lib.mkForce false; }
+                ];
+
+                etcSrc = e: toString e.config.environment.etc."pg-nix-shim.json".source;
+                etcJson = e: builtins.fromJSON e.config.environment.etc."pg-nix-shim.json".text;
+                entries = e: lib.splitString ":" e.config.environment.systemPath;
+
+                homeEval =
+                  extra:
+                  lib.evalModules {
+                    specialArgs = {
+                      pkgs = pkgsO;
+                    };
+                    modules = [
+                      {
+                        options.home = {
+                          file = lib.mkOption {
+                            type = lib.types.attrsOf (
+                              lib.types.submodule { options.source = lib.mkOption { type = lib.types.path; }; }
+                            );
+                            default = { };
+                          };
+                          packages = lib.mkOption {
+                            type = lib.types.listOf lib.types.package;
+                            default = [ ];
+                          };
+                        };
+                      }
+                      # Two consumers pulling the same module in by path: must dedupe.
+                      { imports = [ ./home/pg-nix-shim/default.nix ]; }
+                      { imports = [ ./home/pg-nix-shim/default.nix ]; }
+                    ]
+                    ++ extra;
+                  };
+                hOff = homeEval [ ];
+                hOn = homeEval [ { phillipgreenii.pg-nix-shim.enable = true; } ];
+                hVerbs = homeEval [
+                  {
+                    phillipgreenii.pg-nix-shim = {
+                      enable = true;
+                      extraVerbs = [
+                        "eval"
+                        "fmt"
+                      ];
+                    };
+                  }
+                ];
+                tomlOf = e: e.config.home.file.".config/pn/shim.toml".source;
+              in
+              if hOff.config.phillipgreenii.pg-nix-shim.package != shim then
+                throw "home package default does not resolve through overlays.default"
+              else if off.config.phillipgreenii.pg-nix-shim.package != shim then
+                throw "darwin package default does not resolve through overlays.default"
+              else if hOff.config.home.packages != [ ] || hOff.config.home.file != { } then
+                throw "home module with enable off must add nothing"
+              else if hOn.config.home.packages != [ shim ] then
+                throw "home module enable did not add the shim to home.packages"
+              else if hOn.config.home.file ? ".config/pn/shim.toml" then
+                throw "home module must not write shim.toml without extraVerbs"
+              else if !(hVerbs.config.home.file ? ".config/pn/shim.toml") then
+                throw "home module did not write shim.toml for extraVerbs"
+              else if
+                off.config.environment.etc != { }
+                || off.config.assertions != [ ]
+                ||
+                  off.config.environment.systemPath != lib.concatStringsSep ":" [
+                    "$HOME/.nix-profile/bin"
+                    sw
+                    "/nix/var/nix/profiles/default/bin"
+                    "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+                  ]
+              then
+                throw "darwin module with enable off changed the evaluation"
+              else if on.config.environment ? systemPackages then
+                throw "darwin module must not touch environment.systemPackages"
+              else if lib.head (entries on) != shimBin then
+                throw "shim directory is not first on the generated systemPath: ${on.config.environment.systemPath}"
+              else if
+                lib.length (lib.filter (x: x == sw) (entries on)) != 1
+                || lib.elemAt (entries on) 1 != "$HOME/.nix-profile/bin"
+              then
+                throw "darwin module disturbed the remaining systemPath entries"
+              else if !(lib.hasPrefix "${builtins.storeDir}/" (etcSrc on)) then
+                throw "environment.etc pg-nix-shim.json source is not a store path: ${etcSrc on}"
+              else if etcJson on != { rootEndpoint = "http://127.0.0.1:4318"; } then
+                throw "unexpected /etc/pg-nix-shim.json content for rootEndpoint only"
+              else if
+                etcJson onVerbs != {
+                  rootEndpoint = "http://127.0.0.1:4318";
+                  verbs = [ "eval" ];
+                }
+              then
+                throw "unexpected /etc/pg-nix-shim.json content with extraVerbs"
+              else if etcJson onNoEndpoint != { } then
+                throw "null rootEndpoint must omit the key"
+              else if failed on != [ ] || !(forced on) then
+                throw "assertions failed on a correct configuration"
+              # Negative tests: each bad case must carry its message and throw.
+              else if !(hasMsg "before ${sw}" badOrder) || !(throws badOrder) then
+                throw "assertion (a) did not trip on a shim directory after ${sw}"
+              else if !(hasMsg "before ${sw}" noShim) || !(throws noShim) then
+                throw "assertion (a) did not trip when the shim directory is absent"
+              else if !(hasMsg "not a symlink into" badEtcSource) || !(throws badEtcSource) then
+                throw "assertion (b) did not trip on a non-store source"
+              else if !(hasMsg "not a symlink into" badEtcDisabled) || !(throws badEtcDisabled) then
+                throw "assertion (b) did not trip on a disabled entry"
+              else if hasMsg "not a symlink into" badOrder || hasMsg "before ${sw}" badEtcSource then
+                throw "assertions are not independent"
+              else
+                pkgs.runCommand "pg-nix-shim-modules"
+                  {
+                    toml = tomlOf hVerbs;
+                    etc = etcSrc on;
+                  }
+                  ''
+                    grep -qxF 'verbs = ["eval", "fmt"]' "$toml"
+                    grep -qF 'rootEndpoint' "$etc"
+                    case "$etc" in /nix/store/*) ;; *) echo "etc source not in store" >&2; exit 1 ;; esac
+                    touch "$out"
+                  '';
+
             # Hermetically verify the exported darwinModules.default (the aggregate
             # the machine actually imports) registers logSources.pn, and --
             # since pg-go-mutate-tui's darwin module now shares this same
@@ -2057,7 +2254,16 @@
             pn-logsources-registration =
               let
                 eval = pkgs.lib.evalModules {
+                  specialArgs = {
+                    inherit pkgs;
+                  };
                   modules = [
+                    # nix-darwin stubs (environment.systemPath/etc, assertions) so the
+                    # off-by-default pg-nix-shim module in the aggregate type-checks.
+                    (import ./tests/pg-nix-shim-darwin-stubs.nix {
+                      inherit (pkgs) lib;
+                      inherit pkgs;
+                    })
                     # Narrow stub: declares just enough of the support-apps observability
                     # surface for the pn and pg-go-mutate-tui modules to type-check
                     # standalone (the real options live in phillipgreenii-nix-support-apps).
@@ -2647,6 +2853,9 @@
           # same home-manager eval — otherwise the shared account.* options are
           # declared twice ("already declared"). Mirrors install-metadata above.
           capability-framework = ./home/capability-framework/default.nix;
+          # pg-nix-shim: nix and darwin-rebuild shim on the user PATH. A PATH, not
+          # an import, for the same dedupe reason as capability-framework above.
+          pg-nix-shim = ./home/pg-nix-shim/default.nix;
         };
         # repo-base's first darwin module set, exported as the aggregate
         # darwinModules.default (mirrors agent-support). Currently carries the pn
