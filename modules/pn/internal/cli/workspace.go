@@ -188,9 +188,19 @@ func workspaceStatusCmd(terminal *string) *cobra.Command {
 }
 
 func workspaceInitCmd(terminal *string) *cobra.Command {
-	return &cobra.Command{
+	var yes, noDetectHooks bool
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Scan workspace root for git repos; reconcile into pn-workspace.toml (config-only; no clone, no lock write)",
+		Long: `Scan the workspace root for git repos and reconcile them into pn-workspace.toml.
+
+After the reconcile, init probes each cloned repo whose entry does not declare
+{nix_run install-pre-commit-hooks} for an install-pre-commit-hooks flake output and
+offers to add the per-repo event hook that opts the repo into having its hook bundle
+installed and audited. With --yes every candidate is accepted; on a terminal each is
+prompted (default No); otherwise nothing is written and one advisory names the
+candidates. Writing re-serializes pn-workspace.toml, which drops hand-written comments.
+Pass --no-detect-hooks to skip the probe.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {
@@ -199,10 +209,25 @@ func workspaceInitCmd(terminal *string) *cobra.Command {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 			return runWithHooks(ctx, w, "init", func() error {
-				return w.Init(ctx, out, workspace.InitOptions{Terminal: *terminal})
+				if err := w.Init(ctx, out, workspace.InitOptions{Terminal: *terminal}); err != nil {
+					return err
+				}
+				if noDetectHooks {
+					return nil
+				}
+				hopts := workspace.InitHooksOptions{Yes: yes}
+				if !yes && isInteractive() {
+					in := cmd.InOrStdin()
+					hopts.Confirm = func(string) bool { return readYes(in) }
+				}
+				_, err := w.DetectInstallHooks(ctx, out, hopts)
+				return err
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "Accept every detected install-pre-commit-hooks hook without prompting (required for non-interactive use)")
+	cmd.Flags().BoolVar(&noDetectHooks, "no-detect-hooks", false, "Skip detecting repos that expose install-pre-commit-hooks")
+	return cmd
 }
 
 // waitFlag is the value of --wait on build and apply: a duration, or no value to

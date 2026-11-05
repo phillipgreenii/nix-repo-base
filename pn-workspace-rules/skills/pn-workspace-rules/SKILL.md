@@ -105,6 +105,8 @@ A pn workspace is bootstrapped and maintained with three separate commands:
 
 Scans the workspace root for existing git repos and reconciles them into `pn-workspace.toml`. Config-only: does NOT clone repos and does NOT write a lock file. Run this when repos already exist on disk but are not yet in the TOML config.
 
+After the reconcile, init also probes each cloned repo that does not declare `{nix_run install-pre-commit-hooks}` for an `install-pre-commit-hooks` flake output and offers to add the per-repo event hook `[[repos.<key>.hooks]]` (`when = ["post-clone", "post-rebase", "post-update", "post-upgrade"]`, `run = ["{nix_run install-pre-commit-hooks}"]`) that opts the repo into the hook bundle (ADR 0032). `--yes` accepts every candidate; on a terminal each is prompted (default No); otherwise nothing is written and one advisory names the candidates. Writing re-serializes the TOML and drops hand-written comments. `--no-detect-hooks` skips the probe.
+
 ### 2. `pn workspace clone`
 
 Clones repos listed in `pn-workspace.toml` that are missing on disk. Idempotent: repos already cloned are skipped. Run after writing or editing `pn-workspace.toml` to get repos onto disk.
@@ -201,7 +203,7 @@ Consequences worth knowing before you run it:
 Workspace-level (operate on every repo in the workspace):
 
 ```text
-pn workspace init                        Scan for git repos; reconcile into pn-workspace.toml
+pn workspace init [--yes] [--no-detect-hooks]  Scan for git repos; reconcile into pn-workspace.toml; offer install-pre-commit-hooks hook
 pn workspace clone                       Clone repos from pn-workspace.toml missing on disk
 pn workspace lock                        Derive and write pn-workspace.lock.json
 pn workspace build                       Build the current host's system config
