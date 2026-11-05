@@ -385,6 +385,14 @@
             # Surfaced through overlays.default as pkgs.pg-nix-log-wrapped. ADR 0030.
             pg-nix-log-wrapped = pkgs.callPackage ./modules/pg-nix-log-wrapped { inherit self; };
 
+            # pg-nix-shim: bin/nix and bin/darwin-rebuild symlinks onto the one
+            # pg-nix-log-wrapped binary (no second build). Surfaced through
+            # overlays.default as pkgs.pg-nix-shim. Deliberately NOT part of
+            # pkgs.pg-nix-log-wrapped or homeModules.pn's unconditional install.
+            pg-nix-shim = pkgs.callPackage ./modules/pg-nix-shim {
+              pg-nix-log-wrapped = self.packages.${system}.pg-nix-log-wrapped;
+            };
+
             # pg-go-mutate: reports which assertions a Go package's tests are
             # missing (bash CLI wrapping the pinned gomu mutation engine).
             # Mirrors how pnwf/wsplan expose their module's script above.
@@ -1857,6 +1865,42 @@
               else
                 throw "overlays.default does not expose pg-nix-log-wrapped";
 
+            # overlays.default MUST expose pkgs.pg-nix-shim: the shim modules
+            # default their `package` option to it. Lazy attribute check only.
+            pg-nix-shim-overlay-entry =
+              let
+                applied = self.overlays.default pkgs pkgs;
+              in
+              if applied ? pg-nix-shim then
+                pkgs.runCommand "pg-nix-shim-overlay-entry" { } "touch $out"
+              else
+                throw "overlays.default does not expose pg-nix-shim";
+
+            # The shim package holds exactly bin/nix and bin/darwin-rebuild,
+            # both symlinks whose target's final component is pg-nix-log-wrapped
+            # and resolves to an executable file.
+            pg-nix-shim-package =
+              pkgs.runCommand "pg-nix-shim-package"
+                {
+                  shim = self.packages.${system}.pg-nix-shim;
+                }
+                ''
+                  fail() { echo "pg-nix-shim-package: $*" >&2; exit 1; }
+                  [ "$(find "$shim" -mindepth 1 -maxdepth 1 | sort)" = "$shim/bin" ] \
+                    || fail "package root must contain only bin"
+                  [ "$(ls -A "$shim/bin" | sort | tr '\n' ' ')" = "darwin-rebuild nix " ] \
+                    || fail "bin must contain exactly nix and darwin-rebuild"
+                  for n in nix darwin-rebuild; do
+                    l="$shim/bin/$n"
+                    [ -L "$l" ] || fail "$n is not a symlink"
+                    t="$(readlink "$l")"
+                    [ "$(basename "$t")" = pg-nix-log-wrapped ] \
+                      || fail "$n target final component is not pg-nix-log-wrapped: $t"
+                    [ -f "$l" ] && [ -x "$l" ] || fail "$n does not resolve to an executable file"
+                  done
+                  touch $out
+                '';
+
             # Pattern-B regression guard for the Go builders (bead pg2-sjxhy).
             # base has no Pattern-B (local `replace`) module of its own, so
             # mkGoLint/mkGoTest's modRoot forwarding would otherwise be validated
@@ -2223,6 +2267,8 @@
                 throw "telemetry.enable = false must still install pg-nix-log-wrapped (always built to emit)"
               else if !(pkgs.lib.elem "pg-nix-log-wrapped" (pkgNames defaults)) then
                 throw "default telemetry options must still install pg-nix-log-wrapped"
+              else if pkgs.lib.elem "pg-nix-shim" (pkgNames defaults) then
+                throw "phillipgreenii.pn must NOT install pg-nix-shim unconditionally"
               else if !(pkgs.lib.elem "pg-reconcile-repo" (pkgNames defaults)) then
                 throw "phillipgreenii.pn must install pg-reconcile-repo (reconcile-repo skill step 4)"
               else if !(off.config.home.file ? ".config/pn/telemetry.toml") then
@@ -2620,6 +2666,7 @@
             pn-workspace-toml-enforce
             pjira
             pg-nix-log-wrapped
+            pg-nix-shim
             pg-go-mutate
             pg-go-mutate-tui
             pg-test-runner
