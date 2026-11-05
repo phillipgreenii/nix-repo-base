@@ -44,7 +44,8 @@ instead of finishing (see "Escalation").
 **Authorization limits (MUST honor).** This skill does NOT itself authorize an
 agent to run `/pn-workspace-sync` (not ruled on) or `pn workspace update` /
 `pn workspace apply`. Every nix run (`nix flake update`, `nix build`, `nix fmt`)
-MUST go through `pg-nix-log-wrapped`, run with `bgrun NAME -- ...` then
+is a plain command (`nix` is shimmed on `PATH` and observed without a
+prefix), run with `bgrun NAME -- ...` then
 `bgwait NAME --timeout 540` (Bash `timeout: 600000`), or with an explicit
 `timeout`. A full `nix flake check` is not a gate (operator ruling 2026-10-01);
 the gate is `pg-hooks run pre-land`.

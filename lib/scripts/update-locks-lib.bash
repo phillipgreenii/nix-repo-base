@@ -492,6 +492,13 @@ _ul_in_linked_worktree() {
 #     pg-nix-log-wrapped on PATH.
 # The wrapper itself fails open too (no endpoint, unwritable log dir, ...): it
 # then execs nix unmodified with empty stderr.
+#
+# REDUNDANT WHEN A SHIM IS ON PATH: with the pg-nix-shim home-manager module
+# applied, a bare `nix` is already the shim and is observed without any prefix.
+# This path is kept working on purpose: a script run outside a login
+# environment may not have the shim on PATH, and the explicit call carries
+# TRACEPARENT. The two do not double-count (the explicit call sets the guard
+# the shim honours).
 _UL_NIX_PREFIX=()
 _ul_nix_wrap_prefix() {
   _UL_NIX_PREFIX=()

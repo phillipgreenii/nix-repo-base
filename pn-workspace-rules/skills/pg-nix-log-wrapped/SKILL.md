@@ -1,16 +1,16 @@
 ---
 name: pg-nix-log-wrapped
 description: >-
-  Use before running a long nix command (`nix build`, `nix flake check`, `nix eval`, `nix run`,
-  `nix fmt`, `darwin-rebuild build`) from an agent or a shell in a pn-workspace repo — it says how
-  to run it through `pg-nix-log-wrapped` so the run becomes OpenTelemetry spans and metrics, which
-  quick probes are exempt, what to do when the wrapper is absent, the escape hatches and `--check`,
-  and where to look (Tempo TraceQL, Prometheus PromQL) when a nix run was slow or failed. Fires on:
-  "run nix flake check", "build this with nix", "why was that nix build slow", "which derivations
-  were built vs substituted", "is nix telemetry working", "pg-nix-log-wrapped", "nix.invocation",
-  "nix.build span", `nix_derivations`. Do NOT use for `pn workspace ...` verbs (pn already routes
-  its own nix calls through the wrapper), for building or changing the wrapper itself (Go module
-  `modules/pg-nix-log-wrapped` in phillipg-nix-repo-base), or for non-nix commands.
+  Use when a nix run (`nix build`, `nix flake check`, `nix eval`, `nix run`, `nix fmt`,
+  `darwin-rebuild build`) from an agent or a shell in a pn-workspace repo needs to be observed or
+  explained — it describes the PATH shim that records those runs as OpenTelemetry spans and metrics
+  without any prefix, the escape hatches and `--check`, and where to look (Tempo TraceQL,
+  Prometheus PromQL) when a nix run was slow or failed. Fires on: "why was that nix build slow",
+  "which derivations were built vs substituted", "is nix telemetry working", "pg-nix-log-wrapped",
+  "nix shim", "nix.invocation", "nix.build span", `nix_derivations`. Do NOT use for
+  `pn workspace ...` verbs (pn already routes its own nix calls through the wrapper), for building
+  or changing the wrapper itself (Go module `modules/pg-nix-log-wrapped` in phillipg-nix-repo-base),
+  or for non-nix commands.
 ---
 
 # pg-nix-log-wrapped
@@ -19,52 +19,45 @@ description: >-
 the command **unchanged** (inherited stdio, same exit code), tails nix's `--json-log-path` activity
 stream, and exports it as OpenTelemetry spans and metrics to the local collector. It is built to
 **fail open**: any setup problem, or no endpoint resolved, and it just `exec`s the command, with
-nothing extra on stderr. Using it is therefore safe; not using it only loses visibility.
+nothing extra on stderr.
 
-The tool is **always built and installed to emit**; whether a given system emits is a **runtime**
-per-system setting in `~/.config/pn/telemetry.toml` (`enabled`, `endpoint`, `wrapper_path`; ADR 0028
-"Amendment 2026-10-08"). Telemetry MAY be off on a given system (`enabled = false`): the wrapper is
-still installed and still safe to use, it simply execs CMD with no output. Agents do not need to
-know which; always use the wrapper when it is on `PATH`.
+## The PATH shim: no prefix needed
+
+`nix` and `darwin-rebuild` on the user `PATH` are shims (symlinks to `pg-nix-log-wrapped`, installed
+by the `pg-nix-shim` home-manager module of phillipg-nix-repo-base; design
+`docs/superpowers/specs/2026-11-04-pg-nix-shim-design.md`). A plain `nix flake check` therefore
+already runs under the wrapper and is recorded; an agent MUST NOT add the prefix by hand and just
+runs the command, with its own explicit timeout or `bgrun` for a long one.
+
+- Bypass for one command: `PG_NIX_LOG_DISABLE=1 nix ...` (under root: `sudo env PG_NIX_LOG_DISABLE=1 ...`).
+- Bypass permanently: call the real binary by its absolute path.
+- Verbs off the shim's allowlist (quick probes such as `nix --version`, `nix path-info`,
+  `nix store ping`, and anything else not wrapped) exec the real nix directly; off-allowlist verbs
+  do not get the unmatched `--override-input` guard unless opted in.
+- Explicit `pg-nix-log-wrapped -- nix ...` stays supported and yields one span set, not two.
+- `pn workspace` verbs route their own nix calls through the wrapper; do not prefix `pn` or `pnwf`.
+- Telemetry is a per-system runtime setting in `~/.config/pn/telemetry.toml` (`enabled`,
+  `endpoint`, `wrapper_path`; ADR 0028 "Amendment 2026-10-08"); with `enabled = false` the shim is a
+  silent passthrough.
 
 Reference for the details below: `modules/pg-nix-log-wrapped/README.md` and ADR 0030
 (`docs/adr/0030-pg-nix-log-wrapped.md`) in phillipg-nix-repo-base.
 
-## Decision flow
-
 ```mermaid
 flowchart TD
-    A["About to run a nix command"] --> B{"Quick probe?<br/>nix --version, nix path-info,<br/>nix store ping"}
-    B -->|yes| C["Run nix directly"]
-    B -->|no| D{"build, flake check, eval,<br/>run, fmt, darwin-rebuild?"}
-    D -->|no| C
-    D -->|yes| E{"command -v<br/>pg-nix-log-wrapped"}
-    E -->|found| F["pg-nix-log-wrapped -- nix ..."]
-    E -->|not found| G["Run nix directly, say so ONCE,<br/>never block"]
-    F --> H{"Need proof it was observed?"}
+    A["About to run a nix command"] --> B["Run it as a plain command<br/>(shim on PATH records it)"]
+    B --> H{"Need proof it was observed?"}
     H -->|yes| I["--check, or PG_NIX_LOG_DEBUG=1"]
+    B --> J{"Wrapper suspect?"}
+    J -->|yes| K["PG_NIX_LOG_DISABLE=1 for one run, report it"]
 ```
 
-## What to wrap, and what is exempt
+## Explicit invocation
 
-| Run through the wrapper (MUST)                                                  | Run directly (MAY)                                                                                              |
-| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `nix build`, `nix flake check`, `nix eval`, `nix run`, `nix fmt`                | `nix --version`                                                                                                 |
-| `darwin-rebuild build` (a build-only run; `switch` is operator-only, see below) | `nix path-info`, `nix store ping` (quick probes)                                                                |
-| `nixos-rebuild` on a machine that has it                                        | Any nix command not named in the left column (for example `nix flake show`, `nix-store`, `nix-collect-garbage`) |
-
-- Agents MUST run the left-column commands through the wrapper.
-- Quick probes are exempt: they are short, and a span per probe is noise. An agent MUST NOT wrap
-  them just to be thorough.
-- Agents MUST NOT wrap `pn` or `pnwf` themselves. `pn workspace build|apply|flake-check|...` already
-  rewrites its own `nix` / `darwin-rebuild` calls to go through the wrapper and parents them under
-  its own trace; wrapping `pn` adds nothing.
-
-## Invocation
+Still supported, and needed where the shim is not on `PATH` (for example `sudo`, which may drop it):
 
 ```bash
 pg-nix-log-wrapped -- nix flake check
-pg-nix-log-wrapped -- nix build .#some-package
 pg-nix-log-wrapped -- darwin-rebuild build --flake .
 ```
 

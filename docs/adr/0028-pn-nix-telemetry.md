@@ -792,6 +792,10 @@ Two cases read as explicit (no `nix.started_by = pn`) and are documented rather 
 - The hook and `update-locks.sh` path (`NixWrapperArgv` plus `WithTraceEnv`) is a different call path
   and is not changed; its wrapped prefix reads as explicit.
 
+### Amendment 2026-11-05: the PATH shim coexists with `exec.WithNixWrapper`
+
+The `pg-nix-shim` puts `nix` and `darwin-rebuild` shims on `PATH`, so callers no longer prefix the wrapper. `exec.WithNixWrapper` stays in place unchanged: it serves the root path (`sudo` drops `PATH` and `TRACEPARENT`), and its explicit wrapped call sets the guard that makes any shim inside it exec direct. The `update-locks` prefix (`_ul_nix_wrap_prefix`, `PN_NIX_LOG_WRAPPER`) keeps working and is redundant when a shim is on `PATH`.
+
 ## Consequences
 
 - Phases 2b and 3 may start; the golden files give the activity state machine real input.
