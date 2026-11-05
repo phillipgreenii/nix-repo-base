@@ -123,6 +123,12 @@ type doctorEnv struct {
 	lock     *Lock // effective lock (derived if the disk lock is stale)
 
 	telemetry *telemetrycfg.Resolution // resolved telemetry config; nil = not provided
+
+	// wrapperCheck memoizes the wrapper's --check for this run (telemetry and
+	// shim checks share it). shimRootConfig overrides the root shim
+	// configuration path (tests only; empty selects /etc/pg-nix-shim.json).
+	wrapperCheck   *wrapperCheck
+	shimRootConfig string
 }
 
 type check struct {
@@ -280,5 +286,6 @@ func (ws *Workspace) registerChecks() []check {
 		{id: "extra-remotes-synced", run: ws.checkExtraRemotesSynced},
 		{id: "applied-state-current", run: ws.checkAppliedStateCurrent},
 		{id: telemetryCheckID, run: ws.checkTelemetry},
+		{id: shimCheckID, run: ws.checkShim},
 	}
 }

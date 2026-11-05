@@ -74,23 +74,74 @@ func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Findi
 		)
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, wrapperCheckTimeout)
-	defer cancel()
-	out, err := ws.runner.Run(cctx, wrapper, []string{"--check"}, exec.RunOptions{})
-	if err != nil || out.ExitCode != 0 {
-		detail := strings.TrimSpace(string(out.Stdout) + "\n" + string(out.Stderr))
+	wc := env.wrapperCheckResult(ctx, ws, wrapper)
+	if wc.telemetryFailed() {
+		detail := strings.TrimSpace(wc.telemetryText())
 		switch {
-		case err != nil && !errors.Is(err, context.DeadlineExceeded):
-			detail = strings.TrimSpace(err.Error() + "\n" + detail)
-		case errors.Is(err, context.DeadlineExceeded):
+		case wc.err != nil && !errors.Is(wc.err, context.DeadlineExceeded):
+			detail = strings.TrimSpace(wc.err.Error() + "\n" + detail)
+		case errors.Is(wc.err, context.DeadlineExceeded):
 			detail = "timed out after " + wrapperCheckTimeout.String()
 		}
 		return warn(
-			fmt.Sprintf("%s --check failed (exit %d): %s", wrapper, out.ExitCode, firstLines(detail, 4)),
+			fmt.Sprintf("%s --check failed (exit %d): %s", wrapper, wc.out.ExitCode, firstLines(detail, 4)),
 			wrapper+" --check",
 		)
 	}
 	return nil
+}
+
+// wrapperCheck is one run of `pg-nix-log-wrapped --check`, shared by the
+// telemetry and shim checks so doctor probes the collector once.
+type wrapperCheck struct {
+	out exec.Result
+	err error
+}
+
+// wrapperCheckResult runs the wrapper's --check at most once per doctor run.
+func (env *doctorEnv) wrapperCheckResult(ctx context.Context, ws *Workspace, wrapper string) *wrapperCheck {
+	if env.wrapperCheck != nil {
+		return env.wrapperCheck
+	}
+	cctx, cancel := context.WithTimeout(ctx, wrapperCheckTimeout)
+	defer cancel()
+	out, err := ws.runner.Run(cctx, wrapper, []string{"--check"}, exec.RunOptions{})
+	env.wrapperCheck = &wrapperCheck{out: out, err: err}
+	return env.wrapperCheck
+}
+
+// statusLine is the wrapper's final "status: telemetry=ok shim=fail" line; ""
+// from an older wrapper that does not print it.
+func (wc *wrapperCheck) statusLine() string {
+	for _, ln := range strings.Split(string(wc.out.Stdout), "\n") {
+		if strings.HasPrefix(ln, "status: ") {
+			return ln
+		}
+	}
+	return ""
+}
+
+// telemetryFailed says whether the telemetry half of --check failed. The
+// wrapper now exits non-zero for a shim failure alone, which the shim check
+// reports; with a status line only its telemetry verdict counts here, and an
+// older wrapper (no status line) keeps the plain exit-code rule.
+func (wc *wrapperCheck) telemetryFailed() bool {
+	if st := wc.statusLine(); st != "" && !errors.Is(wc.err, context.DeadlineExceeded) {
+		return strings.Contains(st, "telemetry=fail")
+	}
+	return wc.err != nil || wc.out.ExitCode != 0
+}
+
+// telemetryText is the --check output without the shim and status lines, so a
+// telemetry warning reads as it did before the shim lines existed.
+func (wc *wrapperCheck) telemetryText() string {
+	var keep []string
+	for _, ln := range strings.Split(string(wc.out.Stdout), "\n") {
+		if !strings.HasPrefix(ln, "shim: ") && !strings.HasPrefix(ln, "status: ") {
+			keep = append(keep, ln)
+		}
+	}
+	return strings.Join(keep, "\n") + "\n" + string(wc.out.Stderr)
 }
 
 // firstLines returns at most n non-empty lines of s joined with "; ".
