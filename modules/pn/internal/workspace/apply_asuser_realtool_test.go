@@ -20,19 +20,35 @@ import (
 // They skip with a message where darwin-rebuild is not installed (a Linux
 // machine, the nix check sandbox).
 
-// installedDarwinRebuild returns the resolved path of the installed script, or
-// skips the test.
+// installedDarwinRebuild returns the resolved path of the installed
+// darwin-rebuild SCRIPT, or skips the test. The first darwin-rebuild on PATH can
+// be the pg-nix-shim (a compiled wrapper that resolves to a Mach-O binary, not the
+// nix-darwin script), so every PATH entry and the system profile are searched for
+// the first candidate that resolves to a file starting with a shebang.
 func installedDarwinRebuild(t *testing.T) string {
 	t.Helper()
-	p, err := osexec.LookPath("darwin-rebuild")
-	if err != nil {
-		t.Skip("SKIP: darwin-rebuild is not installed on this machine; the drift guard and the real-tool probe test need the real script")
+	dirs := append(filepath.SplitList(os.Getenv("PATH")), "/run/current-system/sw/bin")
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(filepath.Join(d, "darwin-rebuild"))
+		if err != nil {
+			continue
+		}
+		f, err := os.Open(real)
+		if err != nil {
+			continue
+		}
+		head := make([]byte, 2)
+		n, _ := f.Read(head)
+		f.Close()
+		if n == 2 && string(head) == "#!" {
+			return real
+		}
 	}
-	real, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		t.Skipf("SKIP: cannot resolve %s: %v", p, err)
-	}
-	return real
+	t.Skip("SKIP: no darwin-rebuild script is installed on this machine (none on PATH or in /run/current-system/sw/bin resolves to a script; the pg-nix-shim binary does not count); the drift guard and the real-tool probe test need the real script")
+	return ""
 }
 
 // The root steps rely on four facts about the script; if a nix-darwin update
