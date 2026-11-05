@@ -31,8 +31,14 @@ func (e *PermissionError) Error() string {
 	return fmt.Sprintf("fork/exec %s: permission denied", e.Path)
 }
 
+// WrapperName is the final path component of the wrapper binary. A candidate
+// that resolves to a file with this name is another copy of the wrapper (for
+// example a shim symlink pointing at a different build) and is never CMD.
+const WrapperName = "pg-nix-log-wrapped"
+
 // LookPath resolves name like exec.LookPath, except that any candidate that is
-// the same file as self (inode compare, symlinks followed) is skipped. A name
+// the same file as self (inode compare, symlinks followed) or whose fully
+// resolved path ends in WrapperName is skipped. A name
 // containing a slash is used as given. self may be nil.
 func LookPath(name, pathEnv string, self os.FileInfo) (string, error) {
 	if strings.Contains(name, "/") {
@@ -55,6 +61,9 @@ func LookPath(name, pathEnv string, self os.FileInfo) (string, error) {
 			continue
 		}
 		if self != nil && os.SameFile(fi, self) {
+			continue
+		}
+		if real, err := filepath.EvalSymlinks(cand); err == nil && filepath.Base(real) == WrapperName {
 			continue
 		}
 		return filepath.Abs(cand)

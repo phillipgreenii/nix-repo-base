@@ -62,22 +62,9 @@ var subcommandValueFlagArity = map[string]int{
 	"--commit-lock-file-summary":    1,
 }
 
-// nixVerbs are the allowlisted `nix` subcommands; "flake" needs an allowlisted
-// second word (nixFlakeVerbs) and is then reported as "flake <word>".
-var nixVerbs = map[string]bool{
-	"build": true, "eval": true, "fmt": true, "run": true, "develop": true,
-	"shell": true, "path-info": true, "store": true, "copy": true, "flake": true,
-}
-
-var nixFlakeVerbs = map[string]bool{
-	"check": true, "update": true, "lock": true, "show": true, "metadata": true,
-}
-
-// darwinRebuildVerbs are the allowlisted nix-darwin actions.
-var darwinRebuildVerbs = map[string]bool{
-	"switch": true, "activate": true, "build": true, "check": true,
-	"edit": true, "changelog": true,
-}
+// The label tables below are derived from verbTable (allowlist.go), the one
+// table that also drives the shim's wrap decision.
+var nixVerbs, nixFlakeVerbs, darwinRebuildVerbs = deriveLabelTables()
 
 // Subcommand returns the bounded operation label of cmd (CMD and its
 // arguments): the allowlisted verb ("build", "flake check", "switch", ...) or

@@ -42,7 +42,9 @@ func TestMain(m *testing.M) {
 	if fakecmd.Run() {
 		return
 	}
-	if filepath.Base(os.Args[0]) == "pg-nix-log-wrapped" {
+	// The wrapper's own name, or a shim name (a symlink to this binary).
+	switch filepath.Base(os.Args[0]) {
+	case "pg-nix-log-wrapped", "nix", "darwin-rebuild":
 		main()
 		return
 	}

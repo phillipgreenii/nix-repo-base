@@ -73,7 +73,10 @@ type Telemetry struct {
 
 // Deps is everything Run touches in the outside world.
 type Deps struct {
-	Args    []string // without argv[0]
+	Args []string // without argv[0]
+	// Argv0 is os.Args[0]. A base name of nix or darwin-rebuild selects shim
+	// mode (RunShim); any other value, including empty, is the wrapper proper.
+	Argv0   string
 	Environ []string
 	Euid    int
 	Pid     int
@@ -95,6 +98,12 @@ type Deps struct {
 	ReadFile     func(string) ([]byte, error)
 	Dial         func(addr string, timeout time.Duration) error
 
+	// RootConfigPath and StorePrefix locate and vouch for the root shim
+	// configuration (shimconfig.go). Empty selects the production defaults;
+	// tests inject temporary ones because they cannot write under /nix/store.
+	RootConfigPath string
+	StorePrefix    string
+
 	// RootLogDir overrides logdir.RootDir (tests only).
 	RootLogDir string
 	// LogSizeCap overrides the W-12 PARSE cap (counted in retained bytes, not
@@ -115,20 +124,23 @@ func DefaultDeps(version string) Deps {
 	exe, _ := os.Executable()
 	home, _ := os.UserHomeDir()
 	return Deps{
-		Args:        os.Args[1:],
-		Environ:     os.Environ(),
-		Euid:        os.Geteuid(),
-		Pid:         os.Getpid(),
-		Home:        home,
-		Executable:  exe,
-		Version:     version,
-		Stdout:      os.Stdout,
-		Stderr:      os.Stderr,
-		ChildStdin:  os.Stdin,
-		ChildStdout: os.Stdout,
-		ChildStderr: os.Stderr,
-		Now:         time.Now,
-		Exec:        syscall.Exec,
+		Args:           os.Args[1:],
+		Argv0:          os.Args[0],
+		RootConfigPath: DefaultRootConfigPath,
+		StorePrefix:    DefaultStorePrefix,
+		Environ:        os.Environ(),
+		Euid:           os.Geteuid(),
+		Pid:            os.Getpid(),
+		Home:           home,
+		Executable:     exe,
+		Version:        version,
+		Stdout:         os.Stdout,
+		Stderr:         os.Stderr,
+		ChildStdin:     os.Stdin,
+		ChildStdout:    os.Stdout,
+		ChildStderr:    os.Stderr,
+		Now:            time.Now,
+		Exec:           syscall.Exec,
 		NewTelemetry: func(ctx context.Context, cfg otelsetup.Config, opts ...otelsetup.Option) (Telemetry, error) {
 			t, err := otelsetup.Init(ctx, cfg, opts...)
 			if err != nil {
@@ -150,7 +162,22 @@ func DefaultDeps(version string) Deps {
 type runner struct {
 	Deps
 	getenv func(string) string
+	// startedBy is the nix.started_by span attribute value.
+	startedBy string
 }
+
+// Values of the nix.started_by span attribute (a closed set).
+const (
+	StartedByShim     = "shim"
+	StartedByPn       = "pn"
+	StartedByExplicit = "explicit"
+	// StartedByEnv is set to "pn" by pn's explicit wrapper decorator; any other
+	// value reads as explicit.
+	StartedByEnv = "PG_NIX_LOG_STARTED_BY"
+	// ActiveEnv is the nesting guard exported into CMD's environment when the
+	// wrapper wraps a run. Only shim mode honours it.
+	ActiveEnv = "PG_NIX_LOG_ACTIVE"
+)
 
 func (r *runner) debugf(format string, args ...any) {
 	if r.getenv("PG_NIX_LOG_DEBUG") == "1" {
@@ -161,10 +188,16 @@ func (r *runner) debugf(format string, args ...any) {
 // Run executes the wrapper and returns the process exit code. It returns only
 // on the observed path; the fail-open path replaces the process via Deps.Exec.
 func Run(d Deps) int {
+	if tool, ok := shimName(d.Argv0); ok {
+		return RunShim(d, tool)
+	}
 	// The OTel SDK reports export errors through a global handler that logs
 	// to stderr by default. The wrapper MUST be silent on stderr (W-2).
 	log.SetOutput(io.Discard)
-	r := &runner{Deps: d, getenv: envLookup(d.Environ)}
+	r := &runner{Deps: d, getenv: envLookup(d.Environ), startedBy: StartedByExplicit}
+	if r.getenv(StartedByEnv) == StartedByPn {
+		r.startedBy = StartedByPn
+	}
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { r.debugf("otel: %v", err) }))
 
 	opts, err := config.ParseArgs(d.Args)
@@ -197,7 +230,13 @@ func Run(d Deps) int {
 		}
 		return 127
 	}
+	return r.observe(opts, cmdPath)
+}
 
+// observe is the part of a run after CMD is resolved: decide whether to
+// observe at all, and either run CMD observed or exec it unmodified.
+func (r *runner) observe(opts config.Options, cmdPath string) int {
+	d := r.Deps
 	passthrough := func(why string) int {
 		r.debugf("fail open: %s", why)
 		err := d.Exec(cmdPath, opts.Cmd, d.Environ)
@@ -347,6 +386,7 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 			attribute.String("command", filepath.Base(opts.Cmd[0])),
 			attribute.String("nix.subcommand", subcommand),
 			attribute.String("nix.log.file", logPath),
+			attribute.String("nix.started_by", r.startedBy),
 		))
 	rec, err := recorder.New(ctx, tel.Tracer, tel.Meter)
 	if err != nil {
@@ -366,7 +406,7 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 	return &session{
 		r: r, opts: opts, cmdPath: cmdPath,
 		// nix writes the scratch file; nix.log.file names the retained one.
-		env:   ChildEnv(r.Environ, files.RawPath),
+		env:   withActive(ChildEnv(r.Environ, files.RawPath)),
 		files: files, logPath: logPath, retain: ret, tel: tel, inv: inv, rec: rec, proc: proc,
 		tail:  tailer.New(files.Raw, ret, r.Now, r.LogSizeCap),
 		guard: guard,
@@ -394,6 +434,19 @@ func ChildEnv(environ []string, logPath string) []string {
 		ambient += "\n"
 	}
 	return append(out, "NIX_CONFIG="+ambient+"json-log-path = "+logPath)
+}
+
+// withActive sets the nesting guard in env, replacing any earlier value. It is
+// applied only to the environment of a WRAPPED run; the fail-open exec keeps
+// the caller's environment untouched.
+func withActive(env []string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, ActiveEnv+"=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, ActiveEnv+"=1")
 }
 
 // run is the observed path: start CMD, tail, finish in the W-9 order.

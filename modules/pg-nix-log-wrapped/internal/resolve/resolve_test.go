@@ -71,3 +71,28 @@ func TestLookPathSkipsDirsAndNonExecutables(t *testing.T) {
 		t.Errorf("got %q, %v", got, err)
 	}
 }
+
+func TestLookPathSkipsAnotherWrapperBuildByName(t *testing.T) {
+	shadow, real := t.TempDir(), t.TempDir()
+	self := script(t, t.TempDir(), "wrapper", 0o755)
+	// A different build of the wrapper, reached through a symlink named like
+	// CMD: the inode differs from self, so only the resolved name protects.
+	other := script(t, t.TempDir(), WrapperName, 0o755)
+	if err := os.Symlink(other, filepath.Join(shadow, "nix")); err != nil {
+		t.Fatal(err)
+	}
+	want := script(t, real, "nix", 0o755)
+	fi, _ := os.Stat(self)
+	path := shadow + string(os.PathListSeparator) + real
+	if got, err := LookPath("nix", path, fi); err != nil || got != want {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+	// Control: a symlink to a differently named file is a normal candidate.
+	if got, _ := LookPath("nix", real+string(os.PathListSeparator)+shadow, fi); got != want {
+		t.Fatalf("control: got %q", got)
+	}
+	var nf *NotFoundError
+	if _, err := LookPath("nix", shadow, fi); !errors.As(err, &nf) {
+		t.Fatalf("want NotFoundError, got %v", err)
+	}
+}
