@@ -72,7 +72,17 @@ func (r *wrapRunner) Run(ctx context.Context, name string, args []string, opts R
 		return r.inner.Run(ctx, name, args, opts)
 	}
 	telemetry.RecordExecWrap(ctx, true, "")
-	res, err := r.inner.Run(ctx, wname, wargs, opts)
+	// Mark the run as pn-started. Copy the caller's map: it is never mutated.
+	// An environment variable, not a wrapper flag, so an older wrapper ignores
+	// it instead of exiting 2 on an unknown flag. sudo drops it, so root runs
+	// read as explicit (ADR 0028).
+	wopts := opts
+	wopts.Env = make(map[string]string, len(opts.Env)+1)
+	for k, v := range opts.Env {
+		wopts.Env[k] = v
+	}
+	wopts.Env[StartedByEnv] = StartedByPn
+	res, err := r.inner.Run(ctx, wname, wargs, wopts)
 	// Errors must read as if the wrapper were absent: report the command pn
 	// asked for, not the wrapper argv.
 	var ce *CommandError
@@ -81,6 +91,13 @@ func (r *wrapRunner) Run(ctx context.Context, name string, args []string, opts R
 	}
 	return res, err
 }
+
+// StartedByEnv names the environment variable that tells the wrapper pn started
+// the run (span attribute nix.started_by); StartedByPn is its value.
+const (
+	StartedByEnv = "PG_NIX_LOG_STARTED_BY"
+	StartedByPn  = "pn"
+)
 
 // Reasons a WrapNix call runs unwrapped, recorded as pn.exec.wrap_skip_reason.
 const (

@@ -774,6 +774,24 @@ log-dir: /Users/phillipg/.local/state/pn/nix-logs (writable: yes)
 Outcome: all four pass; Phase 5 (`pg2-kqrrs.10`, `pg2-kqrrs.11`) and Phase 8 (`pg2-kqrrs.15`) are
 unblocked.
 
+### Amendment 2026-11-05: wrapped runs carry `PG_NIX_LOG_STARTED_BY=pn`
+
+The `WithNixWrapper` decorator MUST set the environment variable `PG_NIX_LOG_STARTED_BY=pn` on every
+call it actually rewrites to run under the wrapper, so wrapper spans read `nix.started_by = pn`. The
+caller's own `RunOptions.Env` map is copied, never mutated, and a pre-existing value for the key is
+overridden. Calls that run unwrapped (`WrapNix` false, or skipped for any `pn.exec.wrap_skip_reason`)
+MUST NOT receive it, so nix probes are unchanged.
+
+It is an environment variable and not a wrapper flag on purpose. During pn/wrapper version skew an
+older wrapper ignores an unknown variable, whereas an unknown flag makes `config.ParseArgs` exit 2
+and would fail the whole nix call.
+
+Two cases read as explicit (no `nix.started_by = pn`) and are documented rather than worked around:
+
+- `sudo` drops the variable, so pn's root runs (`sudo darwin-rebuild ...`) read as explicit.
+- The hook and `update-locks.sh` path (`NixWrapperArgv` plus `WithTraceEnv`) is a different call path
+  and is not changed; its wrapped prefix reads as explicit.
+
 ## Consequences
 
 - Phases 2b and 3 may start; the golden files give the activity state machine real input.

@@ -535,3 +535,104 @@ func TestWrap_UserBuildArgvMatchesTheWrapperContractGolden(t *testing.T) {
 		t.Errorf("the user build's wrapper argv no longer matches %s byte for byte (the wrapper module's contract test reads that file):\n--- got\n%s--- want\n%s", wrapperArgvGolden, got, want)
 	}
 }
+
+func TestWrap_StartedByEnv(t *testing.T) {
+	args := []string{"build", "--flake", "/x#h"}
+
+	t.Run("set on a wrapped call and caller Env kept and not mutated", func(t *testing.T) {
+		e := newWrapEnv(t, "/wrapper/pg-nix-log-wrapped")
+		caller := map[string]string{"K": "v", StartedByEnv: "other"}
+		if _, err := e.r.Run(e.ctx, "nix", args, RunOptions{WrapNix: true, Env: caller}); err != nil {
+			t.Fatal(err)
+		}
+		got := e.only(t).Opts.Env
+		want := map[string]string{"K": "v", StartedByEnv: "pn"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Env = %v, want %v", got, want)
+		}
+		if !reflect.DeepEqual(caller, map[string]string{"K": "v", StartedByEnv: "other"}) {
+			t.Errorf("caller Env mutated: %v", caller)
+		}
+	})
+
+	t.Run("set on a wrapped call with nil Env", func(t *testing.T) {
+		e := newWrapEnv(t, "/wrapper/pg-nix-log-wrapped")
+		if _, err := e.r.Run(e.ctx, "nix", args, RunOptions{WrapNix: true}); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.only(t).Opts.Env; !reflect.DeepEqual(got, map[string]string{StartedByEnv: "pn"}) {
+			t.Errorf("Env = %v", got)
+		}
+	})
+
+	t.Run("sudo form gets no special treatment", func(t *testing.T) {
+		e := newWrapEnv(t, storeWrapper)
+		if _, err := e.r.Run(e.ctx, "sudo", append([]string{"darwin-rebuild"}, args...), RunOptions{WrapNix: true}); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.only(t).Opts.Env[StartedByEnv]; got != "pn" {
+			t.Errorf("sudo wrapped call Env[%s] = %q", StartedByEnv, got)
+		}
+	})
+
+	t.Run("absent on unwrapped probe", func(t *testing.T) {
+		e := newWrapEnv(t, "/wrapper/pg-nix-log-wrapped")
+		if _, err := e.r.Run(e.ctx, "nix", args, RunOptions{Env: map[string]string{"K": "v"}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := e.only(t).Opts.Env[StartedByEnv]; ok {
+			t.Error("variable set on a call that did not ask for wrapping")
+		}
+	})
+
+	skips := []struct {
+		name  string
+		cmd   string
+		setup func(*wrapEnv) context.Context
+	}{
+		{skipTelemetryOff, "nix", func(e *wrapEnv) context.Context {
+			return telemetry.WithTelemetry(e.ctx, telemetry.Disabled())
+		}},
+		{skipNoEndpoint, "nix", func(e *wrapEnv) context.Context {
+			res := telemetrycfg.Resolution{Enabled: true, WrapperPath: "/w"}
+			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
+		}},
+		{skipNoWrapperPath, "nix", func(e *wrapEnv) context.Context {
+			res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint}
+			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
+		}},
+		{skipUnrecognized, "git", func(e *wrapEnv) context.Context { return e.ctx }},
+		{skipSudoNotInStore, "sudo", func(e *wrapEnv) context.Context {
+			e.r.evalSymlinks = func(string) (string, error) { return "/Users/me/bin/wrapper", nil }
+			return e.ctx
+		}},
+		{skipNotAbsolute, "nix", func(e *wrapEnv) context.Context {
+			res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint, WrapperPath: "rel/wrapper"}
+			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
+		}},
+		{skipNotExecutable, "nix", func(e *wrapEnv) context.Context {
+			e.r.usable = func(string) bool { return false }
+			return e.ctx
+		}},
+	}
+	for _, tc := range skips {
+		t.Run("absent on skip "+tc.name, func(t *testing.T) {
+			e := newWrapEnv(t, storeWrapper)
+			callArgs := args
+			if tc.cmd == "sudo" {
+				callArgs = append([]string{"darwin-rebuild"}, args...)
+			}
+			ctx := tc.setup(e)
+			if _, err := e.r.Run(ctx, tc.cmd, callArgs, RunOptions{WrapNix: true, Env: map[string]string{"K": "v"}}); err != nil {
+				t.Fatal(err)
+			}
+			c := e.only(t)
+			if c.Name != tc.cmd {
+				t.Fatalf("call was wrapped: %s", c.Name)
+			}
+			if !reflect.DeepEqual(c.Opts.Env, map[string]string{"K": "v"}) {
+				t.Errorf("Env = %v, want only caller's", c.Opts.Env)
+			}
+		})
+	}
+}
