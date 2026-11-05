@@ -643,8 +643,9 @@ func exitCode(ps *os.ProcessState, waitErr error) int {
 }
 
 // check implements --check (W-11): print the resolved endpoint, whether it is
-// reachable, and whether the log directory is writable. Exit 0 only when
-// telemetry would actually run.
+// reachable, and whether the log directory is writable, then the shim lines
+// (shimcheck.go) and a final status line. Exit 0 only when telemetry would
+// actually run AND both nix and darwin-rebuild resolve to a shim.
 func (r *runner) check(opts config.Options) int {
 	healthy := true
 	if off, why := config.Disabled(r.getenv); off {
@@ -680,7 +681,9 @@ func (r *runner) check(opts config.Options) int {
 	} else {
 		fmt.Fprintf(r.Stdout, "log-dir: %s (writable: yes)\n", dir)
 	}
-	if healthy {
+	shimOK := r.checkShim()
+	fmt.Fprintf(r.Stdout, StatusPrefix+"telemetry=%s shim=%s\n", okWord(healthy), okWord(shimOK))
+	if healthy && shimOK {
 		return 0
 	}
 	return 1

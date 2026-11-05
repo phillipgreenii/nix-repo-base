@@ -878,7 +878,8 @@ func TestCheck(t *testing.T) {
 	dial := DefaultDeps("x").Dial
 
 	t.Run("healthy", func(t *testing.T) {
-		r := newRig(t, fakecmd.Spec{})
+		c := newCheckRig(t, "nix", "darwin-rebuild")
+		r := c.rig
 		r.setEnv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
 		r.d.Dial = dial
 		if code := r.run("--check"); code != 0 {
