@@ -115,16 +115,134 @@ logs to `/var/log/pg-nix-log-wrapped`.
 
 ## Escape hatches
 
-| Control                                 | Effect                                                                      |
-| --------------------------------------- | --------------------------------------------------------------------------- |
-| `PG_NIX_LOG_DISABLE=1`                  | exec CMD unmodified                                                         |
-| `OTEL_SDK_DISABLED=true`                | exec CMD unmodified                                                         |
-| no endpoint resolved                    | exec CMD unmodified                                                         |
-| `PG_NIX_LOG_DEBUG=1`                    | print why the wrapper failed open (and OTel export errors) to stderr        |
-| `PG_NIX_LOG_FLUSH_TIMEOUT=2s`           | bound on the end-of-run export; a dead collector never costs more           |
-| `--check`                               | print endpoint, reachability, log-dir writability; exit 0 only when healthy |
-| `--min-substitute-span=250ms`           | shortest substitution that still gets a span (they are always counted)      |
-| `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` | turn the unmatched `--override-input` guard off (below)                     |
+| Control                                 | Effect                                                                                         |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `PG_NIX_LOG_DISABLE=1`                  | exec CMD unmodified                                                                            |
+| `OTEL_SDK_DISABLED=true`                | exec CMD unmodified                                                                            |
+| no endpoint resolved                    | exec CMD unmodified                                                                            |
+| `PG_NIX_LOG_DEBUG=1`                    | print why the wrapper failed open (and OTel export errors) to stderr                           |
+| `PG_NIX_LOG_FLUSH_TIMEOUT=2s`           | bound on the end-of-run export; a dead collector never costs more                              |
+| `--check`                               | print endpoint, reachability, log-dir writability and the shim state; exit 0 only when healthy |
+| `--min-substitute-span=250ms`           | shortest substitution that still gets a span (they are always counted)                         |
+| `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` | turn the unmatched `--override-input` guard off (below)                                        |
+
+## Shim mode (pg-nix-shim)
+
+The `pg-nix-shim` package holds two symlinks, `bin/nix` and `bin/darwin-rebuild`, onto this one
+binary. When `basename(argv[0])` is `nix` or `darwin-rebuild` the binary decides per call whether to
+wrap the real tool, so callers need no `pg-nix-log-wrapped` prefix. The home-manager module puts the
+package on the user's `PATH`; the nix-darwin module puts its directory first on the system path and
+writes `/etc/pg-nix-shim.json` for root runs. Design:
+[`docs/superpowers/specs/2026-11-04-pg-nix-shim-design.md`](../../docs/superpowers/specs/2026-11-04-pg-nix-shim-design.md);
+the decisions: [ADR 0030](../../docs/adr/0030-pg-nix-log-wrapped.md), "Amendment 2026-11-05".
+
+Dispatch, on every call: `PG_NIX_LOG_DISABLE` set, then exec the real binary; `PG_NIX_LOG_ACTIVE`
+set (an outer wrapped run already covers this call), then exec the real binary; verb not on the
+allowlist, then exec the real binary; otherwise wrap it. A passthrough is silent and leaves the
+environment untouched.
+
+### Which verbs are wrapped
+
+Default: `nix build`, `nix flake check`, `darwin-rebuild build`, `switch` and `check`. Opt-in verbs,
+added to the defaults and never removing one: `nix run`, `nix fmt`, `nix eval`, `nix flake lock`,
+`nix flake update`. `nix develop`, `nix shell`, `nix repl`, `darwin-rebuild activate` and every other
+verb are never wrapped (an opt-in naming one is ignored, and `--check` says so).
+
+| Run as   | Opt-in source                                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| non-root | `verbs = ["run", "fmt"]` in `~/.config/pn/shim.toml` (home-manager `extraVerbs`), and `PG_NIX_SHIM_VERBS=run,fmt` (comma)  |
+| root     | only the `verbs` array of `/etc/pg-nix-shim.json` (nix-darwin `extraVerbs`); `sudo` drops the variable, root reads no home |
+
+### Bypassing, inspecting and debugging the shim
+
+- One command: `PG_NIX_LOG_DISABLE=1 nix build .#x`. Under `sudo` the variable is dropped, so use
+  `sudo env PG_NIX_LOG_DISABLE=1 nix build .#x`.
+- Permanently: call the real binary by its absolute path, for example
+  `/run/current-system/sw/bin/nix`.
+- `type -a nix` lists the shim first and the real `nix` after it; `nix --version` and completion
+  calls pass through and print the real tool's output.
+- `PG_NIX_LOG_DEBUG=1` makes the shim print, on stderr, which branch it took and why (`shim:
+passthrough (...)` or `shim: wrapping ...`). It prints nothing otherwise.
+- `pg-nix-log-wrapped --check` additionally resolves `nix` and `darwin-rebuild` on the caller's
+  `PATH`. A `PATH` entry is a shim when its basename is `nix` or `darwin-rebuild` and its fully
+  resolved final component is `pg-nix-log-wrapped`. Output, after the unchanged telemetry lines:
+
+  ```text
+  shim: nix: shim at /etc/profiles/per-user/me/bin/nix
+  shim: darwin-rebuild: NOT a shim: /run/current-system/sw/bin/darwin-rebuild is a real binary shadowing it
+  shim: allowlist: darwin-rebuild build, ..., nix build, nix flake check
+  shim: allowlist-ignored: develop (never wrapped or unknown)
+  shim: root-config: /etc/pg-nix-shim.json -> /nix/store/...-pg-nix-shim.json (store regular file)
+  shim: root-run: would wrap (rootEndpoint http://127.0.0.1:4318)
+  status: telemetry=ok shim=fail
+  ```
+
+  It exits 1 when either name does not resolve to a shim (or telemetry is unhealthy), and the final
+  `status:` line says which. `shim: root-config:` is `absent`, or `present but not usable: ... (not a
+store symlink)` for a copy or a file outside `/nix/store/`; a root run passes through in both
+  cases, and `shim: root-run:` says so. The effective allowlist is the defaults plus `shim.toml` and
+  `PG_NIX_SHIM_VERBS` (non-root) or the root file's `verbs` (root).
+
+- `pn workspace doctor` runs the same `--check` once and turns the shim lines into warnings (check
+  id `shim`): a name that is not a shim, "root config not a store symlink", no root configuration
+  while a user shim is installed, and a home-manager `telemetry.toml` endpoint that differs from
+  `rootEndpoint`. Root runs write their logs mode 0600 under `/var/log/pg-nix-log-wrapped`, which a
+  non-root doctor cannot read, so the doctor cannot tell whether root runs were wrapped. With
+  telemetry off or no shim module in use it reports nothing new.
+
+A silent fail-open is NOT visible: a passthrough execs the real binary before any telemetry
+exists, so it cannot be counted. `--check`, `PG_NIX_LOG_DEBUG=1` and finding one real wrapped build
+in the trace backend are how a broken shim is found. There is no daemon, launchd job or Grafana rule
+for it.
+
+### Behaviour that is NOT unchanged
+
+- Allowlisted verbs get the unmatched `--override-input` guard (exit 3, next sections), as in
+  explicit use; `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` turns it off. Verbs off the allowlist have
+  no guard.
+- Every command the wrapper wraps sees one new variable, `PG_NIX_LOG_ACTIVE=1`, and so does
+  everything it spawns: a daemon started from a wrapped `nix run` is never wrapped again, and under
+  `sudo` the variable is dropped, so a root shim inside a wrapped user run starts its own run.
+- Signals follow the "Signals" guarantee below: SIGINT is not forwarded (it reaches nix through the
+  shared process group), SIGTERM and SIGHUP are, other signals are not, and a signalled child
+  surfaces as `128+n`. A harness that signals only the shim's pid leaves nix running on SIGKILL.
+  This applies to allowlisted verbs only.
+- Latency: allowlisted verbs pay initialisation, the log-directory sweep, the flush and the tailer
+  drain; every other call pays one extra process start plus a `PATH` walk. Measured below.
+- The explicit wrapper now also skips any `PATH` candidate that resolves to a file named
+  `pg-nix-log-wrapped`, not only its own inode.
+
+### Measured cost
+
+One-off measurement, not a regression guard. Date 2026-11-05; Apple M3 Pro (11 cores, arm64
+darwin), host load average about 16 during the run (a busy workstation, so the p95 values are
+noisy). The built `pg-nix-shim` package on a temporary `PATH`, nothing applied. Each case runs 100
+interleaved pairs: the real `nix` by absolute path, then the same command through the shim's
+`nix`; added latency is the per-pair difference. The workload is a no-op `nix build --impure
+--no-link --offline` of a trivial local derivation that is already realised (so it includes nix's
+own evaluation, which is the same on both sides). Harness:
+`cmd/pg-nix-log-wrapped/latency_measure_test.go`, opt-in behind the `latency` build tag and
+`PG_MEASURE_SHIM_DIR` (never in the unit gate):
+`PG_MEASURE_SHIM_DIR=<pg-nix-shim>/bin go test -tags latency -run TestMeasureShim -v ./cmd/pg-nix-log-wrapped`.
+
+| Case                                                 | Real nix p50 / p95 | Through the shim p50 / p95 | Added p50 / p95 |
+| ---------------------------------------------------- | ------------------ | -------------------------- | --------------- |
+| no-op `nix build`, live collector (local stub OTLP)  | 67.4 / 101 ms      | 81.7 / 116 ms              | 13.5 / 45.6 ms  |
+| no-op `nix build`, dead collector (closed port)      | 63.1 / 103.9 ms    | 78.0 / 126.8 ms            | 13.6 / 43.9 ms  |
+| `nix --version` (off the allowlist, one process hop) | 75.6 / 209.7 ms    | 87.9 / 158.3 ms            | 11.3 / 42.7 ms  |
+
+- The "live" collector is a local stub OTLP/HTTP receiver that answers 200 to everything, not a real
+  collector; "dead" is a closed loopback port, which refuses at once. A collector that blackholes
+  packets can cost up to the 2 s flush bound instead; it was not measured.
+- A no-op build emits almost no activity, so these runs pay initialisation, the sweep and the
+  export, but not a long tailer drain. A real build adds the tailing cost it always had.
+- Sweep cost: the log directory is swept on every wrapped run (retention is by age, 7 days, and
+  total size, 2 GiB; never by file count). A loop of 300 short allowlisted runs against the live
+  stub took p50 113.7 ms for the first 30 runs and 113.8 ms for the last 30 (p95 237.7 and 141.6 ms)
+  while the directory grew to 502 files, 334,834 bytes: no visible growth with directory size at
+  that scale. The 7-day and 2 GiB limits were not reached, so the cost of sweeping a directory at
+  its cap is unmeasured. The loop's absolute time is higher than the paired runs because it ran
+  without a paired baseline and under the same host load.
 
 ## Guarantees
 
