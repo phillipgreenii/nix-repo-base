@@ -1,7 +1,7 @@
 # ADR-0030: `pg-nix-log-wrapped` — a fail-open nix telemetry wrapper
 
 **Date:** 2026-10-01
-**Status:** Accepted 2026-10-29 (amended 2026-10-27 inline; root-apply statements superseded by [ADR 0038](0038-apply-builds-as-the-user-and-runs-only-profile-set-and-activate-as-root.md); body-vs-code drift recorded in "Amendment 2026-10-29")
+**Status:** Accepted 2026-10-29 (amended 2026-10-27 inline, and 2026-11-05 for shim mode; root-apply statements superseded by [ADR 0038](0038-apply-builds-as-the-user-and-runs-only-profile-set-and-activate-as-root.md); body-vs-code drift recorded in "Amendment 2026-10-29")
 **Deciders:** phillipgreenii
 
 ## Context
@@ -231,6 +231,55 @@ is accepted in. The design ships; the places where the body no longer matches ar
   (`nixlog.RetainDrop`, `internal/retain`); the golden-file drift test
   (`internal/nixlog/nixlog_test.go`) and the real-nix canary
   (`cmd/pg-nix-log-wrapped/main_test.go:756`).
+
+## Amendment 2026-11-05: shim mode, the nesting guard and the broadened skip
+
+Design: `docs/superpowers/specs/2026-11-04-pg-nix-shim-design.md`. The same binary now also acts as
+a transparent shim when entered through a symlink named `nix` or `darwin-rebuild`.
+
+- **Shim mode.** When `basename(argv[0])` is `nix` or `darwin-rebuild`, `app.RunShim` runs instead of
+  the wrapper proper. It never calls `config.ParseArgs` (nix's own `--version` and `-L` are not the
+  wrapper's flags) and detects the verb with `Subcommand`. Dispatch, in order: `PG_NIX_LOG_DISABLE`
+  (or `OTEL_SDK_DISABLED`) set, `PG_NIX_LOG_ACTIVE` set, a completion call (`NIX_GET_COMPLETIONS`
+  set) or a verb off the allowlist: exec the real binary (silent, environment untouched,
+  `PG_NIX_LOG_DEBUG=1` names the branch on stderr); otherwise wrap like the explicit wrapper. Under
+  any other name the binary behaves exactly as before. The override-input guard stays on in shim
+  mode for allowlisted verbs.
+- **Allowlist.** One table (`verbTable`) drives both shim dispatch and the `Subcommand` label
+  tables, so a wrapped verb always has a label other than `other`. Default: `nix build`,
+  `nix flake check`, `darwin-rebuild build|switch|check`. Opt-in: `nix run`, `nix fmt`,
+  `nix flake lock`, `nix flake update`, `nix eval`. The label tables are wider than the wrap set
+  (`develop`, `shell`, `activate`, `edit`, `changelog`, `path-info`, `store`, `copy`, `show`,
+  `metadata`); the wrap set is a subset.
+- **Opt-in sources.** Non-root: `~/.config/pn/shim.toml` (`verbs = [...]`; a malformed file reads as
+  absent) and `PG_NIX_SHIM_VERBS` (comma list), merged additively; nothing removes a default. Root:
+  only the `verbs` of the root configuration file. An entry is a label (`run`, `flake lock`) or
+  `tool label` (`nix run`); a bare label applies to every tool that has it.
+- **Decision: opt-in sources cannot add never-wrapped verbs.** `nix develop`, `nix shell`,
+  `nix repl` and `darwin-rebuild activate` are interactive or long-lived and are never wrapped; an
+  entry naming one in any source is ignored. For the same reason an entry naming any other verb
+  that is not an opt-in verb (`path-info`, `copy`, an unknown word) is ignored. A later `--check`
+  lists ignored entries; this phase only ignores them.
+- **Nesting guard `PG_NIX_LOG_ACTIVE=1`.** Exported into CMD's environment next to `NIX_CONFIG` ONLY
+  when the wrapper wraps a run (including a guard-only observed run), never on the fail-open or
+  passthrough exec, so the "environment untouched" invariant and its tests hold. Only shim mode
+  honours it; an explicit wrapper ignores a guard set by an outer run (and replaces it with one).
+- **Broadened skip.** `resolve.LookPath` (explicit and shim lookups) also skips a `PATH` candidate
+  whose `EvalSymlinks` result has the final component `pg-nix-log-wrapped`, in addition to the inode
+  check, so a wrapper never execs a shim that points at a different wrapper build. In shim mode the
+  real binary is exec'd with the PATH-found absolute path as `argv[0]` (so `darwin-rebuild`'s `$0`
+  keeps its `/sw/bin/darwin-rebuild` suffix); nothing found exits 127.
+- **Root.** A shim with euid 0 reads `/etc/pg-nix-shim.json` only: it takes the `EvalSymlinks`
+  result, accepts it only as a regular file under `/nix/store/`, and reads from that RESOLVED path.
+  It never reads anything under a home directory and ignores `shim.toml` and `PG_NIX_SHIM_VERBS`.
+  The file holds `rootEndpoint` and optional `verbs`; with an endpoint the shim passes it as
+  `--otlp-endpoint`, with no file (or a refused, malformed or endpoint-less one) it passes through.
+  A non-root shim passes no endpoint, so the precedence above, including `enabled = false`, is
+  unchanged. The config path and store prefix are `Deps` fields (tests use a temporary directory); a
+  test pins the production defaults.
+- **`nix.started_by`.** The invocation span carries `nix.started_by`, a closed set: `shim` (entered
+  through shim mode, wins over everything), `pn` (explicit wrapper with `PG_NIX_LOG_STARTED_BY=pn`),
+  `explicit` (everything else, including unknown values).
 
 ## Not verified here (resolved 2026-10-29)
 
