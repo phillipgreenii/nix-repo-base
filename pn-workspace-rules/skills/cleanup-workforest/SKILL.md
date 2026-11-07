@@ -69,6 +69,11 @@ kept-member report: do not force past it; leave the worktree/branch and report
 which process is anchored. (The force flags run no liveness check at all, so
 they MUST NOT be used to get past an anchored-process refusal.)
 
+A checkout-pool slot (a worktree locked with a reason starting `pool slot`, or one at
+`<root>/pg-checkout-pool/slots/<id>/tree`) or any other worktree locked with `git worktree lock` is
+never removed by this skill: report it as kept, never force it, and never unlock it to get past the
+refusal. `wtdone` enforces this; the force flags MUST NOT be used to bypass it.
+
 ## The landed-test (MUST understand)
 
 `pnwf cleanup` classifies each repo from the canonical clone on its primary:

@@ -33,6 +33,14 @@ re-derives those facts by hand: it acts on each row by its `action` and spends i
 the rows marked `agent`. This skill adds no git or landing mechanics of its own — every mutating
 action is executed by `wtaudit remove` or by a skill that already implements that action.
 
+## Pool slots and locked worktrees are never candidates
+
+A **checkout-pool slot** is a worktree locked with a reason starting `pool slot`, or one at
+`<root>/pg-checkout-pool/slots/<id>/tree`. This skill MUST NOT remove a slot or report it as
+abandoned, and MUST honour `git worktree lock`: any other locked worktree is reported, never
+removed or forced (no `git worktree remove --force`, no unlock). `wtaudit` is authoritative for
+what is a removal candidate; never add a removal it did not classify.
+
 ## Disambiguation
 
 - **Not a single-target tool.** For one already-identified branch or set, call `integrate-branch`,
