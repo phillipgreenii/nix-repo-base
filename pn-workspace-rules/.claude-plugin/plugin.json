@@ -4,5 +4,5 @@
   "description": "Workspace-aware rules for phillipgreenii's nix workspace tooling, delivered as a skill",
   "version": "1.0.0",
   "defaultEnabled": true,
-  "requires": ["pn"]
+  "requires": ["pnwf", "wtdone", "wtaudit"]
 }

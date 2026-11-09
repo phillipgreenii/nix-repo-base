@@ -38,6 +38,8 @@ the manifest or invent a `-<digest>` fallback.
      merely uses (soft). Absent ⇒ `[ ]`. The builders validate them (non-list,
      non-string/empty or duplicate entries throw at eval) and export both in the
      plugin `passthru` (`requires`, `uses`) for consumers to gate on.
+     Each id MUST be a declared `phillipgreenii.programs.<f>` option: an
+     undeclared id reads as off and the plugin never loads.
 
    **Plugin content must be a skill/agent/hook — NOT a root `CLAUDE.md`.**
    Verified on Claude Code 2.1.186: a plugin-root `CLAUDE.md` is **not** injected
