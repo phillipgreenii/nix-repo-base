@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-func intp(n int) *int    { return &n }
-func boolp(b bool) *bool { return &b }
+func intp(n int) *int { return &n }
 
 func eqIntPtr(a, b *int) bool {
 	if a == nil || b == nil {
