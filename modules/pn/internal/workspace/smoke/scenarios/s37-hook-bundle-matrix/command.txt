@@ -1,8 +1,9 @@
-# Bootstrap the workspace (trusted, so the per-repo install hook fires), build the
+# Bootstrap the workspace (init skips the install-hook probe: the stand-in nix would
+# count it as an install; trusted, so the per-repo install hook fires), build the
 # canonical bundle through the post-status hook, then add a workforest set.
 # The matrix itself (plain worktree, producer change in the set, commits with
 # stand-in hooks, nothing written into any working tree) is in assertS37.
-workspace init
+workspace init --no-detect-hooks
 workspace allow
 workspace clone
 workspace lock
