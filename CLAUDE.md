@@ -107,7 +107,8 @@ family.
 
 A Go daemon that exposes the opt-in pprof endpoint follows the convention page
 [`docs/go-daemons.md`](docs/go-daemons.md) (module requirements, shared package, daemon
-requirements). Capturing and reading a profile, including the goroutine-dump warning, is the
+requirements). Every Go daemon under launchd also MUST meet its "Shutdown requirements" section
+(root context, bounded deadline, `ExitTimeOut`). Capturing and reading a profile, including the goroutine-dump warning, is the
 [`docs/go-daemon-profiling-runbook.md`](docs/go-daemon-profiling-runbook.md) runbook.
 
 ## Go tests (`pg-test-runner` labels)
