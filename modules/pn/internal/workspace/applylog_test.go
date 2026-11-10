@@ -507,7 +507,7 @@ func TestApplyLog_HeaderContextAndPhases(t *testing.T) {
 		t.Errorf("trace_id = %q", got)
 	}
 	tr := logTrailer(t, log)
-	for _, k := range []string{"prelude_seconds", "build_seconds", "activate_seconds", "post_steps_seconds"} {
+	for _, k := range []string{"prelude_seconds", "sudo_auth_seconds", "build_seconds", "activate_seconds", "post_steps_seconds"} {
 		if logKey(tr, k) == "<absent>" {
 			t.Errorf("trailer lacks %s:\n%s", k, tr)
 		}
@@ -745,5 +745,12 @@ func TestRunLog_ModeIs0644ForBothVerbs(t *testing.T) {
 		if st.Mode().Perm()&0o044 != 0o044 {
 			t.Errorf("%s log mode = %v, want 0644", verb, st.Mode().Perm())
 		}
+	}
+}
+
+func TestApplyLog_PhaseOrderIncludesSudoAuthAfterPrelude(t *testing.T) {
+	want := []string{phasePrelude, phaseSudoAuth, phaseBuild, phaseActivate, phasePostSteps}
+	if strings.Join(phaseOrder, ",") != strings.Join(want, ",") {
+		t.Errorf("phaseOrder = %v, want %v", phaseOrder, want)
 	}
 }

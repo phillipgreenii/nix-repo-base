@@ -65,6 +65,26 @@ ln -s "$OUT" result
 SH
 cat >"$WSROOT/fakebin/sudo" <<SH
 #!/bin/sh
+# Stateful like real sudo: the session forms (-n -v, -v, -k) are logged to
+# sudo-session.log and keep a ticket marker; every other call is numbered
+# sudo.N.argv so sudo.1 / sudo.2 are the two root steps.
+case "\$*" in
+"-n -v")
+  echo "-n -v" >>"$WSROOT/sudo-session.log"
+  [ -e "$WSROOT/sudo-ticket" ]
+  exit \$?
+  ;;
+"-v")
+  echo "-v" >>"$WSROOT/sudo-session.log"
+  : >"$WSROOT/sudo-ticket"
+  exit 0
+  ;;
+"-k")
+  echo "-k" >>"$WSROOT/sudo-session.log"
+  rm -f "$WSROOT/sudo-ticket"
+  exit 0
+  ;;
+esac
 n=1
 while [ -e "$WSROOT/sudo.\$n.argv" ]; do n=\$((n + 1)); done
 printf '%s\\n' "\$@" >"$WSROOT/sudo.\$n.argv"

@@ -529,6 +529,14 @@ func TestSmoke_S44_ProbeFailureFailsApply(t *testing.T) {
 	runScenario(t, "s44-probe-failure-fails-apply")
 }
 
+// TestSmoke_S45_SudoSession: apply authenticates sudo first, refreshes it while
+// the one-second stand-in build runs (the smoke binary refreshes every 100 ms)
+// and releases it with -k at the end; the two root steps keep their numbering
+// (ADR 0042).
+func TestSmoke_S45_SudoSession(t *testing.T) {
+	runScenario(t, "s45-sudo-session")
+}
+
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
 	t.Helper()
@@ -758,6 +766,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS43WorkforestNoHooks(t, wsRoot)
 	case "s44-probe-failure-fails-apply":
 		assertS44NoRootStep(t, wsRoot)
+	case "s45-sudo-session":
+		assertS45SudoSession(t, wsRoot)
 	}
 }
 

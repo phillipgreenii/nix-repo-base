@@ -155,7 +155,7 @@ See **Expected (Acceptable) Warnings** in `SKILL.md`.
 **Smoke:** ✓ **S19 `happy-path-apply`** — same shape as S18 with
 `activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"` and stand-ins for `darwin-rebuild`
 and `sudo` (nothing real runs); asserts exit 0 and that both root steps (set-profile, activate)
-ran. Nix daemon check runs; no formatter step
+ran (the stand-in sudo logs its session calls separately in `sudo-session.log`). Nix daemon check runs; no formatter step
 (nix fmt coupling removed in tc-perh.9.27).
 
 ---

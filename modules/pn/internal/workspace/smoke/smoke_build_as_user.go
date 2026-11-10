@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -124,7 +125,83 @@ func writeAsUserStandIns(t *testing.T, wsRoot string) string {
 		"#!/bin/sh\necho \"darwin-rebuild [--help] {edit | switch | activate | build | check | changelog}\" >&2\nexit 1\n")
 	fakebin := filepath.Join(phys, "fakebin")
 	write(filepath.Join(fakebin, "darwin-rebuild"), "#!/bin/sh\nln -sfn \""+out+"\" result\n")
+	// Stateful like real sudo: -n -v fails until a -v ran, -k clears the ticket;
+	// the three session forms go to sudo-session.log, everything else is numbered.
+	log := phys + "/sudo-session.log"
+	ticket := phys + "/sudo-ticket"
 	write(filepath.Join(fakebin, "sudo"),
-		"#!/bin/sh\nn=1\nwhile [ -e \""+phys+"/sudo.$n.argv\" ]; do n=$((n + 1)); done\nprintf '%s\\n' \"$@\" >\""+phys+"/sudo.$n.argv\"\nexit 0\n")
+		"#!/bin/sh\ncase \"$*\" in\n"+
+			"\"-n -v\") echo \"-n -v\" >>\""+log+"\"; [ -e \""+ticket+"\" ]; exit $? ;;\n"+
+			"\"-v\") echo \"-v\" >>\""+log+"\"; : >\""+ticket+"\"; exit 0 ;;\n"+
+			"\"-k\") echo \"-k\" >>\""+log+"\"; rm -f \""+ticket+"\"; exit 0 ;;\nesac\n"+
+			"n=1\nwhile [ -e \""+phys+"/sudo.$n.argv\" ]; do n=$((n + 1)); done\nprintf '%s\\n' \"$@\" >\""+phys+"/sudo.$n.argv\"\nexit 0\n")
 	return fakebin
+}
+
+// assertS45SudoSession: apply authenticated sudo first, kept the session warm
+// while the (one second) stand-in build ran, and released it at the end (ADR
+// 0042). The session calls are in sudo-session.log; sudo.1 and sudo.2 are still
+// the two root steps.
+func assertS45SudoSession(t *testing.T, wsRoot string) {
+	t.Helper()
+	lines, ok := readArgvFile(t, filepath.Join(wsRoot, "sudo-session.log"))
+	if !ok {
+		t.Fatal("S45: no sudo-session.log: the session never ran")
+	}
+	if len(lines) < 6 {
+		t.Fatalf("S45: sudo-session.log = %q, want probe, prompt, verify, at least two refreshes and a release", lines)
+	}
+	if !reflect.DeepEqual(lines[:3], []string{"-n -v", "-v", "-n -v"}) {
+		t.Errorf("S45: session log starts %q, want [-n -v -v -n -v]", lines[:3])
+	}
+	if got := lines[len(lines)-1]; got != "-k" {
+		t.Errorf("S45: session log ends with %q, want -k", got)
+	}
+	var prompts, probes, releases int
+	for _, l := range lines {
+		switch l {
+		case "-v":
+			prompts++
+		case "-n -v":
+			probes++
+		case "-k":
+			releases++
+		default:
+			t.Errorf("S45: unexpected session call %q", l)
+		}
+	}
+	if prompts != 1 || releases != 1 {
+		t.Errorf("S45: %d prompts and %d releases in %q, want exactly one of each", prompts, releases, lines)
+	}
+	if probes < 4 { // probe + verify + at least two refreshes
+		t.Errorf("S45: %d -n -v calls in %q, want at least 4 (probe, verify, two refreshes)", probes, lines)
+	}
+	if _, err := os.Stat(filepath.Join(wsRoot, "sudo-ticket")); err == nil {
+		t.Error("S45: the stand-in ticket survived the apply: -k did not run last")
+	}
+
+	out, _ := readArgvFile(t, filepath.Join(wsRoot, "expected.out"))
+	if len(out) != 1 {
+		t.Fatalf("S45: expected.out = %q", out)
+	}
+	wantSetProfile := []string{
+		"env", "-i", "HOME=/var/root", "NIX_REMOTE=daemon",
+		"PATH=/run/current-system/sw/bin:/usr/bin:/bin",
+		"/run/current-system/sw/bin/nix-env", "-p", "/nix/var/nix/profiles/system", "--set", out[0],
+	}
+	if got, ok := readArgvFile(t, filepath.Join(wsRoot, "sudo.1.argv")); !ok || !reflect.DeepEqual(got, wantSetProfile) {
+		t.Errorf("S45: sudo.1 argv = %q (ran=%v), want %q", got, ok, wantSetProfile)
+	}
+	wantActivate := []string{out[0] + "/sw/bin/darwin-rebuild", "activate"}
+	if got, ok := readArgvFile(t, filepath.Join(wsRoot, "sudo.2.argv")); !ok || !reflect.DeepEqual(got, wantActivate) {
+		t.Errorf("S45: sudo.2 argv = %q (ran=%v), want %q", got, ok, wantActivate)
+	}
+	if _, ok := readArgvFile(t, filepath.Join(wsRoot, "sudo.3.argv")); ok {
+		t.Error("S45: a third numbered sudo ran")
+	}
+	// The build ran as the invoking user, not root.
+	uid, ok := readArgvFile(t, filepath.Join(wsRoot, "build.uid"))
+	if !ok || len(uid) != 1 || uid[0] != strconv.Itoa(os.Getuid()) {
+		t.Errorf("S45: build uid = %q (ran=%v), want %d", uid, ok, os.Getuid())
+	}
 }

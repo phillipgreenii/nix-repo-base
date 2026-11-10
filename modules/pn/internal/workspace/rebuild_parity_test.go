@@ -102,7 +102,7 @@ func TestRebuildParity_VerbSpecificSteps(t *testing.T) {
 	if got, want := parityRun(t, "build").own, []string{stepReportApplyDecision, stepRunCommand}; !reflect.DeepEqual(got, want) {
 		t.Errorf("build steps = %v, want %v", got, want)
 	}
-	want := []string{stepSkipGate, stepApplyLog, stepCaptureHeads, stepRunCommand, stepReadResult, stepProbe, stepSetProfile, stepActivate, stepPostSteps, stepMarkApplied}
+	want := []string{stepSkipGate, stepApplyLog, stepSudoAuth, stepCaptureHeads, stepRunCommand, stepReadResult, stepProbe, stepSetProfile, stepActivate, stepPostSteps, stepMarkApplied}
 	if got := parityRun(t, "apply").own; !reflect.DeepEqual(got, want) {
 		t.Errorf("apply steps = %v, want %v", got, want)
 	}

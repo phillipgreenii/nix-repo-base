@@ -115,7 +115,7 @@ After the prelude the verbs differ, deliberately:
   below), diffs the system profile with nvd, restarts a stale fsmonitor daemon, and records the
   applied state.
 
-### Apply (`activate_command`, ADRs 0038 and 0041)
+### Apply (`activate_command`, ADRs 0038, 0041 and 0042)
 
 Apply has ONE flow: it builds as YOU and only the profile set and the activation run as root. It
 requires `[workspace].activate_command`; without it apply fails with
@@ -134,6 +134,18 @@ activate_command = "sudo {out}/bin/switch-to-configuration switch"
 
 The steps:
 
+0. **Authenticate sudo** (ADR 0042), after the skip gate (a skipped apply never prompts) and before
+   the HEADs are captured and the build starts: pn runs `sudo -n -v`, and only when that fails
+   prints `apply: authenticate sudo now; ...` and runs one `sudo -v` (password or Touch ID). A wrong
+   password or a cancelled prompt fails the apply before anything is built (`failed_step:
+sudo_auth`). pn then verifies with `sudo -n -v` that sudo cached the credentials; if not it prints
+   `apply: sudo does not cache credentials here; it will ask again after the build` and prompts after
+   the build. While the build runs, one cancellable goroutine refreshes the session with `sudo -n -v`
+   every 60 s and never writes to the apply output. If a refresh fails (for example the machine slept
+   longer than sudo's timeout) pn prints `apply: sudo authentication expired during the build; sudo
+will ask again now` before the root steps. Credentials pn created are invalidated with `sudo -k`
+   right after the activate step and on every other exit path; credentials you already held are
+   never invalidated. The build still runs as you, not root.
 1. **Preflight** (no process): `activate_command` is set and names a supported program, and
    `/run/current-system/sw/bin/nix-env` is executable. Any failure is an error before anything is
    built; there is no fallback. The preflight runs before the dry-run gate, so
@@ -160,7 +172,7 @@ PATH=/run/current-system/sw/bin:/usr/bin:/bin /run/current-system/sw/bin/nix-env
 6. **Activate**: the `activate_command` expansion.
 
 Every failure is an error; a root build is no longer reachable from `pn`. The sudo prompt comes
-after the build; pn prints `apply: waiting for sudo ...` first. A cancel during the build stops its
+first (step 0), so the build and the two root steps run unattended. A cancel during the build stops its
 whole process tree and starts no root step; once the profile set has started, both root steps run to
 completion and the cancel is reported afterwards. `{out}` is valid only in `activate_command`, whose
 `argv[0]` MUST be `sudo` and whose program MUST be one element beginning with `{out}/`.
@@ -335,10 +347,10 @@ activation script's own output), and `~/.local/share/pn-workspace/applied/` hold
   `130` for a signalled wrapper exit, `-1` = killed directly by a signal, `none` = it never started;
   for a failed probe it is the probe's exit code only when the probe exited non-zero, and `none` when
   the probe could not run, was signalled, timed out, or exited 0 with unusable output),
-  `failed_step` (apply only: `build`, `read-result`, `probe`, `set-profile`, `activate`
+  `failed_step` (apply only: `sudo_auth`, `build`, `read-result`, `probe`, `set-profile`, `activate`
   or `none`), `result` (`success` or `failed`, and `error:` when failed), then the phase times
-  `prelude_seconds`, `build_seconds`, `activate_seconds` (apply only: set-profile plus activate,
-  including the wait for sudo) and
+  `prelude_seconds`, `sudo_auth_seconds` (apply only: the up-front sudo prompt), `build_seconds`,
+  `activate_seconds` (apply only: set-profile plus activate) and
   `post_steps_seconds` (apply only: nvd diff, fsmonitor restart, markApplied), and
   `plan: builds=N fetches=M [download_mib=X]` when the build step ran. Phase times and the plan live
   in the trailer ONLY, never in the output section, whose contract is verbatim terminal output; a

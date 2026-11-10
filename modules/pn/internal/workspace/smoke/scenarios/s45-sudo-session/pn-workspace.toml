@@ -1,0 +1,11 @@
+[workspace]
+name = "smoke-s45"
+terminal = "consumer"
+build_command = "darwin-rebuild build"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
+
+[repos.consumer]
+url = "file:///PLACEHOLDER_consumer"
+
+[repos.producer]
+url = "file:///PLACEHOLDER_producer"

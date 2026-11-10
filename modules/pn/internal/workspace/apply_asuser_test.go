@@ -90,6 +90,10 @@ type asUserFake struct {
 	setProfile func(ctx context.Context, args []string) (exec.Result, error)
 	activate   func(ctx context.Context, args []string) (exec.Result, error)
 	fallback   func(ctx context.Context, args []string) (exec.Result, error)
+	// sudoSession answers the sudo session calls (`-v`, `-n -v`, `-k`). Nil: the
+	// stateful default, where `-n -v` fails until the first `-v` has run.
+	sudoSession func(ctx context.Context, args []string) (exec.Result, error)
+	sudoHeld    bool
 }
 
 func cmdErr(name string, args []string, code int) (exec.Result, error) {
@@ -129,6 +133,11 @@ func (f *asUserFake) Run(ctx context.Context, name string, args []string, opts e
 			return f.probe(ctx, opts)
 		}
 		return cmdErrResult(name, args, exec.Result{ExitCode: 1, Stderr: []byte(realUsage)})
+	case isSudoSessionCall(name, args):
+		if f.sudoSession != nil {
+			return f.sudoSession(ctx, args)
+		}
+		return f.defaultSudoSession(args)
 	case name == "sudo" && len(args) > 0 && args[0] == "env":
 		if f.setProfile != nil {
 			return f.setProfile(ctx, args)
@@ -149,6 +158,37 @@ func (f *asUserFake) Run(ctx context.Context, name string, args []string, opts e
 	return exec.Result{}, fmt.Errorf("unexpected call %s %v", name, args)
 }
 
+// isSudoSessionCall reports whether the call is one of the three sudo session
+// forms: `sudo -v`, `sudo -n -v` and `sudo -k`.
+func isSudoSessionCall(name string, args []string) bool {
+	if name != "sudo" {
+		return false
+	}
+	switch strings.Join(args, " ") {
+	case "-v", "-n -v", "-k":
+		return true
+	}
+	return false
+}
+
+// defaultSudoSession behaves like sudo: `-n -v` fails until a `-v` has run,
+// and `-k` drops the credentials.
+func (f *asUserFake) defaultSudoSession(args []string) (exec.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch strings.Join(args, " ") {
+	case "-v":
+		f.sudoHeld = true
+	case "-k":
+		f.sudoHeld = false
+	case "-n -v":
+		if !f.sudoHeld {
+			return cmdErr("sudo", args, 1)
+		}
+	}
+	return exec.Result{}, nil
+}
+
 // cmdErrResult mimics the real runner: a non-zero exit is returned both as the
 // Result and as a *CommandError.
 func cmdErrResult(name string, args []string, res exec.Result) (exec.Result, error) {
@@ -160,6 +200,11 @@ func cmdErrResult(name string, args []string, res exec.Result) (exec.Result, err
 
 // calls returns the recorded calls that are not git or the daemon probe.
 func (f *asUserFake) significant() []exec.Call {
+	return nonSessionCalls(f.withSession())
+}
+
+// withSession is significant plus the sudo session calls, in call order.
+func (f *asUserFake) withSession() []exec.Call {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []exec.Call
@@ -175,9 +220,38 @@ func (f *asUserFake) significant() []exec.Call {
 func (f *asUserFake) rootCalls() []exec.Call {
 	var out []exec.Call
 	for _, c := range f.significant() {
-		if c.Name == "sudo" {
+		if c.Name == "sudo" && !isSudoSessionCall(c.Name, c.Args) {
 			out = append(out, c)
 		}
+	}
+	return out
+}
+
+// sessionCalls returns only the sudo session calls (`-v`, `-n -v`, `-k`).
+func (f *asUserFake) sessionCalls() []exec.Call {
+	var out []exec.Call
+	for _, c := range f.withSession() {
+		if isSudoSessionCall(c.Name, c.Args) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func nonSessionCalls(in []exec.Call) []exec.Call {
+	var out []exec.Call
+	for _, c := range in {
+		if !isSudoSessionCall(c.Name, c.Args) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func argvsOf(in []exec.Call) []string {
+	var out []string
+	for _, c := range in {
+		out = append(out, argvOf(c))
 	}
 	return out
 }
@@ -385,7 +459,10 @@ func TestAsUser_CommandSequenceExactRootArgvAndOptions(t *testing.T) {
 		"sudo env -i HOME=/var/root NIX_REMOTE=daemon PATH=/run/current-system/sw/bin:/usr/bin:/bin /run/current-system/sw/bin/nix-env -p /nix/var/nix/profiles/system --set " + out0,
 		"sudo " + out0 + "/sw/bin/darwin-rebuild activate",
 	}
-	calls := e.f.significant()
+	if got := argvsOf(e.f.sessionCalls()); strings.Join(got, "|") != "sudo -n -v|sudo -v|sudo -n -v|sudo -k" {
+		t.Errorf("sudo session calls = %v", got)
+	}
+	calls := nonSessionCalls(e.f.significant())
 	if len(calls) != len(want) {
 		t.Fatalf("calls = %d, want %d:\n%s", len(calls), len(want), dumpCalls(calls))
 	}
@@ -441,8 +518,8 @@ func TestAsUser_CommandSequenceExactRootArgvAndOptions(t *testing.T) {
 	if !e.applied(t) {
 		t.Error("a successful apply did not record the applied state")
 	}
-	if !strings.Contains(out.String(), "waiting for sudo") {
-		t.Errorf("no 'waiting for sudo' line:\n%s", out.String())
+	if !strings.Contains(out.String(), "running the root steps on the authenticated sudo session") {
+		t.Errorf("no authenticated-session line:\n%s", out.String())
 	}
 }
 
@@ -1268,8 +1345,9 @@ func TestAsUser_ExecSpansCarryTheSubcommands(t *testing.T) {
 			sudoSpans++
 		}
 	}
-	if sudoSpans != 2 {
-		t.Errorf("sudo pn.exec spans = %d, want 2 (set-profile, activate)", sudoSpans)
+	// Two root steps plus the four sudo session calls (probe, prompt, verify, release).
+	if sudoSpans != 6 {
+		t.Errorf("sudo pn.exec spans = %d, want 6 (set-profile, activate, and the session's -n -v, -v, -n -v, -k)", sudoSpans)
 	}
 }
 

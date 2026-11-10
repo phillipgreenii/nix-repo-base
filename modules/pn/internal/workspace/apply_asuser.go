@@ -72,6 +72,7 @@ const (
 	failedStepProbe      = "probe"
 	failedStepSetProfile = "set-profile"
 	failedStepActivate   = "activate"
+	failedStepSudoAuth   = "sudo_auth"
 	failedStepNone       = "none"
 )
 
@@ -158,7 +159,7 @@ func (applyVerb) extendPlan(_ context.Context, ws *Workspace, _ io.Writer, p *re
 // dryRunLines are the extra lines of a --show-nix-commands dry run in the
 // build-as-user flow: the build itself is the command line above them.
 func (applyVerb) dryRunLines(p *rebuildPlan) []string {
-	var lines []string
+	lines := []string{"# sudo -v (before the build; kept fresh with sudo -n -v while it runs; released with sudo -k)"}
 	for _, l := range p.asUser.describeSteps(p) {
 		lines = append(lines, "# "+l)
 	}
@@ -169,6 +170,7 @@ func (applyVerb) dryRunLines(p *rebuildPlan) []string {
 // for the out path the build will produce.
 func (a *asUserPlan) describeSteps(p *rebuildPlan) []string {
 	lines := []string{
+		"0 sudo-auth   sudo -v, then sudo -n -v every " + sudoRefreshInterval.String() + " while the build runs",
 		"set-profile command: " + strings.Join(setProfileArgv("<out>", a.platform), " "),
 	}
 	if act, err := substituteActivateCommand(a.activateTmpl, withOut(p.vars, "<out>")); err == nil {
@@ -420,18 +422,30 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 	// stay in pn's own group (OwnProcessGroup is never set): sudo reads the
 	// password from the terminal, which a background group cannot (SIGTTIN).
 	alog.phase(phaseActivate)
-	fmt.Fprintln(out, "apply: waiting for sudo (set the system profile, then activate)")
+	switch {
+	case p.sudo.Lost():
+		fmt.Fprintln(out, "apply: sudo authentication expired during the build; sudo will ask again now")
+	case p.sudo.Cacheless():
+		// The up-front warning already said sudo will ask again.
+	default:
+		fmt.Fprintln(out, "apply: running the root steps on the authenticated sudo session")
+	}
 	rootCtx := context.WithoutCancel(ctx)
 
 	ws.recordStep("apply", false, stepSetProfile)
 	sp := setProfileArgv(built, p.asUser.platform)
 	if _, err := ws.runner.Run(rootCtx, sp[0], sp[1:], rootStepOptions(out)); err != nil {
+		p.sudo.Stop()
 		alog.fail(failedStepSetProfile, err)
 		return fmt.Errorf("apply failed: set system profile: %w", err)
 	}
 
 	ws.recordStep("apply", false, stepActivate)
-	if _, err := ws.runner.Run(rootCtx, activate[0], activate[1:], rootStepOptions(out)); err != nil {
+	_, err = ws.runner.Run(rootCtx, activate[0], activate[1:], rootStepOptions(out))
+	// Release the credentials now, so they do not outlive the root steps
+	// (nvd, the fsmonitor restart and markApplied follow).
+	p.sudo.Stop()
+	if err != nil {
 		alog.fail(failedStepActivate, err)
 		return fmt.Errorf("apply failed: activate: %w", err)
 	}

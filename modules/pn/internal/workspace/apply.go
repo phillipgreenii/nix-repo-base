@@ -95,6 +95,21 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	out = alog.tee(out)
 	defer func() { alog.finish(err) }()
 
+	// Ask for sudo first, before anything is captured or built: the operator
+	// approves once and may walk away. The session keeps the credentials warm
+	// through the build; applyAsUser stops it right after activate and the defer
+	// below is the backstop for every earlier exit.
+	alog.useSteps()
+	ws.recordStep("apply", false, stepSudoAuth)
+	alog.phase(phaseSudoAuth)
+	sess, err := startSudoSession(ctx, ws.runner, out, nil)
+	if err != nil {
+		alog.fail(failedStepSudoAuth, err)
+		return fmt.Errorf("apply failed: %w", err)
+	}
+	defer sess.Stop()
+	p.sudo = sess
+
 	oldProfile := readSystemProfile()
 	// Capture the git binary identity before the rebuild so we can tell,
 	// afterwards, whether this apply swapped in a new git binary.

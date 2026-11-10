@@ -155,7 +155,7 @@ Run every command below from `modules/pn` of this repo on a NixOS host, unless s
   fake-runner tests. Also the probe error text `no usable 'darwin-rebuild activate'` in
   `apply_asuser.go` (`applyAsUser`, step 3).
 - Assumption: fake-runner tests are enough. They are not an end-to-end proof.
-- Add: scenario `s45-nixos-build-as-user-apply`, modeled on `s42-build-as-user-apply`
+- Add: scenario `s46-nixos-build-as-user-apply`, modeled on `s42-build-as-user-apply`
   (`setup.sh` plus `pn-workspace.toml`): a stand-in `nixos-rebuild build` that leaves `./result`
   pointing at a fake store directory holding an executable `activate` and an executable
   `bin/switch-to-configuration`, a stand-in `sudo` first on PATH, and
@@ -203,6 +203,6 @@ records the removal of `apply_command` (ADR 0041 in the plan
 - [ ] Remove each `TODO(nixos)` comment as its item is resolved (`rg -n 'TODO\(nixos\)' modules/pn` must return nothing).
 - [ ] Fill in the NixOS section of docs/adr/0041-apply-has-one-flow-the-build-as-user-apply.md with the spike output (or the corrections found).
 - [ ] Update `modules/pn/README.md` and `pn-workspace-rules` skill docs if the documented NixOS `activate_command` changed.
-- [ ] Add the `s45-nixos-build-as-user-apply` smoke scenario (item 11) and run the smoke tier on Linux.
+- [ ] Add the `s46-nixos-build-as-user-apply` smoke scenario (item 11) and run the smoke tier on Linux.
 - [ ] Before deleting this file, run `rg -n 'NIXOS_TODO|UNVERIFIED on a NixOS host|TODO\(nixos\)'` repo-wide and rewrite or remove every hit (known: `modules/pn/README.md` around line 130, `pn-workspace-rules/skills/pn-workspace-rules/SKILL.md` around line 133, `docs/adr/0041-apply-has-one-flow-the-build-as-user-apply.md` around lines 70 and 75, plus the code markers).
 - [ ] Delete this file.

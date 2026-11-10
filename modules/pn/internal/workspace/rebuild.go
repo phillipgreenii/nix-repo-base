@@ -45,6 +45,7 @@ const (
 	stepReportApplyDecision = "report_apply_decision" // build: the read-only `apply would:` line
 	stepSkipGate            = "skip_gate"             // apply: needsRebuild, may end the apply
 	stepApplyLog            = "apply_log"
+	stepSudoAuth            = "sudo_auth" // apply: the up-front sudo session, before capture_heads
 	stepCaptureHeads        = "capture_heads"
 	stepRunCommand          = "run_command" // the verb's build/switch command
 	stepPostSteps           = "post_steps"  // apply: nvd diff, fsmonitor restart
@@ -162,6 +163,9 @@ type rebuildPlan struct {
 	// alog is the verb's retained run log once it is open (nil before, or when it
 	// could not be created); runPlannedIn records the build plan into it.
 	alog *applyLog
+	// sudo is apply's authenticated sudo session (nil before it is acquired);
+	// applyAsUser stops it right after the activate step.
+	sudo *sudoSession
 }
 
 // fullArgs is the command's arguments after the program name, with the override

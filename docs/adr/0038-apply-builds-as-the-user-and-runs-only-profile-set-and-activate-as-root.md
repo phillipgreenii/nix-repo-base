@@ -1,7 +1,7 @@
 # ADR-0038: `pn workspace apply` builds as the invoking user and runs only the profile set and the activation as root
 
 **Date:** 2026-10-27
-**Status:** Partly superseded by ADR 0041: decision 1 (opt-in by config), the fallback clauses of decisions 2.1 and 2.4 and the migration paragraph no longer apply; `activate_command` is now required. Accepted (supersedes the "apply runs one root `sudo darwin-rebuild switch`" statements of ADR 0028 and ADR 0030; amends 0017 for the new `activate_command` key)
+**Status:** Its UX consequence "the sudo prompt now comes AFTER the build" is superseded by ADR 0042. Partly superseded by ADR 0041: decision 1 (opt-in by config), the fallback clauses of decisions 2.1 and 2.4 and the migration paragraph no longer apply; `activate_command` is now required. Accepted (supersedes the "apply runs one root `sudo darwin-rebuild switch`" statements of ADR 0028 and ADR 0030; amends 0017 for the new `activate_command` key)
 **Deciders:** phillipgreenii
 **Tracking:** `pg2-sdbhh4` (epic), `pg2-sdbhh4.7` (the spike whose recorded outcome this ADR follows), `pg2-sdbhh4.9` (implementation)
 

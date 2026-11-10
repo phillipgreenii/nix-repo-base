@@ -66,9 +66,9 @@ import (
 //	result: success|failed
 //	error: <only when failed>
 //	prelude_seconds: <s>                (v2; time before the build command started)
+//	sudo_auth_seconds: <s>              (apply only: the up-front sudo prompt)
 //	build_seconds: <s>                  (v2; the nix build, the build step only)
-//	activate_seconds: <s>               (v2; apply only: set-profile plus activate,
-//	                                     including the wait for sudo)
+//	activate_seconds: <s>               (v2; apply only: set-profile plus activate)
 //	post_steps_seconds: <s>             (v2; apply only: nvd diff, fsmonitor restart,
 //	                                     markApplied)
 //	plan: builds=<n> fetches=<m> [download_mib=<x>]   (v2; once the build ran)
@@ -105,12 +105,13 @@ const (
 // Phase names, in the order the trailer prints them.
 const (
 	phasePrelude   = "prelude"
+	phaseSudoAuth  = "sudo_auth"
 	phaseBuild     = "build"
 	phaseActivate  = "activate"
 	phasePostSteps = "post_steps"
 )
 
-var phaseOrder = []string{phasePrelude, phaseBuild, phaseActivate, phasePostSteps}
+var phaseOrder = []string{phasePrelude, phaseSudoAuth, phaseBuild, phaseActivate, phasePostSteps}
 
 // nixConfPath is the nix.conf read for the header's max-jobs and cores; a test
 // seam. It is read as a plain file: never `nix config show`, never a subprocess.
@@ -354,6 +355,9 @@ func (l *applyLog) useSteps() {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.steps {
+		return
+	}
 	l.steps = true
 	l.failedStep = failedStepNone
 }

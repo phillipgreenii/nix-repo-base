@@ -123,7 +123,7 @@ Evaluates each cloned repo's `flake.nix` inputs, discovers workspace dependency 
 
 The `input-name` field on `[repos.*]` sections has been removed. Alias names are now derived automatically from each consumer's declared flake input aliases at lock time. If you see an error about `input-name`, remove that field from `pn-workspace.toml`.
 
-**`activate_command` is required** (ADRs 0038 and 0041). `pn workspace apply` has one flow and fails with `workspace.activate_command is not set in pn-workspace.toml` without it. There is no `apply_command` and no `--apply-command`; a leftover `apply_command` line in the toml is an ignored unknown key. Apply builds as YOU (the `build_command` expansion, wrapped, in a private `~/.local/state/pn/apply-build/run-*` directory removed afterwards, so `build_command` MUST be a `darwin-rebuild build` or `nixos-rebuild build` that leaves `./result` in its cwd), validates the resulting `/nix/store` path, probes it (darwin), and then runs only two root steps through sudo: `nix-env -p /nix/var/nix/profiles/system --set <out>` (hard-coded, not templated) and the `activate_command` expansion. Any preflight, directory or probe failure is an error before a root step; there is no fallback and no root build. The platform comes from the program named in `activate_command`, not from the host. Examples:
+**`activate_command` is required** (ADRs 0038, 0041 and 0042). `pn workspace apply` has one flow and fails with `workspace.activate_command is not set in pn-workspace.toml` without it. There is no `apply_command` and no `--apply-command`; a leftover `apply_command` line in the toml is an ignored unknown key. Apply asks for sudo first, then builds and activates unattended (ADR 0042). Apply builds as YOU (the `build_command` expansion, wrapped, in a private `~/.local/state/pn/apply-build/run-*` directory removed afterwards, so `build_command` MUST be a `darwin-rebuild build` or `nixos-rebuild build` that leaves `./result` in its cwd), validates the resulting `/nix/store` path, probes it (darwin), and then runs only two root steps through sudo: `nix-env -p /nix/var/nix/profiles/system --set <out>` (hard-coded, not templated) and the `activate_command` expansion. Any preflight, directory or probe failure is an error before a root step; there is no fallback and no root build. The platform comes from the program named in `activate_command`, not from the host. Examples:
 
 ```toml
 # darwin (verified)
@@ -285,9 +285,8 @@ a missing key as unknown rather than as an error.
 
 Trailer phase times, in seconds, one `key: value` line each, never inside the output section:
 `prelude_seconds` (start of the verb until the nix build command started: skip gate, lock wait, ref
-capture), `build_seconds` (the nix build),
-`activate_seconds` (apply only: set-profile plus activate, including the
-wait for sudo), `post_steps_seconds` (apply only: nvd diff, fsmonitor restart, markApplied). A phase
+capture), `sudo_auth_seconds` (apply only: the up-front sudo prompt), `build_seconds` (the nix build),
+`activate_seconds` (apply only: set-profile plus activate), `post_steps_seconds` (apply only: nvd diff, fsmonitor restart, markApplied). A phase
 the run never reached has no line. `plan: builds=N fetches=M download_mib=X` records the plan nix
 printed. Post-HOOK time is NOT in the trailer (hooks run after the trailer is written): read it from
 the `pn.hook` spans (`pn.hook.when`, `pn.hook.name`) in the trace named by `trace_id`.
