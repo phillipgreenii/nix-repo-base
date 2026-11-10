@@ -18,20 +18,22 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry/telemetrytest"
 )
 
-// planRunner is a FakeRunner whose darwin-rebuild (build) and sudo (apply)
-// calls stream scripted chunks to the Stdout/Stderr the verb handed it, as a
-// real nix child would, and then return runErr. Every other call is the fake's.
+// planRunner is an asUserFake whose build call (darwin-rebuild build) streams
+// scripted chunks to the Stdout/Stderr the verb handed it, as a real nix child
+// would, and then returns runErr (or, for apply, lets the fake leave ./result).
+// Every other call is the fake's.
 type planRunner struct {
-	*exec.FakeRunner
+	*asUserFake
 	chunks   []string
 	toStderr bool // alternate chunks between Stdout and Stderr when true
 	runErr   error
+	apply    bool // the verb under test is apply: a good build leaves ./result
 	ran      atomic.Int32
 }
 
 func (r *planRunner) Run(ctx context.Context, name string, args []string, opts exec.RunOptions) (exec.Result, error) {
-	if name != "darwin-rebuild" && name != "sudo" {
-		return r.FakeRunner.Run(ctx, name, args, opts)
+	if !(name == "darwin-rebuild" && len(args) > 0 && args[0] == "build") {
+		return r.asUserFake.Run(ctx, name, args, opts)
 	}
 	r.ran.Add(1)
 	for i, c := range r.chunks {
@@ -43,7 +45,10 @@ func (r *planRunner) Run(ctx context.Context, name string, args []string, opts e
 			return exec.Result{}, err
 		}
 	}
-	return exec.Result{}, r.runErr
+	if r.runErr != nil || !r.apply {
+		return exec.Result{}, r.runErr
+	}
+	return exec.Result{}, os.Symlink(r.sys.out, filepath.Join(opts.Dir, "result"))
 }
 
 // planVerbEnv builds a hermetic one-repo workspace and returns a runner to
@@ -64,27 +69,20 @@ func newPlanVerbEnv(t *testing.T, extraWorkspaceTOML string) *planVerbEnv {
 id = "plantest"
 terminal = "leaf"
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 `+extraWorkspaceTOML+`
 [repos.leaf]
 url = "github:owner/leaf"
 `)
 	trustWS(t, root)
-	leafDir := filepath.Join(root, "leaf")
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
-	for i := 0; i < 3; i++ {
-		f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("h\n")}, nil)
-	}
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/g\n")}, nil)
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/g\n")}, nil)
-	pr := &planRunner{FakeRunner: f}
+	store := t.TempDir()
+	pr := &planRunner{asUserFake: &asUserFake{t: t, sys: newFakeSystem(t, store, fakeHash)}}
 	w, err := Open(root, pr)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	w.hostnameFn = func() string { return "planhost" }
+	installAsUserSeams(w, store)
 	return &planVerbEnv{w: w, runner: pr}
 }
 
@@ -92,11 +90,12 @@ url = "github:owner/leaf"
 func (e *planVerbEnv) run(ctx context.Context, verb string) (string, error) {
 	var out bytes.Buffer
 	var err error
+	e.runner.apply = verb == "apply"
 	switch verb {
 	case "build":
 		err = e.w.Build(ctx, &out, BuildOptions{})
 	case "apply":
-		err = e.w.Apply(ctx, &out, ApplyOptions{Force: true})
+		err = e.w.Apply(ctx, &out, ApplyOptions{Force: true, Builder: "darwin-rebuild"})
 	}
 	return out.String(), err
 }

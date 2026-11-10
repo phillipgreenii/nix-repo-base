@@ -17,7 +17,6 @@ func activateTOML(extra string) string {
 [workspace]
 terminal = "leaf"
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 ` + extra + `
 [repos.leaf]
 url = "github:owner/leaf"
@@ -48,10 +47,10 @@ func TestActivateCommand_AbsentMeansUnset(t *testing.T) {
 	}
 }
 
-// {out} is accepted ONLY in activate_command; build_command and apply_command
-// keep rejecting it as an unknown placeholder.
+// {out} is accepted ONLY in activate_command; build_command keeps
+// rejecting it as an unknown placeholder.
 func TestActivateCommand_OutIsValidOnlyThere(t *testing.T) {
-	for _, field := range []string{"build_command", "apply_command"} {
+	for _, field := range []string{"build_command"} {
 		toml := `
 [workspace]
 terminal = "leaf"
@@ -166,12 +165,12 @@ func TestEnforceKeys_ActivateCommand(t *testing.T) {
 	p := writeTemp(t, "pn-workspace.toml", realWorldTOML, 0o600)
 
 	// Empty leaves the key untouched (here: absent) and writes nothing.
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
 	if err != nil || changed {
 		t.Fatalf("empty activate value: changed=%v err=%v, want a no-op", changed, err)
 	}
 
-	changed, err = EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", activateCmdV1)
+	changed, err = EnforceKeys(p, "phillipg-mbp", "pb gate check", "", activateCmdV1)
 	if err != nil || !changed {
 		t.Fatalf("set activate: changed=%v err=%v, want a write", changed, err)
 	}
@@ -183,18 +182,18 @@ func TestEnforceKeys_ActivateCommand(t *testing.T) {
 		t.Errorf("activate_command = %q, want %q", cfg.Workspace.ActivateCommand, activateCmdV1)
 	}
 	// Everything else preserved.
-	if cfg.Workspace.ApplyCommand == "" || cfg.Workspace.BuildCommand == "" || cfg.Workspace.Terminal == "" {
+	if cfg.Workspace.BuildCommand == "" || cfg.Workspace.Terminal == "" {
 		t.Errorf("enforcing activate_command disturbed other keys: %+v", cfg.Workspace)
 	}
 
 	// Idempotent.
-	if changed, err = EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", activateCmdV1); err != nil || changed {
+	if changed, err = EnforceKeys(p, "phillipg-mbp", "pb gate check", "", activateCmdV1); err != nil || changed {
 		t.Errorf("second enforce: changed=%v err=%v, want a no-op", changed, err)
 	}
 
 	// An empty value afterwards does NOT delete the existing key (rollback is the
 	// operator's edit, ADR 0038).
-	if changed, err = EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", ""); err != nil || changed {
+	if changed, err = EnforceKeys(p, "phillipg-mbp", "pb gate check", "", ""); err != nil || changed {
 		t.Errorf("empty enforce after set: changed=%v err=%v, want a no-op", changed, err)
 	}
 	cfg, _ = loadConfigFile(t, p)
@@ -207,7 +206,7 @@ func TestEnforceKeys_ActivateCommand(t *testing.T) {
 func TestEnforceKeys_RejectsABadActivateCommand(t *testing.T) {
 	p := writeTemp(t, "pn-workspace.toml", realWorldTOML, 0o600)
 	before, _ := os.ReadFile(p)
-	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "sudo -E {out}/x"); err == nil {
+	if _, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "sudo -E {out}/x"); err == nil {
 		t.Fatal("EnforceKeys accepted an activate_command pn cannot parse")
 	}
 	after, _ := os.ReadFile(p)

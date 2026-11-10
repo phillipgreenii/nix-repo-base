@@ -2,7 +2,8 @@
 name = "smoke-s36"
 id = "smoke-s36"
 terminal = "consumer"
-apply_command = "./apply.sh"
+build_command = "darwin-rebuild build"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.consumer]
 url = "file:///PLACEHOLDER_consumer"

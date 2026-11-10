@@ -18,7 +18,6 @@ func TestUpgrade_TerminalFlagForwardedToUpdateAndApply(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
-apply_command = "true"
 
 [repos.leaf]
 url = "github:owner/leaf"
@@ -51,37 +50,8 @@ url = "github:owner/leaf"
 }
 
 func TestUpgrade_RunsUpdateThenApply(t *testing.T) {
-	stateDir := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateDir)
-	// Apply's success path writes the applied-state store; keep it in a temp dir.
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	mkRepoDir(t, root, "dep")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
-[workspace]
-terminal = "leaf"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
-
-[repos.leaf]
-url = "github:owner/leaf"
-
-[repos.dep]
-url = "github:owner/dep"
-`)
-	// Lock file: leaf depends on dep via alias "dep" (default = repo key).
-	writeFile(t, filepath.Join(root, LockFileName), `{
-  "order": ["dep", "leaf"],
-  "repos": {
-    "dep":  {"flake_path": "flake.nix", "remote_url": "github:owner/dep"},
-    "leaf": {"flake_path": "flake.nix", "remote_url": "github:owner/leaf"}
-  },
-  "edges": [{"consumer": "leaf", "alias": "dep", "target": "dep"}]
-}`)
-	trustWS(t, root) // upgrade's apply phase now gates on workspace trust (bead pg2-x2q6o)
-
-	leaf := filepath.Join(root, "leaf")
-	dep := filepath.Join(root, "dep")
+	e, f := newScriptedEnv(t, asUserTOML)
+	leaf, dep := e.leafDir, e.depDir
 	// Both repos have an upstream (hasUpstream, migrated onto x/gitclient's
 	// RefReader.HasUpstream — bead pg2-oxle0), so Update pulls both.
 	stubGitOpener(t, map[string]*fakeGitReader{
@@ -89,58 +59,36 @@ url = "github:owner/dep"
 		leaf: {hasUpstreamVal: true},
 	})
 
-	f := exec.NewFakeRunner()
 	// Update sequence (clean, has upstream) for dep and leaf (alphabetical).
 	for _, dir := range []string{dep, leaf} {
-		f.AddResponse("git", []string{"-C", dir, "diff", "--quiet"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", dir, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", dir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
-		f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", dir, "push"}, exec.Result{}, nil)
+		f.add("git", []string{"-C", dir, "diff", "--quiet"}, exec.Result{}, nil)
+		f.add("git", []string{"-C", dir, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+		f.add("git", []string{"-C", dir, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
+		f.add("./update-locks.sh", nil, exec.Result{}, nil)
+		f.add("git", []string{"-C", dir, "push"}, exec.Result{}, nil)
 	}
 
-	// Apply sequence: daemon check only (nix fmt is now a separate pn workspace format command).
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
+	// needsRebuild: make dep dirty so it returns true immediately and the build
+	// runs. Every other call is answered by the as-user fake.
+	f.add("git", []string{"-C", dep, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("M file\n")}, nil)
 
-	// needsRebuild: git status --porcelain + git rev-parse HEAD for each repo.
-	// Pre-write the applied-hash files with matching hashes so rebuild is skipped,
-	// OR mark repos dirty so we skip the hash check and force a rebuild.
-	// Simplest: make dep dirty so needsRebuild returns true immediately.
-	f.AddResponse("git", []string{"-C", dep, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("M file\n")}, nil)
-
-	// Apply command runs because dep is dirty.
-	f.AddResponse("sudo", []string{
-		"darwin-rebuild", "switch", "--flake", leaf + "#" + shortHostname(),
-		"--override-input", "dep", "git+file://" + dep,
-	}, exec.Result{}, nil)
-
-	// markApplied: git rev-parse HEAD for dep and leaf, then git status --porcelain for each.
-	f.AddResponse("git", []string{"-C", dep, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
-	f.AddResponse("git", []string{"-C", leaf, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("def\n")}, nil)
-	f.AddResponse("git", []string{"-C", dep, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", leaf, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Upgrade(context.Background(), io.Discard, UpgradeOptions{InPlace: true}); err != nil {
+	if err := e.w.Upgrade(context.Background(), io.Discard, UpgradeOptions{InPlace: true}); err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}
-	// Ensure the apply command was invoked (Apply ran after Update).
-	// nix fmt is no longer part of Apply; it is a separate pn workspace format command.
-	gotApply := false
-	gotFmt := false
+	// Ensure the apply phase ran after Update, as the one flow: the user build and
+	// the root activate. nix fmt is not part of Apply (it is a separate command).
+	gotBuild, gotActivate, gotFmt := false, false, false
 	for _, c := range f.Calls() {
 		if c.Name == "nix" && len(c.Args) > 0 && c.Args[0] == "fmt" {
 			gotFmt = true
 		}
-		if c.Name == "sudo" && len(c.Args) > 0 && c.Args[0] == "darwin-rebuild" {
-			gotApply = true
+		gotBuild = gotBuild || isBuildCall(c)
+		if c.Name == "sudo" && len(c.Args) == 2 && c.Args[1] == "activate" {
+			gotActivate = true
 		}
 	}
-	if !gotApply {
-		t.Errorf("expected apply phase to run apply command; got calls=%+v", f.Calls())
+	if !gotBuild || !gotActivate {
+		t.Errorf("expected apply phase to build and activate; got calls=%+v", f.Calls())
 	}
 	if gotFmt {
 		t.Errorf("Apply should not invoke nix fmt (fmt is now a separate pn workspace format command); got calls=%+v", f.Calls())

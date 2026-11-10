@@ -15,32 +15,18 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry/telemetrytest"
 )
 
-// applyLogRun runs Apply with a REAL child process as the apply command (a shell
-// script body), git/nix probes faked. It returns the terminal output, Apply's
-// the apply-logs directory, how long Apply took and Apply's error.
+// applyLogRun runs Apply with a REAL child process as the user build (a shell
+// script body that leaves ./result when it exits 0), everything else faked. It
+// returns the terminal output, the apply-logs directory, how long Apply took and
+// Apply's error.
 func applyLogRun(t *testing.T, scriptBody string, grace time.Duration) (out, logDir string, took time.Duration, err error) {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root)
-
-	script := filepath.Join(t.TempDir(), "fake-rebuild.sh")
-	if werr := os.WriteFile(script, []byte("#!/bin/sh\n"+scriptBody), 0o755); werr != nil {
-		t.Fatal(werr)
-	}
-	f, _ := applyTestRunner(t, root)
-	h := &hybridRunner{realName: script, real: exec.NewRealRunnerWithKillGrace(grace), fake: f}
-	w, oerr := Open(root, h)
-	if oerr != nil {
-		t.Fatalf("Open: %v", oerr)
-	}
+	e, sr := newScriptedEnv(t, asUserTOML)
+	sr.add("git", []string{"-C", e.leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
+	e.realBuild(exec.NewRealRunnerWithKillGrace(grace), scriptBody)
 	buf := &bytes.Buffer{}
 	begin := time.Now()
-	err = w.Apply(context.Background(), buf, ApplyOptions{Force: true, ApplyCmd: script})
-	// trustWS re-points XDG_STATE_HOME, so resolve the directory only now.
+	err = e.apply(context.Background(), buf)
 	return buf.String(), applyLogDir(), time.Since(begin), err
 }
 
@@ -99,8 +85,8 @@ func TestApplyLog_RetainsOutputForExitZero(t *testing.T) {
 		}
 	}
 	// Header: start time, terminal, and the applied ref of each repo (leaf -> "l"
-	// per applyTestRunner's fake `git rev-parse HEAD`).
-	for _, want := range []string{applyLogHeader + "\n", "started_at: ", "terminal: leaf\n", applyLogRefs + "\nleaf: l\n"} {
+	// per applyLogRun's scripted `git rev-parse HEAD`).
+	for _, want := range []string{applyLogHeader + "\n", "started_at: ", "terminal: leaf\n", applyLogRefs + "\n", "leaf: l\n"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("log missing %q:\n%s", want, log)
 		}
@@ -221,26 +207,13 @@ func TestApplyLog_LogDirOutsideNixStoreAndReadable(t *testing.T) {
 // An apply that skips the rebuild must not create a log (or it would evict real
 // ones from the bounded set).
 func TestApplyLog_SkippedRebuildWritesNoLog(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root)
-	leafDir := filepath.Join(root, "leaf")
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
-	if err := writeAppliedState(leafDir, AppliedState{AppliedRef: "abc"}); err != nil {
+	e, sr := newScriptedEnv(t, asUserTOML)
+	seedSkippableState(t, e, sr)
+	if err := e.w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Builder: "darwin-rebuild"}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{}); err != nil {
-		t.Fatal(err)
+	if n := len(e.f.significant()); n != 0 {
+		t.Fatalf("the rebuild was not skipped:\n%s", dumpCalls(e.f.significant()))
 	}
 	if m, _ := filepath.Glob(filepath.Join(applyLogDir(), "apply-*.log")); len(m) != 0 {
 		t.Errorf("skipped apply wrote a log: %v", m)
@@ -250,11 +223,8 @@ func TestApplyLog_SkippedRebuildWritesNoLog(t *testing.T) {
 // A log that cannot be created must not fail the apply or change what the
 // terminal shows beyond one warning line.
 func TestApplyLog_UnwritableStateDirDoesNotFailApply(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root) // re-points XDG_STATE_HOME at a fresh temp dir
+	e, sr := newScriptedEnv(t, asUserTOML)
+	sr.add("git", []string{"-C", e.leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
 	// A regular file where the log directory must go makes MkdirAll fail.
 	if err := os.MkdirAll(filepath.Dir(applyLogDir()), 0o755); err != nil {
 		t.Fatal(err)
@@ -262,18 +232,9 @@ func TestApplyLog_UnwritableStateDirDoesNotFailApply(t *testing.T) {
 	if err := os.WriteFile(applyLogDir(), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(t.TempDir(), "fake-rebuild.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho still-applied\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f, _ := applyTestRunner(t, root)
-	h := &hybridRunner{realName: script, real: exec.NewRealRunner(), fake: f}
-	w, err := Open(root, h)
-	if err != nil {
-		t.Fatal(err)
-	}
+	e.realBuild(exec.NewRealRunner(), "echo still-applied\n")
 	out := &bytes.Buffer{}
-	if err := w.Apply(context.Background(), out, ApplyOptions{Force: true, ApplyCmd: script}); err != nil {
+	if err := e.apply(context.Background(), out); err != nil {
 		t.Fatalf("Apply must still succeed: %v", err)
 	}
 	if !strings.Contains(out.String(), "still-applied") || !strings.Contains(out.String(), "could not retain the apply log") {
@@ -523,9 +484,9 @@ func TestBuildLog_FailedBuildRetainsOutputAndExit(t *testing.T) {
 	}
 }
 
-// An apply log (legacy single-command flow) carries the same header context and
-// prelude, build and post_steps phases, but no activate phase; `latest` is the
-// apply log and `latest-build` stays absent.
+// An apply log carries the same header context and prelude, build and post_steps
+// phases as a build log, plus the activate phase of the one flow (set-profile and
+// activate as root); `latest` is the apply log and `latest-build` stays absent.
 func TestApplyLog_HeaderContextAndPhases(t *testing.T) {
 	stubNixConf(t, "max-jobs = auto\nbuild-cores = 8\n")
 	stepClock(t)
@@ -546,13 +507,10 @@ func TestApplyLog_HeaderContextAndPhases(t *testing.T) {
 		t.Errorf("trace_id = %q", got)
 	}
 	tr := logTrailer(t, log)
-	for _, k := range []string{"prelude_seconds", "build_seconds", "post_steps_seconds"} {
+	for _, k := range []string{"prelude_seconds", "build_seconds", "activate_seconds", "post_steps_seconds"} {
 		if logKey(tr, k) == "<absent>" {
 			t.Errorf("trailer lacks %s:\n%s", k, tr)
 		}
-	}
-	if logKey(tr, "activate_seconds") != "<absent>" {
-		t.Errorf("legacy apply has no separate activate phase:\n%s", tr)
 	}
 	if logKey(tr, "plan") != "builds=24 fetches=3 download_mib=1.5" {
 		t.Errorf("plan line wrong:\n%s", tr)

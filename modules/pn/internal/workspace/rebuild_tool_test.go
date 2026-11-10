@@ -12,9 +12,10 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry/telemetrytest"
 )
 
-// toolTestWS opens a hermetic workspace whose build/apply commands start with a
-// bare darwin-rebuild (apply behind sudo). trusted controls the trust gate.
-func toolTestWS(t *testing.T, trusted bool) (*Workspace, *exec.FakeRunner, string) {
+// toolTestWS opens a hermetic workspace whose build command starts with a bare
+// darwin-rebuild (apply builds with it as the user, then activates behind sudo).
+// trusted controls the trust gate.
+func toolTestWS(t *testing.T, trusted bool) (*Workspace, *asUserFake, string) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -25,7 +26,7 @@ func toolTestWS(t *testing.T, trusted bool) (*Workspace, *exec.FakeRunner, strin
 id = "tooltest"
 terminal = "leaf"
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.leaf]
 url = "github:owner/leaf"
@@ -33,12 +34,14 @@ url = "github:owner/leaf"
 	if trusted {
 		trustWS(t, root)
 	}
-	f := exec.NewFakeRunner()
+	store := t.TempDir()
+	f := &asUserFake{t: t, sys: newFakeSystem(t, store, fakeHash)}
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	w.hostnameFn = func() string { return "toolhost" }
+	installAsUserSeams(w, store)
 	return w, f, root
 }
 
@@ -47,7 +50,7 @@ func runVerb(ctx context.Context, w *Workspace, verb string) error {
 	if verb == "build" {
 		return w.Build(ctx, &out, BuildOptions{})
 	}
-	return w.Apply(ctx, &out, ApplyOptions{Force: true})
+	return w.Apply(ctx, &out, ApplyOptions{Force: true, Builder: "darwin-rebuild"})
 }
 
 // TestRebuild_MissingToolFailsFirst (acceptance criterion): when the tool is on
@@ -82,7 +85,7 @@ func TestRebuild_MissingToolFailsFirst(t *testing.T) {
 				t.Errorf("subprocess calls before the failure: %+v", got)
 			}
 			if !reflect.DeepEqual(looked, []string{"darwin-rebuild"}) {
-				t.Errorf("resolved %v, want [darwin-rebuild] (the name after sudo for apply)", looked)
+				t.Errorf("resolved %v, want [darwin-rebuild] (the build command's tool, for both verbs)", looked)
 			}
 			if last := steps[len(steps)-1]; last != stepResolveTool {
 				t.Errorf("last prelude step = %q, want %q (no trust gate, wsid or daemon step may run)", last, stepResolveTool)
@@ -111,42 +114,28 @@ func TestRebuild_FallbackToolRunsBareNameWithPATHOverlay(t *testing.T) {
 	overlay := map[string]string{"PATH": "/usr/bin:/run/current-system/sw/bin"}
 	for _, verb := range []string{"build", "apply"} {
 		t.Run(verb, func(t *testing.T) {
-			w, f, root := toolTestWS(t, true)
-			leaf := filepath.Join(root, "leaf")
+			w, f, _ := toolTestWS(t, true)
 			w.resolveTool = func(string) (map[string]string, error) { return overlay, nil }
-			f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
-			f.AddResponse("darwin-rebuild", []string{"build", "--flake", leaf + "#toolhost"}, exec.Result{}, nil)
-			f.AddResponse("sudo", []string{"darwin-rebuild", "switch", "--flake", leaf + "#toolhost"}, exec.Result{}, nil)
-			for i := 0; i < 3; i++ {
-				f.AddResponse("git", []string{"-C", leaf, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{}, nil)
-				f.AddResponse("git", []string{"-C", leaf, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("h\n")}, nil)
-			}
-			f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/g\n")}, nil)
-			f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/g\n")}, nil)
 			if err := runVerb(context.Background(), w, verb); err != nil {
 				t.Fatalf("%s: %v", verb, err)
 			}
-			wantName := "darwin-rebuild"
-			if verb == "apply" {
-				wantName = "sudo"
-			}
 			var found bool
 			for _, c := range f.Calls() {
-				if c.Name != wantName || !c.Opts.WrapNix {
+				if !isBuildCall(c) || !c.Opts.WrapNix {
 					continue
 				}
 				found = true
 				// pg2-sdbhh4.20: the user-run build leads its own process group so a
-				// stop reaches its descendants; a sudo child must not (SIGTTIN).
-				if wantGroup := verb == "build"; c.Opts.OwnProcessGroup != wantGroup {
-					t.Errorf("OwnProcessGroup = %v, want %v for %s", c.Opts.OwnProcessGroup, wantGroup, wantName)
+				// stop reaches its descendants (apply's build is that same user build).
+				if !c.Opts.OwnProcessGroup {
+					t.Errorf("OwnProcessGroup = false, want true for the %s build", verb)
 				}
 				if !reflect.DeepEqual(c.Opts.Env, overlay) {
 					t.Errorf("Env = %v, want %v", c.Opts.Env, overlay)
 				}
 			}
 			if !found {
-				t.Fatalf("no WrapNix %s call recorded: %+v", wantName, f.Calls())
+				t.Fatalf("no WrapNix darwin-rebuild build call recorded: %+v", f.Calls())
 			}
 		})
 	}

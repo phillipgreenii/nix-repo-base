@@ -111,47 +111,62 @@ After the prelude the verbs differ, deliberately:
   record, a failing `git`) the line reads `apply would: fail (<error>)`, which is what apply would
   do, and the build still runs. Build NEVER skips and NEVER writes applied state. Its output is retained in a build log like apply's (see "the apply log" below).
 - **apply** runs the skip gate for real (skipping when nothing changed), opens the apply log, captures
-  each repo's HEAD, runs the apply command (or, with `activate_command` set, the build-as-user flow
+  each repo's HEAD, runs the build-as-user flow (see
   below), diffs the system profile with nvd, restarts a stale fsmonitor daemon, and records the
   applied state.
 
-### Build-as-user apply (`activate_command`, ADR 0038)
+### Apply (`activate_command`, ADRs 0038 and 0041)
 
-With the optional `[workspace].activate_command` UNSET, apply runs the single `apply_command`
-(`sudo darwin-rebuild switch ...`) exactly as before. With it set (for example
-`activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"`), apply builds as YOU and only
-the profile set and the activation run as root:
+Apply has ONE flow: it builds as YOU and only the profile set and the activation run as root. It
+requires `[workspace].activate_command`; without it apply fails with
+`workspace.activate_command is not set in pn-workspace.toml`. The platform is chosen from the
+program named in `activate_command`, never from the host:
 
-1. **Preflight** (no process): `/run/current-system/sw/bin/nix-env` is executable and the per-run
-   directory can be created. If not, one line is printed and the legacy `apply_command` runs before
-   anything is built.
+```toml
+# darwin (verified)
+build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
+
+# NixOS (implemented to the documented layout, UNVERIFIED on a NixOS host: see NIXOS_TODO.md)
+build_command = "nixos-rebuild build --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/bin/switch-to-configuration switch"
+```
+
+The steps:
+
+1. **Preflight** (no process): `activate_command` is set and names a supported program, the per-run
+   directory can be created, and `/run/current-system/sw/bin/nix-env` is executable. Any failure is
+   an error before anything is built; there is no fallback. The preflight runs before the dry-run
+   gate, so `--show-nix-commands` also fails on a machine without that `nix-env`.
 2. **Build**, as the invoking user, wrapped like `pn workspace build` (so its nix JSONL lands in
    `~/.local/state/pn/nix-logs`, not in root's `/var/log/pg-nix-log-wrapped`), with the working
    directory a private mode-0700 directory `${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-build/run-<random>`.
-   `darwin-rebuild build` leaves `./result` in its cwd, so the link is private to the run. Removed
-   afterwards on success, failure and cancel; a stale one older than 24 h is pruned at the next apply.
-   `build_command` MUST therefore leave `./result` in its cwd (a `darwin-rebuild build`).
+   `build_command` MUST leave `./result` in its cwd (a `darwin-rebuild build` or
+   `nixos-rebuild build`), so the link is private to the run. The directory is removed afterwards on
+   success, failure and cancel; a stale one older than 24 h is pruned at the next apply.
 3. **Read and validate** the out path from `R/result`, once, before any root process: absolute,
-   clean, one element under `/nix/store`, with an executable `activate` and `sw/bin/darwin-rebuild`.
-   The invoked path is validated, not its realpath. A missing or invalid result is an error, never a
-   second build.
-4. **Probe** the built system as the user: `<out>/sw/bin/darwin-rebuild --help` must exit 1 with a
-   usage line listing `activate`, `switch` and `build` on stderr. Otherwise pn announces
-   `apply: built system has no usable 'darwin-rebuild activate' (<reason>); falling back to: ...` and
-   runs `apply_command` (root re-evaluates); with no `apply_command` it fails naming the reason.
-5. **Set the profile** (hard-coded, not templated): `sudo env -i HOME=/var/root NIX_REMOTE=daemon
+   clean, one element under `/nix/store`, with an executable `activate` and the platform's
+   activation program (`sw/bin/darwin-rebuild` or `bin/switch-to-configuration`). The invoked path is
+   validated, not its realpath. A missing or invalid result is an error, never a second build.
+4. **Probe** (darwin only), as the user: `<out>/sw/bin/darwin-rebuild --help` must exit 1 with a
+   usage line listing `activate`, `switch` and `build` on stderr. A failed probe is an error naming
+   the reason. On NixOS the file check in step 3 is the whole pre-root check.
+5. **Set the profile** (hard-coded, not templated): `sudo env -i HOME=<root home> NIX_REMOTE=daemon
 PATH=/run/current-system/sw/bin:/usr/bin:/bin /run/current-system/sw/bin/nix-env -p
-/nix/var/nix/profiles/system --set <out>`.
-6. **Activate**: the `activate_command` expansion (`sudo <out>/sw/bin/darwin-rebuild activate`).
+/nix/var/nix/profiles/system --set <out>`. The root home is `/var/root` on darwin and `/root` on
+   NixOS (the latter unverified).
+6. **Activate**: the `activate_command` expansion.
 
-The sudo prompt now comes after the build; pn prints `apply: waiting for sudo ...` first. A cancel
-during the build stops its whole process tree and starts no root step; once the profile set has
-started, both root steps run to completion and the cancel is reported afterwards. `{out}` is valid
-only in `activate_command`, whose `argv[0]` MUST be `sudo` and whose program MUST be one element
-beginning with `{out}/`. `pn-workspace-toml-enforce --activate-command` enforces the key (an empty
-value leaves it untouched and never deletes it). The step errors are `apply failed: build:`,
-`read build result:`, `set system profile:` and `activate:`; the apply log's `failed_step` names
-the step and the process exit code is the failed step's own.
+Every failure is an error; a root build is no longer reachable from `pn`. The sudo prompt comes
+after the build; pn prints `apply: waiting for sudo ...` first. A cancel during the build stops its
+whole process tree and starts no root step; once the profile set has started, both root steps run to
+completion and the cancel is reported afterwards. `{out}` is valid only in `activate_command`, whose
+`argv[0]` MUST be `sudo` and whose program MUST be one element beginning with `{out}/`.
+`pn-workspace-toml-enforce --activate-command` enforces the key (an empty value leaves it untouched
+and never deletes it). The step errors are `apply failed: build:`, `read build result:`,
+`probe:`, `set system profile:` and `activate:`; the apply log's `failed_step` names the step and the
+process exit code is the failed step's own. A leftover `apply_command` line in a toml is an ignored
+unknown key (ADR 0041).
 
 ### Single-flight lock: two runs cannot overlap
 
@@ -290,9 +305,9 @@ argv: the attributes are observations only.
 Every `pn workspace apply` (and the apply step of `upgrade`) that actually REBUILDS, and every
 `pn workspace build`, keeps a copy of everything it printed, so a post-apply check can read what the apply said instead of inferring it.
 Before this existed nothing retained the output: `events.jsonl` holds workspace-update events only,
-`nix-logs/*.jsonl` holds the nix wrapper's raw nix JSON (for a build-as-user apply, the user build's,
-in your own `nix-logs` directory; for a legacy `sudo darwin-rebuild switch` apply or a fallback that
-is root-only, under `/var/log/pg-nix-log-wrapped`; either way it carries nix messages, not the
+`nix-logs/*.jsonl` holds the nix wrapper's raw nix JSON (for apply, the user build's,
+in your own `nix-logs` directory; the two root steps run no nix evaluation, so they log nothing, and
+nothing goes to root-only `/var/log/pg-nix-log-wrapped`; it carries nix messages, not the
 activation script's own output), and `~/.local/share/pn-workspace/applied/` holds applied-state records.
 
 - **Location**: `${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-logs/<verb>-<UTC start, yyyymmddThhmmssZ>-<pid>.log`
@@ -310,16 +325,16 @@ activation script's own output), and `~/.local/share/pn-workspace/applied/` hold
   `head_changed`, `no_record`, `unchanged` or `unknown`; for build the read-only "apply would"
   verdict), `max_jobs` and `cores` (read from `/etc/nix/nix.conf` only, as a bare token such as `3` or
   `auto`, `unknown` when absent: no subprocess, and nothing else from the file because the log is
-  world-readable)); for the build-as-user apply, the set-profile, activate and fallback commands
+  world-readable)); for the build-as-user apply, the set-profile and activate commands
   (`<out>` for the out path); for apply, the `applied refs` section (each repo's `git rev-parse HEAD`,
   taken immediately before the build, i.e. the `applied_ref` the applied-state record gets); then the
   combined stdout and stderr exactly as the terminal received them (for build, starting at the
   `apply would:` line); then a trailer: `ended_at`, `exit_status` (the command's exit code; `143` and
   `130` for a signalled wrapper exit, `-1` = killed directly by a signal, `none` = it never started),
-  `failed_step` (build-as-user apply only: `build`, `read-result`, `probe`, `set-profile`, `activate`
+  `failed_step` (apply only: `build`, `read-result`, `probe`, `set-profile`, `activate`
   or `none`), `result` (`success` or `failed`, and `error:` when failed), then the phase times
   `prelude_seconds`, `build_seconds`, `activate_seconds` (apply only: set-profile plus activate,
-  including the wait for sudo; a legacy single-command apply folds this into `build_seconds`) and
+  including the wait for sudo) and
   `post_steps_seconds` (apply only: nvd diff, fsmonitor restart, markApplied), and
   `plan: builds=N fetches=M [download_mib=X]` when the build step ran. Phase times and the plan live
   in the trailer ONLY, never in the output section, whose contract is verbatim terminal output; a

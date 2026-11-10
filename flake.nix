@@ -1759,9 +1759,11 @@
             # its `requires-network` marker (see smoke_test.go's networkAvailable
             # probe), so it still runs for a developer outside the sandbox.
             #
-            # No scenario invokes darwin-rebuild, sudo, or any real activation:
-            # `apply` runs the synthetic apply_command from the scenario's own
-            # pn-workspace.toml, so S19/S36 never reach the real machine.
+            # No scenario invokes the real darwin-rebuild, sudo, or any real
+            # activation: `apply` builds as the user and runs its two root steps
+            # through stand-in darwin-rebuild and sudo scripts that the scenario's
+            # setup.sh puts first on PATH (S19, S36, S42, S44), against a fake
+            # store directory, so none of them reach the real machine.
             pn-smoke-tests = goBuilders.mkGoTest {
               pname = "pn-smoke";
               src = ./modules/pn;

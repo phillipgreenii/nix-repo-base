@@ -29,23 +29,19 @@ type WorkspaceSection struct {
 	// Terminal is the repo key of the terminal flake — the one build/apply
 	// build and activate; all others are injected as local overrides.
 	Terminal string `toml:"terminal,omitempty"`
-	// BuildCommand / ApplyCommand are command templates expanded with the
-	// placeholders {terminal_repo_dir}, {terminal_nix_dir},
-	// {terminal_nix_relative_path}, {hostname}, and {builder} (the OS-detected
-	// activation tool). BuildCommand defaults when empty; ApplyCommand is
-	// required by `apply`. See ADR 0017.
+	// BuildCommand is a command template expanded with the placeholders
+	// {terminal_repo_dir}, {terminal_nix_dir}, {terminal_nix_relative_path},
+	// {hostname}, and {builder} (the OS-detected activation tool). It defaults
+	// when empty. See ADR 0017.
 	BuildCommand string `toml:"build_command,omitempty"`
-	ApplyCommand string `toml:"apply_command,omitempty"`
-	// ActivateCommand is the OPTIONAL root-only activation template of the
-	// build-as-user apply flow (bead pg2-sdbhh4.9, ADR 0038). Unset: apply runs
-	// the single apply_command exactly as before. Set: apply builds as the
-	// invoking user with build_command (which MUST leave ./result in its working
-	// directory, as `darwin-rebuild build` does), validates the system out path
-	// and runs only this command as root. It takes the five placeholders above
-	// plus {out} (the validated out path, valid ONLY here); argv[0] MUST be
-	// sudo, and the program MUST be one argv element beginning with {out}/. The
-	// root profile step is NOT templated: it is hard-coded in pn. apply_command
-	// stays the fallback when the built system cannot be activated this way.
+	// ActivateCommand is the root-only activation template `apply` REQUIRES
+	// (ADR 0038): apply builds as the invoking user with build_command (which
+	// MUST leave ./result in its working directory, as `darwin-rebuild build`
+	// does), validates the system out path and runs only this command as root.
+	// It takes the five placeholders above plus {out} (the validated out path,
+	// valid ONLY here); argv[0] MUST be sudo, and the program MUST be one argv
+	// element beginning with {out}/. The root profile step is NOT templated: it
+	// is hard-coded in pn.
 	ActivateCommand string `toml:"activate_command,omitempty"`
 	// WorkforestsDir is where `pn workspace workforest` creates sets. Relative paths are
 	// resolved against the workspace root. Defaults to ".workforests" when empty.
@@ -131,14 +127,6 @@ func (c *WorkspaceConfig) BuildCommandTemplate() string {
 		return c.Workspace.BuildCommand
 	}
 	return defaultBuildCommand
-}
-
-// ApplyCommandTemplate returns the configured apply_command, or an error if unset.
-func (c *WorkspaceConfig) ApplyCommandTemplate() (string, error) {
-	if c == nil || c.Workspace.ApplyCommand == "" {
-		return "", fmt.Errorf("workspace.apply_command is not set in pn-workspace.toml")
-	}
-	return c.Workspace.ApplyCommand, nil
 }
 
 // ActivateCommandTemplate returns the configured activate_command, or "" when
@@ -297,17 +285,12 @@ func ParseConfig(data []byte) (*WorkspaceConfig, error) {
 			return nil, err
 		}
 	}
-	// Validate build_command / apply_command placeholders at parse time so a
+	// Validate the build_command placeholders at parse time so a
 	// stale {terminal_flake} (or any typo) fails at config-load instead of only
 	// at build/apply. Static NAME check only — {builder} emptiness is
 	// host-dependent and stays a run-time guard (see substituteCommand).
 	if bc := cfg.Workspace.BuildCommand; bc != "" {
 		if err := validateCommandPlaceholders("workspace.build_command", bc); err != nil {
-			return nil, err
-		}
-	}
-	if ac := cfg.Workspace.ApplyCommand; ac != "" {
-		if err := validateCommandPlaceholders("workspace.apply_command", ac); err != nil {
 			return nil, err
 		}
 	}

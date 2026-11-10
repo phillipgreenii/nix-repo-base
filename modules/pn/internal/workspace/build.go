@@ -11,7 +11,7 @@ import (
 )
 
 // ensureExecTrusted gates execution of config-sourced command templates
-// (build_command / apply_command) behind the same TOFU trust check as event
+// (build_command / activate_command) behind the same TOFU trust check as event
 // hooks (ADR-0019). These commands are arbitrary argv taken from the
 // pn-workspace.toml discovered by walking up from the cwd and executed by
 // Build/Apply, so an untrusted checkout must not run them — closing the residual

@@ -147,14 +147,20 @@ func assertS18BuildMarker(t *testing.T, wsRoot string) {
 	}
 }
 
-// --- S19 extra: apply marker exists ---
+// --- S19 extra: apply ran both root steps ---
 
+// assertS19ApplyMarker: the apply reached its activation. The stand-in sudo
+// recorded exactly the set-profile call and the activate call (the build-as-user
+// flow, ADR 0038); nothing real ran.
 func assertS19ApplyMarker(t *testing.T, wsRoot string) {
 	t.Helper()
-	// pn workspace apply only runs the apply command on the terminal (consumer).
-	consumerApplied := filepath.Join(wsRoot, "consumer", "applied.txt")
-	if _, err := os.Stat(consumerApplied); os.IsNotExist(err) {
-		t.Errorf("S19: consumer/applied.txt not found after workspace apply")
+	for _, n := range []string{"1", "2"} {
+		if _, ok := readArgvFile(t, filepath.Join(wsRoot, "sudo."+n+".argv")); !ok {
+			t.Errorf("S19: root step %s never ran (no sudo.%s.argv) after workspace apply", n, n)
+		}
+	}
+	if _, ok := readArgvFile(t, filepath.Join(wsRoot, "sudo.3.argv")); ok {
+		t.Error("S19: a third sudo ran")
 	}
 }
 

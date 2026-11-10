@@ -11,16 +11,15 @@ import (
 
 // EnforceKeys reconciles the nix-owned keys in a pn-workspace.toml against
 // committed source values: [workspace].id, [hooks.apply].post, and — added by
-// bead pg2-k43p.8 — the static command templates [workspace].build_command and
-// [workspace].apply_command, plus (pg2-sdbhh4.9) the optional [workspace].
-// activate_command. It has create-if-missing / enforce-when-present
+// bead pg2-k43p.8 — the static command template [workspace].build_command, plus
+// (pg2-sdbhh4.9) the optional [workspace].activate_command. It has create-if-missing / enforce-when-present
 // semantics and is deliberately narrow: it NEVER renders or owns [repos.*],
 // workspace.terminal, workspace.name/description, or any other key — pn owns
 // those. In particular workspace.terminal is left pn-owned because pn validates
 // it against [repos.*] (it is coupled to repo topology, which pn manages via
 // init/doctor); see phillipg-nix-repo-base ADR 0017.
 //
-// Key-scoped enforcement: buildCommand, applyCommand and activateCommand are enforced ONLY when a
+// Key-scoped enforcement: buildCommand and activateCommand are enforced ONLY when a
 // non-empty value is supplied. An empty string leaves that key untouched, so the
 // caller can enforce a subset (and any key not passed a value — including
 // terminal and any future key — is never touched). id and applyPost are always
@@ -43,7 +42,7 @@ import (
 //
 // It reuses pn's go-toml/v2 serialization rather than reimplementing TOML
 // writing, so nix-driven activation and pn's own commands cannot fight.
-func EnforceKeys(path, id, applyPost, buildCommand, applyCommand, activateCommand string) (bool, error) {
+func EnforceKeys(path, id, applyPost, buildCommand, activateCommand string) (bool, error) {
 	if !workspaceIDRe.MatchString(id) {
 		return false, fmt.Errorf("workspace.id %q must be a slug: lowercase letters, digits, dashes", id)
 	}
@@ -110,7 +109,7 @@ func EnforceKeys(path, id, applyPost, buildCommand, applyCommand, activateComman
 		changed = true
 	}
 
-	// Key-scoped: enforce build_command / apply_command ONLY when a non-empty
+	// Key-scoped: enforce build_command ONLY when a non-empty
 	// value is supplied. An empty value leaves the existing key untouched (so a
 	// caller enforcing only id+applyPost never disturbs these, and terminal /
 	// any future key is likewise never touched).
@@ -118,12 +117,8 @@ func EnforceKeys(path, id, applyPost, buildCommand, applyCommand, activateComman
 		cfg.Workspace.BuildCommand = buildCommand
 		changed = true
 	}
-	if applyCommand != "" && cfg.Workspace.ApplyCommand != applyCommand {
-		cfg.Workspace.ApplyCommand = applyCommand
-		changed = true
-	}
 
-	// activate_command (bead pg2-sdbhh4.9) is key-scoped like the two above: only
+	// activate_command (bead pg2-sdbhh4.9) is key-scoped like build_command: only
 	// a non-empty value is enforced, and an existing key is never deleted.
 	if activateCommand != "" && cfg.Workspace.ActivateCommand != activateCommand {
 		cfg.Workspace.ActivateCommand = activateCommand

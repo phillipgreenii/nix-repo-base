@@ -1,6 +1,6 @@
 # A separate `pn-workspace-toml-enforce` entrypoint for the nix-owned keys
 
-**Status**: Accepted (enforce semantics amended by [ADR-0019](0019-per-repo-event-hooks.md): ensure-present on the `post-apply` `[[hooks]]` entry)
+**Status**: Accepted (the EnforceKeys signature and the `--apply-command` flag were removed by [ADR-0041](0041-apply-has-one-flow-the-build-as-user-apply.md); enforce semantics amended by [ADR-0019](0019-per-repo-event-hooks.md): ensure-present on the `post-apply` `[[hooks]]` entry)
 **Date**: 2026-07-02
 **Deciders**: Phillip Green II (implemented by Claude, beads pg2-k43p.6 and pg2-k43p.8)
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// templateVars holds the values substituted into build_command / apply_command
+// templateVars holds the values substituted into build_command
 // templates. See ADR 0017.
 type templateVars struct {
 	TerminalRepoDir    string // {terminal_repo_dir}
@@ -19,7 +19,7 @@ type templateVars struct {
 	Hostname           string // {hostname}
 	Builder            string // {builder}
 	// Out is the validated system out path, {out}. It is set only when an
-	// activate_command is expanded; in build_command/apply_command {out} stays
+	// activate_command is expanded; in build_command {out} stays
 	// an unknown placeholder.
 	Out string
 }
@@ -123,7 +123,7 @@ func validateActivateCommand(field, tmpl string) error {
 	fields := strings.Fields(tmpl)
 	if len(fields) < 2 || fields[0] != "sudo" {
 		return fmt.Errorf("%s %q: argv[0] must be sudo, followed directly by the activate program (for example %q)",
-			field, tmpl, "sudo {out}/sw/bin/darwin-rebuild activate")
+			field, tmpl, "sudo {out}/sw/bin/darwin-rebuild activate (darwin) or sudo {out}/bin/switch-to-configuration switch (nixos)")
 	}
 	if !strings.HasPrefix(fields[1], "{out}/") {
 		return fmt.Errorf("%s %q: the activate program (the argument right after sudo, which takes no options) must be one element beginning with {out}/",
@@ -159,7 +159,7 @@ func substituteCommandOut(tmpl string, v templateVars, allowOut bool) ([]string,
 	for _, n := range names {
 		if n == "builder" && v.Builder == "" {
 			return nil, fmt.Errorf(
-				"no built-in builder for this OS (GOOS=%s); set build_command/apply_command explicitly in pn-workspace.toml",
+				"no built-in builder for this OS (GOOS=%s); set build_command/activate_command explicitly in pn-workspace.toml",
 				runtime.GOOS,
 			)
 		}
@@ -170,7 +170,7 @@ func substituteCommandOut(tmpl string, v templateVars, allowOut bool) ([]string,
 	// `<dir>#` instead of the host's flake output.
 	for _, n := range names {
 		if n == "hostname" && v.Hostname == "" {
-			return nil, fmt.Errorf("cannot determine this host's name for the {hostname} placeholder; set build_command/apply_command without {hostname} or fix the system hostname")
+			return nil, fmt.Errorf("cannot determine this host's name for the {hostname} placeholder; set build_command/activate_command without {hostname} or fix the system hostname")
 		}
 	}
 

@@ -153,8 +153,9 @@ per overridden input) on the success path — expected, not an error.
 See **Expected (Acceptable) Warnings** in `SKILL.md`.
 
 **Smoke:** ✓ **S19 `happy-path-apply`** — same shape as S18 with
-`apply_command = "./apply.sh"`; asserts exit 0 and `applied.txt` in
-terminal (consumer) dir. Nix daemon check runs; no formatter step
+`activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"` and stand-ins for `darwin-rebuild`
+and `sudo` (nothing real runs); asserts exit 0 and that both root steps (set-profile, activate)
+ran. Nix daemon check runs; no formatter step
 (nix fmt coupling removed in tc-perh.9.27).
 
 ---
@@ -835,7 +836,7 @@ GAP at the smoke layer (unit/integration coverage only). J30
 **Closed by tc-perh.9.26 (S18–S22b):**
 
 - J5 build happy-path → **S18** (build_command=./build.sh)
-- J6 apply happy-path → **S19** (apply_command=./apply.sh)
+- J6 apply happy-path → **S19** (stand-in darwin-rebuild and sudo)
 - J7 update happy-path → **S20** (update-locks.sh per-repo, topo order.log)
 - J10 push happy-path → **S21** (file:// bare remote, HEAD advancement)
 - J11 rebase happy-path → **S22 + S22b** (git fetch+pull --rebase --autostash)

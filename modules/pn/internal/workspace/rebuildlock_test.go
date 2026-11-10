@@ -48,7 +48,7 @@ func newLockRoot(t *testing.T) string {
 id = "`+filepath.Base(root)+`"
 terminal = "leaf"
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.leaf]
 url = "github:owner/leaf"
@@ -73,7 +73,7 @@ func newGate() *gateRunner {
 }
 
 func (g *gateRunner) Run(ctx context.Context, name string, args []string, opts exec.RunOptions) (exec.Result, error) {
-	if g.started != nil && (name == "darwin-rebuild" || name == "sudo") {
+	if g.started != nil && ((name == "darwin-rebuild" && len(args) > 0 && args[0] == "build") || name == "sudo") {
 		g.once.Do(func() { close(g.started) })
 		select {
 		case <-g.release:
@@ -84,20 +84,20 @@ func (g *gateRunner) Run(ctx context.Context, name string, args []string, opts e
 	return g.Runner.Run(ctx, name, args, opts)
 }
 
-// newLockWS opens the workspace at root over a scripted fake runner (several
-// runs' worth of responses), gated when gate is non-nil.
-func newLockWS(t *testing.T, root string, gate *gateRunner) *Workspace {
+// newLockWS opens the workspace at root over an asUserFake (the user build
+// leaves ./result; the root steps succeed), gated when gate is non-nil.
+func newLockWS(t *testing.T, root string, gate *gateRunner) (w *Workspace) {
 	t.Helper()
-	leafDir := filepath.Join(root, "leaf")
-	f := exec.NewFakeRunner()
-	for i := 0; i < 4; i++ {
-		f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
-		f.AddResponse("darwin-rebuild", []string{"build", "--flake", leafDir + "#" + lockTestHost}, exec.Result{}, nil)
-		f.AddResponse("sudo", []string{"darwin-rebuild", "switch", "--flake", leafDir + "#" + lockTestHost}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("h\n")}, nil)
-		f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/g\n")}, nil)
-		f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/g\n")}, nil)
+	store := t.TempDir()
+	f := &asUserFake{t: t, sys: newFakeSystem(t, store, fakeHash)}
+	// A plain build verb runs in the repo dir, where an earlier run's ./result may
+	// still be; only apply reads the link, and it runs in its own fresh dir.
+	f.build = func(_ context.Context, opts exec.RunOptions) (exec.Result, error) {
+		link := filepath.Join(opts.Dir, "result")
+		if _, err := os.Lstat(link); err == nil {
+			return exec.Result{}, nil
+		}
+		return exec.Result{}, os.Symlink(f.sys.out, link)
 	}
 	var r exec.Runner = f
 	if gate != nil {
@@ -109,6 +109,7 @@ func newLockWS(t *testing.T, root string, gate *gateRunner) *Workspace {
 		t.Fatalf("Open: %v", err)
 	}
 	w.hostnameFn = func() string { return lockTestHost }
+	installAsUserSeams(w, store)
 	return w
 }
 
@@ -118,7 +119,7 @@ func runLockVerb(ctx context.Context, w *Workspace, verb string, wait time.Durat
 	case "build":
 		return w.Build(ctx, out, BuildOptions{Wait: wait})
 	default:
-		return w.Apply(ctx, out, ApplyOptions{Force: true, Wait: wait})
+		return w.Apply(ctx, out, ApplyOptions{Force: true, Wait: wait, Builder: "darwin-rebuild"})
 	}
 }
 

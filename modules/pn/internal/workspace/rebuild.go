@@ -56,9 +56,9 @@ const (
 // the parity contract.
 const (
 	stepReadResult = "read_result" // read and validate the build's ./result
-	stepProbe      = "probe"       // <out>/sw/bin/darwin-rebuild --help
+	stepProbe      = "probe"       // the platform's probe (darwin: <out>/sw/bin/darwin-rebuild --help)
 	stepSetProfile = "set_profile" // sudo ... nix-env -p <system profile> --set <out>
-	stepActivate   = "activate"    // sudo <out>/sw/bin/darwin-rebuild activate
+	stepActivate   = "activate"    // sudo <out>/<activate program> (the activate_command expansion)
 )
 
 // stepRecorder observes the ordered steps a verb runs. shared is true for a step
@@ -153,7 +153,7 @@ type rebuildPlan struct {
 	// verb can expand a second template (apply's activate_command).
 	vars templateVars
 	// asUser is non-nil when apply runs the build-as-user flow (apply_asuser.go):
-	// cmdArgs is then the user build, not apply_command.
+	// cmdArgs is then the user build.
 	asUser *asUserPlan
 	// begin is when the verb started (the run log's prelude phase starts here).
 	begin time.Time
@@ -206,17 +206,16 @@ func (ws *Workspace) runPlanned(ctx context.Context, out io.Writer, verb string,
 
 // runPlannedIn is runPlanned with an explicit working directory (apply's
 // build-as-user flow runs the build in its private per-run directory) and an
-// option to skip RecordPlan (the legacy fallback run after a user build, which
-// already recorded the plan once).
+// option to skip RecordPlan.
 func (ws *Workspace) runPlannedIn(ctx context.Context, out io.Writer, verb string, p *rebuildPlan, dir string, recordPlan bool) error {
 	tap := newPlanTap(out, ws.config.WarnBuildsThreshold())
-	// ownGroup: a user-run command (build, and apply's build-as-user build; NOT
-	// apply's `sudo darwin-rebuild switch` legacy/fallback command, and never the
-	// two root steps of the build-as-user flow, pg2-sdbhh4.9) runs as its own
+	// ownGroup: a user-run command (build, and apply's build-as-user build; never the
+	// two root steps of the build-as-user flow) runs as its own
 	// process group so a pn-initiated stop reaches every descendant, e.g.
 	// darwin-rebuild's `nix build | jq` (pg2-sdbhh4.20). A sudo child stays in
 	// pn's group: sudo reads the password from the terminal, which a background
 	// group cannot (SIGTTIN), and a non-root pn cannot signal root children anyway.
+	// A build_command that starts with sudo (a user config may do so) stays in pn's group.
 	ownGroup := p.cmdArgs[0] != "sudo"
 	_, err := ws.runner.Run(ctx, p.cmdArgs[0], p.fullArgs(), exec.RunOptions{
 		Dir:             dir,

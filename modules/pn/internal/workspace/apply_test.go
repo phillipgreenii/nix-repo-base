@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,18 +14,6 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/trust"
 )
-
-const applyTOML = `
-[workspace]
-terminal = "leaf"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
-
-[repos.leaf]
-url = "github:owner/leaf"
-
-[repos.dep]
-url = "github:owner/dep"
-`
 
 // applyLock is the lock with edge leaf→dep alias "dep-input", used by tests
 // that need overrideInputArgsFor to emit the override.
@@ -39,101 +26,26 @@ const applyLock = `{
   "edges": [{"consumer": "leaf", "alias": "dep-input", "target": "dep"}]
 }`
 
-func TestApply_RunsApplyCommandWithOverrides(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// Apply's success path calls markApplied -> writeAppliedState; isolate the
-	// store to a temp dir so it never touches ~/.local/share (the XDG fallback).
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	mkRepoDir(t, root, "dep")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
-	// Write lock so overrideInputArgsFor emits the dep-input override.
-	writeFile(t, filepath.Join(root, LockFileName), applyLock)
-	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
-	leafDir := filepath.Join(root, "leaf")
-	depDir := filepath.Join(root, "dep")
-
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
-	f.AddResponse("sudo", []string{
-		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
-		"--override-input", "dep-input", "git+file://" + depDir,
-	}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", depDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("d\n")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
-	f.AddResponse("git", []string{"-C", depDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	out := &bytes.Buffer{}
-	if err := w.Apply(context.Background(), out, ApplyOptions{Force: true}); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	// Output names the terminal project.
-	if !strings.Contains(out.String(), "leaf") {
-		t.Errorf("apply output should name the terminal project %q; got:\n%s", "leaf", out.String())
-	}
-	// The apply command streams its output live (Opts.Stdout set).
-	var streamed bool
-	for _, c := range f.Calls() {
-		if c.Name == "sudo" {
-			streamed = c.Opts.Stdout != nil
-		}
-	}
-	if !streamed {
-		t.Errorf("apply command should stream output (Opts.Stdout set)")
-	}
-}
-
 // TestApply_RecordsTheOverridesItEmitted is the WIRING test for the pg2-14yqh
 // ruling. `pb`'s gate condition 2 is skipped for a repo the apply overrode, so the
 // evidence the gate trusts is only as good as its agreement with what nix was
 // actually told. This asserts the agreement END TO END: the `--override-input`
-// value in the emitted apply command and the value recorded in the applied-state
+// value in the emitted build command and the value recorded in the applied-state
 // MUST be the same string, for the same repo.
 //
 // Deriving the record from the SAME resolution as the flags is what makes that
 // hold; a second, independent derivation at markApplied time would re-stat the
 // filesystem and could disagree.
 func TestApply_RecordsTheOverridesItEmitted(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	mkRepoDir(t, root, "dep")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
-	writeFile(t, filepath.Join(root, LockFileName), applyLock)
-	trustWS(t, root)
-	leafDir := filepath.Join(root, "leaf")
-	depDir := filepath.Join(root, "dep")
-
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
-	f.AddResponse("sudo", []string{
-		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
-		"--override-input", "dep-input", "git+file://" + depDir,
-	}, exec.Result{}, nil)
-	for _, dir := range []string{depDir, leafDir} {
-		f.AddResponse("git", []string{"-C", dir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("h\n")}, nil)
-		f.AddResponse("git", []string{"-C", dir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-	}
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+	e := newAsUserEnv(t, asUserTOML, nil)
+	if err := e.apply(context.Background(), &bytes.Buffer{}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	// The flag value nix was actually given, read back off the recorded call.
+	// The flag value nix was actually given, read back off the recorded build call.
 	var emitted string
-	for _, c := range f.Calls() {
-		if c.Name != "sudo" {
+	for _, c := range e.f.significant() {
+		if !isBuildCall(c) {
 			continue
 		}
 		for i, a := range c.Args {
@@ -143,10 +55,10 @@ func TestApply_RecordsTheOverridesItEmitted(t *testing.T) {
 		}
 	}
 	if emitted == "" {
-		t.Fatalf("apply emitted no --override-input; calls = %v", f.Calls())
+		t.Fatalf("apply emitted no --override-input; calls:\n%s", dumpCalls(e.f.significant()))
 	}
 	for _, name := range []string{"dep", "leaf"} {
-		st, ok, err := readAppliedState(w.appliedStateKeyPath(name))
+		st, ok, err := readAppliedState(e.w.appliedStateKeyPath(name))
 		if err != nil || !ok {
 			t.Fatalf("read applied state for %s: ok=%v err=%v", name, ok, err)
 		}
@@ -156,13 +68,13 @@ func TestApply_RecordsTheOverridesItEmitted(t *testing.T) {
 				name, st.OverriddenInputs)
 		}
 		if got != emitted {
-			t.Fatalf("%s record: overridden_inputs[dep] = %q but the apply command carried %q; the record "+
+			t.Fatalf("%s record: overridden_inputs[dep] = %q but the build command carried %q; the record "+
 				"MUST describe the build that ran", name, got, emitted)
 		}
 	}
 }
 
-// calledPkillFsmonitor reports whether the FakeRunner saw the
+// calledPkillFsmonitor reports whether the runner saw the
 // `pkill -f 'git fsmonitor--daemon'` invocation.
 func calledPkillFsmonitor(calls []exec.Call) bool {
 	for _, c := range calls {
@@ -173,56 +85,29 @@ func calledPkillFsmonitor(calls []exec.Call) bool {
 	return false
 }
 
-// applyTestRunner scripts a successful single-repo apply (daemon check, the
-// darwin-rebuild command, and markApplied's rev-parse) for terminal "leaf".
-func applyTestRunner(t *testing.T, root string) (*exec.FakeRunner, string) {
-	t.Helper()
-	leafDir := filepath.Join(root, "leaf")
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
-	f.AddResponse("sudo", []string{
-		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
-	}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-	return f, leafDir
+const (
+	gitExecA = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.43.0/libexec/git-core\n"
+	gitExecC = "/nix/store/cccccccccccccccccccccccccccccccc-git-2.45.0/libexec/git-core\n"
+)
+
+// scriptExecPaths scripts `git --exec-path` to answer before then after.
+func scriptExecPaths(sr *scriptedRunner, before, after string) {
+	sr.add("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(before)}, nil)
+	sr.add("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(after)}, nil)
 }
-
-const applySingleRepoTOML = `
-[workspace]
-terminal = "leaf"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
-
-[repos.leaf]
-url = "github:owner/leaf"
-`
 
 // TestApply_RestartsFsmonitorWhenGitVersionChanges asserts that pkill is invoked
 // when the git version differs before vs after the rebuild.
 func TestApply_RestartsFsmonitorWhenGitVersionChanges(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// Apply's success path writes the applied-state store; keep it in a temp dir.
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
-
-	f, _ := applyTestRunner(t, root)
+	e, sr := newScriptedEnv(t, asUserTOML)
 	// git --exec-path: old then new (changed store path) — FIFO consumption.
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.43.0/libexec/git-core\n")}, nil)
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/cccccccccccccccccccccccccccccccc-git-2.45.0/libexec/git-core\n")}, nil)
-	f.AddResponse("pkill", []string{"-f", "git fsmonitor--daemon"}, exec.Result{}, nil)
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+	scriptExecPaths(sr, gitExecA, gitExecC)
+	sr.add("pkill", []string{"-f", "git fsmonitor--daemon"}, exec.Result{}, nil)
+	if err := e.apply(context.Background(), &bytes.Buffer{}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if !calledPkillFsmonitor(f.Calls()) {
-		t.Errorf("expected pkill of fsmonitor daemon when git version changed; calls:\n%+v", f.Calls())
+	if !calledPkillFsmonitor(sr.Calls()) {
+		t.Errorf("expected pkill of fsmonitor daemon when git version changed; calls:\n%+v", sr.Calls())
 	}
 }
 
@@ -232,136 +117,100 @@ func TestApply_RestartsFsmonitorWhenGitVersionChanges(t *testing.T) {
 // binary store path, and the running daemon would otherwise keep executing the
 // stale binary — keying on the version string alone misses this case.
 func TestApply_RestartsFsmonitorWhenGitBinaryChangesSameVersion(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
-
-	f, _ := applyTestRunner(t, root)
+	e, sr := newScriptedEnv(t, asUserTOML)
 	// git --exec-path: same version 2.54.0, different store path before/after.
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.54.0/libexec/git-core\n")}, nil)
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-git-2.54.0/libexec/git-core\n")}, nil)
-	f.AddResponse("pkill", []string{"-f", "git fsmonitor--daemon"}, exec.Result{}, nil)
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+	scriptExecPaths(sr,
+		"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.54.0/libexec/git-core\n",
+		"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-git-2.54.0/libexec/git-core\n")
+	sr.add("pkill", []string{"-f", "git fsmonitor--daemon"}, exec.Result{}, nil)
+	if err := e.apply(context.Background(), &bytes.Buffer{}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if !calledPkillFsmonitor(f.Calls()) {
-		t.Errorf("expected pkill of fsmonitor daemon when git binary path changed (same version); calls:\n%+v", f.Calls())
+	if !calledPkillFsmonitor(sr.Calls()) {
+		t.Errorf("expected pkill of fsmonitor daemon when git binary path changed (same version); calls:\n%+v", sr.Calls())
 	}
 }
 
 // TestApply_NoFsmonitorRestartWhenGitUnchanged asserts that pkill is NOT invoked
 // when the git version is identical before and after the rebuild.
 func TestApply_NoFsmonitorRestartWhenGitUnchanged(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// Apply's success path writes the applied-state store; keep it in a temp dir.
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
-
-	f, _ := applyTestRunner(t, root)
+	e, sr := newScriptedEnv(t, asUserTOML)
 	// git --exec-path: same path both times — git binary unchanged.
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.43.0/libexec/git-core\n")}, nil)
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.43.0/libexec/git-core\n")}, nil)
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+	scriptExecPaths(sr, gitExecA, gitExecA)
+	if err := e.apply(context.Background(), &bytes.Buffer{}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if calledPkillFsmonitor(f.Calls()) {
-		t.Errorf("pkill must not run when git version is unchanged; calls:\n%+v", f.Calls())
+	if calledPkillFsmonitor(sr.Calls()) {
+		t.Errorf("pkill must not run when git version is unchanged; calls:\n%+v", sr.Calls())
+	}
+}
+
+// seedSkippableState records applied state for both repos so needsRebuild finds
+// a clean tree whose HEAD matches the recorded ref (the fake answers `rev-parse`
+// with "h", and the scripted answers below give leaf "abc").
+func seedSkippableState(t *testing.T, e *asUserEnv, sr *scriptedRunner) {
+	t.Helper()
+	for i := 0; i < 3; i++ {
+		sr.add("git", []string{"-C", e.leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
+	}
+	if err := writeAppliedState(e.leafDir, AppliedState{AppliedRef: "abc"}); err != nil {
+		t.Fatalf("seed applied state: %v", err)
+	}
+	if err := writeAppliedState(e.depDir, AppliedState{AppliedRef: "h"}); err != nil {
+		t.Fatalf("seed applied state: %v", err)
 	}
 }
 
 // TestApply_NoFsmonitorRestartOnSkippedRebuild asserts that the skip-rebuild
 // (no-op) path neither checks the git version nor kills the daemon.
 func TestApply_NoFsmonitorRestartOnSkippedRebuild(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
-	leafDir := filepath.Join(root, "leaf")
-
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
-	// needsRebuild: clean tree + HEAD matches the recorded applied hash → no rebuild.
-	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("abc\n")}, nil)
-	// Pre-seed the new applied-state store so HEAD ("abc") matches and the rebuild is skipped.
-	if err := writeAppliedState(leafDir, AppliedState{AppliedRef: "abc"}); err != nil {
-		t.Fatalf("seed applied state: %v", err)
-	}
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{}); err != nil {
+	e, sr := newScriptedEnv(t, asUserTOML)
+	seedSkippableState(t, e, sr)
+	if err := e.w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Builder: "darwin-rebuild"}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if calledPkillFsmonitor(f.Calls()) {
-		t.Errorf("pkill must not run on the skip-rebuild path; calls:\n%+v", f.Calls())
+	for _, c := range sr.Calls() {
+		if isBuildCall(c) {
+			t.Fatalf("the rebuild was not skipped; calls:\n%+v", sr.Calls())
+		}
 	}
-	for _, c := range f.Calls() {
+	if calledPkillFsmonitor(sr.Calls()) {
+		t.Errorf("pkill must not run on the skip-rebuild path; calls:\n%+v", sr.Calls())
+	}
+	for _, c := range sr.Calls() {
 		if c.Name == "git" && len(c.Args) == 1 && c.Args[0] == "--exec-path" {
-			t.Errorf("git --exec-path must not be probed on the skip-rebuild path; calls:\n%+v", f.Calls())
+			t.Errorf("git --exec-path must not be probed on the skip-rebuild path; calls:\n%+v", sr.Calls())
 		}
 	}
 }
 
-func TestApply_ErrorsWhenApplyCommandMissing(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
-[workspace]
-terminal = "leaf"
-
-[repos.leaf]
-url = "github:owner/leaf"
-`)
-	w, err := Open(root, exec.NewFakeRunner())
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{}); err == nil {
-		t.Fatal("expected error when apply_command unset")
-	}
-}
-
-// TestApply_UntrustedAborts is the regression test for bead pg2-x2q6o: apply_command
-// is arbitrary argv taken from the discovered pn-workspace.toml and executed by Apply,
-// so an untrusted workspace root MUST abort before ANY execution — not even the nix
-// daemon check runs. Closes the residual the ADR-0019 hook trust gate left open.
+// TestApply_UntrustedAborts is the regression test for bead pg2-x2q6o: the build
+// and activate commands are argv taken from the discovered pn-workspace.toml and
+// executed by Apply, so an untrusted workspace root MUST abort before ANY
+// execution — not even the nix daemon check or the build runs. Closes the
+// residual the ADR-0019 hook trust gate left open.
 func TestApply_UntrustedAborts(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir()) // empty trust store ⇒ untrusted
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
+	mkRepoDir(t, root, "dep")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), asUserTOML)
 	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true})
+	withAsUserSeams(t, w)
+	var out bytes.Buffer
+	err = w.Apply(context.Background(), &out, ApplyOptions{Force: true, Builder: "darwin-rebuild"})
 	if !errors.Is(err, trust.ErrUntrusted) {
 		t.Fatalf("Apply of an untrusted workspace must abort with ErrUntrusted; got %v", err)
 	}
 	if len(f.Calls()) != 0 {
-		t.Errorf("untrusted apply must not exec anything (not even the daemon check); got %d calls: %+v", len(f.Calls()), f.Calls())
+		t.Errorf("untrusted apply must not exec anything (not even the daemon check or the build); got %d calls: %+v", len(f.Calls()), f.Calls())
+	}
+	if strings.Contains(out.String(), "darwin-rebuild build") {
+		t.Errorf("an untrusted apply printed the build command:\n%s", out.String())
 	}
 }
 
@@ -369,21 +218,22 @@ func TestApply_ShowNixCommandsOnly(t *testing.T) {
 	root := t.TempDir()
 	mkRepoDir(t, root, "leaf")
 	mkRepoDir(t, root, "dep")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), asUserTOML)
 	f := exec.NewFakeRunner()
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	withAsUserSeams(t, w)
 	out := &bytes.Buffer{}
-	if err := w.Apply(context.Background(), out, ApplyOptions{ShowNixCommandsOnly: true}); err != nil {
+	if err := w.Apply(context.Background(), out, ApplyOptions{ShowNixCommandsOnly: true, Builder: "darwin-rebuild"}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if len(f.Calls()) != 0 {
 		t.Errorf("dry-run must not run anything; got %d calls", len(f.Calls()))
 	}
-	if !strings.Contains(out.String(), "sudo darwin-rebuild switch --flake "+filepath.Join(root, "leaf")) {
-		t.Errorf("dry-run output missing apply command:\n%s", out.String())
+	if !strings.Contains(out.String(), "darwin-rebuild build --flake "+filepath.Join(root, "leaf")) {
+		t.Errorf("dry-run output missing the build command:\n%s", out.String())
 	}
 	if strings.Contains(out.String(), "nix fmt") {
 		t.Errorf("dry-run output should not contain 'nix fmt' (fmt is now a separate command):\n%s", out.String())
@@ -467,48 +317,33 @@ func statusPorcelainCallStats(calls []exec.Call) (all, fsmonitorOff int) {
 // (`-c core.fsmonitor=false`), so a wedged `git fsmonitor--daemon` can never
 // hang apply on the `.git/fsmonitor--daemon.ipc` socket. Every status probe
 // apply issues must carry the flag.
-//
-// The runner scripts only the fsmonitor-off arg form; the pre-fix code issues
-// the bare form, which the FakeRunner has no response for, so Apply fails —
-// the RED reason is precisely "the probe did not disable fsmonitor".
 func TestApply_StatusProbesDisableFsmonitor(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
-	leafDir := filepath.Join(root, "leaf")
-
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
+	e, sr := newScriptedEnv(t, asUserTOML)
 	// git --exec-path identical before/after ⇒ no fsmonitor daemon restart.
-	execPath := "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.54.0/libexec/git-core\n"
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(execPath)}, nil)
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(execPath)}, nil)
-	f.AddResponse("sudo", []string{
-		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
-	}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
-	// Only the fsmonitor-off form is scripted. needsRebuild consumes the first
-	// (dirty ⇒ rebuild), markApplied the second — exercising BOTH probe sites.
-	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("M file\n")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	scriptExecPaths(sr, gitExecA, gitExecA)
+	// needsRebuild consumes the first (dirty ⇒ rebuild), markApplied the second —
+	// exercising BOTH probe sites.
+	status := []string{"-C", e.leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}
+	sr.add("git", status, exec.Result{Stdout: []byte("M file\n")}, nil)
+	sr.add("git", status, exec.Result{Stdout: []byte("")}, nil)
 
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{}); err != nil {
+	if err := e.w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Builder: "darwin-rebuild"}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
+	built := false
+	for _, c := range sr.Calls() {
+		built = built || isBuildCall(c)
+	}
+	if !built {
+		t.Fatalf("the dirty tree did not trigger a build; calls:\n%+v", sr.Calls())
+	}
 
-	all, off := statusPorcelainCallStats(f.Calls())
+	all, off := statusPorcelainCallStats(sr.Calls())
 	if all == 0 {
-		t.Fatalf("expected apply to issue git status --porcelain probes; calls:\n%+v", f.Calls())
+		t.Fatalf("expected apply to issue git status --porcelain probes; calls:\n%+v", sr.Calls())
 	}
 	if off != all {
-		t.Errorf("all %d git status --porcelain probes must disable fsmonitor (-c core.fsmonitor=false); only %d did; calls:\n%+v", all, off, f.Calls())
+		t.Errorf("all %d git status --porcelain probes must disable fsmonitor (-c core.fsmonitor=false); only %d did; calls:\n%+v", all, off, sr.Calls())
 	}
 }
 
@@ -526,106 +361,58 @@ func TestApply_StatusProbesDisableFsmonitor(t *testing.T) {
 // there is exactly ONE `git -C leafDir rev-parse HEAD` invocation either way —
 // this test does not change how many times that call happens, only WHEN. That
 // is deliberate: a value-only assertion (AppliedRef == the scripted value)
-// would pass against BOTH the pre-fix and post-fix code, since the
-// FakeRunner's single queued response for that exact (name, args) is consumed
-// by whichever single call reaches it, regardless of that call's position in
-// the sequence. Only the call's INDEX relative to the build command's index
-// distinguishes "before the build" (fixed) from "after the build" (the bug).
+// would pass against BOTH the pre-fix and post-fix code. Only the call's INDEX
+// relative to the build command's index distinguishes "before the build"
+// (fixed) from "after the build" (the bug).
 func TestApply_CapturesHeadBeforeBuild(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root) // apply now gates on workspace trust (bead pg2-x2q6o)
-	leafDir := filepath.Join(root, "leaf")
-
-	f, _ := applyTestRunner(t, root)
-	// git --exec-path identical before/after ⇒ no fsmonitor daemon restart, and
-	// no extra `git` calls to confuse the index search below.
-	execPath := "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-git-2.54.0/libexec/git-core\n"
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(execPath)}, nil)
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte(execPath)}, nil)
-
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{Force: true}); err != nil {
+	e, sr := newScriptedEnv(t, asUserTOML)
+	// git --exec-path identical before/after ⇒ no fsmonitor daemon restart.
+	scriptExecPaths(sr, gitExecA, gitExecA)
+	if err := e.apply(context.Background(), &bytes.Buffer{}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	calls := f.Calls()
+	calls := sr.Calls()
 	headIdx, buildIdx := -1, -1
 	for i, c := range calls {
-		if c.Name == "git" && len(c.Args) == 4 && c.Args[0] == "-C" && c.Args[1] == leafDir &&
+		if c.Name == "git" && len(c.Args) == 4 && c.Args[0] == "-C" && c.Args[1] == e.leafDir &&
 			c.Args[2] == "rev-parse" && c.Args[3] == "HEAD" {
 			headIdx = i
 		}
-		if c.Name == "sudo" {
+		if isBuildCall(c) {
 			buildIdx = i
 		}
 	}
 	if headIdx == -1 {
-		t.Fatalf("expected a `git -C %s rev-parse HEAD` call; calls:\n%+v", leafDir, calls)
+		t.Fatalf("expected a `git -C %s rev-parse HEAD` call; calls:\n%+v", e.leafDir, calls)
 	}
 	if buildIdx == -1 {
-		t.Fatalf("expected the apply (sudo darwin-rebuild) call; calls:\n%+v", calls)
+		t.Fatalf("expected the build (darwin-rebuild build) call; calls:\n%+v", calls)
 	}
 	if headIdx > buildIdx {
 		t.Errorf("`git rev-parse HEAD` for %s ran AFTER the build (call index %d vs build's index %d) — "+
 			"AppliedRef must be captured BEFORE the build runs (eval-time HEAD), not by re-reading HEAD "+
-			"once the build has already completed; calls:\n%+v", leafDir, headIdx, buildIdx, calls)
+			"once the build has already completed; calls:\n%+v", e.leafDir, headIdx, buildIdx, calls)
 	}
 }
 
-// hybridRunner sends one command (the apply script) to the REAL os/exec runner
-// and everything else (git, nix daemon probe) to a FakeRunner, so an apply-level
-// test can exercise real child-process semantics for the rebuild step only.
-type hybridRunner struct {
-	realName string
-	real     exec.Runner
-	fake     *exec.FakeRunner
-}
-
-func (h *hybridRunner) Run(ctx context.Context, name string, args []string, opts exec.RunOptions) (exec.Result, error) {
-	if name == h.realName {
-		return h.real.Run(ctx, name, args, opts)
-	}
-	return h.fake.Run(ctx, name, args, opts)
-}
-
-// applyWithLingeringGrandchild runs Apply with an apply command that is a REAL
+// applyWithLingeringGrandchild runs Apply with a user build that is a REAL
 // script: it backgrounds a grandchild holding the inherited stdout for longer
-// than the (shortened) kill grace, then exits with `exitCode`.
+// than the (shortened) kill grace, then exits with `exitCode`. Everything else
+// the apply runs is the fake.
 func applyWithLingeringGrandchild(t *testing.T, exitCode int) (*Workspace, string, error) {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applySingleRepoTOML)
-	trustWS(t, root)
-
-	script := filepath.Join(t.TempDir(), "fake-rebuild.sh")
-	body := fmt.Sprintf("#!/bin/sh\n(sleep 3) &\necho activated\nexit %d\n", exitCode)
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	f, _ := applyTestRunner(t, root)
-	h := &hybridRunner{realName: script, real: exec.NewRealRunnerWithKillGrace(300 * time.Millisecond), fake: f}
-	w, err := Open(root, h)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	e, sr := newScriptedEnv(t, asUserTOML)
+	sr.add("git", []string{"-C", e.leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
+	e.realBuild(exec.NewRealRunnerWithKillGrace(300*time.Millisecond),
+		"(sleep 3) &\necho activated\nexit "+strconv.Itoa(exitCode)+"\n")
 	out := &bytes.Buffer{}
-	err = w.Apply(context.Background(), out, ApplyOptions{Force: true, ApplyCmd: script})
-	return w, out.String(), err
+	err := e.apply(context.Background(), out)
+	return e.w, out.String(), err
 }
 
-// pg2-gb5ng: an apply command that exits 0 while a descendant keeps its output
-// open past WaitDelay is a SUCCESSFUL apply: it warns, and markApplied still runs.
+// pg2-gb5ng: a build that exits 0 while a descendant keeps its output open past
+// WaitDelay is a SUCCESSFUL build: it warns, and markApplied still runs.
 func TestApply_ExitZeroWithLingeringGrandchildStillMarksApplied(t *testing.T) {
 	w, out, err := applyWithLingeringGrandchild(t, 0)
 	if err != nil {

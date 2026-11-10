@@ -17,7 +17,6 @@ import (
 // ApplyOptions configures Apply.
 type ApplyOptions struct {
 	Terminal            string            // overrides workspace.terminal for this invocation
-	ApplyCmd            string            // overrides apply_command template
 	OverridePaths       map[string]string // repo key -> abs path
 	ShowNixCommandsOnly bool
 	Force               bool // always rebuild (bypass the skip gate)
@@ -40,7 +39,6 @@ type ApplyOptions struct {
 func (ws *Workspace) Apply(ctx context.Context, out io.Writer, opts ApplyOptions) error {
 	return ws.rebuild(ctx, out, applyVerb{}, rebuildOptions{
 		Terminal:            opts.Terminal,
-		Cmd:                 opts.ApplyCmd,
 		OverridePaths:       opts.OverridePaths,
 		ShowNixCommandsOnly: opts.ShowNixCommandsOnly,
 		Force:               opts.Force,
@@ -54,17 +52,10 @@ type applyVerb struct{}
 
 func (applyVerb) name() string { return "apply" }
 
-func (applyVerb) commandTemplate(ws *Workspace, opts rebuildOptions) (string, error) {
-	if opts.Cmd != "" {
-		return opts.Cmd, nil
-	}
-	tmpl, err := ws.config.ApplyCommandTemplate()
-	if err != nil && ws.config.ActivateCommandTemplate() != "" {
-		// The build-as-user flow (activate_command) needs no apply_command unless
-		// it has to fall back; extendPlan reports the missing fallback if it does.
-		return ws.config.BuildCommandTemplate(), nil
-	}
-	return tmpl, err
+// commandTemplate is build_command: apply's first step is the user build. The
+// missing activate_command is reported by extendPlan.
+func (applyVerb) commandTemplate(ws *Workspace, _ rebuildOptions) (string, error) {
+	return ws.config.BuildCommandTemplate(), nil
 }
 
 func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) (err error) {
@@ -87,10 +78,7 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	// tee into it, so the terminal output is unchanged. A failure to open the log
 	// is reported and otherwise ignored: it must never fail or alter the apply.
 	ws.recordStep("apply", false, stepApplyLog)
-	var extraHeader []string
-	if p.asUser != nil {
-		extraHeader = p.asUser.describeSteps(p)
-	}
+	extraHeader := p.asUser.describeSteps(p)
 	alog, logErr := openRunLog(runLogOpts{
 		Verb:     "apply",
 		Terminal: terminal,
@@ -130,17 +118,8 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	alog.recordRefs(preBuildHeads)
 	ws.recordStep("apply", false, stepRunCommand)
 	alog.phase(phaseBuild)
-	if p.asUser != nil {
-		// Build-as-user flow (activate_command set, preflight passed): apply_asuser.go.
-		if err := ws.applyAsUser(ctx, out, alog, p); err != nil {
-			return err
-		}
-	} else {
-		if runErr := ws.runPlanned(ctx, out, "apply", p); runErr != nil {
-			alog.setExit(runErr)
-			return fmt.Errorf("apply failed: %w", runErr)
-		}
-		alog.setExit(nil)
+	if err := ws.applyAsUser(ctx, out, alog, p); err != nil {
+		return err
 	}
 	ws.recordStep("apply", false, stepPostSteps)
 	alog.phase(phasePostSteps)

@@ -99,6 +99,15 @@ func TestSmoke_P1Invariant(t *testing.T) {
 	// --- 4. Build a SET-rooted env so verbs operate on the set, not canonical ---
 	// buildScrubbedEnv hard-sets PN_WORKSPACE_ROOT=wsRoot; replace it with setDir.
 	setEnv := replaceEnv(rootEnv, "PN_WORKSPACE_ROOT", setDir)
+	// apply builds as the user and runs two root steps: stand-ins for
+	// darwin-rebuild and sudo, and the fake store PN_SMOKE_STORE_DIR names.
+	setEnv = replaceEnv(setEnv, "PATH", writeAsUserStandIns(t, wsRoot)+string(os.PathListSeparator)+envValue(setEnv, "PATH"))
+
+	// build and apply run config-sourced commands, which are trust-gated: trust
+	// the set so they reach the stand-ins instead of stopping at the gate.
+	if r := runCommand(t, pnBin, setDir, []string{"workspace", "allow"}, setEnv); r.ExitCode != 0 {
+		t.Fatalf("workspace allow in the set exited %d\nstderr: %s", r.ExitCode, r.Stderr)
+	}
 
 	// --- 5. Verb table. Each runs from INSIDE the set (cwd=setDir, set env) ---
 	type verbCase struct {
@@ -198,7 +207,7 @@ func TestSmoke_P1Invariant(t *testing.T) {
 		// Run the verb from inside the set. We tolerate ANY exit code / per-repo
 		// skip / verb error: the assertion is purely that canonical is unchanged.
 		r := runCommand(t, pnBin, setDir, vc.args, setEnv)
-		t.Logf("P1: verb %q exit=%d", vc.name, r.ExitCode)
+		t.Logf("P1: verb %q exit=%d stderr=%s", vc.name, r.ExitCode, r.Stderr)
 
 		// --- 6. After EACH verb, assert every canonical snapshot is unchanged ---
 		for _, repo := range repos {
@@ -371,8 +380,8 @@ func replaceEnv(env []string, key, val string) []string {
 // p1SetupFixture builds a producer+consumer workspace under wsRoot. Each repo
 // has a bare remote (file://) so push/rebase/update have an origin/main
 // upstream. consumer is the terminal and declares producer as a flake input so
-// the lock has an edge (mirroring s20). Fake build/apply/update scripts let
-// build/apply/update run without real nix.
+// the lock has an edge (mirroring s20). Stand-in darwin-rebuild and sudo
+// (writeAsUserStandIns) let build and apply run without real nix or root.
 func p1SetupFixture(t *testing.T, wsRoot string) {
 	t.Helper()
 	remotesDir := filepath.Join(wsRoot, "remotes")
@@ -381,8 +390,6 @@ func p1SetupFixture(t *testing.T, wsRoot string) {
 	}
 
 	// Common fake scripts seeded into each repo.
-	buildSh := "#!/bin/sh\nset -e\ntouch built.txt\n"
-	applySh := "#!/bin/sh\nset -e\ntouch applied.txt\n"
 	// update-locks.sh writes a marker INSIDE the repo it runs in (the set
 	// worktree, never canonical). Trivial; no nix.
 	updateLocksSh := "#!/bin/sh\nset -e\ntouch updated.txt\n"
@@ -392,8 +399,6 @@ func p1SetupFixture(t *testing.T, wsRoot string) {
 
 	producerBare := setupBareRemote(t, remotesDir, "producer", map[string]string{
 		"flake.nix":       producerFlake,
-		"build.sh":        buildSh,
-		"apply.sh":        applySh,
 		"update-locks.sh": updateLocksSh,
 	})
 
@@ -401,8 +406,6 @@ func p1SetupFixture(t *testing.T, wsRoot string) {
 	consumerFlake := fmt.Sprintf("{\n  inputs.producer.url = \"%s\";\n  outputs = { self, producer, ... }: {};\n}\n", producerBare)
 	consumerBare := setupBareRemote(t, remotesDir, "consumer", map[string]string{
 		"flake.nix":       consumerFlake,
-		"build.sh":        buildSh,
-		"apply.sh":        applySh,
 		"update-locks.sh": updateLocksSh,
 	})
 
@@ -411,8 +414,8 @@ func p1SetupFixture(t *testing.T, wsRoot string) {
 	toml := fmt.Sprintf(`[workspace]
 name = "smoke-p1"
 terminal = "consumer"
-build_command = "./build.sh"
-apply_command = "./apply.sh"
+build_command = "darwin-rebuild build"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.consumer]
 url = "%s"

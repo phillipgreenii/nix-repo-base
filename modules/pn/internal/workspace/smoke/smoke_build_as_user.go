@@ -13,8 +13,7 @@ import (
 // assertS42BuildAsUserApply: apply ran the build-as-user flow end to end against
 // stand-ins (pg2-sdbhh4.9, ADR 0038). The user build ran in a private run dir
 // that is gone again, the two root steps are exactly the documented argv with the
-// validated out path as an argument (never in the environment), and the legacy
-// apply_command (apply.sh) did not run.
+// validated out path as an argument (never in the environment).
 func assertS42BuildAsUserApply(t *testing.T, wsRoot string, env []string) {
 	t.Helper()
 	outLines, ok := readArgvFile(t, filepath.Join(wsRoot, "expected.out"))
@@ -72,10 +71,6 @@ func assertS42BuildAsUserApply(t *testing.T, wsRoot string, env []string) {
 			t.Errorf("S42: the out path leaked into sudo %s's environment", n)
 		}
 	}
-	// No fallback.
-	if _, err := os.Stat(filepath.Join(wsRoot, "consumer", "apply-ran.txt")); err == nil {
-		t.Error("S42: the legacy apply_command ran although the build-as-user flow succeeded")
-	}
 	// The apply log names no failed step.
 	log, err := os.ReadFile(filepath.Join(state, "pn", "apply-logs", "latest"))
 	if err != nil {
@@ -84,4 +79,52 @@ func assertS42BuildAsUserApply(t *testing.T, wsRoot string, env []string) {
 	if !strings.Contains(string(log), "failed_step: none\n") || !strings.Contains(string(log), "result: success\n") {
 		t.Errorf("S42: apply log trailer:\n%s", log)
 	}
+}
+
+// assertS44NoRootStep: the probe failed, so neither sudo call happened and the
+// built system's activate never ran.
+func assertS44NoRootStep(t *testing.T, wsRoot string) {
+	t.Helper()
+	if _, ok := readArgvFile(t, filepath.Join(wsRoot, "sudo.1.argv")); ok {
+		t.Error("S44: a root step ran although the probe failed")
+	}
+	if _, err := os.Stat(filepath.Join(wsRoot, "activate-ran.txt")); err == nil {
+		t.Error("S44: the system's activate ran although the probe failed")
+	}
+	// The user build did run: the probe is after the build.
+	if _, ok := readArgvFile(t, filepath.Join(wsRoot, "build.argv")); !ok {
+		t.Error("S44: the user build never ran")
+	}
+}
+
+// writeAsUserStandIns creates, under wsRoot, the stand-ins the build-as-user
+// apply needs when a test (not a scenario setup.sh) drives pn: a fake system in
+// the fake store (PN_SMOKE_STORE_DIR is wsRoot's physical path + /store, see
+// buildScrubbedEnv), a darwin-rebuild that leaves ./result -> that system, and a
+// sudo that records its argv (sudo.N.argv) and runs nothing. It returns the
+// directory to put first on PATH. Same shape as S42's setup.sh.
+func writeAsUserStandIns(t *testing.T, wsRoot string) string {
+	t.Helper()
+	phys, err := filepath.EvalSymlinks(wsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 32 characters of the nix base32 alphabet.
+	out := filepath.Join(phys, "store", "0123456789abcdfghijklmnpqrsvwxyz-darwin-system-smoke")
+	write := func(path, body string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(out, "activate"), "#!/bin/sh\nexit 0\n")
+	write(filepath.Join(out, "sw", "bin", "darwin-rebuild"),
+		"#!/bin/sh\necho \"darwin-rebuild [--help] {edit | switch | activate | build | check | changelog}\" >&2\nexit 1\n")
+	fakebin := filepath.Join(phys, "fakebin")
+	write(filepath.Join(fakebin, "darwin-rebuild"), "#!/bin/sh\nln -sfn \""+out+"\" result\n")
+	write(filepath.Join(fakebin, "sudo"),
+		"#!/bin/sh\nn=1\nwhile [ -e \""+phys+"/sudo.$n.argv\" ]; do n=$((n + 1)); done\nprintf '%s\\n' \"$@\" >\""+phys+"/sudo.$n.argv\"\nexit 0\n")
+	return fakebin
 }

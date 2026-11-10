@@ -15,25 +15,30 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
-// Build-as-user apply (bead pg2-sdbhh4.9, ADR 0038). When [workspace].
-// activate_command is set and the preflight passes, apply runs the SAME build
-// step as `pn workspace build` as the invoking user (one evaluation, the user's
-// caches, a wrapped run whose nix JSONL lands in the user log directory), reads
-// and validates the system out path, probes the built system, and only then runs
-// two root steps through sudo: set the system profile, then activate. Root never
-// evaluates. With activate_command unset, none of this code runs and apply is the
-// single apply_command flow it always was.
+// Build-as-user apply (ADR 0038). This is the one apply flow: [workspace].
+// activate_command is required. Apply runs the SAME build step as
+// `pn workspace build` as the invoking user (one evaluation, the user's caches, a
+// wrapped run whose nix JSONL lands in the user log directory), reads and
+// validates the system out path, probes the built system, and only then runs two
+// root steps through sudo: set the system profile, then activate. Root never
+// evaluates. A failed preflight, run directory or probe is an error, never a
+// fallback to a root build. The platform specific parts (the activate program
+// checks, the probe, root's home) are an activationPlatform chosen from the
+// activate_command program: darwin-rebuild (darwin) or switch-to-configuration
+// (nixos).
 //
 // Command sequence (every step is a Runner call, so fake runners pin it):
 //
-//	0 preflight        no process: activate_command set, nix-env usable, build_command expands
-//	                   (the run dir is created first thing in the run, still before any build;
-//	                   if that fails the legacy flow runs instead)
+//	0 preflight        no process: activate_command set and recognised, nix-env usable,
+//	                   build_command expands (the run dir is created first thing in the
+//	                   run, still before any build; if that fails apply fails)
 //	1 build            user, Dir = private run dir R, WrapNix true: the build_command expansion
 //	2 read-result      os.Readlink(R/result) ONCE, then validateBuildOut; no process
-//	3 probe            user, Dir = R, unwrapped, 10 s: <out>/sw/bin/darwin-rebuild --help
-//	4 set-profile      sudo env -i HOME=/var/root NIX_REMOTE=daemon PATH=... nix-env -p <profile> --set <out>
-//	5 activate         sudo <out>/sw/bin/darwin-rebuild activate (the activate_command expansion)
+//	3 probe            darwin: user, Dir = R, unwrapped, 10 s: <out>/sw/bin/darwin-rebuild --help
+//	                   nixos: no process (the file check of step 2 is the whole check)
+//	4 set-profile      sudo env -i HOME=<root home> NIX_REMOTE=daemon PATH=... nix-env -p <profile> --set <out>
+//	5 activate         sudo <out>/sw/bin/darwin-rebuild activate, or
+//	                   sudo <out>/bin/switch-to-configuration switch (the activate_command expansion)
 //
 // The set-profile step is hard-coded here, never templated: it is root-executed
 // and security-sensitive, and the drift guard and the fake-runner tests pin it.
@@ -42,11 +47,10 @@ const (
 	// nixEnvPath is the nix-env the set-profile step runs, by its nix-env symlink
 	// name: nix-env is a multi-call binary that dispatches on argv[0], so the
 	// resolved path (.../bin/nix) fails with "unrecognised flag '-p'".
+	// TODO(nixos): /run/current-system/sw/bin/nix-env is assumed to exist on NixOS
+	// (it does on darwin). Verify: `ls -l /run/current-system/sw/bin/nix-env`. If it is
+	// absent, the NixOS platform needs its own nix-env path (a field of activationPlatform).
 	nixEnvPath = "/run/current-system/sw/bin/nix-env"
-	// rootHome is root's home on macOS. It is set explicitly because macOS sudo
-	// preserves the caller's HOME, which would make root write .nix-defexpr and
-	// .local/state/nix into the invoking user's home.
-	rootHome = "/var/root"
 	// rootPath is the whole PATH of the set-profile step.
 	rootPath = "/run/current-system/sw/bin:/usr/bin:/bin"
 	// nixStoreDir is the store the out path must be a direct child of.
@@ -115,11 +119,8 @@ type asUserPlan struct {
 	// activateTmpl is the activate_command template; its {out} is substituted
 	// only from the validated out path.
 	activateTmpl string
-	// fallbackArgs is the apply_command expansion run when the built system
-	// cannot be activated this way; nil when apply_command is unset (or could not
-	// be expanded, see fallbackErr).
-	fallbackArgs []string
-	fallbackErr  error
+	// platform is the activationPlatform selected from activateTmpl.
+	platform activationPlatform
 }
 
 // applyBuildDir is the directory holding the per-run directories:
@@ -128,59 +129,35 @@ func applyBuildDir() string {
 	return filepath.Join(filepath.Dir(eventlog.DefaultPath()), "apply-build")
 }
 
-// extendPlan selects the build-as-user flow for apply (planExtender). It leaves
-// the plan exactly as the prelude resolved it, so the legacy flow is untouched,
-// when activate_command is unset or the caller passed an explicit apply command.
-// Otherwise it runs the preflight (no side effects: it runs before the trust
-// gate); when that fails it says so in one line and,
-// again leaving the plan untouched, lets the legacy apply_command flow run
-// BEFORE anything is built.
-func (applyVerb) extendPlan(_ context.Context, ws *Workspace, out io.Writer, p *rebuildPlan) error {
+// errActivateCommandUnset is returned when apply has no activate_command: the
+// build-as-user flow is the only apply flow.
+var errActivateCommandUnset = errors.New("workspace.activate_command is not set in pn-workspace.toml: apply builds as you and activates as root, so it needs the activation command (darwin: 'sudo {out}/sw/bin/darwin-rebuild activate'; nixos: 'sudo {out}/bin/switch-to-configuration switch')")
+
+// extendPlan runs apply's preflight (planExtender): activate_command must be set
+// and name a recognised program, nix-env must be usable and build_command must
+// expand. The preflight has no side effects and runs before the trust gate; any
+// failure fails the apply before anything is built.
+func (applyVerb) extendPlan(_ context.Context, ws *Workspace, _ io.Writer, p *rebuildPlan) error {
 	activateTmpl := ws.config.ActivateCommandTemplate()
-	if activateTmpl == "" || p.opts.Cmd != "" {
-		return nil
+	if activateTmpl == "" {
+		return errActivateCommandUnset
 	}
-
-	// The prelude expanded apply_command when it is set (the fallback) and
-	// build_command when it is not (commandTemplate).
-	asUser := &asUserPlan{activateTmpl: activateTmpl}
-	if _, err := ws.config.ApplyCommandTemplate(); err != nil {
-		asUser.fallbackErr = err
-	} else {
-		asUser.fallbackArgs = p.cmdArgs
+	platform, err := platformForActivate(activateTmpl)
+	if err != nil {
+		return fmt.Errorf("apply failed: %w", err)
 	}
-
-	reason := ""
-	var buildArgs []string
-	switch {
-	case !ws.nixEnvUsable():
-		reason = nixEnvPath + " is missing or not executable"
-	default:
-		var err error
-		buildArgs, err = substituteCommand(ws.config.BuildCommandTemplate(), p.vars)
-		if err != nil {
-			reason = "build_command: " + err.Error()
-		}
+	if !ws.nixEnvUsable() {
+		return fmt.Errorf("apply failed: the build-as-user flow cannot start (%s is missing or not executable)", nixEnvPath)
 	}
-	if reason != "" {
-		if asUser.fallbackArgs == nil {
-			return fmt.Errorf("apply: the build-as-user flow (activate_command) is unavailable (%s) and there is no apply_command to fall back to: %w", reason, asUser.fallbackErr)
-		}
-		fmt.Fprintf(out, "apply: build-as-user flow unavailable (%s); running apply_command instead: %s\n", reason, strings.Join(asUser.fallbackArgs, " "))
-		return nil
-	}
-
-	p.asUser = asUser
-	p.cmdArgs = buildArgs
+	// The prelude already expanded build_command (commandTemplate), so p.cmdArgs is
+	// the user build.
+	p.asUser = &asUserPlan{activateTmpl: activateTmpl, platform: platform}
 	return nil
 }
 
 // dryRunLines are the extra lines of a --show-nix-commands dry run in the
 // build-as-user flow: the build itself is the command line above them.
 func (applyVerb) dryRunLines(p *rebuildPlan) []string {
-	if p.asUser == nil {
-		return nil
-	}
 	var lines []string
 	for _, l := range p.asUser.describeSteps(p) {
 		lines = append(lines, "# "+l)
@@ -192,15 +169,12 @@ func (applyVerb) dryRunLines(p *rebuildPlan) []string {
 // for the out path the build will produce.
 func (a *asUserPlan) describeSteps(p *rebuildPlan) []string {
 	lines := []string{
-		"set-profile command: " + strings.Join(setProfileArgv("<out>"), " "),
+		"set-profile command: " + strings.Join(setProfileArgv("<out>", a.platform), " "),
 	}
 	if act, err := substituteActivateCommand(a.activateTmpl, withOut(p.vars, "<out>")); err == nil {
 		lines = append(lines, "activate command: "+strings.Join(act, " "))
 	} else {
 		lines = append(lines, "activate command: (invalid: "+err.Error()+")")
-	}
-	if a.fallbackArgs != nil {
-		lines = append(lines, "fallback command (if the built system cannot be activated this way): "+strings.Join(a.fallbackArgs, " "))
 	}
 	return lines
 }
@@ -212,10 +186,10 @@ func withOut(v templateVars, out string) templateVars {
 
 // setProfileArgv is the argv of the set-profile step, sudo included. It is
 // hard-coded: see the package comment.
-func setProfileArgv(out string) []string {
+func setProfileArgv(out string, p activationPlatform) []string {
 	return []string{
 		"sudo", "env", "-i",
-		"HOME=" + rootHome,
+		"HOME=" + p.rootHome,
 		"NIX_REMOTE=daemon",
 		"PATH=" + rootPath,
 		nixEnvPath, "-p", systemProfileLink, "--set", out,
@@ -233,7 +207,7 @@ func outPathRe(storeDir string) *regexp.Regexp {
 // is a symlink into a separate store package, so a "realpath stays under out"
 // check would always fail. The string itself is what the root steps receive,
 // as an argv element, never in the environment.
-func validateBuildOut(out, storeDir string) error {
+func validateBuildOut(out, storeDir string, p activationPlatform) error {
 	if !filepath.IsAbs(out) {
 		return fmt.Errorf("out path %q is not absolute", out)
 	}
@@ -258,34 +232,30 @@ func validateBuildOut(out, storeDir string) error {
 	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
 		return fmt.Errorf("%s is not an executable regular file (mode %s)", activate, fi.Mode())
 	}
-	rebuild := filepath.Join(out, "sw", "bin", "darwin-rebuild")
-	fi, err = os.Stat(rebuild) // follows symlinks: the invoked path must resolve to an executable file
-	if err != nil {
-		return fmt.Errorf("built system has no sw/bin/darwin-rebuild: %w", err)
-	}
-	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
-		return fmt.Errorf("%s does not resolve to an executable regular file (mode %s)", rebuild, fi.Mode())
-	}
-	return nil
+	return p.checkOut(out)
 }
 
 // readBuildResult reads the build's out path from <runDir>/result, one symlink
 // level and exactly once, and validates it. The returned string is the only
 // thing every later step uses; the link is never read again.
-func readBuildResult(runDir, storeDir string) (string, error) {
+func readBuildResult(runDir, storeDir string, p activationPlatform) (string, error) {
+	// TODO(nixos): `nixos-rebuild build` is assumed to leave ./result in its working
+	// directory like `darwin-rebuild build`. Verify: run it in an empty directory and
+	// `ls -l result`. If it does not (or needs --no-link/--out-link handling), the NixOS
+	// build_command must be adjusted and this read made platform specific.
 	link := filepath.Join(runDir, "result")
 	fi, err := os.Lstat(link)
 	if err != nil {
-		return "", fmt.Errorf("the build left no ./result in its working directory (is build_command a result-leaving `darwin-rebuild build`?): %w", err)
+		return "", fmt.Errorf("the build left no ./result in its working directory (is build_command a result-leaving rebuild build, such as `darwin-rebuild build` or `nixos-rebuild build`?): %w", err)
 	}
 	if fi.Mode()&os.ModeSymlink == 0 {
-		return "", fmt.Errorf("%s is not a symlink (is build_command a result-leaving `darwin-rebuild build`?)", link)
+		return "", fmt.Errorf("%s is not a symlink (is build_command a result-leaving rebuild build, such as `darwin-rebuild build` or `nixos-rebuild build`?)", link)
 	}
 	out, err := os.Readlink(link)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", link, err)
 	}
-	if err := validateBuildOut(out, storeDir); err != nil {
+	if err := validateBuildOut(out, storeDir, p); err != nil {
 		return "", err
 	}
 	return out, nil
@@ -391,8 +361,8 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 
 	runDir, err := makeRunDir()
 	if err != nil {
-		// Still before anything is built, so the legacy flow is a clean fallback.
-		return ws.applyFallback(ctx, out, alog, p, "cannot create the per-run build directory: "+err.Error(), failedStepBuild, nil)
+		alog.fail(failedStepBuild, nil)
+		return fmt.Errorf("apply failed: cannot create the per-run build directory: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(runDir) }()
 
@@ -408,20 +378,25 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 	// 2. read the out path once and validate it. The root's build key from the
 	// single-flight lock is still held here (it is released when rebuild returns).
 	ws.recordStep("apply", false, stepReadResult)
-	built, err := readBuildResult(runDir, ws.storeDir())
+	built, err := readBuildResult(runDir, ws.storeDir(), p.asUser.platform)
 	if err != nil {
 		alog.fail(failedStepReadResult, nil)
 		return fmt.Errorf("apply failed: read build result: %w", err)
 	}
 	fmt.Fprintf(out, "apply: built %s\n", built)
 
-	// 3. probe the built system's own darwin-rebuild.
+	// 3. probe the built system's own activation tool (the platform's probe).
 	ws.recordStep("apply", false, stepProbe)
-	if res, reason := ws.probeActivate(ctx, runDir, built); reason != "" {
+	if res, reason := p.asUser.platform.probe(ctx, ws, runDir, built); reason != "" {
 		if err := ctx.Err(); err != nil {
 			return cancelledBeforeRoot(err)
 		}
-		return ws.applyFallback(ctx, out, alog, p, reason, failedStepProbe, &res)
+		if res.Signal == "" && res.ExitCode != 0 {
+			alog.failExit(failedStepProbe, res.ExitCode)
+		} else {
+			alog.fail(failedStepProbe, nil)
+		}
+		return fmt.Errorf("apply failed: probe: the built system has no usable 'darwin-rebuild activate' (%s)", reason)
 	}
 
 	activate, err := substituteActivateCommand(p.asUser.activateTmpl, withOut(p.vars, built))
@@ -447,7 +422,7 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 	rootCtx := context.WithoutCancel(ctx)
 
 	ws.recordStep("apply", false, stepSetProfile)
-	sp := setProfileArgv(built)
+	sp := setProfileArgv(built, p.asUser.platform)
 	if _, err := ws.runner.Run(rootCtx, sp[0], sp[1:], rootStepOptions(out)); err != nil {
 		alog.fail(failedStepSetProfile, err)
 		return fmt.Errorf("apply failed: set system profile: %w", err)
@@ -474,35 +449,4 @@ func rootStepOptions(out io.Writer) exec.RunOptions {
 
 func cancelledBeforeRoot(err error) error {
 	return fmt.Errorf("apply cancelled before any root step started: %w", err)
-}
-
-// applyFallback runs the legacy apply_command flow instead of the build-as-user
-// flow, announcing why. failedStep is what the trailer records if the apply has
-// no apply_command to fall back to. The fallback re-evaluates as root, exactly
-// as apply always did; it does not record the build plan a second time.
-func (ws *Workspace) applyFallback(ctx context.Context, out io.Writer, alog *applyLog, p *rebuildPlan, reason, failedStep string, probe *exec.Result) error {
-	what := "the built system has no usable 'darwin-rebuild activate'"
-	if failedStep != failedStepProbe {
-		what = "the build-as-user flow cannot start"
-	}
-	if p.asUser.fallbackArgs == nil {
-		if probe != nil && probe.Signal == "" {
-			alog.failExit(failedStep, probe.ExitCode)
-		} else {
-			alog.fail(failedStep, nil)
-		}
-		return fmt.Errorf("apply failed: %s: %s (%s) and there is no apply_command to fall back to (%v)", failedStep, what, reason, p.asUser.fallbackErr)
-	}
-	fmt.Fprintf(out, "apply: %s (%s); falling back to: %s (root re-evaluates)\n",
-		what, reason, strings.Join(p.asUser.fallbackArgs, " "))
-	alog.phase(phaseActivate) // the root re-evaluation and switch replace set-profile and activate
-	fp := *p
-	fp.cmdArgs = p.asUser.fallbackArgs
-	fp.asUser = nil
-	if err := ws.runPlannedIn(ctx, out, "apply", &fp, p.terminalRepoDir, false); err != nil {
-		alog.fail(failedStepActivate, err)
-		return fmt.Errorf("apply failed: %w", err)
-	}
-	alog.setExit(nil)
-	return nil
 }

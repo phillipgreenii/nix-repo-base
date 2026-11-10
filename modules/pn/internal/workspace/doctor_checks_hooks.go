@@ -19,7 +19,7 @@ import (
 //     `nix eval` and swallowed-as-absent per the edges.go convention; skipped
 //     under --offline. Never a hard failure — runtime failure is the backstop.
 //
-// build_command/apply_command placeholder validity and {nix_run} well-formedness
+// build_command/activate_command placeholder validity and {nix_run} well-formedness
 // are already enforced at config load (ParseConfig hard-errors), so they cannot
 // reach here; this check covers only what load-time validation cannot: output
 // existence (needs nix eval) and firability (needs the command→repo mapping).
@@ -101,7 +101,7 @@ func (ws *Workspace) checkHooksTrusted(_ context.Context, _ *doctorEnv) []Findin
 	return []Finding{{
 		CheckID: "hooks-trusted", Severity: SevWarning,
 		Message: fmt.Sprintf(
-			"workspace hooks in %s are not trusted (pn-workspace.toml never allowed, or changed since); event hooks and build_command/apply_command execution are disarmed until it is reviewed and allowed",
+			"workspace hooks in %s are not trusted (pn-workspace.toml never allowed, or changed since); event hooks and build_command/activate_command execution are disarmed until it is reviewed and allowed",
 			ws.root,
 		),
 		Manual: "review pn-workspace.toml, then run: pn workspace allow",

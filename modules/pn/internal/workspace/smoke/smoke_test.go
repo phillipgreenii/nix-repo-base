@@ -318,8 +318,8 @@ func TestSmoke_S18_HappyPathBuild(t *testing.T) {
 	runScenario(t, "s18-happy-path-build")
 }
 
-// TestSmoke_S19_HappyPathApply: two-repo workspace; pn workspace apply runs
-// apply.sh in the terminal (consumer) dir; asserts applied.txt marker exists.
+// TestSmoke_S19_HappyPathApply: two-repo workspace; pn workspace apply builds as
+// the user and runs the two root steps through stand-ins; asserts both ran.
 func TestSmoke_S19_HappyPathApply(t *testing.T) {
 	runScenario(t, "s19-happy-path-apply")
 }
@@ -520,6 +520,13 @@ func TestSmoke_S42_BuildAsUserApply(t *testing.T) {
 // identical (same members, branches, config and lock) (pg2-wu21kf).
 func TestSmoke_S43_WorkforestNoHooks(t *testing.T) {
 	runScenario(t, "s43-workforest-no-hooks")
+}
+
+// TestSmoke_S44_ProbeFailureFailsApply: the built system's darwin-rebuild shows no
+// activate action, so apply fails at the probe: non-zero exit, the probe text on
+// stderr, and no root step runs (ADR 0038).
+func TestSmoke_S44_ProbeFailureFailsApply(t *testing.T) {
+	runScenario(t, "s44-probe-failure-fails-apply")
 }
 
 // runScenario is the main per-scenario harness.
@@ -749,6 +756,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS42BuildAsUserApply(t, wsRoot, env)
 	case "s43-workforest-no-hooks":
 		assertS43WorkforestNoHooks(t, wsRoot)
+	case "s44-probe-failure-fails-apply":
+		assertS44NoRootStep(t, wsRoot)
 	}
 }
 

@@ -82,7 +82,7 @@ func TestTerminalRequired_Apply(t *testing.T) {
 	mkRepoDir(t, root, "leaf")
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.leaf]
 url = "github:o/leaf"

@@ -26,13 +26,15 @@ func attrs(s sdktrace.ReadOnlySpan) map[string]attribute.Value {
 
 // gitProbeRunner answers apply's skip-gate probes (git status --porcelain,
 // git rev-parse HEAD, git --exec-path) from fixed values and succeeds at
-// everything else, so a verb runs end to end.
+// everything else (through base, an asUserFake that decisionWS provides), so a
+// verb runs end to end.
 type gitProbeRunner struct {
 	porcelain string
 	head      string
+	base      exec.Runner
 }
 
-func (r *gitProbeRunner) Run(_ context.Context, name string, args []string, _ exec.RunOptions) (exec.Result, error) {
+func (r *gitProbeRunner) Run(ctx context.Context, name string, args []string, opts exec.RunOptions) (exec.Result, error) {
 	if name == "git" {
 		for _, a := range args {
 			switch a {
@@ -44,6 +46,9 @@ func (r *gitProbeRunner) Run(_ context.Context, name string, args []string, _ ex
 				return exec.Result{Stdout: []byte("/g\n")}, nil
 			}
 		}
+	}
+	if r.base != nil {
+		return r.base.Run(ctx, name, args, opts)
 	}
 	return exec.Result{}, nil
 }
@@ -61,7 +66,7 @@ func decisionWS(t *testing.T, r exec.Runner) *Workspace {
 [workspace]
 terminal = "leaf"
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.leaf]
 url = "github:owner/leaf"
@@ -71,11 +76,16 @@ url = "github:owner/dep"
 `)
 	writeFile(t, filepath.Join(root, LockFileName), applyLock)
 	trustWS(t, root)
+	store := t.TempDir()
+	if g, ok := r.(*gitProbeRunner); ok && g.base == nil {
+		g.base = &asUserFake{t: t, sys: newFakeSystem(t, store, fakeHash)}
+	}
 	w, err := Open(root, r)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	w.hostnameFn = func() string { return "spanhost" }
+	installAsUserSeams(w, store)
 	return w
 }
 

@@ -59,40 +59,18 @@ url = "github:owner/leaf"
 	}
 }
 
-// Apply sets WrapNix on the apply command (sudo darwin-rebuild switch) and NOT
-// on the nix daemon health probe (nix eval) that runs just before it.
+// Apply sets WrapNix on the user build (darwin-rebuild build) and NOT on the nix
+// daemon health probe (nix eval) that runs just before it.
 func TestWrapNix_SetOnApplyNotOnItsProbe(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	root := t.TempDir()
-	mkRepoDir(t, root, "leaf")
-	mkRepoDir(t, root, "dep")
-	writeFile(t, filepath.Join(root, "pn-workspace.toml"), applyTOML)
-	writeFile(t, filepath.Join(root, LockFileName), applyLock)
-	trustWS(t, root)
-	leafDir := filepath.Join(root, "leaf")
-	depDir := filepath.Join(root, "dep")
-
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
-	f.AddResponse("sudo", []string{
-		"darwin-rebuild", "switch", "--flake", leafDir + "#" + shortHostname(),
-		"--override-input", "dep-input", "git+file://" + depDir,
-	}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", depDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("d\n")}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("l\n")}, nil)
-	f.AddResponse("git", []string{"-C", depDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{}, nil)
-	f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{}, nil)
-	w, err := Open(root, f)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := w.Apply(context.Background(), io.Discard, ApplyOptions{Force: true}); err != nil {
+	e := newAsUserEnv(t, asUserTOML, nil)
+	if err := e.apply(context.Background(), io.Discard); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	calls := f.Calls()
-	if !wrapNixOf(t, calls, "sudo", "darwin-rebuild") {
-		t.Error("Apply must set WrapNix on the apply command")
+	e.f.mu.Lock()
+	calls := append([]exec.Call{}, e.f.calls...)
+	e.f.mu.Unlock()
+	if !wrapNixOf(t, calls, "darwin-rebuild", "build") {
+		t.Error("Apply must set WrapNix on the build command")
 	}
 	if wrapNixOf(t, calls, "nix", "eval") {
 		t.Error("the nix daemon health probe (nix eval) must NOT set WrapNix")

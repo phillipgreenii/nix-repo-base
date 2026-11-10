@@ -123,9 +123,19 @@ Evaluates each cloned repo's `flake.nix` inputs, discovers workspace dependency 
 
 The `input-name` field on `[repos.*]` sections has been removed. Alias names are now derived automatically from each consumer's declared flake input aliases at lock time. If you see an error about `input-name`, remove that field from `pn-workspace.toml`.
 
-**`apply_command` has no default** — unlike `build_command`, which defaults to `{builder} build --flake {terminal_nix_dir}`, `workspace.apply_command` MUST be set explicitly in `pn-workspace.toml` or `pn workspace apply` fails with `workspace.apply_command is not set in pn-workspace.toml`. A NixOS example: `apply_command = '{builder} switch --flake {terminal_nix_dir}#{hostname} --sudo'`. Known template placeholders: `terminal_repo_dir`, `terminal_nix_dir`, `terminal_nix_relative_path`, `hostname`, `builder` (`nixos-rebuild` on NixOS, `darwin-rebuild` on darwin). `--sudo` (nixos-rebuild-ng) builds/evaluates unprivileged and escalates only activation — this matters because an eval running as root hits a git "dubious ownership" error on the sibling override repos owned by the non-root user. `pn-workspace.toml` lives in the non-git workspace root, so this setting is not version-controlled — a `pn workspace init`/`clone` regen could drop it, so re-check it after either.
+**`activate_command` is required** (ADRs 0038 and 0041). `pn workspace apply` has one flow and fails with `workspace.activate_command is not set in pn-workspace.toml` without it. There is no `apply_command` and no `--apply-command`; a leftover `apply_command` line in the toml is an ignored unknown key. Apply builds as YOU (the `build_command` expansion, wrapped, in a private `~/.local/state/pn/apply-build/run-*` directory removed afterwards, so `build_command` MUST be a `darwin-rebuild build` or `nixos-rebuild build` that leaves `./result` in its cwd), validates the resulting `/nix/store` path, probes it (darwin), and then runs only two root steps through sudo: `nix-env -p /nix/var/nix/profiles/system --set <out>` (hard-coded, not templated) and the `activate_command` expansion. Any preflight, directory or probe failure is an error before a root step; there is no fallback and no root build. The platform comes from the program named in `activate_command`, not from the host. Examples:
 
-**`activate_command` (optional, build-as-user apply, ADR 0038).** When `[workspace].activate_command` is set (v1 value `sudo {out}/sw/bin/darwin-rebuild activate`), `pn workspace apply` no longer lets root evaluate: it runs the `build_command` expansion as YOU (wrapped, in a private `~/.local/state/pn/apply-build/run-*` directory that is removed afterwards, so `build_command` MUST be a `darwin-rebuild build` that leaves `./result` in its cwd), validates the resulting `/nix/store` path, probes `<out>/sw/bin/darwin-rebuild --help`, and then runs only two root steps through sudo: `nix-env -p /nix/var/nix/profiles/system --set <out>` (hard-coded, not templated) and the `activate_command` expansion. `{out}` is valid only in `activate_command`; its `argv[0]` MUST be `sudo` and its program one element beginning with `{out}/`. `apply_command` stays set as the fallback (probe or preflight failure runs it, announced). With the key unset nothing changes. The nix JSONL of such an apply is in your own `~/.local/state/pn/nix-logs`, and the apply log's trailer has `failed_step`. Rollback is clearing the key (the enforcer never deletes it) and `pn workspace allow`. Agents still MUST NOT run apply.
+```toml
+# darwin (verified)
+build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
+
+# NixOS (UNVERIFIED on a NixOS host until NIXOS_TODO.md is done)
+build_command = "nixos-rebuild build --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/bin/switch-to-configuration switch"
+```
+
+`{out}` is valid only in `activate_command`; its `argv[0]` MUST be `sudo` and its program one element beginning with `{out}/`. Other placeholders: `terminal_repo_dir`, `terminal_nix_dir`, `terminal_nix_relative_path`, `hostname`, `builder` (`nixos-rebuild` on NixOS, `darwin-rebuild` on darwin). `pn-workspace.toml` lives in the non-git workspace root, so this setting is not version-controlled: a `pn workspace init`/`clone` regen could drop it, so re-check it after either. The nix JSONL of an apply is in your own `~/.local/state/pn/nix-logs`, and the apply log's trailer has `failed_step`. The enforcer never deletes the key; any rewrite of the toml needs `pn workspace allow` afterwards. Agents still MUST NOT run apply.
 
 ### Adopting a new hookable command (forward-compat two-step)
 
@@ -275,8 +285,8 @@ a missing key as unknown rather than as an error.
 
 Trailer phase times, in seconds, one `key: value` line each, never inside the output section:
 `prelude_seconds` (start of the verb until the nix build command started: skip gate, lock wait, ref
-capture), `build_seconds` (the nix build; a legacy single-command apply reports its whole command
-here), `activate_seconds` (apply only, build-as-user flow: set-profile plus activate, including the
+capture), `build_seconds` (the nix build),
+`activate_seconds` (apply only: set-profile plus activate, including the
 wait for sudo), `post_steps_seconds` (apply only: nvd diff, fsmonitor restart, markApplied). A phase
 the run never reached has no line. `plan: builds=N fetches=M download_mib=X` records the plan nix
 printed. Post-HOOK time is NOT in the trailer (hooks run after the trailer is written): read it from

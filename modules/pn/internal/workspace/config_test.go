@@ -98,7 +98,7 @@ func TestParseConfig_Hooks(t *testing.T) {
 }
 
 func TestParseConfig_RejectsUnknownPlaceholder(t *testing.T) {
-	// A stale {terminal_flake} (or any typo) in build_command/apply_command must
+	// A stale {terminal_flake} (or any typo) in build_command must
 	// fail at config-load, not silently at build/apply time.
 	badBuild := `[workspace]
 build_command = "nixos-rebuild build --flake {terminal_flake}"
@@ -109,19 +109,9 @@ build_command = "nixos-rebuild build --flake {terminal_flake}"
 		t.Errorf("error should name the bad placeholder; got %q", err.Error())
 	}
 
-	badApply := `[workspace]
-apply_command = "sudo {builder} switch --flake {bogus}"
-`
-	if _, err := ParseConfig([]byte(badApply)); err == nil {
-		t.Fatal("expected error for unknown apply_command placeholder; got nil")
-	} else if !strings.Contains(err.Error(), "bogus") {
-		t.Errorf("error should name the bad placeholder; got %q", err.Error())
-	}
-
 	// Known placeholders — plus a legitimate lowercase ${shellvar} the $-aware
 	// scan must not mistake for a placeholder — parse cleanly.
 	good := `[workspace]
-apply_command = "sudo {builder} switch --flake {terminal_nix_dir}#{hostname}"
 build_command = "sh -c 'echo ${home}; {builder} build --flake {terminal_repo_dir}/{terminal_nix_relative_path}'"
 `
 	if _, err := ParseConfig([]byte(good)); err != nil {
@@ -329,7 +319,6 @@ func TestParseConfig_WorkspaceCommands(t *testing.T) {
 [workspace]
 terminal = "leaf"
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 
 [repos.leaf]
 url = "github:owner/leaf"
@@ -346,10 +335,6 @@ url = "github:owner/dep"
 	}
 	if got := cfg.BuildCommandTemplate(); got != "darwin-rebuild build --flake {terminal_nix_dir}" {
 		t.Errorf("BuildCommandTemplate: got %q", got)
-	}
-	ac, err := cfg.ApplyCommandTemplate()
-	if err != nil || ac != "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}" {
-		t.Errorf("ApplyCommandTemplate: got %q, %v", ac, err)
 	}
 }
 
@@ -378,9 +363,6 @@ url = "github:owner/leaf"
 	}
 	if _, err := cfg.TerminalRepo(); err == nil {
 		t.Error("expected error when terminal unset")
-	}
-	if _, err := cfg.ApplyCommandTemplate(); err == nil {
-		t.Error("expected error when apply_command unset")
 	}
 }
 
@@ -725,7 +707,7 @@ func TestWriteConfigTOMLTo_PreservesFoundation(t *testing.T) {
 
 func TestEnforceKeys_PreservesFoundation(t *testing.T) {
 	p := writeTemp(t, "pn-workspace.toml", foundationTOML, 0o600)
-	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "", "")
+	changed, err := EnforceKeys(p, "phillipg-mbp", "pb gate check", "", "")
 	if err != nil {
 		t.Fatalf("EnforceKeys: %v", err)
 	}
@@ -795,5 +777,29 @@ func TestWarnBuilds_SurvivesRewrite(t *testing.T) {
 		if !strings.Contains(string(data), "warn_builds = "+v) {
 			t.Fatalf("warn_builds = %s lost on rewrite:\n%s", v, data)
 		}
+	}
+}
+
+// A toml that still carries the removed apply_command key parses; the key is
+// ignored and the remaining command keys keep their values.
+func TestConfig_LeftoverApplyCommandLineIsIgnored(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`
+[workspace]
+terminal = "leaf"
+build_command = "darwin-rebuild build --flake {terminal_nix_dir}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
+apply_command = "sudo darwin-rebuild switch"
+
+[repos.leaf]
+url = "github:owner/leaf"
+`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Workspace.BuildCommand != "darwin-rebuild build --flake {terminal_nix_dir}" {
+		t.Errorf("BuildCommand = %q", cfg.Workspace.BuildCommand)
+	}
+	if cfg.Workspace.ActivateCommand != "sudo {out}/sw/bin/darwin-rebuild activate" {
+		t.Errorf("ActivateCommand = %q", cfg.Workspace.ActivateCommand)
 	}
 }

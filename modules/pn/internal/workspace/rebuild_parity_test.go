@@ -7,8 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
 
 // wantPrelude is the golden prelude, in order. Adding a step to the shared
@@ -44,28 +42,20 @@ func parityRun(t *testing.T, verb string) recordedSteps {
 id = "paritytest"
 terminal = "leaf"
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.leaf]
 url = "github:owner/leaf"
 `)
 	trustWS(t, root)
-	leafDir := filepath.Join(root, "leaf")
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil)
-	f.AddResponse("darwin-rebuild", []string{"build", "--flake", leafDir + "#parityhost"}, exec.Result{}, nil)
-	f.AddResponse("sudo", []string{"darwin-rebuild", "switch", "--flake", leafDir + "#parityhost"}, exec.Result{}, nil)
-	for i := 0; i < 3; i++ { // gate probes, markApplied's probe
-		f.AddResponse("git", []string{"-C", leafDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{}, nil)
-		f.AddResponse("git", []string{"-C", leafDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("h\n")}, nil)
-	}
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/g\n")}, nil)
-	f.AddResponse("git", []string{"--exec-path"}, exec.Result{Stdout: []byte("/g\n")}, nil)
+	store := t.TempDir()
+	f := &asUserFake{t: t, sys: newFakeSystem(t, store, fakeHash)}
 	w, err := Open(root, f)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	w.hostnameFn = func() string { return "parityhost" }
+	installAsUserSeams(w, store)
 	var rec recordedSteps
 	w.stepRecorder = func(v string, shared bool, step string) {
 		if v != verb {
@@ -82,7 +72,7 @@ url = "github:owner/leaf"
 	case "build":
 		err = w.Build(context.Background(), &out, BuildOptions{})
 	case "apply":
-		err = w.Apply(context.Background(), &out, ApplyOptions{Force: true})
+		err = w.Apply(context.Background(), &out, ApplyOptions{Force: true, Builder: "darwin-rebuild"})
 	}
 	if err != nil {
 		t.Fatalf("%s: %v\n%s", verb, err, out.String())
@@ -112,7 +102,7 @@ func TestRebuildParity_VerbSpecificSteps(t *testing.T) {
 	if got, want := parityRun(t, "build").own, []string{stepReportApplyDecision, stepRunCommand}; !reflect.DeepEqual(got, want) {
 		t.Errorf("build steps = %v, want %v", got, want)
 	}
-	want := []string{stepSkipGate, stepApplyLog, stepCaptureHeads, stepRunCommand, stepPostSteps, stepMarkApplied}
+	want := []string{stepSkipGate, stepApplyLog, stepCaptureHeads, stepRunCommand, stepReadResult, stepProbe, stepSetProfile, stepActivate, stepPostSteps, stepMarkApplied}
 	if got := parityRun(t, "apply").own; !reflect.DeepEqual(got, want) {
 		t.Errorf("apply steps = %v, want %v", got, want)
 	}

@@ -1,7 +1,7 @@
 // Command pn-workspace-toml-enforce reconciles the nix-owned keys in a
 // pn-workspace.toml — [workspace].id, [hooks.apply].post, and (added by bead
-// pg2-k43p.8) the static command templates [workspace].build_command and
-// [workspace].apply_command — against committed source values supplied on the
+// pg2-k43p.8) the static command template [workspace].build_command and the
+// optional [workspace].activate_command — against committed source values supplied on the
 // command line. It is a small, separate entrypoint (NOT a user-facing
 // `pn workspace` verb): pn deliberately stays parse-and-surface-only for these
 // keys, while a nix home.activation script invokes THIS binary to enforce them.
@@ -10,7 +10,7 @@
 //
 // workspace.terminal is deliberately NOT enforced: pn validates it against
 // [repos.*], so it stays pn-owned (repo-topology-coupled). --build-command and
-// --apply-command are key-scoped — an empty/omitted value leaves that key
+// --activate-command are key-scoped — an empty/omitted value leaves that key
 // untouched, so terminal and any future unmanaged key are never disturbed.
 //
 // It reuses pn's internal/workspace serialization (ParseConfig + the orderedConfig
@@ -45,8 +45,8 @@ func main() {
 // It prints a single line to out ONLY when it rewrote the file (so a no-op is
 // silent — the caller's activation wrapper prints nothing on an unchanged run).
 //
-// --root, --id, and --apply-post are required. --build-command,
-// --apply-command and --activate-command are OPTIONAL and key-scoped: an omitted (empty) value leaves
+// --root, --id, and --apply-post are required. --build-command and
+// --activate-command are OPTIONAL and key-scoped: an omitted (empty) value leaves
 // that key untouched (see workspace.EnforceKeys).
 func run(args []string, out io.Writer) int {
 	fs := flag.NewFlagSet("pn-workspace-toml-enforce", flag.ContinueOnError)
@@ -55,7 +55,6 @@ func run(args []string, out io.Writer) int {
 	id := fs.String("id", "", "committed value for [workspace].id (required)")
 	applyPost := fs.String("apply-post", "", "committed value for the single [hooks.apply].post entry (required)")
 	buildCommand := fs.String("build-command", "", "committed value for [workspace].build_command (optional; empty leaves it untouched)")
-	applyCommand := fs.String("apply-command", "", "committed value for [workspace].apply_command (optional; empty leaves it untouched)")
 	activateCommand := fs.String("activate-command", "", "committed value for [workspace].activate_command (optional; empty leaves it untouched)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -66,7 +65,7 @@ func run(args []string, out io.Writer) int {
 	}
 
 	path := filepath.Join(*root, workspace.ConfigFileName)
-	changed, err := workspace.EnforceKeys(path, *id, *applyPost, *buildCommand, *applyCommand, *activateCommand)
+	changed, err := workspace.EnforceKeys(path, *id, *applyPost, *buildCommand, *activateCommand)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

@@ -36,7 +36,6 @@ const asUserTOML = `
 [workspace]
 terminal = "leaf"
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.leaf]
@@ -120,7 +119,7 @@ func (f *asUserFake) Run(ctx context.Context, name string, args []string, opts e
 			}
 		}
 		return exec.Result{}, nil
-	case name == "darwin-rebuild" && len(args) > 0 && args[0] == "build":
+	case (name == "darwin-rebuild" || name == "nixos-rebuild") && len(args) > 0 && args[0] == "build":
 		if f.build != nil {
 			return f.build(ctx, opts)
 		}
@@ -135,7 +134,7 @@ func (f *asUserFake) Run(ctx context.Context, name string, args []string, opts e
 			return f.setProfile(ctx, args)
 		}
 		return exec.Result{}, nil
-	case name == "sudo" && len(args) == 2 && strings.HasSuffix(args[0], "/sw/bin/darwin-rebuild") && args[1] == "activate":
+	case name == "sudo" && len(args) == 2 && ((strings.HasSuffix(args[0], "/sw/bin/darwin-rebuild") && args[1] == "activate") || (strings.HasSuffix(args[0], "/bin/switch-to-configuration") && args[1] == "switch")):
 		if f.activate != nil {
 			return f.activate(ctx, args)
 		}
@@ -185,6 +184,85 @@ func (f *asUserFake) rootCalls() []exec.Call {
 
 func argvOf(c exec.Call) string { return strings.Join(append([]string{c.Name}, c.Args...), " ") }
 
+// installAsUserSeams points w at a fake store and a usable nix-env.
+func installAsUserSeams(w *Workspace, store string) {
+	w.asUserSeams = &asUserSeams{nixEnvUsable: func() bool { return true }, storeDir: store}
+}
+
+// withAsUserSeams is for tests that build their own Workspace: it installs the
+// seams over a fresh store, lays a fake system out in it and returns its out path.
+func withAsUserSeams(t *testing.T, w *Workspace) string {
+	t.Helper()
+	store := t.TempDir()
+	installAsUserSeams(w, store)
+	return newFakeSystem(t, store, fakeHash).out
+}
+
+// asUserTOMLWith is asUserTOML plus extra [workspace] lines.
+func asUserTOMLWith(extra string) string {
+	return strings.Replace(asUserTOML, "[workspace]\n", "[workspace]\n"+extra+"\n", 1)
+}
+
+// scriptedRunner answers the calls a test scripted (FIFO per name and args) and
+// hands every other call to base (an asUserFake). It records every call, in
+// order, so a test can compare the position of a scripted git call with the
+// build's.
+type scriptedRunner struct {
+	base exec.Runner
+
+	mu    sync.Mutex
+	resp  []scriptedResp
+	calls []exec.Call
+}
+
+type scriptedResp struct {
+	name string
+	args []string
+	res  exec.Result
+	err  error
+}
+
+func newScripted(base exec.Runner) *scriptedRunner { return &scriptedRunner{base: base} }
+
+func (s *scriptedRunner) add(name string, args []string, res exec.Result, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resp = append(s.resp, scriptedResp{name, args, res, err})
+}
+
+func (s *scriptedRunner) Run(ctx context.Context, name string, args []string, opts exec.RunOptions) (exec.Result, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, exec.Call{Name: name, Args: append([]string{}, args...), Opts: opts})
+	for i, r := range s.resp {
+		if r.name == name && strings.Join(r.args, "\x00") == strings.Join(args, "\x00") {
+			s.resp = append(s.resp[:i], s.resp[i+1:]...)
+			s.mu.Unlock()
+			return r.res, r.err
+		}
+	}
+	s.mu.Unlock()
+	return s.base.Run(ctx, name, args, opts)
+}
+
+func (s *scriptedRunner) Calls() []exec.Call {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]exec.Call{}, s.calls...)
+}
+
+// newScriptedEnv is newAsUserEnv with a scriptedRunner in front of the fake.
+func newScriptedEnv(t *testing.T, toml string) (*asUserEnv, *scriptedRunner) {
+	t.Helper()
+	var sr *scriptedRunner
+	e := newAsUserEnv(t, toml, func(b exec.Runner) exec.Runner { sr = newScripted(b); return sr })
+	return e, sr
+}
+
+// isBuildCall reports whether c is the user's `<builder> build` call.
+func isBuildCall(c exec.Call) bool {
+	return (c.Name == "darwin-rebuild" || c.Name == "nixos-rebuild") && len(c.Args) > 0 && c.Args[0] == "build"
+}
+
 type asUserEnv struct {
 	w       *Workspace
 	f       *asUserFake
@@ -217,7 +295,7 @@ func newAsUserEnv(t *testing.T, toml string, wrap func(exec.Runner) exec.Runner)
 		t.Fatalf("Open: %v", err)
 	}
 	w.hostnameFn = func() string { return asUserHost }
-	w.asUserSeams = &asUserSeams{nixEnvUsable: func() bool { return true }, storeDir: store}
+	installAsUserSeams(w, store)
 	return &asUserEnv{
 		w: w, f: f, root: root,
 		leafDir: filepath.Join(root, "leaf"), depDir: filepath.Join(root, "dep"),
@@ -403,7 +481,6 @@ func TestAsUser_ApplyLogRecordsAllStepsAndNoFailure(t *testing.T) {
 		"command: darwin-rebuild build --flake " + e.leafDir + "#" + asUserHost,
 		"set-profile command: sudo env -i HOME=/var/root NIX_REMOTE=daemon PATH=/run/current-system/sw/bin:/usr/bin:/bin /run/current-system/sw/bin/nix-env -p /nix/var/nix/profiles/system --set <out>",
 		"activate command: sudo <out>/sw/bin/darwin-rebuild activate",
-		"fallback command (if the built system cannot be activated this way): sudo darwin-rebuild switch --flake " + e.leafDir + "#" + asUserHost,
 	} {
 		if !strings.Contains(header, want) {
 			t.Errorf("apply log header lacks %q:\n%s", want, header)
@@ -423,25 +500,6 @@ func TestAsUser_ApplyLogRecordsAllStepsAndNoFailure(t *testing.T) {
 	for _, k := range []string{"prelude_seconds", "build_seconds", "activate_seconds", "post_steps_seconds"} {
 		if got := trailerValue(t, log, k); got == "<absent>" {
 			t.Errorf("trailer lacks %s:\n%s", k, log)
-		}
-	}
-}
-
-// With activate_command unset the legacy trailer has no failed_step line.
-func TestAsUser_LegacyApplyLogHasNoFailedStep(t *testing.T) {
-	e := newAsUserEnv(t, strings.Replace(asUserTOML, `activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"`, "", 1), nil)
-	if err := e.apply(context.Background(), io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if got := trailerValue(t, e.applyLogText(t), "failed_step"); got != "<absent>" {
-		t.Errorf("legacy trailer carries failed_step = %q", got)
-	}
-	if got := trailerValue(t, e.applyLogText(t), "activate_seconds"); got != "<absent>" {
-		t.Errorf("the legacy single-command flow has no activate phase, got %q", got)
-	}
-	for _, c := range e.f.significant() {
-		if c.Name == "darwin-rebuild" {
-			t.Errorf("the legacy flow ran a user build: %s", argvOf(c))
 		}
 	}
 }
@@ -504,7 +562,7 @@ func TestValidateBuildOut(t *testing.T) {
 
 	// Positive: sw/bin/darwin-rebuild is a symlink into another store path (the
 	// invoked path is validated, not its realpath, which is NOT under out).
-	if err := validateBuildOut(good.out, store); err != nil {
+	if err := validateBuildOut(good.out, store, darwinPlatform(t)); err != nil {
 		t.Errorf("a real-shaped system was rejected: %v", err)
 	}
 	real, _ := filepath.EvalSymlinks(filepath.Join(good.out, "sw", "bin", "darwin-rebuild"))
@@ -521,7 +579,7 @@ func TestValidateBuildOut(t *testing.T) {
 	if err := os.Symlink(link, filepath.Join(chain.out, "sw", "bin", "darwin-rebuild")); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateBuildOut(chain.out, store); err != nil {
+	if err := validateBuildOut(chain.out, store, darwinPlatform(t)); err != nil {
 		t.Errorf("a two-level symlink chain was rejected: %v", err)
 	}
 
@@ -594,7 +652,7 @@ func TestValidateBuildOut(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			out, sd := tc.out(t)
-			err := validateBuildOut(out, sd)
+			err := validateBuildOut(out, sd, darwinPlatform(t))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("validateBuildOut(%q) = %v, want an error containing %q", out, err, tc.want)
 			}
@@ -736,115 +794,79 @@ func TestAsUser_HoldsTheBuildKeyThroughTheReadAndLater(t *testing.T) {
 	}
 }
 
-// --- Fallback --------------------------------------------------------------------
+// --- Failures that used to fall back to the legacy apply ---------------------------
 
-func TestAsUser_ProbeFailureFallsBackToTheLegacyApply(t *testing.T) {
+func TestAsUser_ProbeFailureFailsWithNoRootStep(t *testing.T) {
 	cases := []struct {
-		name  string
-		probe func(context.Context, exec.RunOptions) (exec.Result, error)
-		why   string
+		name     string
+		probe    func(context.Context, exec.RunOptions) (exec.Result, error)
+		why      string
+		wantExit string
 	}{
 		{"exit 0", func(context.Context, exec.RunOptions) (exec.Result, error) {
 			return exec.Result{ExitCode: 0, Stderr: []byte(realUsage)}, nil
-		}, "exited 0, want 1"},
+		}, "exited 0, want 1", "none"},
 		{"usage on stdout", func(context.Context, exec.RunOptions) (exec.Result, error) {
 			return cmdErrResult("p", nil, exec.Result{ExitCode: 1, Stdout: []byte(realUsage)})
-		}, "wrote to stdout"},
+		}, "wrote to stdout", "1"},
 		{"no activate action", func(context.Context, exec.RunOptions) (exec.Result, error) {
 			return cmdErrResult("p", nil, exec.Result{ExitCode: 1, Stderr: []byte("darwin-rebuild [--help] {edit | switch | build | check}\n")})
-		}, `lists no "activate" action`},
+		}, `lists no "activate" action`, "1"},
 		{"not darwin-rebuild usage", func(context.Context, exec.RunOptions) (exec.Result, error) {
 			return cmdErrResult("p", nil, exec.Result{ExitCode: 1, Stderr: []byte("usage: something else\n")})
-		}, "does not start with darwin-rebuild"},
+		}, "does not start with darwin-rebuild", "1"},
 		{"cannot run", func(context.Context, exec.RunOptions) (exec.Result, error) {
 			return exec.Result{}, errors.New("fork/exec: permission denied")
-		}, "the probe could not run"},
+		}, "the probe could not run", "none"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newAsUserEnv(t, asUserTOML, nil)
 			e.f.probe = tc.probe
 			var out bytes.Buffer
-			if err := e.apply(context.Background(), &out); err != nil {
-				t.Fatalf("Apply: %v\n%s", err, out.String())
+			err := e.apply(context.Background(), &out)
+			if err == nil || !strings.Contains(err.Error(), "probe") ||
+				!strings.Contains(err.Error(), "has no usable 'darwin-rebuild activate'") || !strings.Contains(err.Error(), tc.why) {
+				t.Fatalf("err = %v, want a probe failure naming %q", err, tc.why)
 			}
-			announce := "falling back to: sudo darwin-rebuild switch --flake " + e.leafDir + "#" + asUserHost
-			if !strings.Contains(out.String(), "has no usable 'darwin-rebuild activate'") ||
-				!strings.Contains(out.String(), tc.why) || !strings.Contains(out.String(), announce) {
-				t.Errorf("the fallback was not announced with its reason (%q):\n%s", tc.why, out.String())
+			if n := len(e.f.rootCalls()); n != 0 {
+				t.Errorf("root steps ran: %d\n%s", n, dumpCalls(e.f.rootCalls()))
 			}
-			roots := e.f.rootCalls()
-			if len(roots) != 1 || argvOf(roots[0]) != "sudo darwin-rebuild switch --flake "+e.leafDir+"#"+asUserHost+" --override-input dep-input git+file://"+e.depDir {
-				t.Fatalf("root calls:\n%s", dumpCalls(roots))
+			log := e.applyLogText(t)
+			if got := trailerValue(t, log, "failed_step"); got != "probe" {
+				t.Errorf("failed_step = %q, want probe", got)
 			}
-			if !roots[0].Opts.WrapNix || roots[0].Opts.Dir != e.leafDir || roots[0].Opts.OwnProcessGroup {
-				t.Errorf("the fallback must run as the legacy command does: %+v", roots[0].Opts)
+			if got := trailerValue(t, log, "exit_status"); got != tc.wantExit {
+				t.Errorf("exit_status = %q, want %q", got, tc.wantExit)
 			}
-			if !e.applied(t) {
-				t.Error("a successful fallback must record the applied state")
+			if e.applied(t) {
+				t.Error("markApplied written on a failure")
 			}
 			if dirs := e.runDirs(t); len(dirs) != 0 {
 				t.Errorf("run dirs left: %v", dirs)
-			}
-			if got := trailerValue(t, e.applyLogText(t), "failed_step"); got != "none" {
-				t.Errorf("failed_step = %q", got)
 			}
 		})
 	}
 }
 
-func TestAsUser_ProbeFailureWithoutApplyCommandFailsClearly(t *testing.T) {
-	toml := strings.Replace(asUserTOML, `apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"`, "", 1)
-	e := newAsUserEnv(t, toml, nil)
-	e.f.probe = func(context.Context, exec.RunOptions) (exec.Result, error) {
-		return cmdErrResult("p", nil, exec.Result{ExitCode: 1, Stderr: []byte("darwin-rebuild {switch | build}\n")})
-	}
-	err := e.apply(context.Background(), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "probe") || !strings.Contains(err.Error(), `lists no "activate" action`) || !strings.Contains(err.Error(), "no apply_command") {
-		t.Fatalf("err = %v, want a clear probe failure naming the reason and the missing apply_command", err)
-	}
-	if n := len(e.f.rootCalls()); n != 0 {
-		t.Errorf("root steps ran: %d", n)
-	}
-	log := e.applyLogText(t)
-	if got := trailerValue(t, log, "failed_step"); got != "probe" {
-		t.Errorf("failed_step = %q, want probe", got)
-	}
-	if got := trailerValue(t, log, "exit_status"); got != "1" {
-		t.Errorf("exit_status = %q, want the probe's 1", got)
-	}
-	if e.applied(t) {
-		t.Error("markApplied written on a failure")
-	}
-}
-
-// A failed preflight runs the legacy flow BEFORE building anything, with one line.
-func TestAsUser_PreflightFailureRunsTheLegacyApplyBeforeAnyBuild(t *testing.T) {
+// A failed preflight fails BEFORE anything is built, with no root build.
+func TestAsUser_PreflightFailureFailsBeforeAnyBuild(t *testing.T) {
 	e := newAsUserEnv(t, asUserTOML, nil)
 	e.w.asUserSeams.nixEnvUsable = func() bool { return false }
-	var out bytes.Buffer
-	if err := e.apply(context.Background(), &out); err != nil {
-		t.Fatalf("Apply: %v\n%s", err, out.String())
+	err := e.apply(context.Background(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "build-as-user flow cannot start") || !strings.Contains(err.Error(), nixEnvPath) {
+		t.Fatalf("err = %v", err)
 	}
-	if !strings.Contains(out.String(), "build-as-user flow unavailable") || !strings.Contains(out.String(), nixEnvPath) ||
-		!strings.Contains(out.String(), "running apply_command instead: sudo darwin-rebuild switch") {
-		t.Errorf("preflight failure not announced:\n%s", out.String())
-	}
-	calls := e.f.significant()
-	if len(calls) != 1 || calls[0].Name != "sudo" || calls[0].Args[0] != "darwin-rebuild" || calls[0].Args[1] != "switch" {
-		t.Errorf("calls:\n%s", dumpCalls(calls))
+	if n := len(e.f.significant()); n != 0 {
+		t.Errorf("commands ran before the preflight failure was reported: %d\n%s", n, dumpCalls(e.f.significant()))
 	}
 	if dirs := e.runDirs(t); len(dirs) != 0 {
 		t.Errorf("run dirs: %v", dirs)
 	}
-	if got := trailerValue(t, e.applyLogText(t), "failed_step"); got != "<absent>" {
-		t.Errorf("the legacy trailer must not carry failed_step: %q", got)
-	}
 }
 
-// If the per-run directory cannot be created the legacy flow runs, announced,
-// and nothing has been built.
-func TestAsUser_RunDirFailureRunsTheLegacyApplyBeforeAnyBuild(t *testing.T) {
+// If the per-run directory cannot be created apply fails, and nothing has been built.
+func TestAsUser_RunDirFailureFailsBeforeAnyBuild(t *testing.T) {
 	e := newAsUserEnv(t, asUserTOML, nil)
 	// A FILE where the apply-build directory must go.
 	if err := os.MkdirAll(filepath.Join(e.state, "pn"), 0o755); err != nil {
@@ -853,46 +875,161 @@ func TestAsUser_RunDirFailureRunsTheLegacyApplyBeforeAnyBuild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(e.state, "pn", "apply-build"), []byte("in the way"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	err := e.apply(context.Background(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "cannot create the per-run build directory") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(e.f.significant()); n != 0 {
+		t.Errorf("commands ran: %s", dumpCalls(e.f.significant()))
+	}
+	if got := trailerValue(t, e.applyLogText(t), "failed_step"); got != "build" {
+		t.Errorf("failed_step = %q, want build", got)
+	}
+	if e.applied(t) {
+		t.Error("markApplied written on a failure")
+	}
+}
+
+// --- activate_command is required ----------------------------------------------
+
+// asUserTOMLWithoutActivate is a toml with build_command but no
+// activate_command.
+func asUserTOMLWithoutActivate() string {
+	return strings.Replace(asUserTOML, `activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"`, "", 1)
+}
+
+func TestAsUser_ApplyWithoutActivateCommandFailsBeforeAnyProcess(t *testing.T) {
+	e := newAsUserEnv(t, asUserTOMLWithoutActivate(), nil)
+	var out bytes.Buffer
+	err := e.apply(context.Background(), &out)
+	if err == nil || !strings.Contains(err.Error(), "workspace.activate_command is not set") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(e.f.significant()); n != 0 {
+		t.Errorf("commands ran: %s", dumpCalls(e.f.significant()))
+	}
+	if e.applied(t) {
+		t.Error("an apply with no activate_command was recorded as applied")
+	}
+}
+
+func TestAsUser_ShowNixCommandsWithoutActivateCommandFails(t *testing.T) {
+	e := newAsUserEnv(t, asUserTOMLWithoutActivate(), nil)
+	var out bytes.Buffer
+	err := e.w.Apply(context.Background(), &out, ApplyOptions{ShowNixCommandsOnly: true, Builder: "darwin-rebuild"})
+	if err == nil || !strings.Contains(err.Error(), "workspace.activate_command is not set") {
+		t.Fatalf("err = %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("printed output despite the failure:\n%s", out.String())
+	}
+}
+
+// A toml that still has apply_command next to activate_command applies through the
+// one flow and never runs apply_command.
+func TestAsUser_LeftoverApplyCommandLineIsIgnored(t *testing.T) {
+	toml := strings.Replace(asUserTOML, "[workspace]\n", "[workspace]\napply_command = \"sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}\"\n", 1)
+	e := newAsUserEnv(t, toml, nil)
 	var out bytes.Buffer
 	if err := e.apply(context.Background(), &out); err != nil {
 		t.Fatalf("Apply: %v\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "cannot create the per-run build directory") || !strings.Contains(out.String(), "falling back to: sudo darwin-rebuild switch") {
-		t.Errorf("not announced:\n%s", out.String())
+	for _, c := range e.f.significant() {
+		if hasString(c.Args, "switch") {
+			t.Errorf("a call containing switch ran: %s", argvOf(c))
+		}
+	}
+	if strings.Contains(out.String(), "apply_command") {
+		t.Errorf("output mentions apply_command:\n%s", out.String())
+	}
+}
+
+// --- NixOS and unrecognised activate programs -------------------------------------
+
+const nixosTOML = `
+[workspace]
+terminal = "leaf"
+build_command = "nixos-rebuild build --flake {terminal_nix_dir}#{hostname}"
+activate_command = "sudo {out}/bin/switch-to-configuration switch"
+
+[repos.leaf]
+url = "github:owner/leaf"
+
+[repos.dep]
+url = "github:owner/dep"
+`
+
+func TestAsUser_NixOSCommandSequence(t *testing.T) {
+	e := newAsUserEnv(t, nixosTOML, nil)
+	e.f.sys = newFakeNixOSSystem(t, e.sys.store, fakeHash2)
+	var out bytes.Buffer
+	// No Builder: the platform comes from activate_command, never from the host.
+	if err := e.w.Apply(context.Background(), &out, ApplyOptions{Force: true}); err != nil {
+		t.Fatalf("Apply: %v\n%s", err, out.String())
+	}
+	o := e.f.sys.out
+	want := []string{
+		"nixos-rebuild build --flake " + e.leafDir + "#" + asUserHost + " --override-input dep-input git+file://" + e.depDir,
+		"sudo env -i HOME=/root NIX_REMOTE=daemon PATH=/run/current-system/sw/bin:/usr/bin:/bin /run/current-system/sw/bin/nix-env -p /nix/var/nix/profiles/system --set " + o,
+		"sudo " + o + "/bin/switch-to-configuration switch",
 	}
 	calls := e.f.significant()
-	if len(calls) != 1 || calls[0].Name != "sudo" || calls[0].Args[1] != "switch" {
-		t.Errorf("calls:\n%s", dumpCalls(calls))
+	if len(calls) != len(want) {
+		t.Fatalf("calls = %d, want %d (the NixOS probe runs no process):\n%s", len(calls), len(want), dumpCalls(calls))
+	}
+	for i, c := range calls {
+		if got := argvOf(c); got != want[i] {
+			t.Errorf("call %d:\n got  %s\n want %s", i, got, want[i])
+		}
+	}
+	if calls[0].Opts.Dir == e.leafDir || !calls[0].Opts.WrapNix {
+		t.Errorf("build options = %+v, want the private run dir and WrapNix", calls[0].Opts)
+	}
+	for _, c := range calls {
+		if strings.Contains(argvOf(c), "darwin") && c.Name != "env" {
+			t.Errorf("a darwin-only string appears in a NixOS argv: %s", argvOf(c))
+		}
+	}
+	if !e.applied(t) {
+		t.Error("a successful NixOS apply did not record the applied state")
 	}
 }
 
-func TestAsUser_PreflightFailureWithoutApplyCommandFailsBeforeAnyBuild(t *testing.T) {
-	toml := strings.Replace(asUserTOML, `apply_command = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"`, "", 1)
-	e := newAsUserEnv(t, toml, nil)
-	e.w.asUserSeams.nixEnvUsable = func() bool { return false }
-	err := e.apply(context.Background(), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "unavailable") || !strings.Contains(err.Error(), "no apply_command") {
-		t.Fatalf("err = %v", err)
-	}
-	if n := len(e.f.significant()); n != 0 {
-		t.Errorf("commands ran before the preflight failure was reported: %d", n)
-	}
-}
-
-// An explicit per-invocation apply command (upgrade's ApplyCmd) keeps the legacy
-// flow even when activate_command is configured.
-func TestAsUser_ExplicitApplyCommandKeepsTheLegacyFlow(t *testing.T) {
-	e := newAsUserEnv(t, asUserTOML, nil)
-	err := e.w.Apply(context.Background(), io.Discard, ApplyOptions{
-		Force: true, Builder: "darwin-rebuild",
-		ApplyCmd: "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}",
-	})
-	if err != nil {
+func TestAsUser_NixOSMissingSwitchToConfigurationFailsAtReadResult(t *testing.T) {
+	e := newAsUserEnv(t, nixosTOML, nil)
+	sys := newFakeNixOSSystem(t, e.sys.store, fakeHash2)
+	if err := os.Remove(sys.out + "/bin/switch-to-configuration"); err != nil {
 		t.Fatal(err)
 	}
-	calls := e.f.significant()
-	if len(calls) != 1 || calls[0].Name != "sudo" {
-		t.Errorf("calls:\n%s", dumpCalls(calls))
+	e.f.sys = sys
+	err := e.w.Apply(context.Background(), io.Discard, ApplyOptions{Force: true})
+	if err == nil || !strings.Contains(err.Error(), "read build result") || !strings.Contains(err.Error(), "bin/switch-to-configuration") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(e.f.rootCalls()); n != 0 {
+		t.Errorf("root steps ran: %d", n)
+	}
+	if got := trailerValue(t, e.applyLogText(t), "failed_step"); got != "read-result" {
+		t.Errorf("failed_step = %q, want read-result", got)
+	}
+	// The error text of the NixOS path names no darwin file.
+	if strings.Contains(err.Error(), "darwin") {
+		t.Errorf("NixOS error mentions darwin: %v", err)
+	}
+}
+
+func TestAsUser_UnrecognisedActivateProgramFailsBeforeAnyProcess(t *testing.T) {
+	toml := strings.Replace(nixosTOML, "{out}/bin/switch-to-configuration switch", "{out}/bin/other activate", 1)
+	e := newAsUserEnv(t, toml, nil)
+	err := e.w.Apply(context.Background(), io.Discard, ApplyOptions{Force: true})
+	if err == nil || !strings.Contains(err.Error(), "{out}/sw/bin/darwin-rebuild") || !strings.Contains(err.Error(), "{out}/bin/switch-to-configuration") {
+		t.Fatalf("err = %v, want one naming both accepted programs", err)
+	}
+	if n := len(e.f.significant()); n != 0 {
+		t.Errorf("commands ran: %s", dumpCalls(e.f.significant()))
+	}
+	if e.applied(t) {
+		t.Error("applied despite the failure")
 	}
 }
 
@@ -1033,7 +1170,7 @@ func TestAsUser_CancelBeforeSetProfileStartsNoRootStep(t *testing.T) {
 
 // A cancel while the probe runs must not turn into a fallback to the legacy root
 // switch.
-func TestAsUser_CancelDuringTheProbeDoesNotFallBack(t *testing.T) {
+func TestAsUser_CancelDuringTheProbeStartsNoRootStep(t *testing.T) {
 	e := newAsUserEnv(t, asUserTOML, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	e.f.probe = func(c context.Context, _ exec.RunOptions) (exec.Result, error) {
@@ -1222,7 +1359,7 @@ func TestParseDarwinRebuildUsage(t *testing.T) {
 }
 
 // A probe that outlives its timeout is a probe failure, not a hang.
-func TestAsUser_ProbeTimeoutFallsBack(t *testing.T) {
+func TestAsUser_ProbeTimeoutFails(t *testing.T) {
 	old := probeTimeout
 	probeTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { probeTimeout = old })
@@ -1231,11 +1368,37 @@ func TestAsUser_ProbeTimeoutFallsBack(t *testing.T) {
 		<-c.Done()
 		return cmdErr("p", nil, -1)
 	}
-	var out bytes.Buffer
-	if err := e.apply(context.Background(), &out); err != nil {
-		t.Fatalf("%v\n%s", err, out.String())
+	err := e.apply(context.Background(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "did not finish within") {
+		t.Fatalf("err = %v, want a probe timeout failure", err)
 	}
-	if !strings.Contains(out.String(), "did not finish within") || len(e.f.rootCalls()) != 1 {
-		t.Errorf("timeout not handled as a probe failure:\n%s\n%s", out.String(), dumpCalls(e.f.rootCalls()))
+	if n := len(e.f.rootCalls()); n != 0 {
+		t.Errorf("root steps ran after a probe timeout: %d", n)
 	}
+	if got := trailerValue(t, e.applyLogText(t), "failed_step"); got != "probe" {
+		t.Errorf("failed_step = %q, want probe", got)
+	}
+}
+
+// realBuild makes the user build a REAL child process: script runs under sh with
+// the options pn chose for the build (Dir, streams, process group), and, as
+// darwin-rebuild would, a successful build leaves ./result pointing at the system.
+// Everything else the apply runs stays the fake.
+func (e *asUserEnv) realBuild(real exec.Runner, script string) {
+	e.f.build = func(ctx context.Context, opts exec.RunOptions) (exec.Result, error) {
+		res, err := real.Run(ctx, "sh", []string{"-c", script}, opts)
+		if err == nil && res.ExitCode == 0 {
+			if serr := os.Symlink(e.sys.out, filepath.Join(opts.Dir, "result")); serr != nil {
+				return res, serr
+			}
+		}
+		return res, err
+	}
+}
+
+// Calls returns every recorded call (git and the daemon probe included), in order.
+func (f *asUserFake) Calls() []exec.Call {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]exec.Call{}, f.calls...)
 }

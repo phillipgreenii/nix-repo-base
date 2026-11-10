@@ -123,7 +123,7 @@ func TestRealProbe_FixtureOutDirSymlinkedToTheInstalledScript(t *testing.T) {
 	if err := os.Symlink(script, filepath.Join(out, "sw", "bin", "darwin-rebuild")); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateBuildOut(out, store); err != nil {
+	if err := validateBuildOut(out, store, darwinPlatform(t)); err != nil {
 		t.Fatalf("validateBuildOut: %v", err)
 	}
 	ws := &Workspace{runner: pnexec.NewRealRunner()}

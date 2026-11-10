@@ -280,7 +280,8 @@ func TestInfo_FindsOverridePathAppliedState(t *testing.T) {
 [workspace]
 id = "ws1"
 terminal = "leaf"
-apply_command = "sudo darwin-rebuild switch --flake {terminal_repo_dir}#{hostname}"
+build_command = "darwin-rebuild build --flake {terminal_repo_dir}#{hostname}"
+activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.leaf]
 url = "github:owner/leaf"
@@ -290,21 +291,20 @@ url = "github:owner/leaf"
 	// path OTHER than the canonical <root>/leaf.
 	overrideDir := t.TempDir()
 
-	f := exec.NewFakeRunner()
-	f.AddResponse("nix", []string{"eval", "--expr", "true"}, exec.Result{}, nil) // daemon check
-	f.AddResponse("sudo", []string{
-		"darwin-rebuild", "switch", "--flake", overrideDir + "#" + shortHostname(),
-	}, exec.Result{}, nil)
+	store := t.TempDir()
+	sr := newScripted(&asUserFake{t: t, sys: newFakeSystem(t, store, fakeHash)})
 	// markApplied runs git against the OVERRIDE dir (the applied checkout).
-	f.AddResponse("git", []string{"-C", overrideDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("feedface\n")}, nil)
-	f.AddResponse("git", []string{"-C", overrideDir, "-c", "core.fsmonitor=false", "status", "--porcelain"}, exec.Result{Stdout: []byte("")}, nil)
+	sr.add("git", []string{"-C", overrideDir, "rev-parse", "HEAD"}, exec.Result{Stdout: []byte("feedface\n")}, nil)
 
-	w, err := Open(root, f)
+	w, err := Open(root, sr)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	w.hostnameFn = func() string { return "infohost" }
+	installAsUserSeams(w, store)
 	if err := w.Apply(context.Background(), &bytes.Buffer{}, ApplyOptions{
 		Force:         true,
+		Builder:       "darwin-rebuild",
 		OverridePaths: map[string]string{"leaf": overrideDir},
 	}); err != nil {
 		t.Fatalf("Apply: %v", err)

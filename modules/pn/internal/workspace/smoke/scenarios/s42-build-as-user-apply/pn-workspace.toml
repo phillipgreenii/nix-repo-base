@@ -2,7 +2,6 @@
 name = "smoke-s42"
 terminal = "consumer"
 build_command = "darwin-rebuild build"
-apply_command = "./apply.sh"
 activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
 [repos.consumer]

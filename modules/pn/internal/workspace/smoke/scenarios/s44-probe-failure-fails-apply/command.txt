@@ -1,0 +1,7 @@
+# Bootstrap, trust the workspace, then apply: the stand-in system's
+# darwin-rebuild shows no `activate` action, so the probe fails the apply.
+workspace init
+workspace clone
+workspace lock
+workspace allow
+workspace apply

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -103,9 +104,9 @@ func TestRun_MissingFlags(t *testing.T) {
 	}
 }
 
-// --build-command / --apply-command enforce those keys, report a change, and
+// --build-command enforces that key, reports a change, and
 // leave workspace.terminal + [repos.*] intact (bead pg2-k43p.8).
-func TestRun_EnforcesBuildAndApplyCommands(t *testing.T) {
+func TestRun_EnforcesBuildCommand(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "pn-workspace.toml")
 	// liveTOML has id/terminal/apply-post but no command keys.
@@ -113,14 +114,12 @@ func TestRun_EnforcesBuildAndApplyCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	const buildCmd = "darwin-rebuild build --flake {terminal_nix_dir}"
-	const applyCmd = "sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}"
 	var out bytes.Buffer
 	code := run([]string{
 		"--root", dir,
 		"--id", "phillipg-mbp",
 		"--apply-post", "pb gate check",
 		"--build-command", buildCmd,
-		"--apply-command", applyCmd,
 	}, &out)
 	if code != 0 {
 		t.Fatalf("exit code = %d; want 0. output: %s", code, out.String())
@@ -132,9 +131,6 @@ func TestRun_EnforcesBuildAndApplyCommands(t *testing.T) {
 	if !bytes.Contains(data, []byte("build_command = 'darwin-rebuild build --flake {terminal_nix_dir}'")) {
 		t.Errorf("build_command not written verbatim: %s", data)
 	}
-	if !bytes.Contains(data, []byte("apply_command = 'sudo darwin-rebuild switch --flake {terminal_nix_dir}#{hostname}'")) {
-		t.Errorf("apply_command not written verbatim: %s", data)
-	}
 	// terminal must be preserved (pn-owned).
 	if !bytes.Contains(data, []byte("terminal = 'phillipg-nix-ziprecruiter'")) {
 		t.Errorf("terminal not preserved: %s", data)
@@ -145,7 +141,7 @@ func TestRun_EnforcesBuildAndApplyCommands(t *testing.T) {
 	}
 }
 
-// Omitting --build-command / --apply-command leaves those keys untouched
+// Omitting --build-command leaves that key untouched
 // (key-scoped) even when the required keys are enforced.
 func TestRun_OmittedCommandsLeaveKeysUntouched(t *testing.T) {
 	dir := t.TempDir()
@@ -153,7 +149,6 @@ func TestRun_OmittedCommandsLeaveKeysUntouched(t *testing.T) {
 id = 'phillipg-mbp'
 terminal = 'phillipg-nix-ziprecruiter'
 build_command = 'custom'
-apply_command = 'custom apply'
 
 [repos.phillipg-nix-ziprecruiter]
 url = 'git@github.com:x/y.git'
@@ -168,7 +163,7 @@ run = ['pb gate check']
 	}
 	before, _ := os.ReadFile(p)
 	var out bytes.Buffer
-	// No --build-command / --apply-command flags; everything else already correct.
+	// No --build-command flag; everything else already correct.
 	code := run([]string{"--root", dir, "--id", "phillipg-mbp", "--apply-post", "pb gate check"}, &out)
 	if code != 0 {
 		t.Fatalf("exit code = %d; want 0. output: %s", code, out.String())
@@ -178,7 +173,7 @@ run = ['pb gate check']
 	}
 	after, _ := os.ReadFile(p)
 	if !bytes.Equal(before, after) {
-		t.Errorf("file changed when command flags omitted:\nbefore:\n%s\nafter:\n%s", before, after)
+		t.Errorf("file changed when the flag is omitted:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -236,5 +231,28 @@ func TestRun_RejectsABadActivateCommand(t *testing.T) {
 	data, _ := os.ReadFile(p)
 	if bytes.Contains(data, []byte("activate_command")) {
 		t.Errorf("a rejected value was written:\n%s", data)
+	}
+}
+
+// --apply-command no longer exists: the standard flag package rejects it like
+// any unknown flag (exit 2, "flag provided but not defined").
+func TestEnforce_ApplyCommandFlagIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = wr
+	var out bytes.Buffer
+	code := run([]string{"--root", dir, "--id", "phillipg-mbp", "--apply-post", "pb gate check", "--apply-command", "x"}, &out)
+	os.Stderr = oldStderr
+	_ = wr.Close()
+	msg, _ := io.ReadAll(rd)
+	if code != 2 {
+		t.Errorf("exit code = %d; want 2", code)
+	}
+	if !bytes.Contains(msg, []byte("flag provided but not defined")) {
+		t.Errorf("stderr = %q; want it to contain 'flag provided but not defined'", msg)
 	}
 }

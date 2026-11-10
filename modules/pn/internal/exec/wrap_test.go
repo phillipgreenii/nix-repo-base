@@ -216,7 +216,7 @@ func TestWrap_SudoFormTable(t *testing.T) {
 		{"sudo nix-env", "sudo", []string{"nix-env", "--profile", "/p", "--list-generations"}, false},
 		{"sudo sh -c", "sudo", []string{"sh", "-c", "darwin-rebuild switch"}, false},
 		{"sudo abs path", "sudo", []string{"/run/current-system/sw/bin/darwin-rebuild", "switch"}, false},
-		// NEGATIVE: build_command / apply_command with another argv[0].
+		// NEGATIVE: build_command / activate_command with another argv[0].
 		{"sh -c", "sh", []string{"-c", "nix build"}, false},
 		{"script", "./build.sh", nil, false},
 		{"nix-store", "nix-store", []string{"--gc"}, false},
