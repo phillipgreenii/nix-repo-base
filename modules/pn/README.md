@@ -134,47 +134,48 @@ activate_command = "sudo {out}/bin/switch-to-configuration switch"
 
 The steps:
 
-0. **Authenticate sudo** (ADR 0042), after the skip gate (a skipped apply never prompts) and before
-   the HEADs are captured and the build starts: pn runs `sudo -n -v`, and only when that fails
-   prints `apply: authenticate sudo now; ...` and runs one `sudo -v` (password or Touch ID). A wrong
-   password or a cancelled prompt fails the apply before anything is built (`failed_step:
-sudo_auth`). pn then verifies with `sudo -n -v` that sudo cached the credentials; if not it prints
-   `apply: sudo does not cache credentials here; it will ask again after the build` and prompts after
-   the build. While the build runs, one cancellable goroutine refreshes the session with `sudo -n -v`
-   every 60 s and never writes to the apply output. If a refresh fails (for example the machine slept
-   longer than sudo's timeout) pn prints `apply: sudo authentication expired during the build; sudo
-will ask again now` before the root steps. Credentials pn created are invalidated with `sudo -k`
-   right after the activate step and on every other exit path; credentials you already held are
-   never invalidated. The build still runs as you, not root.
 1. **Preflight** (no process): `activate_command` is set and names a supported program, and
    `/run/current-system/sw/bin/nix-env` is executable. Any failure is an error before anything is
-   built; there is no fallback. The preflight runs before the dry-run gate, so
-   the dry-run option (`ShowNixCommandsOnly`) also fails on a machine without that `nix-env`. The per-run directory
-   is created afterwards, at the start of the flow (after the trust gate and the lock); if it cannot
-   be created the apply fails before the build.
-2. **Build**, as the invoking user, wrapped like `pn workspace build` (so its nix JSONL lands in
+   built; there is no fallback. The preflight runs before the dry-run gate, so the dry-run option
+   (`ShowNixCommandsOnly`) also fails on a machine without that `nix-env`. The per-run directory is
+   created afterwards, at the start of the flow (after the trust gate and the lock); if it cannot be
+   created the apply fails before the build.
+2. **Authenticate sudo** (ADR 0042), after the preflight and the skip gate (a skipped apply never
+   prompts) and before the HEADs are captured and the build starts: pn runs `sudo -n -v`, and only
+   when that fails prints `apply: authenticate sudo now; ...` and runs one `sudo -v` (password or
+   Touch ID). A wrong password or a cancelled prompt fails the apply before anything is built
+   (`failed_step: sudo_auth`). pn then verifies with `sudo -n -v` that sudo cached the credentials;
+   if not it prints `apply: sudo does not cache credentials here; it will ask again after the
+build` and prompts after the build. While the build runs, one cancellable goroutine refreshes the
+   session with `sudo -n -v` every 60 s and never writes to the apply output. If a refresh fails
+   (for example the machine slept longer than sudo's timeout) pn prints `apply: sudo authentication
+expired during the build; sudo will ask again now` before the root steps. Credentials pn created
+   are invalidated with `sudo -k` right after the activate step and on every other exit path;
+   credentials you already held are never invalidated. The build still runs as you, not root.
+3. **Build**, as the invoking user, wrapped like `pn workspace build` (so its nix JSONL lands in
    `~/.local/state/pn/nix-logs`, not in root's `/var/log/pg-nix-log-wrapped`), with the working
    directory a private mode-0700 directory `${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-build/run-<random>`.
    `build_command` MUST leave `./result` in its cwd (a `darwin-rebuild build` or
    `nixos-rebuild build`), so the link is private to the run. The directory is removed afterwards on
    success, failure and cancel; a stale one older than 24 h is pruned at the next apply.
-3. **Read and validate** the out path from `R/result`, once, before any root process: absolute,
+4. **Read and validate** the out path from `R/result`, once, before any root process: absolute,
    clean, one element under `/nix/store`, with an executable `activate` and the platform's
    activation program (`sw/bin/darwin-rebuild` or `bin/switch-to-configuration`). The invoked path is
    validated, not its realpath. A missing or invalid result is an error, never a second build.
-4. **Probe** (darwin only), as the user: `<out>/sw/bin/darwin-rebuild --help` must exit 1 with a
+5. **Probe** (darwin only), as the user: `<out>/sw/bin/darwin-rebuild --help` must exit 1 with a
    usage line listing `activate`, `switch` and `build` on stderr. A failed probe is an error naming
-   the reason. On NixOS the file check in step 3 is the whole pre-root check.
-5. **Set the profile** (hard-coded, not templated): `sudo env -i HOME=<root home> NIX_REMOTE=daemon
-PATH=/run/current-system/sw/bin:/usr/bin:/bin /run/current-system/sw/bin/nix-env -p
-/nix/var/nix/profiles/system --set <out>`. The root home is `/var/root` on darwin and `/root` on
-   NixOS (the latter unverified).
-6. **Activate**: the `activate_command` expansion.
+   the reason. On NixOS the file check in step 4 is the whole pre-root check.
+6. **Set the profile** (hard-coded, not templated): `sudo env -i HOME=<root home>
+NIX_REMOTE=daemon PATH=/run/current-system/sw/bin:/usr/bin:/bin
+/run/current-system/sw/bin/nix-env -p /nix/var/nix/profiles/system --set <out>`. The root home is
+   `/var/root` on darwin and `/root` on NixOS (the latter unverified).
+7. **Activate**: the `activate_command` expansion.
 
 Every failure is an error; a root build is no longer reachable from `pn`. The sudo prompt comes
-first (step 0), so the build and the two root steps run unattended. A cancel during the build stops its
-whole process tree and starts no root step; once the profile set has started, both root steps run to
-completion and the cancel is reported afterwards. `{out}` is valid only in `activate_command`, whose
+first (step 2), so the build and the two root steps run unattended unless sudo caches nothing, in
+which case the root steps ask again. A cancel during the build stops its whole process tree and
+starts no root step; once the profile set has started, both root steps run to completion and the
+cancel is reported afterwards. `{out}` is valid only in `activate_command`, whose
 `argv[0]` MUST be `sudo` and whose program MUST be one element beginning with `{out}/`.
 `pn-workspace-toml-enforce --activate-command` enforces the key (an empty value leaves it untouched
 and never deletes it). The step errors are `apply failed: build:`, `read build result:`,

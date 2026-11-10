@@ -331,12 +331,14 @@ func TestSudoSession_StopSurvivesACancelledContext(t *testing.T) {
 
 func TestSudoSession_CancelDuringPromptReturnsContextError(t *testing.T) {
 	f := newSudoFake()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel from inside the prompt, so the cancel can never precede the probe.
 	f.onV = func(ctx context.Context) error {
+		cancel()
 		<-ctx.Done()
 		return &exec.CommandError{Name: "sudo", Args: []string{"-v"}, Result: exec.Result{ExitCode: -1, Signal: "SIGTERM"}}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(20*time.Millisecond, cancel)
 	fastSudo(t)
 	sess, err := startSudoSession(ctx, f, &bytes.Buffer{}, nil)
 	if sess != nil || !errors.Is(err, context.Canceled) {
@@ -357,6 +359,73 @@ func TestSudoSession_ProbeRefreshAndVerifyNeverTouchOut(t *testing.T) {
 		if strings.Join(c.Args, " ") == "-n -v" && (c.Opts.Stdout != nil || c.Opts.Stderr != nil) {
 			t.Errorf("a -n -v call has Stdout/Stderr set")
 		}
+	}
+}
+
+// Stop must wait for the refresh loop before it releases the credentials, so
+// no refresh can re-create them after `sudo -k`.
+func TestSudoSession_StopWaitsForTheLoop(t *testing.T) {
+	f := newSudoFake()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce, releaseOnce sync.Once
+	releaseLoop := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseLoop)
+	f.onNV = func(ctx context.Context, n int) error {
+		switch n {
+		case 1:
+			return sudoExit1([]string{"-n", "-v"}) // probe: no credentials yet
+		case 2:
+			return nil // verify
+		}
+		enterOnce.Do(func() { close(entered) })
+		<-ctx.Done() // the refresh hangs until Stop cancels the loop ...
+		<-release    // ... and then takes as long as the test allows
+		return ctx.Err()
+	}
+	sess := startFast(t, context.Background(), f, &bytes.Buffer{})
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the refresh never started")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		sess.Stop()
+		close(stopped)
+	}()
+	time.Sleep(20 * time.Millisecond) // let Stop cancel the loop and block on it
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the refresh was still running")
+	default:
+	}
+	if f.count("-k") != 0 {
+		t.Error("sudo -k ran while the refresh was still running")
+	}
+	releaseLoop()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return after the refresh finished")
+	}
+	select {
+	case <-sess.done:
+	default:
+		t.Error("Stop returned before the loop was done")
+	}
+	argvs := f.argvs()
+	lastK, lastNV := -1, -1
+	for i, a := range argvs {
+		switch a {
+		case "-k":
+			lastK = i
+		case "-n -v":
+			lastNV = i
+		}
+	}
+	if lastK < 0 || lastNV > lastK {
+		t.Errorf("a sudo -n -v ran after sudo -k (or -k never ran): %v", argvs)
 	}
 }
 

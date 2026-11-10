@@ -94,6 +94,8 @@ type asUserFake struct {
 	// stateful default, where `-n -v` fails until the first `-v` has run.
 	sudoSession func(ctx context.Context, args []string) (exec.Result, error)
 	sudoHeld    bool
+	// onGit, when set, runs on every git call (a test clock hook).
+	onGit func()
 }
 
 func cmdErr(name string, args []string, code int) (exec.Result, error) {
@@ -112,6 +114,9 @@ func (f *asUserFake) Run(ctx context.Context, name string, args []string, opts e
 	case name == "nix" && len(args) > 0 && args[0] == "eval":
 		return exec.Result{}, nil
 	case name == "git":
+		if f.onGit != nil {
+			f.onGit()
+		}
 		for _, a := range args {
 			switch a {
 			case "status":
@@ -198,7 +203,8 @@ func cmdErrResult(name string, args []string, res exec.Result) (exec.Result, err
 	return res, &exec.CommandError{Name: name, Args: args, Result: res}
 }
 
-// calls returns the recorded calls that are not git or the daemon probe.
+// significant returns the recorded calls without git, the daemon probe
+// (nix eval) and the sudo session calls. The raw list is f.calls.
 func (f *asUserFake) significant() []exec.Call {
 	return nonSessionCalls(f.withSession())
 }

@@ -32,12 +32,14 @@ import (
 //	0 preflight        no process: activate_command set and recognised, nix-env usable,
 //	                   build_command expands (the run dir is created first thing in the
 //	                   run, still before any build; if that fails apply fails)
-//	1 build            user, Dir = private run dir R, WrapNix true: the build_command expansion
-//	2 read-result      os.Readlink(R/result) ONCE, then validateBuildOut; no process
-//	3 probe            darwin: user, Dir = R, unwrapped, 10 s: <out>/sw/bin/darwin-rebuild --help
-//	                   nixos: no process (the file check of step 2 is the whole check)
-//	4 set-profile      sudo env -i HOME=<root home> NIX_REMOTE=daemon PATH=... nix-env -p <profile> --set <out>
-//	5 activate         sudo <out>/sw/bin/darwin-rebuild activate, or
+//	1 sudo-auth        sudo -n -v, else sudo -v once; then sudo -n -v every minute while
+//	                   the build runs; sudo -k right after activate (ADR 0042)
+//	2 build            user, Dir = private run dir R, WrapNix true: the build_command expansion
+//	3 read-result      os.Readlink(R/result) ONCE, then validateBuildOut; no process
+//	4 probe            darwin: user, Dir = R, unwrapped, 10 s: <out>/sw/bin/darwin-rebuild --help
+//	                   nixos: no process (the file check of step 3 is the whole check)
+//	5 set-profile      sudo env -i HOME=<root home> NIX_REMOTE=daemon PATH=... nix-env -p <profile> --set <out>
+//	6 activate         sudo <out>/sw/bin/darwin-rebuild activate, or
 //	                   sudo <out>/bin/switch-to-configuration switch (the activate_command expansion)
 //
 // The set-profile step is hard-coded here, never templated: it is root-executed
@@ -355,7 +357,7 @@ func pruneStaleRunDirs(parent string, maxAge time.Duration, now time.Time) {
 	}
 }
 
-// applyAsUser runs the build-as-user flow (steps 1 to 5 above) and returns the
+// applyAsUser runs the build-as-user flow (steps 2 to 6 above) and returns the
 // apply's error, already wrapped with the step that failed. It records the
 // failed step and its exit status in the apply log.
 func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *applyLog, p *rebuildPlan) error {

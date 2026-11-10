@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,11 +53,16 @@ func TestAsUser_SudoAuthRunsBeforeTheBuildAndBeforeCaptureHeads(t *testing.T) {
 	if sudoIdx < 0 || headsIdx < 0 || sudoIdx > headsIdx {
 		t.Errorf("steps = %v, want %s before %s", steps, stepSudoAuth, stepCaptureHeads)
 	}
-	all := e.f.withSession()
+	e.f.mu.Lock()
+	all := append([]exec.Call{}, e.f.calls...)
+	e.f.mu.Unlock()
 	first := indexOfCall(all, func(c exec.Call) bool { return c.Name == "sudo" })
+	heads := indexOfCall(all, func(c exec.Call) bool {
+		return c.Name == "git" && slices.Contains(c.Args, "rev-parse") && slices.Contains(c.Args, "HEAD")
+	})
 	build := indexOfCall(all, isBuildCall)
-	if first < 0 || build < 0 || first > build {
-		t.Errorf("first sudo call %d, build call %d; want sudo first:\n%s", first, build, dumpCalls(all))
+	if first < 0 || heads < 0 || build < 0 || first > heads || first > build {
+		t.Errorf("first sudo call %d, captureHeads git call %d, build call %d; want sudo first:\n%s", first, heads, build, dumpCalls(all))
 	}
 }
 
@@ -100,10 +107,16 @@ func TestAsUser_SessionIsReleasedRightAfterActivate(t *testing.T) {
 	if act < 0 || kill < act {
 		t.Fatalf("activate at %d, sudo -k at %d:\n%s", act, kill, dumpCalls(calls))
 	}
-	// The next git call after activate belongs to the post steps and markApplied.
-	nextGit := indexOfCall(calls[act:], func(c exec.Call) bool { return c.Name == "git" })
-	if nextGit >= 0 && act+nextGit < kill {
-		t.Errorf("sudo -k (%d) came after the post-activate git call (%d)", kill, act+nextGit)
+	// Every call after activate (git --exec-path, the fsmonitor and status git
+	// calls of markApplied, ...) belongs to the post-activate work; none may come
+	// before sudo -k. Only refresh calls of the loop may sit between the two.
+	for i := act + 1; i < kill; i++ {
+		if !isSudoSessionCall(calls[i].Name, calls[i].Args) {
+			t.Errorf("call %d (%s) ran between activate (%d) and sudo -k (%d):\n%s", i, argvOf(calls[i]), act, kill, dumpCalls(calls))
+		}
+	}
+	if kill+1 >= len(calls) {
+		t.Fatalf("no post-activate call follows sudo -k; the test would be vacuous:\n%s", dumpCalls(calls))
 	}
 }
 
@@ -127,6 +140,42 @@ func TestAsUser_SudoAuthFailureFailsBeforeAnyBuild(t *testing.T) {
 	}
 	if e.applied(t) {
 		t.Error("an apply that failed to authenticate was marked applied")
+	}
+}
+
+// The time spent in the sudo prompt is sudo_auth_seconds; the git and profile
+// reads that follow it are prelude, not sudo_auth.
+func TestAsUser_SudoPromptTimeLandsInSudoAuthNotPrelude(t *testing.T) {
+	e := newAsUserEnv(t, asUserTOML, nil)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	applyLogNow = func() time.Time { return now }
+	t.Cleanup(func() { applyLogNow = time.Now })
+	e.f.sudoSession = func(_ context.Context, args []string) (exec.Result, error) {
+		if strings.Join(args, " ") == "-v" {
+			now = now.Add(100 * time.Second) // the operator takes 100 s to type the password
+		}
+		return e.f.defaultSudoSession(args)
+	}
+	// Everything after the prompt (git binary identity, captureHeads) takes
+	// 40 s, and must not be billed to sudo_auth.
+	e.f.onGit = func() { now = now.Add(10 * time.Second) }
+	if err := e.apply(context.Background(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	log := e.applyLogText(t)
+	auth, err := strconv.ParseFloat(trailerValue(t, log, "sudo_auth_seconds"), 64)
+	if err != nil {
+		t.Fatalf("sudo_auth_seconds: %v\n%s", err, log)
+	}
+	if auth < 99 || auth > 101 {
+		t.Errorf("sudo_auth_seconds = %v, want about 100", auth)
+	}
+	pre, err := strconv.ParseFloat(trailerValue(t, log, "prelude_seconds"), 64)
+	if err != nil {
+		t.Fatalf("prelude_seconds: %v\n%s", err, log)
+	}
+	if pre < 10 || pre > 100 {
+		t.Errorf("prelude_seconds = %v, want the git time (>= 10) and not the prompt time", pre)
 	}
 }
 
@@ -185,29 +234,27 @@ func TestAsUser_CancelDuringBuildStopsTheRefreshAndInvalidates(t *testing.T) {
 }
 
 // waitForRefreshes blocks until n refresh calls (beyond the probe and the
-// verify) have been made, by polling the recorded calls without sleeping.
+// verify) have been made, polling the recorded calls from the test goroutine.
 func waitForRefreshes(t *testing.T, f *asUserFake, n int) {
 	t.Helper()
-	sig := make(chan struct{})
-	go func() {
-		for {
-			cnt := 0
-			for _, c := range f.sessionCalls() {
-				if strings.Join(c.Args, " ") == "-n -v" {
-					cnt++
-				}
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(5 * time.Second)
+	for {
+		cnt := 0
+		for _, c := range f.sessionCalls() {
+			if strings.Join(c.Args, " ") == "-n -v" {
+				cnt++
 			}
-			if cnt >= n+2 {
-				close(sig)
-				return
-			}
-			runtimeGosched()
 		}
-	}()
-	select {
-	case <-sig:
-	case <-afterFiveSeconds():
-		t.Fatal("refresh calls did not arrive")
+		if cnt >= n+2 {
+			return
+		}
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatal("refresh calls did not arrive")
+		}
 	}
 }
 
@@ -215,17 +262,29 @@ func TestAsUser_LostSessionPrintsNoticeBeforeRootSteps(t *testing.T) {
 	e := newAsUserEnv(t, asUserTOML, nil)
 	fastSudo(t)
 	nv := 0
+	refreshFailed := make(chan struct{})
+	var failOnce sync.Once
 	e.f.sudoSession = func(_ context.Context, args []string) (exec.Result, error) {
 		if strings.Join(args, " ") == "-n -v" {
 			nv++ // only the apply goroutine and the loop call this, never concurrently
 			if nv >= 3 {
+				failOnce.Do(func() { close(refreshFailed) })
 				return cmdErr("sudo", args, 1)
 			}
 		}
 		return e.f.defaultSudoSession(args)
 	}
 	e.f.build = func(_ context.Context, o exec.RunOptions) (exec.Result, error) {
-		expectNoLoops(t) // the loop ended itself: the session is lost
+		// Order the build after the failed refresh: once the loop goroutine has
+		// made the failing call it is alive, so expectNoLoops then returns only
+		// after Lost() is set (the loop records it before it exits). Without
+		// the first wait expectNoLoops passes when the loop was not scheduled yet.
+		select {
+		case <-refreshFailed:
+		case <-time.After(5 * time.Second):
+			t.Error("the refresh never failed")
+		}
+		expectNoLoops(t)
 		return exec.Result{}, os.Symlink(e.sys.out, filepath.Join(o.Dir, "result"))
 	}
 	var out bytes.Buffer
@@ -264,7 +323,3 @@ func TestAsUser_ShowNixCommandsListsTheSudoAuthLine(t *testing.T) {
 		t.Errorf("a dry run ran %d commands", n)
 	}
 }
-
-func runtimeGosched() { runtime.Gosched() }
-
-func afterFiveSeconds() <-chan time.Time { return time.After(5 * time.Second) }

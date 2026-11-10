@@ -90,3 +90,6 @@ Run by the operator 2026-11-10 (macOS, zsh login shell, one prompt), recorded ve
   terminal.
 - Real-sudo behaviour cannot be proven by tests: the smoke tier uses a stateful stand-in, and the
   real behaviour is checked by the operator-run spike above and a post-deploy check.
+- Cancelling the apply also stops the refresh, even if set-profile has already started (the root
+  steps still run to completion on their own non-cancellable context); this is safe because the
+  credentials were refreshed at most 60 s earlier.

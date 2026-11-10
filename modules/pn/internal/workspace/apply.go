@@ -103,6 +103,7 @@ func (applyVerb) run(ctx context.Context, ws *Workspace, out io.Writer, p *rebui
 	ws.recordStep("apply", false, stepSudoAuth)
 	alog.phase(phaseSudoAuth)
 	sess, err := startSudoSession(ctx, ws.runner, out, nil)
+	alog.phase(phasePrelude) // only the authentication counts as sudo_auth
 	if err != nil {
 		alog.fail(failedStepSudoAuth, err)
 		return fmt.Errorf("apply failed: %w", err)
