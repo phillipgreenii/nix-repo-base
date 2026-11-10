@@ -81,11 +81,11 @@ func (r *runner) checkShim() (ok bool) {
 		fmt.Fprintf(r.Stdout, "shim: allowlist-ignored: %s (never wrapped or unknown)\n", strings.Join(ignored, ", "))
 	}
 
-	switch {
-	case why == "":
+	switch why {
+	case "":
 		resolved, _ := filepath.EvalSymlinks(rootPath)
 		fmt.Fprintf(r.Stdout, "shim: root-config: %s -> %s (store regular file)\n", rootPath, resolved)
-	case why == "no root configuration":
+	case "no root configuration":
 		fmt.Fprintf(r.Stdout, "shim: root-config: absent (%s)\n", rootPath)
 	default:
 		fmt.Fprintf(r.Stdout, "shim: root-config: %s present but not usable: %s (not a store symlink)\n", rootPath, why)
