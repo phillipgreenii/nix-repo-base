@@ -42,7 +42,7 @@ func installedDarwinRebuild(t *testing.T) string {
 		}
 		head := make([]byte, 2)
 		n, _ := f.Read(head)
-		f.Close()
+		_ = f.Close() // read-only handle; a close error is not actionable
 		if n == 2 && string(head) == "#!" {
 			return real
 		}
