@@ -198,11 +198,6 @@ func withAsUserSeams(t *testing.T, w *Workspace) string {
 	return newFakeSystem(t, store, fakeHash).out
 }
 
-// asUserTOMLWith is asUserTOML plus extra [workspace] lines.
-func asUserTOMLWith(extra string) string {
-	return strings.Replace(asUserTOML, "[workspace]\n", "[workspace]\n"+extra+"\n", 1)
-}
-
 // scriptedRunner answers the calls a test scripted (FIFO per name and args) and
 // hands every other call to base (an asUserFake). It records every call, in
 // order, so a test can compare the position of a scripted git call with the

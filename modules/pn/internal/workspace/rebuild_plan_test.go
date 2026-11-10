@@ -32,7 +32,7 @@ type planRunner struct {
 }
 
 func (r *planRunner) Run(ctx context.Context, name string, args []string, opts exec.RunOptions) (exec.Result, error) {
-	if !(name == "darwin-rebuild" && len(args) > 0 && args[0] == "build") {
+	if name != "darwin-rebuild" || len(args) == 0 || args[0] != "build" {
 		return r.asUserFake.Run(ctx, name, args, opts)
 	}
 	r.ran.Add(1)
