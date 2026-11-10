@@ -131,7 +131,7 @@ func applyBuildDir() string {
 
 // errActivateCommandUnset is returned when apply has no activate_command: the
 // build-as-user flow is the only apply flow.
-var errActivateCommandUnset = errors.New("workspace.activate_command is not set in pn-workspace.toml: apply builds as you and activates as root, so it needs the activation command (darwin: 'sudo {out}/sw/bin/darwin-rebuild activate'; nixos: 'sudo {out}/bin/switch-to-configuration switch')")
+var errActivateCommandUnset = errors.New("apply failed: workspace.activate_command is not set in pn-workspace.toml: apply builds as you and activates as root, so it needs the activation command (darwin: 'sudo {out}/sw/bin/darwin-rebuild activate'; nixos: 'sudo {out}/bin/switch-to-configuration switch')")
 
 // extendPlan runs apply's preflight (planExtender): activate_command must be set
 // and name a recognised program, nix-env must be usable and build_command must
@@ -396,6 +396,8 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 		} else {
 			alog.fail(failedStepProbe, nil)
 		}
+		// TODO(nixos): this text is darwin-worded; generalise it if a NixOS probe is ever
+		// added (NIXOS_TODO.md item 6 and 11).
 		return fmt.Errorf("apply failed: probe: the built system has no usable 'darwin-rebuild activate' (%s)", reason)
 	}
 
@@ -443,6 +445,14 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 
 // rootStepOptions are the RunOptions of a root step: not wrapped (they run no
 // nix evaluation), output tee'd to the terminal and the apply log, cwd "/".
+//
+// TODO(nixos): no Env is passed, and sudo's env_reset drops variables that
+// `nixos-rebuild switch` sets for switch-to-configuration (LOCALE_ARCHIVE,
+// NIXOS_NO_CHECK, NIXOS_INSTALL_BOOTLOADER with --install-bootloader). The root steps
+// also exec `sudo` by bare name, which must resolve to /run/wrappers/bin/sudo (setuid)
+// on NixOS. Also: the "both root steps run to completion" design (rootCtx) is untested
+// against a long-running switch-to-configuration and an SSH drop. See NIXOS_TODO.md
+// items 7 to 9.
 func rootStepOptions(out io.Writer) exec.RunOptions {
 	return exec.RunOptions{Dir: "/", Stdout: out, Stderr: out}
 }

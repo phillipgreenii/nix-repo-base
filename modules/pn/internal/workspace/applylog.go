@@ -66,8 +66,7 @@ import (
 //	result: success|failed
 //	error: <only when failed>
 //	prelude_seconds: <s>                (v2; time before the build command started)
-//	build_seconds: <s>                  (v2; the nix build. A legacy single-command
-//	                                     apply reports its whole command here)
+//	build_seconds: <s>                  (v2; the nix build, the build step only)
 //	activate_seconds: <s>               (v2; apply only: set-profile plus activate,
 //	                                     including the wait for sudo)
 //	post_steps_seconds: <s>             (v2; apply only: nvd diff, fsmonitor restart,
@@ -154,8 +153,8 @@ type applyLog struct {
 	exit     string // exit_status line value; "none" until the command ran
 	finished bool
 	// steps is true for the build-as-user flow, whose trailer also records
-	// failed_step. The legacy single-command flow never writes that line, so its
-	// log stays exactly as it was.
+	// failed_step. Only apply sets it (a build log has no steps), so a build log
+	// never carries that line.
 	steps      bool
 	failedStep string
 	// Phase timing (trailer only): cur is the phase running since curStart;
@@ -307,7 +306,7 @@ func (l *applyLog) tee(out io.Writer) io.Writer {
 }
 
 // recordRefs writes the refs section and opens the output section. Called once,
-// immediately before the apply command starts; refs is nil when capture failed.
+// immediately before the build starts; refs is nil when capture failed.
 func (l *applyLog) recordRefs(refs map[string]string) {
 	if l == nil {
 		return
@@ -328,7 +327,8 @@ func (l *applyLog) recordRefs(refs map[string]string) {
 	l.writef("%s", b.String())
 }
 
-// setExit records the apply command's outcome: nil = exit 0.
+// setExit records a step's outcome: nil = exit 0; a command error with a result
+// records its exit code; anything else leaves "none".
 func (l *applyLog) setExit(err error) {
 	if l == nil {
 		return

@@ -2,7 +2,7 @@
 #
 # Provides the pn workspace management binary (Go).
 # Workspace root is discovered at runtime (walk up CWD for pn-workspace.toml).
-# Apply command and hooks live in pn-workspace.toml, not here.
+# Build and activate commands and hooks live in pn-workspace.toml, not here.
 #
 # The pn package is sourced from pkgs.pn, which consuming flakes make
 # available by adding this flake's overlays.default to nixpkgs.overlays.

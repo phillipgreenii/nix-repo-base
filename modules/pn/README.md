@@ -45,7 +45,7 @@ call) run as `pg-nix-log-wrapped --traceparent TP --otlp-endpoint URL --log-dir 
 (`sudo <wrapper> ... -- <command>` for the exact `sudo darwin-rebuild|nixos-rebuild|nix` form, without
 `--log-dir`). Probes, `sudo nix-store`, any other `sudo` form and a `build_command` such as `sh -c ...`
 run unwrapped, as does everything when the wrapper is missing or telemetry is off. The command's own
-arguments, including every `--override-input`, reach it unchanged, and `--show-nix-commands-only`
+arguments, including every `--override-input`, reach it unchanged, and the dry-run option (`ShowNixCommandsOnly`, library only)
 prints the unwrapped command (ADR 0028).
 
 With telemetry on, hooks and `update-locks.sh` additionally get `TRACEPARENT` (the `pn.exec` span of
@@ -134,10 +134,12 @@ activate_command = "sudo {out}/bin/switch-to-configuration switch"
 
 The steps:
 
-1. **Preflight** (no process): `activate_command` is set and names a supported program, the per-run
-   directory can be created, and `/run/current-system/sw/bin/nix-env` is executable. Any failure is
-   an error before anything is built; there is no fallback. The preflight runs before the dry-run
-   gate, so `--show-nix-commands` also fails on a machine without that `nix-env`.
+1. **Preflight** (no process): `activate_command` is set and names a supported program, and
+   `/run/current-system/sw/bin/nix-env` is executable. Any failure is an error before anything is
+   built; there is no fallback. The preflight runs before the dry-run gate, so
+   the dry-run option (`ShowNixCommandsOnly`) also fails on a machine without that `nix-env`. The per-run directory
+   is created afterwards, at the start of the flow (after the trust gate and the lock); if it cannot
+   be created the apply fails before the build.
 2. **Build**, as the invoking user, wrapped like `pn workspace build` (so its nix JSONL lands in
    `~/.local/state/pn/nix-logs`, not in root's `/var/log/pg-nix-log-wrapped`), with the working
    directory a private mode-0700 directory `${XDG_STATE_HOME:-$HOME/.local/state}/pn/apply-build/run-<random>`.
@@ -194,7 +196,7 @@ On contention the run fails fast with exit status **75** (sysexits `EX_TEMPFAIL`
 (for example `--wait=5m`) to block up to that long instead; a bare `--wait` waits indefinitely. The
 value MUST be written with `=`: `--wait` takes an optional value, so `--wait 5m` is NOT parsed as the
 value (pn rejects the stray `5m` argument rather than waiting forever). A waiting run holds nothing
-while it polls, so a waiting build and a waiting apply in one root cannot deadlock. `--show-nix-commands-only`
+while it polls, so a waiting build and a waiting apply in one root cannot deadlock. The dry-run option (`ShowNixCommandsOnly`)
 takes no lock.
 
 The lock is held until the build or apply returns and is NOT held across post-hooks (the CLI runs
@@ -222,7 +224,7 @@ a shell with the system profile on PATH`, exit status 69 (not the 127 a shell re
   `pn.exec` span with `process.executable.name=<tool>`, `process.exit.code=69` and
   `pn.exec.tool_not_found=true`.
 
-Both verbs get this through the shared prelude. `--show-nix-commands-only` only prints and is exempt.
+Both verbs get this through the shared prelude. The dry-run option (`ShowNixCommandsOnly`) only prints and is exempt.
 
 Build's command template has no required `#{hostname}`; when `build_command` includes `{hostname}` it
 addresses the same flake output as apply. Neither verb changes how the workspace root is resolved.
@@ -315,7 +317,7 @@ activation script's own output), and `~/.local/share/pn-workspace/applied/` hold
   to the newest APPLY log (it never moves for a build) and `apply-logs/latest-build` to the newest
   build log. The directory is a subdirectory so the Loki `pn/*.jsonl` glob never ingests it.
 - **When**: from the moment pn has decided to rebuild, for exit 0 and non-zero alike. An apply that
-  is skipped because nothing changed, a `--show-nix-commands` dry run, and a failure before the
+  is skipped because nothing changed, a dry run (the `ShowNixCommandsOnly` option), and a failure before the
   rebuild (untrusted workspace, nix daemon down) write no log, so they never evict a real one. A
   `pn workspace build` always builds, so it always writes one (bead pg2-sdbhh4.14; before it a 29,037 s
   failed build left no human-readable record). Both verbs retain through the same code path
@@ -330,7 +332,9 @@ activation script's own output), and `~/.local/share/pn-workspace/applied/` hold
   taken immediately before the build, i.e. the `applied_ref` the applied-state record gets); then the
   combined stdout and stderr exactly as the terminal received them (for build, starting at the
   `apply would:` line); then a trailer: `ended_at`, `exit_status` (the command's exit code; `143` and
-  `130` for a signalled wrapper exit, `-1` = killed directly by a signal, `none` = it never started),
+  `130` for a signalled wrapper exit, `-1` = killed directly by a signal, `none` = it never started;
+  for a failed probe it is the probe's exit code only when the probe exited non-zero, and `none` when
+  the probe could not run, was signalled, timed out, or exited 0 with unusable output),
   `failed_step` (apply only: `build`, `read-result`, `probe`, `set-profile`, `activate`
   or `none`), `result` (`success` or `failed`, and `error:` when failed), then the phase times
   `prelude_seconds`, `build_seconds`, `activate_seconds` (apply only: set-profile plus activate,

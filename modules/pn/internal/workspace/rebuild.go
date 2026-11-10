@@ -91,6 +91,8 @@ func (ws *Workspace) hostname() string {
 // default so tests with a fake runner need no real binary.
 func (ws *Workspace) EnableToolResolution() {
 	ws.resolveTool = func(name string) (map[string]string, error) {
+		// TODO(nixos): the fallback dirs hold no setuid sudo on NixOS (it is
+		// /run/wrappers/bin/sudo); see NIXOS_TODO.md item 7.
 		return exec.ResolveTool(name, exec.SystemProfileBinDirs)
 	}
 }
@@ -310,9 +312,9 @@ func (ws *Workspace) rebuild(ctx context.Context, out io.Writer, v rebuildVerb, 
 		begin:             begin,
 	}
 
-	// A verb may adjust the plan (apply: select the build-as-user flow, which
-	// swaps cmdArgs for the user build). Everything after this point (dry run,
-	// tool resolution) therefore sees the command that will actually run first.
+	// A verb may adjust the plan (apply: select the platform and run its
+	// preflight). Everything after this point (dry run, tool resolution)
+	// therefore sees the plan that will actually run.
 	if ex, ok := v.(planExtender); ok {
 		if err := ex.extendPlan(ctx, ws, out, plan); err != nil {
 			return err

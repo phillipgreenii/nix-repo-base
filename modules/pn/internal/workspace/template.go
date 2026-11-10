@@ -282,7 +282,7 @@ func shortHostname() string {
 
 // nixRunTokenRe matches a single "{nix_run <attr>}" helper token. The internal
 // space means it never collides with placeholderTokenRe (\{([a-z_]+)\}), so the
-// build/apply command substitution in substituteCommand is unaffected.
+// build_command and activate_command substitution in substituteCommand is unaffected.
 var nixRunTokenRe = regexp.MustCompile(`\{nix_run\s+([A-Za-z0-9._-]+)\}`)
 
 // nixRunOpenerRe matches a "{nix_run" token opener at a word boundary. It catches

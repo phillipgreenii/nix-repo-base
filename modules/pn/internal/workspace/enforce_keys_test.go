@@ -293,7 +293,7 @@ const (
 // Setting build_command rewrites the file, updates ONLY that key, and preserves the [repos.*] entries, workspace.terminal, and everything
 // else. This is the primary pg2-k43p.8 behavior.
 func TestEnforceKeys_SetsBuildCommandPreservesReposAndTerminal(t *testing.T) {
-	// Start from a file whose build/apply commands are wrong (empty) and whose
+	// Start from a file whose build_command/activate_command values are wrong (empty) and whose
 	// id/apply-post/terminal are already right.
 	wrongCommands := `[workspace]
 name = ''
@@ -319,7 +319,7 @@ run = ['pb gate check']
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !changed {
-		t.Fatalf("changed = false; want true when build/apply commands differ")
+		t.Fatalf("changed = false; want true when build_command/activate_command values differ")
 	}
 	cfg, err := loadConfigFile(t, p)
 	if err != nil {
@@ -454,7 +454,7 @@ run = ['pb gate check']
 	}
 }
 
-// Absent file → no-op even when build/apply commands are supplied.
+// Absent file → no-op even when build_command/activate_command values are supplied.
 func TestEnforceKeys_AbsentFileNoOpWithCommands(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "pn-workspace.toml")

@@ -57,8 +57,11 @@ can use the config from the user build.").
 
 - One flow to document, test and debug; no silent change of trust level (root evaluation) when a
   probe fails; nix logs of an apply are always in the user's own `nix-logs` directory.
-- `--show-nix-commands` now fails on a machine without `/run/current-system/sw/bin/nix-env`, because
-  the preflight in `extendPlan` runs before the dry-run gate.
+- the dry-run option (`ShowNixCommandsOnly`, library only: pn has no CLI flag for it) now fails on a machine without `/run/current-system/sw/bin/nix-env`,
+  because the preflight in `extendPlan` runs before the dry-run gate.
+- In the apply log trailer, `exit_status` for a failed probe is the probe's exit code only when the
+  probe exited non-zero; it is `none` when the probe could not run, was signalled, timed out, or
+  exited 0 with unusable output.
 - A config without `activate_command` can no longer apply until the key is added. Rollback to a
   root build is no longer a config change.
 - The enforcer rewrites of `pn-workspace.toml` (and `pn workspace init`, `doctor --fix`, workforest
