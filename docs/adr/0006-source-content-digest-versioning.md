@@ -113,3 +113,22 @@ together.
 - See also: phillipg-nix-ziprecruiter docs/adr/0044-reduce-darwin-rebuild-build-time.md —
   complementary build-time work that removes uncached local-compile derivations (ollama,
   contained-claude, serena). This ADR targets a different axis: per-commit rebuild churn.
+
+## Amendment 2026-11-10: Go test files and `testdata/` are excluded from the digest
+
+`mkGoApp` (and so `mkGoBinary`) now applies `lib.cleanSourceWith` once to `src`, before the
+digest, `pwd` and the build input are computed, dropping every regular file ending `_test.go` and
+every directory named `testdata` at any depth. The per-source digest therefore changes iff a
+non-test file changes: a test-only edit no longer rebuilds the package or any package that consumes
+it through a local `replace`.
+
+- Tests and `testdata/` are excluded from the digest and the build input. Production code MUST NOT
+  depend on them: a non-test `//go:embed testdata/...` fails the package build with the `no matching
+files` error.
+- `doCheck = true` opts out of the filter, because the check phase needs the tests; with it, test
+  edits change `version` and the derivation again.
+- A module MUST NOT rename `testdata` to dodge the filter (operator ruling, Phillip, 2026-11-10).
+- `mkGoTest` and `mkGoLint` keep their own unfiltered `src` (ADR 0021 is unchanged).
+- `src` must be a single path or an attrset with `outPath`; a list is rejected with an assertion.
+- Every Go package digest changes once when this lands, so the first apply afterwards rebuilds all
+  Go packages.

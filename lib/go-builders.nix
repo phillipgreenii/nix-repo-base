@@ -18,6 +18,17 @@
 # anyway (ADR 0021). A module's test gate is its dedicated mkGoTest check
 # (`checks.<system>.<name>-go-tests`); a package that genuinely relies on its
 # own check phase opts back in with `doCheck = true`.
+#
+# Tests and test data are NOT part of a package's source: unless `doCheck = true`,
+# mkGoApp (and so mkGoBinary) filters every `*_test.go` file and every `testdata/`
+# directory out of `src` before computing the digest and the build input, so a
+# test-only edit changes neither `version` nor the derivation, and does not
+# rebuild the package or anything that consumes it through a local replace.
+# Production code MUST NOT depend on them (a non-test `//go:embed testdata/...`
+# fails the build with "no matching files"); do not rename `testdata` to dodge
+# the filter (operator ruling, Phillip, 2026-11-10). `doCheck = true` opts out
+# of the filter, since the check phase needs the tests. mkGoTest / mkGoLint keep
+# their own unfiltered `src`.
 {
   pkgs,
   lib ? pkgs.lib,
@@ -255,7 +266,10 @@ rec {
   #
   # Tests: `doCheck` defaults to false (see the file header). Pass
   # `doCheck = true` to run gomod2nix's check phase in the package build; the
-  # module's test gate is still its mkGoTest check (ADR 0021).
+  # module's test gate is still its mkGoTest check (ADR 0021). With the default,
+  # `*_test.go` files and `testdata/` directories are excluded from `src` and
+  # the digest (production code MUST NOT depend on them); `doCheck = true`
+  # keeps them, so test edits then change `version` and the derivation.
   #
   # Go build cache (ADR 0031): buildGoApplication restores a pre-warmed Go build
   # cache (`go-cache-env`, a tarball) populated from the `cachePackages` list
@@ -298,18 +312,39 @@ rec {
       ...
     }@args:
     let
+      # The caller's `src` with Go test-only files removed (see the filter below),
+      # computed ONCE here so the digest, `pwd`, `depFiles` and
+      # buildGoApplication's `src` all see the same filtered tree. A raw path
+      # (e.g. `./.`) becomes a store path; an already-filtered source composes.
+      # `src` must be a single path or an attrset with `outPath`: `pwd` and the
+      # go.mod / gomod2nix.toml reads below need one root, so a list (which
+      # mkSrcDigest alone would accept) is rejected loudly.
+      filteredSrc =
+        assert lib.assertMsg (!(builtins.isList src))
+          "mkGoApp: `src` must be a single path or an attrset with `outPath` (lib.fileset.toSource, lib.cleanSource, ...), not a list; pwd and the go.mod / gomod2nix.toml reads need one root.";
+        if args.doCheck or false then
+          src
+        else
+          lib.cleanSourceWith {
+            inherit src;
+            filter =
+              path: type:
+              !(type == "regular" && lib.hasSuffix "_test.go" (baseNameOf path))
+              && !(type == "directory" && baseNameOf path == "testdata");
+          };
+
       # 8-char digest of the package's own (filtered) source tree via the shared
-      # helper, so this digest changes iff a file included in `src` changes —
-      # never for sibling packages. `src` may also be a list of paths (the helper
-      # joins them). See ADR 0006.
-      version = "${baseVersion}-${(import ./version.nix).mkSrcDigest src}";
+      # helper, so this digest changes iff a file kept in `src` changes — never
+      # for sibling packages, and never for a `_test.go` / `testdata/` edit
+      # (unless `doCheck = true`). See ADR 0006.
+      version = "${baseVersion}-${(import ./version.nix).mkSrcDigest filteredSrc}";
 
       # `pwd` carries module/replace resolution: it is `src` in Pattern A and
       # `src + "/" + modRoot` in Pattern B (where the sibling replace resolves
       # within the same rooted store copy). `modRoot` stays in `forwarded` so
       # buildGoApplication uses it as the build working dir — it is intentionally
       # NOT stripped.
-      pwd = if modRoot != null then src + "/" + modRoot else src;
+      pwd = if modRoot != null then filteredSrc + "/" + modRoot else filteredSrc;
       # Derive meta.mainProgram = baseNameOf (head subPackages) ONLY when exactly
       # one subPackage is built — then the installed exe name is known. For a null
       # or multi-entry subPackages we do not guess (bead pg2-148y). A caller's
@@ -433,6 +468,7 @@ rec {
         "gomod2nixToml"
         "meta"
         "env"
+        "src"
       ];
     in
     # `version` is DERIVED (baseVersion + source digest) and then stripped from
@@ -449,6 +485,7 @@ rec {
       forwarded
       // {
         inherit pname version pwd;
+        src = filteredSrc;
         inherit (pkgs) go; # pin to our nixpkgs Go, not gomod2nix's
         modules = pwd + "/gomod2nix.toml";
         # buildGoApplication's own cache env is keyed on ldflags (hence on the

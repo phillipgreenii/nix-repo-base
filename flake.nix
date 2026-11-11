@@ -1942,8 +1942,9 @@
 
             # Go build cache env decoupling (ADR 0031, bead pg2-t8807). Eval-only:
             # forces derivation attributes and compares drvPaths, builds nothing.
-            # The "source edits" are real fileset changes (a deleted test file in
-            # the package, a deleted source file in the local-replace sibling), so
+            # The "source edits" are real fileset changes (a deleted non-test
+            # source file in the package (tests are filtered out of the digest, so a
+            # test edit would not change it), a deleted source file in the local-replace sibling), so
             # the package's src path, digest and `version` all change; the cache
             # env must not. Asserts:
             #   - the cache env drvPath is invariant under an edit in the package
@@ -1959,14 +1960,14 @@
             #   - mkGoLint / mkGoTest build no cache env at all.
             go-builders-cache-env =
               let
-                srcNoModaTest = goPatternBFixtureSrcOf (
-                  lib.fileset.difference goPatternBFixtureFileset ./lib/tests/fixtures/patternb/moda/main_test.go
+                srcNoModaMain = goPatternBFixtureSrcOf (
+                  lib.fileset.difference goPatternBFixtureFileset ./lib/tests/fixtures/patternb/moda/main.go
                 );
                 srcNoModbSource = goPatternBFixtureSrcOf (
                   lib.fileset.difference goPatternBFixtureFileset ./lib/tests/fixtures/patternb/modb/modb.go
                 );
                 app = goPatternBCacheApp goPatternBFixtureSrc;
-                appModaEdit = goPatternBCacheApp srcNoModaTest;
+                appModaEdit = goPatternBCacheApp srcNoModaMain;
                 appModbEdit = goPatternBCacheApp srcNoModbSource;
                 cacheEnv = app.passthru.goCacheEnv;
                 lint = goBuilders.mkGoLint {
@@ -2047,6 +2048,104 @@
                 echo "cache tarball: $size bytes (${toString (builtins.length roots)} cachePackages roots)"
                 if [ "$size" -le 1048576 ]; then
                   echo "FAIL: cache tarball is $size bytes (<= 1 MiB) although cachePackages is non-empty; the cache env is effectively empty (ADR 0031)" >&2
+                  exit 1
+                fi
+                touch $out
+              '';
+
+            # mkGoApp excludes `*_test.go` files and `testdata/` directories from
+            # its source and digest unless `doCheck = true` (ADR 0006 amendment).
+            # Eval-only drvPath comparisons over lib/tests/fixtures/gotestfilter,
+            # which has test files and testdata/ at the root and nested:
+            #   (a) a test-only or testdata-only edit leaves version and drvPath
+            #       unchanged;
+            #   (b) a non-test edit changes them;
+            #   (c) with doCheck = true a test edit DOES change them (opt-out).
+            go-builders-test-filter =
+              let
+                fx = ./lib/tests/fixtures/gotestfilter;
+                allFiles = lib.fileset.toList fx;
+                fullFileset = lib.fileset.fromSource (lib.sources.cleanSource fx);
+                srcOf =
+                  fileset:
+                  lib.fileset.toSource {
+                    root = fx;
+                    inherit fileset;
+                  };
+                without = f: srcOf (lib.fileset.difference fullFileset f);
+                appOf =
+                  doCheck: src:
+                  goBuilders.mkGoApp {
+                    pname = "gotestfilter-fixture";
+                    inherit src doCheck;
+                    gomod2nixToml = fx + "/gomod2nix.toml";
+                    subPackages = [ "." ];
+                  };
+                base = appOf false (srcOf fullFileset);
+                noRootTest = appOf false (without (fx + "/main_test.go"));
+                noNestedTest = appOf false (without (fx + "/pkg/pkg_test.go"));
+                noRootTestdata = appOf false (without (fx + "/testdata"));
+                noNestedTestdata = appOf false (without (fx + "/pkg/testdata"));
+                noMain = appOf false (without (fx + "/main.go"));
+                noPkg = appOf false (without (fx + "/pkg/pkg.go"));
+                checkedBase = appOf true (srcOf fullFileset);
+                checkedNoRootTest = appOf true (without (fx + "/main_test.go"));
+                checkedNoTestdata = appOf true (without (fx + "/testdata"));
+                same = a: b: a.version == b.version && a.drvPath == b.drvPath;
+                differs = a: b: a.version != b.version && a.drvPath != b.drvPath;
+                cases = {
+                  "fixture really holds tests and testdata (non-vacuous)" =
+                    builtins.length allFiles == 8
+                    && builtins.elem (fx + "/pkg/testdata/data.txt") allFiles
+                    && builtins.elem (fx + "/main_test.go") allFiles;
+                  "(a) root _test.go edit leaves version and drvPath unchanged" = same base noRootTest;
+                  "(a) nested _test.go edit leaves version and drvPath unchanged" = same base noNestedTest;
+                  "(a) root testdata/ edit leaves version and drvPath unchanged" = same base noRootTestdata;
+                  "(a) nested testdata/ edit leaves version and drvPath unchanged" = same base noNestedTestdata;
+                  "(b) root non-test edit changes version and drvPath" = differs base noMain;
+                  "(b) nested non-test edit changes version and drvPath" = differs base noPkg;
+                  "(c) doCheck = true: _test.go edit changes version and drvPath" =
+                    differs checkedBase checkedNoRootTest;
+                  "(c) doCheck = true: testdata/ edit changes version and drvPath" =
+                    differs checkedBase checkedNoTestdata;
+                  "doCheck = true opts out of the filter (differs from the filtered package)" =
+                    differs base checkedBase;
+                };
+                failed = builtins.attrNames (lib.filterAttrs (_: ok: !ok) cases);
+              in
+              pkgs.runCommand "check-go-builders-test-filter" { } (
+                if failed == [ ] then
+                  "touch $out"
+                else
+                  ''
+                    echo 'mkGoApp test/testdata source filter broken. Failed:' >&2
+                    ${lib.concatMapStringsSep "\n" (n: "echo ${lib.escapeShellArg "  - ${n}"} >&2") failed}
+                    exit 1
+                  ''
+              );
+
+            # (d) A non-test file that //go:embed's a testdata/ path must FAIL the
+            # package build, since the filter removed the file: production code
+            # MUST NOT depend on testdata. Real go build, under doCheck = false.
+            go-builders-test-filter-embed =
+              let
+                fx = ./lib/tests/fixtures/goembedtestdata;
+                app = goBuilders.mkGoApp {
+                  pname = "goembedtestdata-fixture";
+                  src = lib.fileset.toSource {
+                    root = fx;
+                    fileset = fx;
+                  };
+                  gomod2nixToml = fx + "/gomod2nix.toml";
+                  subPackages = [ "." ];
+                };
+                failure = pkgs.testers.testBuildFailure app;
+              in
+              pkgs.runCommand "check-go-builders-test-filter-embed" { inherit failure; } ''
+                log="$failure/testBuildFailure.log"
+                if ! grep -q 'pattern testdata/data.txt: no matching files found' "$log"; then
+                  echo "FAIL: build did not fail with the go:embed no-matching-files error; log:" >&2
+                  cat "$log" >&2
                   exit 1
                 fi
                 touch $out
