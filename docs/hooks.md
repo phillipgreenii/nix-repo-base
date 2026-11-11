@@ -163,7 +163,7 @@ bundle exits 12. `explain` of an unknown stage exits 2.
 - Bare arguments are file paths (made relative to the work-tree root). With no paths and no
   `--all-files`, prek runs over the staged files.
 - `--all-files` passes through. Giving both file paths and `--all-files` exits 2.
-- `--` forwards everything after it to prek unchanged. Any other `-option` before `--` exits 2.
+- `--` forwards everything after it to prek unchanged. Any other `-option` before `--` exits 2 (`pre-land` also takes `--base <rev>`).
 - `run` needs a bundle. With none it prints the no-bundle notice and exits 13; a leftover
   `.pre-commit-config.yaml` is never read.
 - A failing hook prints the hooks-failed hint after prek's output and exits 10.
@@ -185,7 +185,7 @@ bundle exits 12. `explain` of an unknown stage exits 2.
   `//go:embed` target) is skipped with a `[SKIP] <project> (go) ... suite not run` line instead of
   running its suite; `projectExtraPaths` declares extra counted paths (same page).
 
-`pg-hooks run pre-land [<ref>]` runs the `pre-commit` stage over the branch diff, with
+`pg-hooks run pre-land [--base <rev>] [<ref>]` runs the `pre-commit` stage over the branch diff, with
 `--from-ref <primary> --to-ref <ref>`:
 
 - `<ref>` defaults to `HEAD`. It MUST be the commit checked out in the current worktree, because prek
@@ -193,6 +193,14 @@ bundle exits 12. `explain` of an unknown stage exits 2.
 - `<primary>` resolves as git config `pgii-integrate-branch.primaryBranch`, then
   `git symbolic-ref refs/remotes/origin/HEAD`, then `main`. If it does not resolve to a commit, the
   run exits 2.
+- `--base <rev>` replaces `<primary>` as the start of the range, so a land onto a target other than
+  the primary branch checks only the files changed since that target tip. It wins over
+  `pgii-integrate-branch.primaryBranch`. A rev that does not resolve exits 2, as does `--base`
+  without a value or on a stage other than `pre-land`. `pg-hooks` never reads
+  `PG_GIT_LANDER_TARGET_TIP`; the caller passes the value.
+- Exit 75: the test runner hit its time cap or found no free slot (host load, transient). `pg-hooks`
+  sets `PG_TEST_RUNNER_TRANSIENT_FILE` for `pre-land` only, so the commit-time hook keeps the runner's
+  fail-open behavior and exit 10.
 - `pre-land` does not take `--all-files` (exit 2).
 - `ff-merge-to-main` FF-1b runs this command. On exit 13 it records the notice line in the land
   outcome and continues; on exit 10 it stops the land. When `pg-hooks` is not on PATH (exit 127) a

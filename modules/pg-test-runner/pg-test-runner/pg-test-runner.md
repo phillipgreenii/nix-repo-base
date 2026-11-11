@@ -59,7 +59,9 @@ Every project invocation first takes one of `maxConcurrentRuns` host-wide slots 
 `0` = unlimited) shared by ALL pg-test-runner processes on the machine, so concurrent commit-time
 and pre-land hook runs from many sessions queue instead of piling `go test -race` onto the same
 cores. Queue time never counts against the `timeoutSeconds` cap. If no slot frees up within
-`slotWaitSeconds` (default `600`) the run proceeds anyway with a warning (fail open). Each run
+`slotWaitSeconds` (default `600`) the run proceeds anyway with a warning (fail open). The one exception: when
+`PG_TEST_RUNNER_TRANSIENT_FILE` names a file (`pg-hooks run pre-land` sets it), the project is not run, `runner-no-slot`
+is appended to that file and the project fails; a `timeoutSeconds` expiry appends `runner-cap` to it. `pg-hooks` then exits `75`. Each run
 executes under `nice -n niceLevel` (default `10`; `0` = off). Slots are symlinks under
 `/tmp/pg-test-runner-slots.<uid>` recording `<pid>:<start time>`; a slot whose owner is dead is
 reclaimed automatically. The bound is a soft cap (a reclaim race can let one extra run through).

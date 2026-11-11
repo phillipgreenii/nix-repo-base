@@ -509,6 +509,42 @@ _slots_setup() {
   [[ "$output" == *"ran"* ]]
 }
 
+@test "ptr_invoke with PG_TEST_RUNNER_TRANSIENT_FILE set does not run without a slot and reports runner-no-slot" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=1
+  SLOT_WAIT_SECONDS=1
+  NICE_LEVEL=0
+  export PG_TEST_RUNNER_TRANSIENT_FILE="$TEST_DIR/transient"
+  ptr_slot_acquire 1 0
+  run ptr_invoke "$PROJ" '["bash","-c","echo ran"]' 1 "" "" "" ""
+  [ "$status" -eq 75 ]
+  [[ "$output" != *"ran"$'\n'* ]]
+  [ "$(cat "$TEST_DIR/transient")" = "runner-no-slot" ]
+}
+
+@test "ptr_invoke with PG_TEST_RUNNER_TRANSIENT_FILE set reports runner-cap on a timeout" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=0
+  NICE_LEVEL=0
+  TIMEOUT_SECONDS=1
+  export PG_TEST_RUNNER_TRANSIENT_FILE="$TEST_DIR/transient"
+  run ptr_invoke "$PROJ" '["sleep","5"]' 1 "" "" "" ""
+  [ "$status" -eq 124 ]
+  [ "$(cat "$TEST_DIR/transient")" = "runner-cap" ]
+}
+
+@test "ptr_invoke without PG_TEST_RUNNER_TRANSIENT_FILE keeps the fail-open run" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=1
+  SLOT_WAIT_SECONDS=1
+  NICE_LEVEL=0
+  unset PG_TEST_RUNNER_TRANSIENT_FILE
+  ptr_slot_acquire 1 0
+  run ptr_invoke "$PROJ" '["bash","-c","echo ran"]' 1 "" "" "" ""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"without one"* ]]
+}
+
 @test "ptr_invoke runs the child at the configured niceness" {
   _slots_setup
   MAX_CONCURRENT_RUNS=0

@@ -618,6 +618,122 @@ $(pgh_msg_hooks_failed pre-commit fixture 2>&1)" ]
   [[ $stderr == "pg-hooks: no hook bundle for repo; pre-land hooks not run. Fix: "* ]]
 }
 
+@test "run pre-land on a pg-git-lander/<id> work branch checks the branch diff against the primary" {
+  _present
+  command git checkout -q -b pg-git-lander/test-op
+  command git commit -q --allow-empty -m work
+  run --separate-stderr "$PGH_T_SUT" run pre-land
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args)" = "$(printf '%s\n' -q run -c "$(_common_dir)/pg-hooks/gen-1/bundle/prek-config.json" --hook-stage pre-commit --from-ref main --to-ref HEAD)" ]
+}
+
+@test "run pre-land --base <tip> on a work branch starts the range at that tip" {
+  _present
+  command git checkout -q -b pg-git-lander/test-op
+  command git commit -q --allow-empty -m one
+  tip=$(command git rev-parse HEAD)
+  command git commit -q --allow-empty -m two
+  run --separate-stderr "$PGH_T_SUT" run pre-land --base "$tip"
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args)" = "$(printf '%s\n' -q run -c "$(_common_dir)/pg-hooks/gen-1/bundle/prek-config.json" --hook-stage pre-commit --from-ref "$tip" --to-ref HEAD)" ]
+}
+
+@test "run pre-land --base wins over pgii-integrate-branch.primaryBranch" {
+  _present
+  command git branch trunk
+  command git config pgii-integrate-branch.primaryBranch trunk
+  command git commit -q --allow-empty -m second
+  run --separate-stderr "$PGH_T_SUT" run pre-land --base main
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args | sed -n '/^--from-ref$/{n;p;}')" = main ]
+}
+
+@test "run pre-land --base <rev> works together with <ref> (ref ends the range)" {
+  _present
+  command git checkout -q -b feature
+  command git commit -q --allow-empty -m work
+  run --separate-stderr "$PGH_T_SUT" run pre-land --base main feature
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args | sed -n '/^--to-ref$/{n;p;}')" = feature ]
+  [ "$(_logged_args | sed -n '/^--from-ref$/{n;p;}')" = main ]
+}
+
+@test "run pre-land --base with an unresolvable rev exits 2" {
+  _present
+  run --separate-stderr "$PGH_T_SUT" run pre-land --base no-such-rev
+  [ "$status" -eq 2 ]
+  [[ $stderr == "pg-hooks: run pre-land: cannot resolve --base: no-such-rev" ]]
+}
+
+@test "run pre-land --base with no value exits 2" {
+  _present
+  run --separate-stderr "$PGH_T_SUT" run pre-land --base
+  [ "$status" -eq 2 ]
+  run --separate-stderr "$PGH_T_SUT" run pre-land --base --timings
+  [ "$status" -eq 2 ]
+}
+
+@test "run <stage other than pre-land> --base exits 2" {
+  _present
+  run --separate-stderr "$PGH_T_SUT" run pre-commit --base main
+  [ "$status" -eq 2 ]
+  [[ $stderr == "pg-hooks: run: --base is only for pre-land" ]]
+}
+
+@test "run pre-land does not read PG_GIT_LANDER_TARGET_TIP" {
+  _present
+  command git commit -q --allow-empty -m second
+  tip=$(command git rev-parse HEAD)
+  PG_GIT_LANDER_TARGET_TIP=$tip run --separate-stderr "$PGH_T_SUT" run pre-land
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args | sed -n '/^--from-ref$/{n;p;}')" = main ]
+}
+
+# A prek stand-in that reports a transient reason the way pg-test-runner does,
+# then fails like a hook would.
+_prek_reports() {
+  cat >"$PGH_T_BUNDLE/bin/prek" <<PREK
+#!/bin/sh
+if [ -n "\${PG_TEST_RUNNER_TRANSIENT_FILE-}" ]; then
+  printf '%s\n' '$1' >>"\$PG_TEST_RUNNER_TRANSIENT_FILE"
+fi
+printf 'transient-var=%s\n' "\${PG_TEST_RUNNER_TRANSIENT_FILE-<unset>}" >'$GFH_ROOT/seen-var'
+exit 1
+PREK
+  chmod +x "$PGH_T_BUNDLE/bin/prek"
+}
+
+@test "run pre-land exits 75 when the test runner hit its time cap" {
+  _present
+  _prek_reports runner-cap
+  run --separate-stderr "$PGH_T_SUT" run pre-land
+  [ "$status" -eq 75 ]
+  [[ $stderr == *"host load (runner-cap)"* ]]
+}
+
+@test "run pre-land exits 75 when the test runner found no free slot" {
+  _present
+  _prek_reports runner-no-slot
+  run --separate-stderr "$PGH_T_SUT" run pre-land
+  [ "$status" -eq 75 ]
+  [[ $stderr == *"host load (runner-no-slot)"* ]]
+}
+
+@test "run pre-land exits 10 for an ordinary hook failure" {
+  _present
+  printf '1\n' >"$PGH_T_CTL/exit"
+  run --separate-stderr "$PGH_T_SUT" run pre-land
+  [ "$status" -eq 10 ]
+}
+
+@test "the commit-time stage does not set PG_TEST_RUNNER_TRANSIENT_FILE and still exits 10 on failure" {
+  _present
+  _prek_reports runner-cap
+  run --separate-stderr "$PGH_T_SUT" run pre-commit
+  [ "$status" -eq 10 ]
+  [ "$(cat "$GFH_ROOT/seen-var")" = "transient-var=<unset>" ]
+}
+
 # --- stdout/stderr discipline and odd paths ----------------------------------
 
 @test "messages go to stderr; stdout carries only status, list and explain output" {

@@ -909,6 +909,13 @@ ptr_invoke() {
   if [[ ${MAX_CONCURRENT_RUNS:-0} -gt 0 ]]; then
     if ptr_slot_acquire "$MAX_CONCURRENT_RUNS" "$slot_wait"; then
       have_slot=1
+    elif [[ -n ${PG_TEST_RUNNER_TRANSIENT_FILE:-} ]]; then
+      # A caller that asked to be told about host-load stops (pg-hooks run
+      # pre-land) gets no fail-open run: the slot wait ending is reported as
+      # transient, and the project is not run. Other callers are unchanged.
+      ptr_err "no run slot free after ${slot_wait}s (maxConcurrentRuns=$MAX_CONCURRENT_RUNS); not running $path (transient: runner-no-slot)"
+      printf 'runner-no-slot\n' >>"$PG_TEST_RUNNER_TRANSIENT_FILE" 2>/dev/null || true
+      return 75
     else
       ptr_err "warning: no run slot free after ${slot_wait}s (maxConcurrentRuns=$MAX_CONCURRENT_RUNS); running $path without one"
     fi
@@ -941,6 +948,9 @@ ptr_invoke() {
   if [[ $have_slot == 1 ]]; then ptr_slot_release; fi
   if [[ $status -eq 124 ]]; then
     ptr_err "project $path timed out after ${timeout_secs}s cap"
+    if [[ -n ${PG_TEST_RUNNER_TRANSIENT_FILE:-} ]]; then
+      printf 'runner-cap\n' >>"$PG_TEST_RUNNER_TRANSIENT_FILE" 2>/dev/null || true
+    fi
   fi
   return "$status"
 }

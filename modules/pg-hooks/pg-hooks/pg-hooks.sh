@@ -23,8 +23,9 @@ Commands:
   run <stage> [--timings] [files...|--all-files] [-- prek-args]
                          Run a stage's hooks now (staged files by default);
                          --timings also prints each passing hook and its duration
-  run pre-land [--timings] [<ref>]
-                         Run the pre-commit hooks over the branch diff
+  run pre-land [--timings] [--base <rev>] [<ref>]
+                         Run the pre-commit hooks over the branch diff (--base
+                         starts the range at <rev> instead of the primary branch)
   fix                    Apply the repo's fixers to the staged files and restage them
                          (also installed as: pre-commit-fix)
 
@@ -47,6 +48,8 @@ Exit codes:
   14  status only: bundle stale
   15  status only: hooks unreachable (core.hooksPath bypasses <common-dir>/hooks)
   16  status only: clone relocated
+  75  run pre-land only: the test runner hit its time cap or found no free
+      slot (host load, transient; retry later)
 
 Environment:
   PG_HOOKS_PROGRESS_AFTER_S  print one progress line after N seconds (default 3; 0 disables)
@@ -419,7 +422,7 @@ cmd_explain() {
   printf 'stage: %s\n' "$stage"
   printf 'triggered by: %s\n' "$(stage_trigger "$stage")"
   if [[ $stage == pre-land ]]; then
-    printf 'runs: the pre-commit hooks over the branch diff (pg-hooks run pre-land [<ref>])\n'
+    printf 'runs: the pre-commit hooks over the branch diff (pg-hooks run pre-land [--base <rev>] [<ref>])\n'
   else
     printf 'runs: pg-hooks run %s [files...|--all-files] [-- prek-args]\n' "$stage"
   fi
@@ -465,7 +468,7 @@ cmd_run() {
   shift
   is_known_stage "$stage" || die "run: unknown stage: $stage"
 
-  local all_files=0 ref="" arg timings=0
+  local all_files=0 ref="" arg timings=0 base="" have_base=0
   if [[ ${PG_HOOKS_TIMINGS:-} == 1 ]]; then
     timings=1
   fi
@@ -483,6 +486,17 @@ cmd_run() {
       ;;
     --all-files) all_files=1 ;;
     --timings) timings=1 ;;
+    --base)
+      if [[ $stage != pre-land ]]; then
+        die "run: --base is only for pre-land"
+      fi
+      if [[ $# -lt 2 || -z $2 || $2 == -* ]]; then
+        die "run pre-land: --base needs a <rev>"
+      fi
+      base=$2
+      have_base=1
+      shift
+      ;;
     -*) die "run: unknown option: $arg (put raw prek flags after --)" ;;
     *)
       if [[ $stage == pre-land ]]; then
@@ -537,8 +551,13 @@ cmd_run() {
     if [[ $head != "$want" ]]; then
       die "run pre-land refuses $ref: it is not the commit checked out in this worktree (HEAD is $head); prek reads working-tree files, so check $ref out first"
     fi
-    primary=$(primary_branch)
-    git rev-parse --verify -q "$primary^{commit}" >/dev/null 2>&1 || die "run pre-land: cannot resolve the primary branch: $primary"
+    if ((have_base)); then
+      primary=$base
+      git rev-parse --verify -q "$primary^{commit}" >/dev/null 2>&1 || die "run pre-land: cannot resolve --base: $primary"
+    else
+      primary=$(primary_branch)
+      git rev-parse --verify -q "$primary^{commit}" >/dev/null 2>&1 || die "run pre-land: cannot resolve the primary branch: $primary"
+    fi
     args+=(--hook-stage "$prek_stage" --from-ref "$primary" --to-ref "$ref")
   else
     args+=(--hook-stage "$prek_stage")
@@ -571,9 +590,28 @@ cmd_run() {
     pgh_progress_start "$progress_after" "pg-hooks: running $stage hooks in $repo..."
     trap pgh_progress_stop EXIT
   fi
-  local rc=0
+  local rc=0 transient=""
+  if [[ $stage == pre-land ]]; then
+    # Ask the test runner to report host-load stops (time cap, no free slot)
+    # here, so they exit 75 instead of 10. Other stages leave it unset.
+    transient=$(mktemp "${TMPDIR:-/tmp}/pg-hooks-transient.XXXXXX") || transient=""
+    if [[ -n $transient ]]; then
+      export PG_TEST_RUNNER_TRANSIENT_FILE=$transient
+    fi
+  fi
   "$prek" "${args[@]}" || rc=$?
   pgh_progress_stop
+  if [[ -n $transient ]]; then
+    local reason=""
+    if ((rc != 0)) && [[ -s $transient ]]; then
+      reason=$(head -n 1 "$transient")
+    fi
+    rm -f "$transient"
+    if [[ -n $reason ]]; then
+      printf 'pg-hooks: %s hooks stopped by host load (%s); retry later\n' "$stage" "$reason" >&2
+      return 75
+    fi
+  fi
   if ((rc != 0)); then
     pgh_msg_hooks_failed "$stage" "$repo"
     return "$PGH_FAILED"

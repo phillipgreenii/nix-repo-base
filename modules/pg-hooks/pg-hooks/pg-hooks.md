@@ -69,6 +69,7 @@ and exits `10`. Per-fixer timings are appended to `~/.local/state/pg-hooks/timin
 | `14` | `status` only: bundle stale.                                                                  |
 | `15` | `status` only: hooks unreachable (`core.hooksPath` bypasses `<common-dir>/hooks`).            |
 | `16` | `status` only: clone relocated (`clone_path` differs).                                        |
+| `75` | `run pre-land` only: the test runner hit its time cap or found no free slot (transient).      |
 
 `status --porcelain` prints `state=`, `bundle=`, `generation=`, `stages=` and `reinstall=` lines.
 `state` is one of `present`, `stale`, `missing`, `broken`, `unreachable`, `relocated`.
