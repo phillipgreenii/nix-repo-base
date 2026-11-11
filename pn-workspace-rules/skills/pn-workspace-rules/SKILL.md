@@ -11,9 +11,13 @@ description: >-
   worktrees / coordinated workforest sets spanning the nix repos; cross-repo
   flake-input changes where one workspace repo's output is consumed by another;
   and the completion gate of "is my task in a pn-workspace repo actually done."
-  Also fires when you see `pn-workspace.toml`, `pn-workspace.lock.json`,
-  `PN_WORKSPACE_ROOT`, `--terminal`, or `--override-input` and need the workspace
-  conventions. Do NOT use for generic nix work unrelated to the `pn` workspace
+  Also fires when the session's working directory is a directory containing
+  `pn-workspace.toml` (the non-git workspace root); when about to plan, design,
+  add or change files in ANY repo declared in that workspace; when the task is
+  on the `pn` tooling itself (`modules/pn`, `pnwf`, or `pn workspace`
+  apply/build behaviour); and when you see `pn-workspace.toml`,
+  `pn-workspace.lock.json`, `PN_WORKSPACE_ROOT`, `--terminal`, or
+  `--override-input` and need the workspace conventions. Do NOT use for generic nix work unrelated to the `pn` workspace
   tooling.
 ---
 
@@ -22,6 +26,13 @@ description: >-
 Rules for AI agents working inside a `pn-workspace.toml` workspace. These apply to ANY repo whose flake is declared as a project in the workspace.
 
 For concrete end-to-end user journeys (the commands a user runs, expected success/error outcomes, and the smoke scenario that exercises each), see `USER_JOURNEYS.md` in this skill directory.
+
+## Starting a change
+
+Before planning or editing in any repo of the workspace, from the workspace root (a directory holding `pn-workspace.toml`, which is NOT a git repo):
+
+- Use the `fork-workforest` skill (`pn workspace workforest add`, with `--repos <a,b>` for a subset of repos) to get isolated worktrees. `EnterWorktree` and `git worktree add` do not apply at the non-git root.
+- Finish with the [Completion Gate](#completion-gate) (including `pn workspace doctor`), then land with the `land-workforest` skill.
 
 ## Cardinal Rule
 
@@ -67,6 +78,10 @@ In this multi-agent workspace an **unqualified "main" — and any bare "merge", 
 - You MUST treat `not writing modified lock file` as a normal, expected line on a successful `pn workspace build`/`apply`.
 - You MUST NOT "fix" it by writing local paths into `flake.lock` (the lock equivalent of the Cardinal Rule violation). Doing so corrupts the lock for every other consumer.
 - You SHOULD NOT add stderr filtering to `pn` to hide it, for the reasons above.
+
+## Adding behaviour
+
+A change to `pn workspace apply` or `build` semantics MUST update this skill's apply section (`activate_command` and the apply pipeline description), `USER_JOURNEYS.md` and `modules/pn/README.md` in the same set.
 
 ## Completion Gate
 
