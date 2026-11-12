@@ -1,5 +1,6 @@
 ---
 name: land-workforest
+user-invocable: false
 description: >-
   Use to LAND a coordinated workforest SET — integrate every repo's feature
   branch in the set back onto its local primary branch, in dependency order,

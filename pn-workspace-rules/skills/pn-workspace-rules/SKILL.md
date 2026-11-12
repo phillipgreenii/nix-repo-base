@@ -1,5 +1,6 @@
 ---
 name: pn-workspace-rules
+user-invocable: false
 description: >-
   Use when working in a repo that participates in a `pn-workspace.toml` /
   phillipgreenii nix-* workspace — ANY repo whose flake is declared as a project

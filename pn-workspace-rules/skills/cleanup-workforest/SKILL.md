@@ -1,5 +1,6 @@
 ---
 name: cleanup-workforest
+user-invocable: false
 description: >-
   Use to TEAR DOWN a coordinated workforest set after landing — best-effort
   removal of the landed repos' worktrees and branches, preserving anything not

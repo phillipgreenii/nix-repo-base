@@ -1,5 +1,6 @@
 ---
 name: validate-workforest
+user-invocable: false
 description: >-
   Use to VALIDATE a coordinated workforest set before landing it — confirm the
   isolated cross-repo workspace still builds/checks cleanly after the WORK, so

@@ -1,5 +1,6 @@
 ---
 name: fork-workforest
+user-invocable: false
 description: >-
   Use to CREATE a coordinated workforest set — an isolated cross-repo feature
   branch spanning the repos of a `pn-workspace.toml` workspace — from the
