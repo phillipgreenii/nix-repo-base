@@ -781,7 +781,7 @@ func workspaceDoctorCmd(terminal *string) *cobra.Command {
 func workspaceNixCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "nix [-- <nix args>]",
-		Short:              "Run nix with --override-input pinned to local workspace clones",
+		Short:              "Run nix with --override-input pinned to local workspace clones (uses the terminal, or the unique sink when none is set)",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()

@@ -45,7 +45,7 @@ func (ws *Workspace) NixCommand(ctx context.Context, out io.Writer, args []strin
 	if denied, match := matchesDeniedSubcommand(args); denied {
 		return fmt.Errorf("nix %s is incompatible with workspace overrides; refused", strings.Join(match, " "))
 	}
-	terminal, err := ws.effectiveTerminal("")
+	terminal, err := ws.nixConsumer(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve terminal: %w", err)
 	}
@@ -54,6 +54,23 @@ func (ws *Workspace) NixCommand(ctx context.Context, out io.Writer, args []strin
 	full = append(full, overrides...)
 	_, err = ws.runner.Run(ctx, "nix", full, exec.RunOptions{Dir: ws.root, Stdout: out, Stderr: out, WrapNix: true})
 	return err
+}
+
+// nixConsumer picks the repo whose workspace deps become the --override-input
+// set. It is the configured terminal when there is one. A subset workforest set
+// excludes the terminal repo, so its pn-workspace.toml has none; there the verb
+// only needs the override set, so it falls back to the unique auto-detected
+// sink (the repo no other member consumes). Zero or several sinks are
+// ambiguous and still error, naming the candidates.
+func (ws *Workspace) nixConsumer(ctx context.Context) (string, error) {
+	if t, err := ws.effectiveTerminal(""); err == nil {
+		return t, nil
+	}
+	candidates := ws.detectTerminalCandidates(ctx)
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	return "", terminalRequiredError(candidates)
 }
 
 // nixValueFlagArity is the shared table of nix flags that consume following

@@ -252,7 +252,7 @@ pn workspace push -u                     Same as --set-upstream (short flag)
 pn workspace push -u --remote <name>     Same, but override the remote for all repos (skip repo if remote absent)
 pn workspace status                      Per-repo working-tree summary
 pn workspace tree                        Print the workspace dependency DAG (terminal required)
-pn workspace nix -- <nix args>           Run nix with --override-input flags injected
+pn workspace nix -- <nix args>           Run nix with --override-input flags injected (no terminal: the unique sink, e.g. in a subset set)
 pn workspace discover                    List workspace repos and their paths
 pn workspace workforest add <branch>              Create a coordinated workforest set on <branch> (all repos)
 pn workspace workforest add <branch> <sha>        Same, starting from <commit-ish>

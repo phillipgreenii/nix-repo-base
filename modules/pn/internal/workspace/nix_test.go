@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -293,5 +294,54 @@ url = "github:o/foo"
 	runner.AddResponse("nix", []string{"--verbose", "build"}, exec.Result{}, nil)
 	if err := w.NixCommand(context.Background(), io.Discard, []string{"--verbose", "build"}); err != nil {
 		t.Fatalf("NixCommand should allow `nix --verbose build`: %v", err)
+	}
+}
+
+// A subset workforest set excludes the terminal repo, so its pn-workspace.toml
+// has no workspace.terminal. `pn workspace nix` must still inject the sibling
+// overrides, using the unique auto-detected sink as the consumer.
+func TestNixCommand_SubsetSetWithoutTerminalInjectsOverrides(t *testing.T) {
+	root := t.TempDir()
+	mkRepoDir(t, root, "leaf")
+	mkRepoDir(t, root, "dep")
+	writeFile(t, filepath.Join(root, "leaf", "flake.nix"), "{}")
+	writeFile(t, filepath.Join(root, "dep", "flake.nix"), "{}")
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+name = "subset"
+
+[repos.leaf]
+url = "github:owner/leaf"
+
+[repos.dep]
+url = "github:owner/dep"
+`)
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["dep", "leaf"],
+  "repos": {
+    "dep":  {"flake_path": "flake.nix", "remote_url": "github:owner/dep"},
+    "leaf": {"flake_path": "flake.nix", "remote_url": "github:owner/leaf"}
+  },
+  "edges": [{"consumer": "leaf", "alias": "dep-input", "target": "dep"}]
+}`)
+	f := exec.NewFakeRunner()
+	want := []string{"eval", "--raw", ".#x", "--override-input", "dep-input", "git+file://" + filepath.Join(root, "dep")}
+	f.AddResponse("nix", want, exec.Result{}, nil)
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { w.Close() })
+	if err := w.NixCommand(context.Background(), io.Discard, []string{"--", "eval", "--raw", ".#x"}); err != nil {
+		t.Fatalf("NixCommand without a terminal: %v", err)
+	}
+	found := false
+	for _, c := range f.Calls() {
+		if c.Name == "nix" && strings.Join(c.Args, " ") == strings.Join(want, " ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected nix %v; calls: %v", want, f.Calls())
 	}
 }
