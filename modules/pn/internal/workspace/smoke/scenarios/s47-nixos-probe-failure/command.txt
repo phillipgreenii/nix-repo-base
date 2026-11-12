@@ -1,0 +1,7 @@
+# Bootstrap, trust the workspace (apply's config-sourced commands are TOFU
+# trust-gated), then apply through the build-as-user flow.
+workspace init
+workspace clone
+workspace lock
+workspace allow
+workspace apply

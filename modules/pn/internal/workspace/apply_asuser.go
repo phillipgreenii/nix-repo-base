@@ -36,11 +36,13 @@ import (
 //	                   the build runs; sudo -k right after activate (ADR 0042)
 //	2 build            user, Dir = private run dir R, WrapNix true: the build_command expansion
 //	3 read-result      os.Readlink(R/result) ONCE, then validateBuildOut; no process
-//	4 probe            darwin: user, Dir = R, unwrapped, 10 s: <out>/sw/bin/darwin-rebuild --help
-//	                   nixos: no process (the file check of step 3 is the whole check)
+//	4 probe            user, Dir = R, unwrapped, 10 s: darwin: <out>/sw/bin/darwin-rebuild --help;
+//	                   nixos: <out>/bin/switch-to-configuration with no arguments (usage, exit 1)
 //	5 set-profile      sudo env -i HOME=<root home> NIX_REMOTE=daemon PATH=... nix-env -p <profile> --set <out>
-//	6 activate         sudo <out>/sw/bin/darwin-rebuild activate, or
-//	                   sudo <out>/bin/switch-to-configuration switch (the activate_command expansion)
+//	6 activate         darwin: sudo <out>/sw/bin/darwin-rebuild activate (the activate_command expansion);
+//	                   nixos: that expansion rewritten by the platform to nixos-rebuild's argv:
+//	                   sudo env -i PATH=... NIXOS_INSTALL_BOOTLOADER=0 [systemd-run ... --unit=...]
+//	                   <out>/bin/switch-to-configuration switch (ADR 0043)
 //
 // The set-profile step is hard-coded here, never templated: it is root-executed
 // and security-sensitive, and the drift guard and the fake-runner tests pin it.
@@ -49,9 +51,7 @@ const (
 	// nixEnvPath is the nix-env the set-profile step runs, by its nix-env symlink
 	// name: nix-env is a multi-call binary that dispatches on argv[0], so the
 	// resolved path (.../bin/nix) fails with "unrecognised flag '-p'".
-	// TODO(nixos): /run/current-system/sw/bin/nix-env is assumed to exist on NixOS
-	// (it does on darwin). Verify: `ls -l /run/current-system/sw/bin/nix-env`. If it is
-	// absent, the NixOS platform needs its own nix-env path (a field of activationPlatform).
+	// The path exists on darwin and on NixOS (checked on a NixOS host: a symlink to nix-env).
 	nixEnvPath = "/run/current-system/sw/bin/nix-env"
 	// rootPath is the whole PATH of the set-profile step.
 	rootPath = "/run/current-system/sw/bin:/usr/bin:/bin"
@@ -86,7 +86,19 @@ type asUserSeams struct {
 	nixEnvUsable func() bool
 	// storeDir is the store directory an out path must sit directly under.
 	storeDir string
+	// systemdPresent reports whether the host runs systemd (the NixOS activation
+	// then runs under systemd-run). nil means the production check. It is
+	// consulted only for a platform that rewrites its activation (never darwin).
+	systemdPresent func() bool
 }
+
+// systemdRunDir exists on a host booted with systemd; nixos-rebuild makes the
+// same test before it uses systemd-run.
+const systemdRunDir = "/run/systemd/system"
+
+// productionSystemdPresent is the seam default. A package variable so the unit
+// tests can replace it with a stub that fails the test when it is reached.
+var productionSystemdPresent = func() bool { return systemdPresent(systemdRunDir) }
 
 // defaultAsUserSeams is the process-wide seam set. It is nil in every shipped
 // binary; only the smoke harness's pn build (build tag smokeseams,
@@ -110,6 +122,13 @@ func (ws *Workspace) nixEnvUsable() bool {
 	return err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0
 }
 
+func (ws *Workspace) systemdPresent() bool {
+	if sm := ws.seams(); sm != nil && sm.systemdPresent != nil {
+		return sm.systemdPresent()
+	}
+	return productionSystemdPresent()
+}
+
 func (ws *Workspace) storeDir() string {
 	if sm := ws.seams(); sm != nil && sm.storeDir != "" {
 		return sm.storeDir
@@ -124,6 +143,24 @@ type asUserPlan struct {
 	activateTmpl string
 	// platform is the activationPlatform selected from activateTmpl.
 	platform activationPlatform
+	// systemd is whether the host runs systemd, decided once in the preflight
+	// (only for a platform that wraps its activation), so the dry-run lines, the
+	// apply-log header and the run all use the same argv.
+	systemd bool
+}
+
+// activateArgv is the argv of the activate step, sudo included, for the out
+// path out: the activate_command expansion, then the platform's rewrite (none
+// for darwin, so its output is exactly substituteActivateCommand's).
+func (a *asUserPlan) activateArgv(v templateVars, out string) ([]string, error) {
+	argv, err := substituteActivateCommand(a.activateTmpl, withOut(v, out))
+	if err != nil {
+		return nil, err
+	}
+	if a.platform.wrapActivate != nil {
+		argv = a.platform.wrapActivate(argv, a.systemd)
+	}
+	return argv, nil
 }
 
 // applyBuildDir is the directory holding the per-run directories:
@@ -134,7 +171,7 @@ func applyBuildDir() string {
 
 // errActivateCommandUnset is returned when apply has no activate_command: the
 // build-as-user flow is the only apply flow.
-var errActivateCommandUnset = errors.New("apply failed: workspace.activate_command is not set in pn-workspace.toml: apply builds as you and activates as root, so it needs the activation command (darwin: 'sudo {out}/sw/bin/darwin-rebuild activate'; nixos: 'sudo {out}/bin/switch-to-configuration switch')")
+var errActivateCommandUnset = errors.New("apply failed: workspace.activate_command is not set in pn-workspace.toml: apply builds as you and activates as root, so it needs the activation command (darwin: 'sudo {out}/sw/bin/darwin-rebuild activate'; nixos: 'sudo {out}/bin/switch-to-configuration switch'); a leftover apply_command is ignored (the old apply flow is removed)")
 
 // extendPlan runs apply's preflight (planExtender): activate_command must be set
 // and name a recognised program, nix-env must be usable and build_command must
@@ -154,7 +191,11 @@ func (applyVerb) extendPlan(_ context.Context, ws *Workspace, _ io.Writer, p *re
 	}
 	// The prelude already expanded build_command (commandTemplate), so p.cmdArgs is
 	// the user build.
-	p.asUser = &asUserPlan{activateTmpl: activateTmpl, platform: platform}
+	plan := &asUserPlan{activateTmpl: activateTmpl, platform: platform}
+	if platform.wrapActivate != nil {
+		plan.systemd = ws.systemdPresent()
+	}
+	p.asUser = plan
 	return nil
 }
 
@@ -175,7 +216,7 @@ func (a *asUserPlan) describeSteps(p *rebuildPlan) []string {
 		"0 sudo-auth   sudo -v, then sudo -n -v every " + sudoRefreshInterval.String() + " while the build runs",
 		"set-profile command: " + strings.Join(setProfileArgv("<out>", a.platform), " "),
 	}
-	if act, err := substituteActivateCommand(a.activateTmpl, withOut(p.vars, "<out>")); err == nil {
+	if act, err := a.activateArgv(p.vars, "<out>"); err == nil {
 		lines = append(lines, "activate command: "+strings.Join(act, " "))
 	} else {
 		lines = append(lines, "activate command: (invalid: "+err.Error()+")")
@@ -243,10 +284,9 @@ func validateBuildOut(out, storeDir string, p activationPlatform) error {
 // level and exactly once, and validates it. The returned string is the only
 // thing every later step uses; the link is never read again.
 func readBuildResult(runDir, storeDir string, p activationPlatform) (string, error) {
-	// TODO(nixos): `nixos-rebuild build` is assumed to leave ./result in its working
-	// directory like `darwin-rebuild build`. Verify: run it in an empty directory and
-	// `ls -l result`. If it does not (or needs --no-link/--out-link handling), the NixOS
-	// build_command must be adjusted and this read made platform specific.
+	// Both `darwin-rebuild build` and `nixos-rebuild build` leave ./result in their
+	// working directory (nixos-rebuild-ng sets no_link only for switch, boot, test
+	// and dry-activate).
 	link := filepath.Join(runDir, "result")
 	fi, err := os.Lstat(link)
 	if err != nil {
@@ -302,9 +342,15 @@ func parseDarwinRebuildUsage(exitCode int, stdout, stderr []byte) error {
 // probeActivate runs the version probe and returns "" when the built system can
 // be activated through its own darwin-rebuild, else the reason it cannot.
 func (ws *Workspace) probeActivate(ctx context.Context, runDir, out string) (res exec.Result, reason string) {
+	return ws.probeUsage(ctx, runDir, filepath.Join(out, "sw", "bin", "darwin-rebuild"), []string{"--help"}, parseDarwinRebuildUsage)
+}
+
+// probeUsage runs prog with args as the user in runDir (unwrapped, bounded by
+// probeTimeout) and hands the outcome to parse. "" means usable, else the reason.
+func (ws *Workspace) probeUsage(ctx context.Context, runDir, prog string, args []string, parse func(exitCode int, stdout, stderr []byte) error) (res exec.Result, reason string) {
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	res, err := ws.runner.Run(pctx, filepath.Join(out, "sw", "bin", "darwin-rebuild"), []string{"--help"}, exec.RunOptions{Dir: runDir})
+	res, err := ws.runner.Run(pctx, prog, args, exec.RunOptions{Dir: runDir})
 	if err != nil {
 		// A non-zero exit is the NORMAL outcome (exit 1); only a failure to run
 		// at all (not found, not executable, timeout) is a probe failure by itself.
@@ -316,10 +362,26 @@ func (ws *Workspace) probeActivate(ctx context.Context, runDir, out string) (res
 			return res, fmt.Sprintf("the probe did not finish within %s", probeTimeout)
 		}
 	}
-	if err := parseDarwinRebuildUsage(res.ExitCode, res.Stdout, res.Stderr); err != nil {
+	if err := parse(res.ExitCode, res.Stdout, res.Stderr); err != nil {
 		return res, err.Error()
 	}
 	return res, ""
+}
+
+// detachedActivateNote is appended to an activate failure on the systemd path:
+// the activation runs in a transient unit that pn does not own, so a failed or
+// interrupted client does not prove the activation stopped. exitCode is the
+// client's exit status (best effort: whether systemd-run --pipe forwards the
+// unit's status through sudo is not verifiable without activating).
+func (a *asUserPlan) detachedActivateNote(exitCode int) string {
+	if !a.systemd {
+		return ""
+	}
+	note := fmt.Sprintf(" (activation may still be running in unit %[1]s, or this one failed: systemctl status %[1]s; journalctl -u %[1]s)", nixosUnit)
+	if exitCode == 4 {
+		note += " (switch-to-configuration exit 4 means some units failed but the system HAS switched: run `systemctl --failed`, do not re-run apply)"
+	}
+	return note
 }
 
 // makeRunDir creates this run's private directory R (mode 0700, owned by the
@@ -400,12 +462,14 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 		} else {
 			alog.fail(failedStepProbe, nil)
 		}
-		// TODO(nixos): this text is darwin-worded; generalise it if a NixOS probe is ever
-		// added (NIXOS_TODO.md item 6 and 11).
-		return fmt.Errorf("apply failed: probe: the built system has no usable 'darwin-rebuild activate' (%s)", reason)
+		advice := ""
+		if f := p.asUser.platform.probeAdvice; f != nil {
+			advice = f(built)
+		}
+		return fmt.Errorf("apply failed: probe: the built system has no usable '%s' (%s)%s", p.asUser.platform.activateWhat, reason, advice)
 	}
 
-	activate, err := substituteActivateCommand(p.asUser.activateTmpl, withOut(p.vars, built))
+	activate, err := p.asUser.activateArgv(p.vars, built)
 	if err != nil {
 		alog.fail(failedStepActivate, nil)
 		return fmt.Errorf("apply failed: activate_command: %w", err)
@@ -443,13 +507,13 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 	}
 
 	ws.recordStep("apply", false, stepActivate)
-	_, err = ws.runner.Run(rootCtx, activate[0], activate[1:], rootStepOptions(out))
+	res, err := ws.runner.Run(rootCtx, activate[0], activate[1:], rootStepOptions(out))
 	// Release the credentials now, so they do not outlive the root steps
 	// (nvd, the fsmonitor restart and markApplied follow).
 	p.sudo.Stop()
 	if err != nil {
 		alog.fail(failedStepActivate, err)
-		return fmt.Errorf("apply failed: activate: %w", err)
+		return fmt.Errorf("apply failed: activate: %w%s", err, p.asUser.detachedActivateNote(res.ExitCode))
 	}
 	alog.setExit(nil)
 
@@ -462,13 +526,10 @@ func (ws *Workspace) applyAsUser(ctx context.Context, out io.Writer, alog *apply
 // rootStepOptions are the RunOptions of a root step: not wrapped (they run no
 // nix evaluation), output tee'd to the terminal and the apply log, cwd "/".
 //
-// TODO(nixos): no Env is passed, and sudo's env_reset drops variables that
-// `nixos-rebuild switch` sets for switch-to-configuration (LOCALE_ARCHIVE,
-// NIXOS_NO_CHECK, NIXOS_INSTALL_BOOTLOADER with --install-bootloader). The root steps
-// also exec `sudo` by bare name, which must resolve to /run/wrappers/bin/sudo (setuid)
-// on NixOS. Also: the "both root steps run to completion" design (rootCtx) is untested
-// against a long-running switch-to-configuration and an SSH drop. See NIXOS_TODO.md
-// items 7 to 9.
+// No Env is ever passed: sudo's env_reset would drop it. The NixOS activation
+// carries the variables it needs as `env -i` arguments in its argv instead
+// (wrapNixOSActivate, ADR 0043), so the out path and every other root input stay
+// out of the environment on every platform.
 func rootStepOptions(out io.Writer) exec.RunOptions {
 	return exec.RunOptions{Dir: "/", Stdout: out, Stderr: out}
 }

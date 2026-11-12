@@ -1,0 +1,11 @@
+[workspace]
+name = "smoke-s46"
+terminal = "consumer"
+build_command = "nixos-rebuild build --flake {terminal_nix_dir}#smokehost"
+activate_command = "sudo {out}/bin/switch-to-configuration switch"
+
+[repos.consumer]
+url = "file:///PLACEHOLDER_consumer"
+
+[repos.producer]
+url = "file:///PLACEHOLDER_producer"

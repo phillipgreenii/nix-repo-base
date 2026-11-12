@@ -106,9 +106,13 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 		"UL_LIB_DIR":          ulLib,
 		"PG_NIX_LOG_DISABLE":  "",
 		"PN_TRACE_HINT":       "",
-		// Read only by a pn built with -tags smokeseams (scenario S42); ignored by
+		// Read only by a pn built with -tags smokeseams (scenarios S42, S44 to S47); ignored by
 		// every other binary.
 		"PN_SMOKE_STORE_DIR": filepath.Join(physRoot, "store"),
+		// Read only by a smokeseams pn (scenarios S46 and S47): the NixOS platform's
+		// systemd decision. Emptied here so a developer shell cannot leak a value;
+		// a scenario that needs one appends it (runScenarioEnv).
+		"PN_SMOKE_SYSTEMD": "",
 	}
 
 	gitDirEnvKeys := make(map[string]bool, len(gitDirEnvVars))
@@ -149,4 +153,24 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 // variable that must not leak from the developer's shell into a smoke run.
 func isTelemetryEnvKey(key string) bool {
 	return strings.HasPrefix(key, "OTEL_") || key == "TRACEPARENT" || key == "TRACESTATE"
+}
+
+// overrideEnv returns env with every KEY=VALUE of extra replacing any existing
+// entry of the same key (envValue reads the first match, so a mere append would
+// not win).
+func overrideEnv(env, extra []string) []string {
+	drop := make(map[string]bool, len(extra))
+	for _, kv := range extra {
+		if k, _, ok := strings.Cut(kv, "="); ok {
+			drop[k] = true
+		}
+	}
+	out := make([]string, 0, len(env)+len(extra))
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && drop[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, extra...)
 }

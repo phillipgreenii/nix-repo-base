@@ -514,6 +514,27 @@ func TestSmoke_S42_BuildAsUserApply(t *testing.T) {
 	runScenario(t, "s42-build-as-user-apply")
 }
 
+// TestSmoke_S46_NixOSBuildAsUserApply: the NixOS twin of S42 (ADR 0043). The two
+// root steps are the documented argv with the activation wrapped as nixos-rebuild
+// wraps it, run once with PN_SMOKE_SYSTEMD=0 (no systemd-run) and once with =1
+// (systemd-run). The scenario FAILS when the variable is unset: the smoke pn never
+// reads the host's /run/systemd/system. Stand-ins for nixos-rebuild and sudo;
+// nothing real is built, activated or run as root.
+func TestSmoke_S46_NixOSBuildAsUserApply(t *testing.T) {
+	for _, sd := range []string{"0", "1"} {
+		t.Run("PN_SMOKE_SYSTEMD="+sd, func(t *testing.T) {
+			runScenarioEnv(t, "s46-nixos-build-as-user-apply", []string{"PN_SMOKE_SYSTEMD=" + sd})
+		})
+	}
+}
+
+// TestSmoke_S47_NixOSProbeFailure: the built system's switch-to-configuration is
+// not the real script, so apply fails at the probe with the pn-check text and no
+// root step runs (ADR 0043).
+func TestSmoke_S47_NixOSProbeFailure(t *testing.T) {
+	runScenarioEnv(t, "s47-nixos-probe-failure", []string{"PN_SMOKE_SYSTEMD=0"})
+}
+
 // TestSmoke_S43_WorkforestNoHooks: two real local git repos each declare a plain
 // post-clone hook. `workforest add with-hooks` runs it in both members; `workforest
 // add --no-hooks no-hooks` runs it in none, and the two sets are otherwise
@@ -539,6 +560,13 @@ func TestSmoke_S45_SudoSession(t *testing.T) {
 
 // runScenario is the main per-scenario harness.
 func runScenario(t *testing.T, name string) {
+	t.Helper()
+	runScenarioEnv(t, name, nil)
+}
+
+// runScenarioEnv is runScenario with extra KEY=VALUE entries appended to the
+// scenario's scrubbed environment (a later entry wins).
+func runScenarioEnv(t *testing.T, name string, extraEnv []string) {
 	t.Helper()
 	t.Parallel()
 
@@ -574,6 +602,7 @@ func runScenario(t *testing.T, name string) {
 	// Build a scrubbed env for all subprocesses in this scenario.
 	// Using buildScrubbedEnv (not t.Setenv) so t.Parallel() is safe.
 	env := buildScrubbedEnv(t, wsRoot)
+	env = overrideEnv(env, extraEnv)
 
 	// Copy pn-workspace.toml (required).
 	tomlSrc := filepath.Join(scenarioDir, "pn-workspace.toml")
@@ -768,6 +797,10 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS44NoRootStep(t, wsRoot)
 	case "s45-sudo-session":
 		assertS45SudoSession(t, wsRoot)
+	case "s46-nixos-build-as-user-apply":
+		assertS46NixOSApply(t, wsRoot, env)
+	case "s47-nixos-probe-failure":
+		assertS47NixOSNoRootStep(t, wsRoot)
 	}
 }
 

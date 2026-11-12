@@ -138,6 +138,18 @@ func (f *asUserFake) Run(ctx context.Context, name string, args []string, opts e
 			return f.probe(ctx, opts)
 		}
 		return cmdErrResult(name, args, exec.Result{ExitCode: 1, Stderr: []byte(realUsage)})
+	case strings.HasSuffix(name, "/bin/switch-to-configuration") && len(args) == 0:
+		// The NixOS probe: the built system's script run with no arguments.
+		if f.probe != nil {
+			return f.probe(ctx, opts)
+		}
+		return cmdErrResult(name, args, exec.Result{ExitCode: 1, Stderr: []byte(nixosUsage)})
+	case name == "sudo" && len(args) > 3 && args[0] == "env" && args[1] == "-i" && strings.HasPrefix(args[2], "PATH="):
+		// The NixOS activation (wrapNixOSActivate); the set-profile step has HOME= there.
+		if f.activate != nil {
+			return f.activate(ctx, args)
+		}
+		return exec.Result{}, nil
 	case isSudoSessionCall(name, args):
 		if f.sudoSession != nil {
 			return f.sudoSession(ctx, args)
@@ -265,8 +277,19 @@ func argvsOf(in []exec.Call) []string {
 func argvOf(c exec.Call) string { return strings.Join(append([]string{c.Name}, c.Args...), " ") }
 
 // installAsUserSeams points w at a fake store and a usable nix-env.
-func installAsUserSeams(w *Workspace, store string) {
-	w.asUserSeams = &asUserSeams{nixEnvUsable: func() bool { return true }, storeDir: store}
+// The systemd seam is set explicitly (absent unless withSystemd(true) is passed)
+// so no unit test reads the host's /run/systemd/system.
+func installAsUserSeams(w *Workspace, store string, opts ...func(*asUserSeams)) {
+	sm := &asUserSeams{nixEnvUsable: func() bool { return true }, storeDir: store, systemdPresent: func() bool { return false }}
+	for _, o := range opts {
+		o(sm)
+	}
+	w.asUserSeams = sm
+}
+
+// withSystemd makes the fake host run (or not run) systemd.
+func withSystemd(present bool) func(*asUserSeams) {
+	return func(sm *asUserSeams) { sm.systemdPresent = func() bool { return present } }
 }
 
 // withAsUserSeams is for tests that build their own Workspace: it installs the
@@ -1038,7 +1061,14 @@ url = "github:owner/dep"
 `
 
 func TestAsUser_NixOSCommandSequence(t *testing.T) {
+	for _, systemd := range []bool{false, true} {
+		t.Run(fmt.Sprintf("systemd=%v", systemd), func(t *testing.T) { testNixOSCommandSequence(t, systemd) })
+	}
+}
+
+func testNixOSCommandSequence(t *testing.T, systemd bool) {
 	e := newAsUserEnv(t, nixosTOML, nil)
+	installAsUserSeams(e.w, e.sys.store, withSystemd(systemd))
 	e.f.sys = newFakeNixOSSystem(t, e.sys.store, fakeHash2)
 	var out bytes.Buffer
 	// No Builder: the platform comes from activate_command, never from the host.
@@ -1049,11 +1079,12 @@ func TestAsUser_NixOSCommandSequence(t *testing.T) {
 	want := []string{
 		"nixos-rebuild build --flake " + e.leafDir + "#" + asUserHost + " --override-input dep-input git+file://" + e.depDir,
 		"sudo env -i HOME=/root NIX_REMOTE=daemon PATH=/run/current-system/sw/bin:/usr/bin:/bin /run/current-system/sw/bin/nix-env -p /nix/var/nix/profiles/system --set " + o,
-		"sudo " + o + "/bin/switch-to-configuration switch",
+		nixosActivateWant(systemd, o),
 	}
+	want = append(want[:1], append([]string{o + "/bin/switch-to-configuration"}, want[1:]...)...)
 	calls := e.f.significant()
 	if len(calls) != len(want) {
-		t.Fatalf("calls = %d, want %d (the NixOS probe runs no process):\n%s", len(calls), len(want), dumpCalls(calls))
+		t.Fatalf("calls = %d, want %d (build, probe, set-profile, activate):\n%s", len(calls), len(want), dumpCalls(calls))
 	}
 	for i, c := range calls {
 		if got := argvOf(c); got != want[i] {
@@ -1062,6 +1093,11 @@ func TestAsUser_NixOSCommandSequence(t *testing.T) {
 	}
 	if calls[0].Opts.Dir == e.leafDir || !calls[0].Opts.WrapNix {
 		t.Errorf("build options = %+v, want the private run dir and WrapNix", calls[0].Opts)
+	}
+	for _, c := range calls[2:] {
+		if c.Opts.Env != nil || c.Opts.WrapNix || c.Opts.OwnProcessGroup {
+			t.Errorf("NixOS root step %s options = %+v, want no Env overlay, no wrap, no own group", argvOf(c), c.Opts)
+		}
 	}
 	for _, c := range calls {
 		if strings.Contains(argvOf(c), "darwin") && c.Name != "env" {
@@ -1074,7 +1110,14 @@ func TestAsUser_NixOSCommandSequence(t *testing.T) {
 }
 
 func TestAsUser_NixOSMissingSwitchToConfigurationFailsAtReadResult(t *testing.T) {
+	for _, systemd := range []bool{false, true} {
+		t.Run(fmt.Sprintf("systemd=%v", systemd), func(t *testing.T) { testNixOSMissingSwitchToConfiguration(t, systemd) })
+	}
+}
+
+func testNixOSMissingSwitchToConfiguration(t *testing.T, systemd bool) {
 	e := newAsUserEnv(t, nixosTOML, nil)
+	installAsUserSeams(e.w, e.sys.store, withSystemd(systemd))
 	sys := newFakeNixOSSystem(t, e.sys.store, fakeHash2)
 	if err := os.Remove(sys.out + "/bin/switch-to-configuration"); err != nil {
 		t.Fatal(err)

@@ -36,10 +36,9 @@ func nixosPlatform(t *testing.T) activationPlatform {
 }
 
 // newFakeNixOSSystem lays out <store>/<hash>-nixos-system-test with an
-// executable activate and bin/switch-to-configuration and no sw/bin/darwin-rebuild.
-// TODO(nixos): the layout (a regular executable activate and bin/switch-to-configuration
-// directly in the system closure) is the documented NixOS shape; verify it on a
-// NixOS host with TestDriftGuard_NixOSSystemLayout and the spike in NIXOS_TODO.md.
+// executable activate and bin/switch-to-configuration, a regular nixos-version file
+// and no sw/bin/darwin-rebuild (the layout of a real NixOS system closure, checked
+// by TestDriftGuard_NixOSSystemLayout on a NixOS host).
 func newFakeNixOSSystem(t *testing.T, store, hash string) fakeSystem {
 	t.Helper()
 	out := filepath.Join(store, hash+"-nixos-system-test")
@@ -50,6 +49,9 @@ func newFakeNixOSSystem(t *testing.T, store, hash string) fakeSystem {
 		if err := os.WriteFile(f, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(out+"/nixos-version", []byte("26.05.test\n"), 0o444); err != nil {
+		t.Fatal(err)
 	}
 	return fakeSystem{store: store, out: out}
 }
@@ -124,9 +126,6 @@ func TestValidateBuildOut_PerPlatform(t *testing.T) {
 // The NixOS twin of the darwin drift guard: on a NixOS host the running system
 // has the layout the NixOS platform validates. Skips elsewhere.
 func TestDriftGuard_NixOSSystemLayout(t *testing.T) {
-	// TODO(nixos): this guard only runs on a NixOS host; it is the one automatic
-	// check that bin/switch-to-configuration and activate are regular executables
-	// in a system closure. Run it natively on NixOS (see NIXOS_TODO.md).
 	for _, p := range []string{"/run/current-system/activate", "/run/current-system/bin/switch-to-configuration"} {
 		if _, err := os.Stat(p); err != nil {
 			t.Skip("not a NixOS host")
@@ -140,5 +139,13 @@ func TestDriftGuard_NixOSSystemLayout(t *testing.T) {
 		if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
 			t.Errorf("%s is not an executable regular file (mode %s)", p, fi.Mode())
 		}
+	}
+	// nixos-rebuild refuses a closure without a regular nixos-version; so does pn.
+	fi, err := os.Stat("/run/current-system/nixos-version")
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Errorf("/run/current-system/nixos-version is not a regular file: %v", err)
+	}
+	if err := nixosPlatform(t).checkOut("/run/current-system"); err != nil {
+		t.Errorf("the NixOS platform rejects the running system: %v", err)
 	}
 }

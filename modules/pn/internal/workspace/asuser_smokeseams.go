@@ -22,5 +22,18 @@ func init() {
 
 	if dir := os.Getenv("PN_SMOKE_STORE_DIR"); dir != "" {
 		defaultAsUserSeams = &asUserSeams{nixEnvUsable: func() bool { return true }, storeDir: dir}
+		// The NixOS platform's systemd decision comes from PN_SMOKE_SYSTEMD (0 or 1),
+		// never from the host: with the variable unset or invalid the seam fails
+		// loudly instead of reading /run/systemd/system. Darwin scenarios never
+		// consult it.
+		switch v := os.Getenv("PN_SMOKE_SYSTEMD"); v {
+		case "0", "1":
+			present := v == "1"
+			defaultAsUserSeams.systemdPresent = func() bool { return present }
+		default:
+			defaultAsUserSeams.systemdPresent = func() bool {
+				panic("smoke pn: PN_SMOKE_SYSTEMD must be 0 or 1 for a NixOS scenario (got \"" + v + "\"); the smoke run never reads the host's /run/systemd/system")
+			}
+		}
 	}
 }
