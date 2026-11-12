@@ -123,11 +123,13 @@ requires `[workspace].activate_command`; without it apply fails with
 program named in `activate_command`, never from the host:
 
 ```toml
-# darwin (verified)
+# darwin
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
 activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
-# NixOS (implemented to the documented layout, UNVERIFIED on a NixOS host: see NIXOS_TODO.md)
+# NixOS (verified on a NixOS 26.05 host, ADR 0043). With no #host in build_command,
+# nixos-rebuild picks nixosConfigurations.<kernel hostname>; if that name differs from
+# the attribute, set an explicit build_command.
 build_command = "nixos-rebuild build --flake {terminal_nix_dir}#{hostname}"
 activate_command = "sudo {out}/bin/switch-to-configuration switch"
 ```
@@ -162,20 +164,34 @@ expired during the build; sudo will ask again now` before the root steps. Creden
    clean, one element under `/nix/store`, with an executable `activate` and the platform's
    activation program (`sw/bin/darwin-rebuild` or `bin/switch-to-configuration`). The invoked path is
    validated, not its realpath. A missing or invalid result is an error, never a second build.
-5. **Probe** (darwin only), as the user: `<out>/sw/bin/darwin-rebuild --help` must exit 1 with a
-   usage line listing `activate`, `switch` and `build` on stderr. A failed probe is an error naming
-   the reason. On NixOS the file check in step 4 is the whole pre-root check.
+5. **Probe**, as the user, unwrapped, 10 s. Darwin: `<out>/sw/bin/darwin-rebuild --help` must exit 1 with a
+   usage line listing `activate`, `switch` and `build` on stderr. NixOS: `<out>/bin/switch-to-configuration`
+   with no arguments must exit 1, write nothing to stdout and mention `switch` and `boot` on stderr
+   (a keyword match). A failed probe is an error naming the reason; on NixOS it says the probe is a pn
+   check, not a system fault, and names the manual command. There is no bypass.
 6. **Set the profile** (hard-coded, not templated): `sudo env -i HOME=<root home>
 NIX_REMOTE=daemon PATH=/run/current-system/sw/bin:/usr/bin:/bin
 /run/current-system/sw/bin/nix-env -p /nix/var/nix/profiles/system --set <out>`. The root home is
-   `/var/root` on darwin and `/root` on NixOS (the latter unverified).
-7. **Activate**: the `activate_command` expansion.
+   `/var/root` on darwin and `/root` on NixOS.
+7. **Activate**: the `activate_command` expansion. On NixOS the platform rewrites it the way
+   `nixos-rebuild switch --sudo` runs it (ADR 0043): `sudo env -i PATH=/run/current-system/sw/bin:/usr/bin:/bin
+NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E NIXOS_INSTALL_BOOTLOADER --collect --no-ask-password --pipe
+--quiet --service-type=exec --unit=nixos-rebuild-switch-to-configuration <out>/bin/switch-to-configuration
+switch` (without the `systemd-run ...` part on a host without `/run/systemd/system`). The NixOS
+   template MUST be exactly `sudo {out}/bin/switch-to-configuration switch`: `boot`, `test`,
+   `dry-activate`, `check` and extra arguments are rejected in the preflight. The closure also needs a
+   regular `nixos-version` (step 4).
 
 Every failure is an error; a root build is no longer reachable from `pn`. The sudo prompt comes
 first (step 2), so the build and the two root steps run unattended unless sudo caches nothing, in
 which case the root steps ask again. A cancel during the build stops its whole process tree and
 starts no root step; once the profile set has started, both root steps run to completion and the
-cancel is reported afterwards. `{out}` is valid only in `activate_command`, whose
+cancel is reported afterwards. On NixOS the activation runs in a transient systemd unit, so a Ctrl-C stops pn's own client
+(sudo and systemd-run) but the unit keeps running; after a failed or interrupted activate pn says the
+activation may still be running and names `systemctl status` and `journalctl -u` for
+`nixos-rebuild-switch-to-configuration`. If the terminal itself is lost (SSH drop, SIGHUP) pn dies and
+can print nothing; the unit still finishes. Exit 4 of `switch-to-configuration` (some units failed)
+means the system HAS switched: run `systemctl --failed` and do not re-run apply. `{out}` is valid only in `activate_command`, whose
 `argv[0]` MUST be `sudo` and whose program MUST be one element beginning with `{out}/`.
 `pn-workspace-toml-enforce --activate-command` enforces the key (an empty value leaves it untouched
 and never deletes it). The step errors are `apply failed: build:`, `read build result:`,

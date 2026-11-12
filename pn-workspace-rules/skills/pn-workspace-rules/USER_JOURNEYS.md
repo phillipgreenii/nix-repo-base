@@ -145,12 +145,21 @@ that (one marker, not two).
 
 **Commands:** `pn workspace apply`
 
-**Outcomes:** same as `build` but with the configured `apply` command
-(typically `nixos-rebuild switch`). Does NOT run `nix fmt`; run
+**Outcomes:** same as `build`, then the build-as-user apply (ADRs 0038, 0041, 0043): with
+`activate_command = "sudo {out}/bin/switch-to-configuration switch"` the built closure is checked
+(`nixos-version`, a no-argument probe of `switch-to-configuration`) and only two root steps run:
+set the system profile, then activate under `systemd-run` as `nixos-rebuild switch --sudo` does.
+A failed activation says the unit may still be running (`systemctl status
+nixos-rebuild-switch-to-configuration`). Does NOT run `nix fmt`; run
 `pn workspace format` first if you want to format. As with `build`, Nix
 prints the benign `warning: not writing modified lock file` (one line
 per overridden input) on the success path — expected, not an error.
 See **Expected (Acceptable) Warnings** in `SKILL.md`.
+
+**Smoke (NixOS):** ✓ **S46 `nixos-build-as-user-apply`** (run with `PN_SMOKE_SYSTEMD=0` and `=1`: the
+recorded sudo argv is the documented wrapped activation with and without `systemd-run`) and
+✓ **S47 `nixos-probe-failure`** (the probe fails, no root step runs); stand-ins for `nixos-rebuild`
+and `sudo`, nothing real runs.
 
 **Smoke:** ✓ **S19 `happy-path-apply`** — same shape as S18 with
 `activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"` and stand-ins for `darwin-rebuild`

@@ -93,3 +93,11 @@ Run by the operator 2026-11-10 (macOS, zsh login shell, one prompt), recorded ve
 - Cancelling the apply also stops the refresh, even if set-profile has already started (the root
   steps still run to completion on their own non-cancellable context); this is safe because the
   credentials were refreshed at most 60 s earlier.
+
+## Note (2026-11-11, ADR 0043)
+
+On NixOS the activate step runs in a transient systemd unit (`nixos-rebuild-switch-to-configuration`).
+The credentials are still released with `sudo -k` right after the step, but a terminal Ctrl-C stops
+only pn's client (sudo and systemd-run), not the unit, and a lost terminal (SIGHUP) kills pn before it
+can report anything. The cancel text above holds for the set-profile step and for darwin; for the
+NixOS activation see ADR 0043 decision 4.

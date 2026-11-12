@@ -138,14 +138,14 @@ Evaluates each cloned repo's `flake.nix` inputs, discovers workspace dependency 
 
 The `input-name` field on `[repos.*]` sections has been removed. Alias names are now derived automatically from each consumer's declared flake input aliases at lock time. If you see an error about `input-name`, remove that field from `pn-workspace.toml`.
 
-**`activate_command` is required** (ADRs 0038, 0041 and 0042). `pn workspace apply` has one flow and fails with `workspace.activate_command is not set in pn-workspace.toml` without it. There is no `apply_command` and no `--apply-command`; a leftover `apply_command` line in the toml is an ignored unknown key. Apply asks for sudo first, then builds and activates unattended (ADR 0042). Apply builds as YOU (the `build_command` expansion, wrapped, in a private `~/.local/state/pn/apply-build/run-*` directory removed afterwards, so `build_command` MUST be a `darwin-rebuild build` or `nixos-rebuild build` that leaves `./result` in its cwd), validates the resulting `/nix/store` path, probes it (darwin), and then runs only two root steps through sudo: `nix-env -p /nix/var/nix/profiles/system --set <out>` (hard-coded, not templated) and the `activate_command` expansion. Any preflight, directory or probe failure is an error before a root step; there is no fallback and no root build. The platform comes from the program named in `activate_command`, not from the host. Examples:
+**`activate_command` is required** (ADRs 0038, 0041 and 0042). `pn workspace apply` has one flow and fails with `workspace.activate_command is not set in pn-workspace.toml` without it. There is no `apply_command` and no `--apply-command`; a leftover `apply_command` line in the toml is an ignored unknown key. Apply asks for sudo first, then builds and activates unattended (ADR 0042). Apply builds as YOU (the `build_command` expansion, wrapped, in a private `~/.local/state/pn/apply-build/run-*` directory removed afterwards, so `build_command` MUST be a `darwin-rebuild build` or `nixos-rebuild build` that leaves `./result` in its cwd), validates the resulting `/nix/store` path, probes it (darwin: `darwin-rebuild --help`; NixOS: `switch-to-configuration` with no arguments), and then runs only two root steps through sudo: `nix-env -p /nix/var/nix/profiles/system --set <out>` (hard-coded, not templated) and the `activate_command` expansion (on NixOS wrapped as `nixos-rebuild switch --sudo` runs it, under `systemd-run` when systemd is present, ADR 0043). Any preflight, directory or probe failure is an error before a root step; there is no fallback and no root build. The platform comes from the program named in `activate_command`, not from the host. Examples:
 
 ```toml
-# darwin (verified)
+# darwin
 build_command = "darwin-rebuild build --flake {terminal_nix_dir}#{hostname}"
 activate_command = "sudo {out}/sw/bin/darwin-rebuild activate"
 
-# NixOS (UNVERIFIED on a NixOS host until NIXOS_TODO.md is done)
+# NixOS (verified on a NixOS 26.05 host, ADR 0043; the template MUST be exactly this, only `switch`)
 build_command = "nixos-rebuild build --flake {terminal_nix_dir}#{hostname}"
 activate_command = "sudo {out}/bin/switch-to-configuration switch"
 ```

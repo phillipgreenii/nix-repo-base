@@ -133,3 +133,10 @@ switch` command would reject the new argv (the post-deploy check covers it).
   `/var/log/pg-nix-log-wrapped`: true only for the legacy flow and the fallback.
 - `modules/pn/README.md` (the apply-log and wrapper sections) and the `pn-workspace-rules` skill
   state the new behavior.
+
+## Note (2026-11-11, ADR 0043)
+
+The NixOS platform's activation, probe and file check are amended by ADR 0043: the activation runs
+under `systemd-run` as `nixos-rebuild switch --sudo` runs it, a no-argument probe of
+`switch-to-configuration` runs as the user before root, and the closure needs a regular
+`nixos-version`. The darwin behaviour described here is unchanged.

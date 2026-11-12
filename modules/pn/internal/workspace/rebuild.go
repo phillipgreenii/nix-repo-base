@@ -92,8 +92,9 @@ func (ws *Workspace) hostname() string {
 // default so tests with a fake runner need no real binary.
 func (ws *Workspace) EnableToolResolution() {
 	ws.resolveTool = func(name string) (map[string]string, error) {
-		// TODO(nixos): the fallback dirs hold no setuid sudo on NixOS (it is
-		// /run/wrappers/bin/sudo); see NIXOS_TODO.md item 7.
+		// The fallback dirs hold no setuid sudo on NixOS (it is /run/wrappers/bin/sudo).
+		// That needs no change here: apply runs `sudo -v` before the build, which fails
+		// with sudo's own message for a missing or non-setuid sudo (ADR 0043).
 		return exec.ResolveTool(name, exec.SystemProfileBinDirs)
 	}
 }

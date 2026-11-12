@@ -1,7 +1,7 @@
 # ADR-0041: `pn workspace apply` has one flow, the build-as-user apply, on darwin and NixOS
 
 **Date:** 2026-11-10
-**Status:** Accepted (supersedes ADR 0038 decision 1 "Opt-in by config", the fallback clauses of its decisions 2.1 and 2.4, and its migration paragraph; amends 0017 by removing the `--apply-command` flag)
+**Status:** Accepted; NixOS activation amended by ADR 0043 (supersedes ADR 0038 decision 1 "Opt-in by config", the fallback clauses of its decisions 2.1 and 2.4, and its migration paragraph; amends 0017 by removing the `--apply-command` flag)
 **Deciders:** phillipgreenii
 
 ## Context
@@ -39,8 +39,9 @@ can use the config from the user build.").
    `{builder}`:
    - `sudo {out}/sw/bin/darwin-rebuild activate` selects darwin: root home `/var/root`, the
      `sw/bin/darwin-rebuild` check and the `--help` usage probe.
-   - `sudo {out}/bin/switch-to-configuration switch` selects NixOS: root home `/root`, a
-     `bin/switch-to-configuration` file check and no process probe.
+   - `sudo {out}/bin/switch-to-configuration switch` selects NixOS: root home `/root`. Its file
+     check, probe and activation (a `nixos-version` check, a no-argument probe, the systemd-run
+     wrapped activation, switch as the only action) are decided in ADR 0043, which amends this bullet.
 
    Any other program MUST be an error. Everything else of ADR 0038 (user build in a private per-run
    directory, store path validation, the hard-coded `nix-env --set` step, the activate step, cancel
@@ -68,16 +69,17 @@ can use the config from the user build.").
   creation) re-marshal through a struct without the field, so they drop a stale `apply_command`
   line. Any rewrite changes the file's SHA and re-arms the trust gate, so the operator runs
   `pn workspace allow` once afterwards.
-- The NixOS path rests on the documented system layout (`<out>/activate`,
-  `<out>/bin/switch-to-configuration`, root home `/root`) and is covered by fake-runner tests only.
-  It is UNVERIFIED on a NixOS host until the spike in `NIXOS_TODO.md` has run; its assumptions are
-  marked `TODO(nixos)` at their code sites.
+- The NixOS path was written on macOS to the documented system layout and has since been compared with
+  `nixos-rebuild-ng` and checked on a NixOS 26.05 host; ADR 0043 records the result and the changes it
+  led to.
 
 ## NixOS spike result
 
-Not yet run on a NixOS host. The Linux agent MUST paste the output of the spike in `NIXOS_TODO.md`
-here (expected: `layout ok`, a `nix-env` symlink under `/run/current-system/sw/bin`, and root's home
-`/root`), or record the corrections found.
+Run 2026-11-11 on a NixOS 26.05 host (monorepod), recorded in ADR 0043 "Spike result": a freshly
+built closure has the expected layout (`activate`, `bin/switch-to-configuration`, a regular
+`nixos-version`), `nixos-rebuild build` leaves `./result`, `/run/current-system/sw/bin/nix-env` exists,
+root's home is `/root`, and the no-argument probe of `switch-to-configuration` prints usage to
+stderr and exits 1.
 
 ## Supersedes
 
