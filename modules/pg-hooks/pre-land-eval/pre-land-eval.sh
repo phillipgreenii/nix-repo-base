@@ -13,8 +13,10 @@
 # clones (so no push, relock or flake.lock write is needed), the system, the
 # tolerance of an absent set, and the experiment log. This script derives no
 # override and runs no nix; it adds only the two things the land step needs and pn
-# must not know: the per-clone opt-in key, and the one-word verdict with its
-# 0/10/2/127 exit codes.
+# must not know: the one-word verdict with its 0/10/2/127 exit codes. It runs
+# whenever it is invoked: a repo opts in to the check by configuring it as a
+# before_move hook of pg-git-lander land (the old per-clone git config key
+# pgii-integrate-branch.preLandEval is retired and never read).
 #
 # There is no retry and no inconclusive class (operator ruling, 2026-10-23): every
 # failure of the check, environmental or not, is eval-failed. pn reports a check
@@ -22,7 +24,7 @@
 # failure and maps to "could not run" (bead pg2-wrujsm).
 #
 # stdout is exactly ONE word; everything else, pn's output included, is stderr.
-# Exit codes: 0 ok or not-enabled, 10 eval-failed, 2 usage error (including an
+# Exit codes: 0 ok, 10 eval-failed, 2 usage error (including an
 # unresolvable ref or a repo that is no workspace member), 127 pn not installed.
 # BASH 3.2 STYLE (no mapfile, no associative arrays).
 
@@ -44,9 +46,9 @@ No push, relock or flake.lock write is involved. A dirty tree and untracked file
 of <repo-path> are ignored; a linked worktree is fine. See `pn workspace
 flake-check --help`; the run is appended to the experiment log it names.
 
-The check is opt-in per clone: it runs only when
-  git -C <repo-path> config --get pgii-integrate-branch.preLandEval
-prints exactly "true". Any other value, or no value, prints "not-enabled".
+The check runs whenever the command is invoked. A repo enables it by listing
+the command as a before_move hook of pg-git-lander land; the retired per-clone
+git config key pgii-integrate-branch.preLandEval is not read.
 
 Options:
   --no-ifd       Pass --no-ifd to pn (nix --option allow-import-from-derivation
@@ -54,11 +56,11 @@ Options:
   -h, --help     Show this help message
   -v, --version  Show version information
 
-stdout: exactly one of ok, eval-failed, not-enabled.
+stdout: exactly one of ok, eval-failed.
 stderr: pn's output (the reproduce commands, timings, the first lines of nix's error).
 
 Exit codes:
-  0   ok, or not-enabled
+  0   ok
   10  eval-failed (pn exited 10: a failed evaluation; there is no retry)
   2   usage error, including a ref that does not resolve and a repo that is no
       workspace member, and a check that could not run (pn exited 1 or any
@@ -117,15 +119,6 @@ REF=${POS[1]}
 
 [[ -d $REPO ]] || die_usage "not a directory: $REPO"
 REPO_ABS="$(cd "$REPO" && pwd -P)"
-
-# Enablement: only the exact value "true" turns the check on. An absent key is
-# the normal case and is never an error.
-ENABLED="$(git -C "$REPO_ABS" config --get pgii-integrate-branch.preLandEval 2>/dev/null || true)"
-if [[ $ENABLED != true ]]; then
-  say "pre-land eval: not enabled for $REPO"
-  printf 'not-enabled\n'
-  exit 0
-fi
 
 if ! command -v pn >/dev/null 2>&1; then
   say "pn not installed on this machine; ask the operator to run pn workspace apply"

@@ -393,9 +393,6 @@ func (e *nbEnv) driftFixture(t *testing.T) (consumer, sibling *gitfixture.Repo) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := consumer.Client.Run(ctx, "config", "pgii-integrate-branch.preLandEval", "true"); err != nil {
-		t.Fatal(err)
-	}
 	e.writeWorkspace(t, "consumer", map[string]string{"sibling": sibling.Dir, "consumer": consumer.Dir})
 	return consumer, sibling
 }

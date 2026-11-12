@@ -72,8 +72,8 @@ because 0021 is superseded, not because they changed):
 - The land gates of `ff-merge-to-main` are exactly: FF-1b, the consolidated hook run over the
   branch diff (`pg-hooks run pre-land`), and FF-1c, the eval-only `pre-land-eval` check (design
   section 9, built after the 2026-10-23 ruling on `pg2-pla9d.26`; see
-  [docs/hooks.md](../hooks.md#the-eval-only-pre-land-check-pre-land-eval)), enabled per clone by
-  `git config pgii-integrate-branch.preLandEval true` and a no-op elsewhere. Routing the sibling
+  [docs/hooks.md](../hooks.md#the-eval-only-pre-land-check-pre-land-eval)), enabled by a repo's `before_move` land hook (the per-clone
+  `pgii-integrate-branch.preLandEval` key it was first enabled by is retired). Routing the sibling
   input overrides through `pn workspace flake-check --no-build` is bead `pg2-8uc2d`, a separate
   experiment.
 - Slow nix work MUST NOT run in a git hook (the hook policy HK-2, unchanged).

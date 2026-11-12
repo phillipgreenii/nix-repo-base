@@ -81,64 +81,43 @@ sut() {
   env PATH="$SHIM_BIN:$MIN_BIN" "$SUT" "$@"
 }
 
-# _enable [<repo>]: set the enablement key in the fixture repo.
-_enable() {
-  command git -C "${1:-$REPO}" config pgii-integrate-branch.preLandEval true
-}
-
 # _pn_rc <rc>: make the pn shim exit with <rc>.
 _pn_rc() {
   printf '%s\n' "$1" >"$SHIM_DIR/pn.rc"
 }
 
 # ---------------------------------------------------------------------------
-# Enablement
+# No opt-in key
 
-@test "an absent key prints not-enabled, exits 0 and never runs pn" {
+@test "a clone with no key set evaluates: it runs pn and prints ok" {
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
-  [ "$output" = "not-enabled" ]
-  [[ $stderr == *"pre-land eval: not enabled for $REPO"* ]]
-  [ ! -e "$SHIM_DIR/argv" ]
+  [ "$output" = "ok" ]
+  [ -e "$SHIM_DIR/argv" ]
+  [ "$(grep -c '^workspace$' "$SHIM_DIR/argv")" -eq 1 ]
 }
 
-@test "the key set to false is not-enabled" {
-  command git -C "$REPO" config pgii-integrate-branch.preLandEval false
-  run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "not-enabled" ]
-  [ ! -e "$SHIM_DIR/argv" ]
-}
-
-@test "any value other than exactly true is not-enabled" {
+@test "a leftover retired key, set to any value, changes nothing" {
   local v
-  for v in yes 1 TRUE True on ""; do
+  for v in true false yes 1 TRUE ""; do
+    rm -f "$SHIM_DIR/argv"
     command git -C "$REPO" config pgii-integrate-branch.preLandEval "$v"
     run --separate-stderr sut "$REPO" HEAD
     [ "$status" -eq 0 ]
-    [ "$output" = "not-enabled" ]
+    [ "$output" = "ok" ]
+    [ "$(grep -c '^workspace$' "$SHIM_DIR/argv")" -eq 1 ]
   done
-  [ ! -e "$SHIM_DIR/argv" ]
 }
 
-@test "not-enabled wins over a ref that does not resolve" {
-  run --separate-stderr sut "$REPO" no-such-ref
-  [ "$status" -eq 0 ]
-  [ "$output" = "not-enabled" ]
-}
-
-@test "a directory that is not a git repository is not-enabled, not an error" {
-  mkdir -p "$GFH_WORK/plain"
-  run --separate-stderr sut "$GFH_WORK/plain" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "not-enabled" ]
-}
-
-@test "not-enabled does not need pn to be installed" {
-  rm "$SHIM_BIN/pn"
+@test "a failed evaluation is eval-failed whether or not the retired key is set" {
+  _pn_rc 10
   run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 0 ]
-  [ "$output" = "not-enabled" ]
+  [ "$status" -eq 10 ]
+  [ "$output" = "eval-failed" ]
+  command git -C "$REPO" config pgii-integrate-branch.preLandEval false
+  run --separate-stderr sut "$REPO" HEAD
+  [ "$status" -eq 10 ]
+  [ "$output" = "eval-failed" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -171,7 +150,6 @@ _pn_rc() {
 }
 
 @test "--no-overrides is gone: the overrides are pn's, not the caller's" {
-  _enable
   run --separate-stderr sut --no-overrides "$REPO" HEAD
   [ "$status" -eq 2 ]
   [[ $stderr == *"unknown option: --no-overrides"* ]]
@@ -197,7 +175,6 @@ _pn_rc() {
 # The pn invocation
 
 @test "it runs pn workspace flake-check --no-build as the ff-1c caller, with the ref and the absolute repo path" {
-  _enable
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
@@ -207,7 +184,6 @@ _pn_rc() {
 }
 
 @test "pn runs from inside the repo, so it walks up to the workspace root" {
-  _enable
   cd "$GFH_WORK"
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
@@ -215,7 +191,6 @@ _pn_rc() {
 }
 
 @test "--no-ifd is forwarded to pn, before or after the positional arguments" {
-  _enable
   run --separate-stderr sut --no-ifd "$REPO" HEAD
   [ "$status" -eq 0 ]
   grep -qx -- '--no-ifd' "$SHIM_DIR/argv"
@@ -226,21 +201,18 @@ _pn_rc() {
 }
 
 @test "without --no-ifd, pn is not told about IFD" {
-  _enable
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
   run ! grep -q -- 'ifd' "$SHIM_DIR/argv"
 }
 
 @test "the ref is passed to pn verbatim: pn resolves it, not this tool" {
-  _enable
   run --separate-stderr sut "$REPO" "refs/heads/main~0"
   [ "$status" -eq 0 ]
   grep -qx -- 'refs/heads/main~0' "$SHIM_DIR/argv"
 }
 
-@test "a linked worktree is passed to pn by its own path and reads the shared enablement key" {
-  _enable
+@test "a linked worktree is passed to pn by its own path" {
   command git -C "$REPO" worktree add -q -b wtbranch "$GFH_WORK/wt"
   run --separate-stderr sut "$GFH_WORK/wt" HEAD
   [ "$status" -eq 0 ]
@@ -250,7 +222,6 @@ _pn_rc() {
 }
 
 @test "a leaked GIT_DIR does not redirect the tool or reach pn" {
-  _enable
   GIT_DIR="$GFH_WORK/not-a-repo" run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
@@ -263,7 +234,6 @@ _pn_rc() {
   printf 'x\n' >"$GFH_WORK/odd dir#1/r/f"
   command git -C "$GFH_WORK/odd dir#1/r" add f
   command git -C "$GFH_WORK/odd dir#1/r" commit -q -m x
-  _enable "$GFH_WORK/odd dir#1/r"
   run --separate-stderr sut "$GFH_WORK/odd dir#1/r" HEAD
   [ "$status" -eq 0 ]
   grep -qxF -- "$(cd "$GFH_WORK/odd dir#1/r" && pwd -P)" "$SHIM_DIR/argv"
@@ -273,7 +243,6 @@ _pn_rc() {
 # The verdict
 
 @test "pn exit 0 prints exactly ok, and pn's own stdout goes to stderr" {
-  _enable
   printf 'pn says hello\n' >"$SHIM_DIR/pn.out"
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 0 ]
@@ -282,7 +251,6 @@ _pn_rc() {
 }
 
 @test "pn exit 10 (a failed check) is eval-failed, exit 10, with pn's output on stderr" {
-  _enable
   _pn_rc 10
   printf '  checks.aarch64-darwin: FAILED\n' >"$SHIM_DIR/pn.out"
   printf 'error: The option `x.dockerState'"'"' does not exist.\n' >"$SHIM_DIR/pn.err"
@@ -294,7 +262,6 @@ _pn_rc() {
 }
 
 @test "pn exit 2 (unknown repo, unresolvable ref) is a usage error, exit 2, with no verdict word" {
-  _enable
   _pn_rc 2
   printf 'ref does not resolve to a commit in /x: nope\n' >"$SHIM_DIR/pn.err"
   run --separate-stderr sut "$REPO" HEAD
@@ -304,7 +271,6 @@ _pn_rc() {
 }
 
 @test "pn exit 1 (a generic pn failure) is NOT eval-failed: the check could not run, exit 2" {
-  _enable
   _pn_rc 1
   printf 'pn: untrusted hooks\n' >"$SHIM_DIR/pn.err"
   run --separate-stderr sut "$REPO" HEAD
@@ -315,7 +281,6 @@ _pn_rc() {
 }
 
 @test "any other pn exit status means the check could not run: exit 2, no verdict word" {
-  _enable
   local rc
   for rc in 3 11 127 130 143; do
     _pn_rc "$rc"
@@ -327,15 +292,13 @@ _pn_rc() {
 }
 
 @test "there is no retry: pn runs exactly once, even on failure" {
-  _enable
   _pn_rc 10
   run --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 10 ]
   [ "$(grep -c '^workspace$' "$SHIM_DIR/argv")" -eq 1 ]
 }
 
-@test "there is no inconclusive outcome: no verdict word but ok, eval-failed or not-enabled is ever printed" {
-  _enable
+@test "there is no inconclusive outcome: no verdict word but ok or eval-failed is ever printed" {
   local rc
   for rc in 0 1 2 3 10 130; do
     _pn_rc "$rc"
@@ -345,7 +308,6 @@ _pn_rc() {
 }
 
 @test "pn not installed is exit 127 with the apply notice, and no verdict word" {
-  _enable
   rm "$SHIM_BIN/pn"
   run -127 --separate-stderr sut "$REPO" HEAD
   [ "$status" -eq 127 ]

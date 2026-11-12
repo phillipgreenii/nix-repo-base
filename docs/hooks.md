@@ -245,7 +245,7 @@ A fixer MUST NOT be run from a git hook and MUST NOT be attached to a prek stage
 
 ## The eval-only pre-land check (`pre-land-eval`)
 
-`pre-land-eval` is the land check for a repo that opted in: it evaluates, without building, the
+`pre-land-eval` is the land check for a repo that configures it: it evaluates, without building, the
 derivation paths of a flake's `checks`, `packages` and `devShells` at one commit, so an evaluation
 error (a missing option, a `throw`, a bad import) is caught before landing. It is a standalone
 command in `modules/pg-hooks/pre-land-eval/`, a sibling of `pre-commit-fix`, and NOT a `pg-hooks`
@@ -256,7 +256,7 @@ in design pg2-3i12x section 9 and un-deferred by the operator ruling on `pg2-pla
 
 **`pre-land-eval` is a thin caller of `pn workspace flake-check --no-build`.** The evaluation, the
 sibling overrides, the system and the experiment log all live in pn (one override derivation, in
-pn); `pre-land-eval` adds only the per-clone opt-in key and the one-word verdict with its exit
+pn); `pre-land-eval` adds only the one-word verdict with its exit
 codes. It runs, from inside the repo:
 
 ```text
@@ -270,7 +270,6 @@ pre-land-eval [--no-ifd] <repo-path> <ref>
 | Stdout (exactly one line) | Exit | Meaning                                                                                              |
 | ------------------------- | ---- | ---------------------------------------------------------------------------------------------------- |
 | `ok`                      | 0    | every evaluated set evaluated cleanly                                                                |
-| `not-enabled`             | 0    | the clone has not opted in (or the key is absent)                                                    |
 | `eval-failed`             | 10   | pn exited 10: a failed evaluation (pn exit 1 is a generic pn failure, reported as exit 2 below)      |
 | (nothing)                 | 2    | usage error: a repo path, ref or workspace repo that does not resolve, or pn failed to run (exit 1)  |
 | (nothing)                 | 127  | pn is not installed (`pn not installed on this machine; ask the operator to run pn workspace apply`) |
@@ -278,11 +277,11 @@ pre-land-eval [--no-ifd] <repo-path> <ref>
 - stderr carries pn's output: the command to reproduce, the timings and the first error of each
   failed set. No other exit code is produced. There is no `eval-inconclusive` outcome and no retry
   (operator ruling, 2026-10-23, `pg2-8uc2d`): a failure is a failure to fix before landing.
-- **Enablement is opt-in per clone.** The check runs only when
-  `git -C <repo-path> config --get pgii-integrate-branch.preLandEval` prints exactly `true`. Any
-  other value, and an absent key, prints `not-enabled` and exits 0; that is never an error. A repo is
-  opted in with `git -C <repo> config pgii-integrate-branch.preLandEval true` (in `pn-workspace.toml`,
-  a `post-clone`/`post-update` hook for that repo).
+- **Enablement is by the hook's presence.** The command runs whenever it is invoked and reads no
+  per-clone key. A repo enables it for landings by listing it as a `before_move` hook of
+  `pg-git-lander land` in its `.pg-git-lander.toml`. The old git config key
+  `pgii-integrate-branch.preLandEval` is retired: it is neither read nor required, and a leftover
+  value is ignored.
 - **Runtime and callers.** Expect 1 to 3 minutes for a small flake, longer for `nix-ziprecruiter`
   (measured 2026-10-23: 191 s for `checks`, 13 s for `packages`, 26 s for `devShells`). Callers MUST
   run it through `bgrun` and `bgwait`.
@@ -355,7 +354,7 @@ Deliberate gaps:
   operation: it writes `.drv` files and source copies to the store.
 - Only workspace siblings are overridden. A third-party input still resolves from the repo's
   `flake.lock`, and a repo outside the workspace is not checkable (exit 2).
-- `nix-ziprecruiter` is enabled in `pn-workspace.toml` (its `preLandEval` hook): its locked
+- `nix-ziprecruiter` is enabled in `pn-workspace.toml` (its `pre-land-eval` land hook): its locked
   siblings lag the local clones (`The option phillipgreenii.observability.dockerState does not
 exist` against the locked inputs), and with the overrides the check returns `ok`. `nix-overlay`
   is not enabled.
