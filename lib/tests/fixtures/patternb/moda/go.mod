@@ -1,6 +1,6 @@
 module example.com/moda
 
-go 1.25.0
+go 1.26.8
 
 require (
 	example.com/modb v0.0.0

@@ -1,6 +1,6 @@
 module github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui
 
-go 1.25.9
+go 1.26.8
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10

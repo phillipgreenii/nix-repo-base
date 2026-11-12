@@ -112,8 +112,10 @@ flowchart TB
   mechanism (`go get github.com/phillipgreenii/x@<sha>`), refreshed the same way any third-party
   dependency already is in this workspace. A version bump is an ordinary one-line `go.mod` diff per
   consumer, reviewed like any other dependency bump — no separate release process to maintain.
-- **Go version**: `go 1.25.x`, matching every other `go.mod` in this workspace (`pn`: 1.25.9,
-  `pg-pr`: 1.25.0, `jsonl-logger`: 1.25.0).
+- **Go version**: every `go.mod` in this workspace MUST declare the same `go 1.26.<n>` line, and
+  `<n>` MUST equal the patch of the nixpkgs `pkgs.go` that the flake locks (currently `go 1.26.8`),
+  so the compiler that gates a module is the one that builds it. A nixpkgs Go bump is followed by
+  a one-line `go.mod` bump in every module (`x` included).
 - **CI**: a GitHub Actions workflow running `go test -race ./...` and `go vet` on every push —
   `x` has no `flake.nix`, so `nix flake check` cannot cover it; this is its only gate. (Consumers
   still gate on their own `nix flake check`, which builds `x` via `gomod2nix`'s ordinary

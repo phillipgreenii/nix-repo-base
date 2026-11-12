@@ -1,6 +1,6 @@
 module github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped
 
-go 1.25.9
+go 1.26.8
 
 require (
 	github.com/pelletier/go-toml/v2 v2.3.1
