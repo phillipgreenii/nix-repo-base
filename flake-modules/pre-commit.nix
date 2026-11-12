@@ -367,12 +367,15 @@ in
               "\\.test\\.ya?ml$"
             ];
           };
-          # NOTE: Go linting is intentionally NOT a pre-commit hook. golangci-lint
-          # must load the full package graph, which cannot be done offline in the
-          # no-network `nix flake check` sandbox that runs checks.pre-commit
-          # (bead pg2-6wly). It is instead a dedicated, sandbox-safe check per Go
-          # module (checks.<module>-golangci) via gomod2nix's vendored dep env —
-          # see lib/go-builders.nix `mkGoLint`.
+          # RULE (docs/hooks.md, "Linters run at pre-commit"): linters run as a
+          # pre-commit hook. A linter that cannot run offline skips itself inside
+          # the nix build sandbox (checks.pre-commit) and is still enforced by its
+          # checks.* derivation. Go lint is therefore an OPT-IN hook, not part of
+          # this base set (base-set hooks reach every consumer): enable
+          # `lib.mkGolangciHook { inherit pkgs; }` (nix/golangci-hook.nix) in
+          # `extraHooks`. It lints only new findings in touched Go modules, runs
+          # from the hook bundle's own golangci-lint and go, and never calls nix
+          # (HK-2, below).
           #
           # AMENDED HK-2 (design spec
           # docs/superpowers/specs/2026-08-24-pg-test-runner-design.md, section 5,
@@ -387,11 +390,11 @@ in
           # exactly what this amendment closes. (repo-base's own former
           # `golangci-lint-prepush` `extraHooks` entry did precisely this -- a
           # pre-push hook that shelled out to `nix build` -- and was removed for
-          # it; bead pg2-lxz3o.) A repo wanting local commit-time Go feedback
-          # short of the full `nix flake check` should add a `pg-test-runner`-based
-          # `extraHooks` entry instead (see repo-base's own `run-unit-tests` hook,
-          # top-level in this repo's flake.nix, for the shape) -- never one that
-          # invokes nix.
+          # it.) The opt-in `mkGolangciHook` is the compliant replacement: its
+          # tools are store paths baked into the hook entry, so no nix runs at
+          # hook time. Commit-time test feedback uses a `pg-test-runner`-based
+          # `extraHooks` entry (see repo-base's own `run-unit-tests` hook,
+          # top-level in this repo's flake.nix, for the shape).
           #
           # HK-2 STANDS (ADR 0032): the commit-time shim experiment that tested a
           # nix-invoking git hook (ADR 0029, bead pg2-z19ad) was abandoned, and its

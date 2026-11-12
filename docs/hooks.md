@@ -575,6 +575,41 @@ check `pre-commit-hook-live` reports, for repos whose `pn-workspace.toml` entry 
 `install-pre-commit-hooks`: a missing pointer, a broken or dangling bundle, a relocated clone,
 unreachable hooks, and missing or foreign stubs.
 
+## Linters run at pre-commit
+
+Rule (operator ruling, Phillip, 2026-11-11: "a general rule should be to run linting tools as part
+of pre-commit hook"):
+
+- A linter for a language a repo contains MUST run as a pre-commit hook.
+- A linter that cannot run offline MUST skip itself with a notice inside the nix build sandbox
+  (`IN_NIX_BUILD` or `NIX_BUILD_TOP` set, which is how `checks.pre-commit` runs) and MUST still be
+  enforced by its own `checks.*` derivation. `run-unit-tests` and `check-git-identity` follow the
+  same pattern.
+- A lint hook MUST NOT invoke nix (HK-2 above holds unchanged): its tools are store paths baked into
+  the hook entry, never resolved by `nix run`/`nix build` at hook time. This is why the earlier
+  pre-push Go lint hook that shelled out to `nix build` was removed, and why this rule does not
+  reverse that removal.
+- A hook that would reach every consumer MUST NOT enter the base set without an operator ruling;
+  language-specific linters are opt-in through `extraHooks`.
+
+Go: `lib.mkGolangciHook { inherit pkgs; }` (source `nix/golangci-hook.nix`, tested by the
+`golangci-hook` check) returns a ready `extraHooks` entry:
+
+```nix
+phillipgreenii.pre-commit.extraHooks = pkgs: {
+  golangci-lint = inputs.nix-repo-base.lib.mkGolangciHook { inherit pkgs; };
+};
+```
+
+- It runs only in Go modules (nearest `go.mod`) that the staged `.go`, `go.mod` or `go.sum` files touch.
+- It runs `golangci-lint run --new-from-rev=<base> ./...` with the module's `.golangci.yml`, so only
+  NEW findings block. The base is `PG_GOLANGCI_BASE_REV`, else the merge-base of `HEAD` with the
+  primary branch, else `HEAD`. Pre-existing findings stay red in the module's `checks.*-golangci`
+  derivation, which is not an exclude.
+- `golangci-lint` and `go` come from the hook's closure with `GOTOOLCHAIN=local`, and the hook
+  resets `PATH` to that closure plus git and coreutils, so no `nix` is reachable.
+- It skips with a notice inside the sandbox.
+
 ## Grafana alert uid hook
 
 `check-grafana-alert-uids` is a base hook: it is part of the standard set in

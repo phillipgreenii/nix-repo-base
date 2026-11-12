@@ -692,6 +692,26 @@
                   touch $out
                 '';
 
+            # bats test of the opt-in golangci hook builder (nix/golangci-hook.nix)
+            # against the real golangci-lint and go in a throwaway git repo.
+            golangci-hook =
+              let
+                hook = (import ./nix/golangci-hook.nix { inherit pkgs; }).entry;
+              in
+              pkgs.runCommand "check-golangci-hook"
+                {
+                  nativeBuildInputs = [
+                    pkgs.bats
+                    pkgs.git
+                  ];
+                  HOOK = hook;
+                }
+                ''
+                  export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+                  bats ${./nix/tests/test-golangci-hook.bats}
+                  touch $out
+                '';
+
             # Pure-function unit tests for lib/ul-pin.nix:isUnpinnedUpdateLocks,
             # the predicate behind the auto-contributed update-locks-pinned guard
             # (bead pg2-o784p). Covers detected (bare), not-detected (pinned), and
@@ -3036,6 +3056,12 @@
             mkPythonBuilders = import ./lib/python-package.nix {
               inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
             };
+          }
+          # Opt-in golangci-lint pre-commit hook for extraHooks (docs/hooks.md,
+          # "Linters run at pre-commit"): new findings only, touched Go modules
+          # only, no nix at hook time (HK-2), skips inside the nix sandbox.
+          // {
+            mkGolangciHook = args: import ./nix/golangci-hook.nix args;
           }
           # Activation-script output helpers
           // (import ./lib/activation.nix { })
