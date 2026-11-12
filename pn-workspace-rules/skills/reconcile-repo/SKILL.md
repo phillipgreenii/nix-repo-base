@@ -133,10 +133,20 @@ ahead of a moved `origin` is the expected starting state.
       to the rebased tip;
    3. removes the temporary worktree and branch.
 
+   A fast-forward landing on `<primary>` while the check runs (another session's
+   `integrate-branch` ff-merge; routine on a busy repo, where the check can take
+   tens of minutes) does NOT make the swap fail: the script cherry-picks the
+   landed commits (`<old-local-tip>..<new primary tip>`) onto the rebased tip in
+   its temporary worktree and retries the swap (up to 20 rounds). It takes no
+   lock the landers respect. The replayed commits are not re-checked; their own
+   lander gated them. Only a non-fast-forward movement (history rewritten) is
+   refused with `6`, and a landed commit that does not replay cleanly stops the
+   run with `4`.
+
    `<CC>` is never mid-rebase, and on any failure nothing in it changes. The
    last stdout line is the outcome (`reconciled <old> <new>`). Exit codes: `3`
    not in steady state, `4` rebase conflict, `5` check failed on the rebased
-   tip, `6` compare-and-swap refused, `7` working-tree move failed (ref
+   tip, `6` compare-and-swap refused (primary rewritten, not merely advanced), `7` working-tree move failed (ref
    restored), `8` fetch failed. Every non-zero exit leaves `<CC>` unchanged.
    Run it as a background job or with an explicit timeout: the check can be
    slow.
@@ -190,7 +200,7 @@ at least when:
 - a rebase conflict is not one the agent is confident resolving;
 - hooks (`pg-hooks run pre-land`) fail on the rebased tip, or the bounded
   fix-breakage rule does not cover the failure;
-- the compare-and-swap swap refuses (the primary branch moved);
+- the compare-and-swap swap refuses (the primary branch was rewritten, not merely advanced);
 - the canonical clone is not in steady state (not on `<primary>`, dirty, or a
   rebase, merge or cherry-pick in progress);
 - `origin` gained commits whose author or committer is not the operator or a

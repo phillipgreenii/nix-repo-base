@@ -13,11 +13,20 @@ primary branch against origin/<primary>. Only the diverged case is reconciled:
      onto origin/<primary>, and run the check command there;
   2. in REPO (which MUST be on the primary branch, clean, with no rebase, merge
      or cherry-pick in progress), move refs/heads/<primary> to the rebased tip
-     with `git update-ref <ref> <new> <old>` (fails safely if the primary branch
-     moved meanwhile), then a two-way `git read-tree -m -u <old> <new>` to move the index and
+     with `git update-ref <ref> <new> <old>`, then a two-way `git read-tree -m -u <old> <new>` to move the index and
      working tree (a plain `git reset --keep <new>` would be a no-op once the
      ref has moved);
   3. remove the temporary worktree and branch.
+
+If the primary branch advances by fast-forward while the check runs (a landing
+by another session; routine on a busy repo, and the check can take tens of
+minutes), the script does not fail: it cherry-picks the landed commits
+(<old>..<new primary>) onto the rebased tip in the temporary worktree and
+retries the swap, up to 20 rounds. The replayed commits are NOT re-checked
+(their own lander gated them). If the primary moved any other way (history
+rewritten, not a descendant of <old>) the swap is refused with exit 6; if a
+landed commit does not replay cleanly the run stops with exit 4. Either way
+nothing changes.
 
 REPO is never mid-rebase. On any failure nothing in REPO changes. Behind-only is
 fast-forwarded; up-to-date and ahead-only are reported and left alone. The script
@@ -39,9 +48,11 @@ Exit codes:
   0  outcome printed
   2  usage error
   3  REPO is not in steady state (not on primary, dirty, or operation in progress)
-  4  rebase conflict (rebase aborted, nothing changed)
+  4  rebase conflict, or a commit landed during the check does not replay
+     (aborted, nothing changed)
   5  check command failed on the rebased tip (nothing changed)
-  6  compare-and-swap refused: the primary branch moved (nothing changed)
+  6  compare-and-swap refused: the primary branch was rewritten or kept moving
+     past the replay limit (nothing changed)
   7  working-tree move failed after the swap (the ref was restored)
   8  fetch failed or origin/<primary> does not resolve
 HELP

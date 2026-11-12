@@ -31,6 +31,8 @@ pgrr_steady_state() {
 PGRR_WT=""
 PGRR_TMP_BRANCH=""
 PGRR_SCRATCH=""
+# Bound on replay rounds when the primary keeps advancing during the swap.
+PGRR_MAX_REPLAYS=20
 
 pgrr_cleanup() {
   if [[ -n $PGRR_WT && -d $PGRR_WT ]]; then
@@ -106,14 +108,34 @@ pgrr_main() {
   fi
 
   # Step 2: compare-and-swap in the canonical clone, then move its working tree.
-  if ! pgrr_steady_state "$REPO" "$primary"; then
-    echo "pg-reconcile-repo: $REPO left steady state during the rebase; nothing changed" >&2
-    exit 3
-  fi
-  if ! git -C "$REPO" update-ref "$ref" "$new" "$old" >&2; then
-    echo "pg-reconcile-repo: compare-and-swap refused ($primary moved); nothing changed" >&2
-    exit 6
-  fi
+  # A fast-forward landing on the primary during the (slow) check is expected on
+  # a busy repo: replay the landed commits onto the rebased tip and retry the
+  # swap, instead of failing. The replayed commits were gated by their own
+  # lander, so the check is not re-run. Any other movement (rewritten history)
+  # is refused.
+  local tries=0 cur orig_old="$old"
+  while :; do
+    if ! pgrr_steady_state "$REPO" "$primary"; then
+      echo "pg-reconcile-repo: $REPO left steady state during the rebase; nothing changed" >&2
+      exit 3
+    fi
+    if git -C "$REPO" update-ref "$ref" "$new" "$old" >&2; then
+      break
+    fi
+    cur="$(git -C "$REPO" rev-parse "$ref")"
+    if ((++tries > PGRR_MAX_REPLAYS)) || ! git -C "$REPO" merge-base --is-ancestor "$old" "$cur"; then
+      echo "pg-reconcile-repo: compare-and-swap refused ($primary moved); nothing changed" >&2
+      exit 6
+    fi
+    echo "pg-reconcile-repo: $primary advanced during the check; replaying $old..$cur onto the rebased tip" >&2
+    if ! git -C "$PGRR_WT" cherry-pick --allow-empty --keep-redundant-commits "$old..$cur" >&2; then
+      git -C "$PGRR_WT" cherry-pick --abort >/dev/null 2>&1 || true
+      echo "pg-reconcile-repo: commits landed during the check do not replay onto the rebased tip; nothing changed" >&2
+      exit 4
+    fi
+    new="$(git -C "$PGRR_WT" rev-parse HEAD)"
+    old="$cur"
+  done
   # The ref already points at $new, so `git reset --keep $new` would be a no-op
   # (HEAD == target); a two-way read-tree from $old to $new is what actually
   # moves index and working tree, and like --keep it refuses to clobber local changes.
@@ -125,5 +147,5 @@ pgrr_main() {
   fi
 
   # Step 3 (worktree and branch removal) runs in the EXIT trap.
-  echo "reconciled $old $new"
+  echo "reconciled $orig_old $new"
 }

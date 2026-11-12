@@ -138,19 +138,55 @@ assert_no_leftovers() {
   assert_no_leftovers
 }
 
-@test "main moved during the rebase: CAS refuses (exit 6), nothing changes" {
+# A check command that runs a git command in the canonical clone behind the
+# script's back, like an integrate-branch fast-forward lander landing on main.
+write_mover() { # script-name shell-body
+  {
+    printf '#!%s\nset -e\ncd "%s"\n%s\n' "$(command -v bash)" "$CC" "$2"
+  } >"$TEST_DIR/$1"
+  chmod +x "$TEST_DIR/$1"
+}
+
+@test "main fast-forwarded during the check: landed commit is replayed, swap succeeds" {
   diverge
-  # The check command runs between the rebase and the swap; it advances the
-  # canonical clone's main behind the script's back.
-  cat >"$TEST_DIR/move-main.sh" <<MOVE
-#!$(command -v bash)
-command git -C "$CC" commit -q --allow-empty -m "moved during the rebase"
-MOVE
-  chmod +x "$TEST_DIR/move-main.sh"
-  run "$SCRIPT" --check-cmd "$TEST_DIR/move-main.sh" "$CC"
+  old="$(command git -C "$CC" rev-parse main)"
+  write_mover mover.sh 'git commit -q --allow-empty -m "landed during the check"'
+  run "$SCRIPT" --check-cmd "$TEST_DIR/mover.sh" "$CC"
+  [ "$status" -eq 0 ]
+  new="$(command git -C "$CC" rev-parse main)"
+  [ "${lines[-1]}" = "reconciled $old $new" ]
+  [ "$new" != "$old" ]
+  command git -C "$CC" merge-base --is-ancestor origin/main main
+  [ "$(command git -C "$CC" rev-list --count origin/main..main)" -eq 2 ]
+  [ "$(command git -C "$CC" log -1 --format=%s main)" = "landed during the check" ]
+  [ -f "$CC/remote.txt" ]
+  [ -f "$CC/local.txt" ]
+  [ -z "$(command git -C "$CC" status --porcelain)" ]
+  assert_no_leftovers
+}
+
+@test "main rewritten during the check: CAS refuses (exit 6), nothing changes" {
+  diverge
+  write_mover mover.sh 'git reset -q --hard HEAD~1
+git commit -q --allow-empty -m "rewritten during the check"'
+  run "$SCRIPT" --check-cmd "$TEST_DIR/mover.sh" "$CC"
   [ "$status" -eq 6 ]
-  [ "$(command git -C "$CC" log -1 --format=%s main)" = "moved during the rebase" ]
+  [ "$(command git -C "$CC" log -1 --format=%s main)" = "rewritten during the check" ]
   [ ! -f "$CC/remote.txt" ]
+  [ -z "$(command git -C "$CC" status --porcelain)" ]
+  assert_no_leftovers
+}
+
+@test "landed commit does not replay onto the rebased tip: exits 4, nothing changes" {
+  diverge
+  # The landing adds remote.txt with other content; origin's remote.txt is
+  # already in the rebased tip, so the replay is an add/add conflict.
+  write_mover mover.sh 'printf "landed\n" >remote.txt
+git add remote.txt
+git commit -q -m "landed conflicting"'
+  run "$SCRIPT" --check-cmd "$TEST_DIR/mover.sh" "$CC"
+  [ "$status" -eq 4 ]
+  [ "$(command git -C "$CC" log -1 --format=%s main)" = "landed conflicting" ]
   [ -z "$(command git -C "$CC" status --porcelain)" ]
   assert_no_leftovers
 }
