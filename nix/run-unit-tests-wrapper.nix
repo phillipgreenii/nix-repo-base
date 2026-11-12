@@ -47,6 +47,13 @@ pkgs.writeShellScript "run-unit-tests" ''
     echo "run-unit-tests: warning: $common_dir/config already sets core.worktree=$before before the tests ran" >&2
   fi
 
+  # Run the tests under the flake's pinned nixpkgs go (the compiler that builds
+  # the deployed binaries), not whichever go happens to be first on the
+  # committer's PATH, and forbid GOTOOLCHAIN auto-download. pg-test-runner
+  # itself stays resolved from the ambient PATH (checked above).
+  export PATH="${pkgs.go}/bin:$PATH"
+  export GOTOOLCHAIN=local
+
   rc=0
   pg-test-runner --config ${configPath} --labels unit --files "$@" || rc=$?
 

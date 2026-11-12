@@ -667,6 +667,31 @@
                   touch $out
                 '';
 
+            # bats test of the run-unit-tests wrapper's Go toolchain pinning: with a
+            # fake older `go` earlier on PATH, the runner still sees the flake's
+            # pinned pkgs.go first and GOTOOLCHAIN=local exported.
+            run-unit-tests-pinned-go =
+              let
+                wrapper = import ./nix/run-unit-tests-wrapper.nix {
+                  inherit pkgs;
+                  configPath = "/nonexistent/pg-test-runner-config.json";
+                };
+              in
+              pkgs.runCommand "check-run-unit-tests-pinned-go"
+                {
+                  nativeBuildInputs = [
+                    pkgs.bats
+                    pkgs.git
+                  ];
+                  WRAPPER = "${wrapper}";
+                  PINNED_GO_BIN = "${pkgs.go}/bin";
+                }
+                ''
+                  export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+                  bats ${./nix/tests/test-run-unit-tests-pinned-go.bats}
+                  touch $out
+                '';
+
             # Pure-function unit tests for lib/ul-pin.nix:isUnpinnedUpdateLocks,
             # the predicate behind the auto-contributed update-locks-pinned guard
             # (bead pg2-o784p). Covers detected (bare), not-detected (pinned), and
