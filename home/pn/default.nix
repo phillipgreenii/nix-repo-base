@@ -22,16 +22,19 @@
 # ALWAYS built and installed so it can emit telemetry; whether it does is a
 # per-system runtime setting in `~/.config/pn/telemetry.toml`, checked on every
 # run, so flipping it needs no rebuild or re-install. `phillipgreenii.pn.telemetry.*`
-# renders that file on EVERY system (keys `enabled`, `endpoint`, `wrapper_path`),
-# the same pattern as store.toml above, and ALWAYS adds the `pg-nix-log-wrapped`
+# renders that file on EVERY system (keys `enabled`, optional `spool_dir`,
+# `wrapper_path`), the same pattern as store.toml above, and ALWAYS adds the `pg-nix-log-wrapped`
 # package to `home.packages`. `telemetry.enable` is the value of the file's
 # `enabled` key (default false), NOT an install gate. The wrapper's default path
 # is `lib.getExe pkgs.pg-nix-log-wrapped`, so the consuming machine repo MUST
 # apply this flake's `overlays.default` (which carries `pkgs.pg-nix-log-wrapped`)
 # on every system that enables `phillipgreenii.pn`, whether or not telemetry is
-# on. This layer is below support-apps, so it MUST NOT call mkEmitterEnv: the
-# machine repo sets `telemetry.endpoint` from the observability module's option
-# (never a literal port) and leaves it null when there is no collector.
+# on. Telemetry is written to a local spool directory that a user-run collector
+# ingests (no endpoint is involved): `telemetry.spool_dir` overrides the default
+# `${XDG_STATE_HOME}/otel-spool`. `telemetry.endpoint` is DEPRECATED: accepted,
+# ignored (never rendered) and reported through `warnings` until the machine
+# repo drops it. This layer is below support-apps, so it MUST NOT call
+# mkEmitterEnv.
 {
   config,
   lib,
@@ -56,14 +59,14 @@ let
   tcfg = cfg.telemetry;
 
   # telemetry.toml is written on EVERY system: `enabled` and `wrapper_path`
-  # always, `endpoint` when non-null (a null endpoint with enabled = true leaves
-  # telemetry off and `pn workspace doctor` warns). `enabled = false` is the
+  # always, `spool_dir` when non-null (null means the XDG default). The
+  # deprecated `endpoint` option is never rendered. `enabled = false` is the
   # runtime off switch; precedence against the flag, the environment and the
   # force-off controls is ADR 0028 "Runtime configuration contract". The
   # wrapper_path is honoured by pn under sudo only if it resolves into
   # /nix/store.
   telemetryToml = tomlFormat.generate "pn-telemetry.toml" (
-    lib.optionalAttrs (tcfg.endpoint != null) { inherit (tcfg) endpoint; }
+    lib.optionalAttrs (tcfg.spool_dir != null) { inherit (tcfg) spool_dir; }
     // {
       enabled = tcfg.enable;
       wrapper_path = tcfg.wrapperPath;
@@ -158,19 +161,32 @@ in
     };
 
     telemetry = {
-      enable = mkEnableOption "emitting pn / nix build telemetry (OpenTelemetry over OTLP/HTTP to a collector). This is the RUNTIME default written to `~/.config/pn/telemetry.toml` as `enabled`, not an install gate: the pn tooling and the pg-nix-log-wrapped package are always installed and `enabled = false` only turns emission off";
+      enable = mkEnableOption "emitting pn / nix build telemetry (OpenTelemetry written to a local spool directory that a collector ingests). This is the RUNTIME default written to `~/.config/pn/telemetry.toml` as `enabled`, not an install gate: the pn tooling and the pg-nix-log-wrapped package are always installed and `enabled = false` only turns emission off";
+
+      spool_dir = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "/Users/me/.local/state/otel-spool";
+        description = ''
+          Directory telemetry spool files are written to, rendered to
+          `~/.config/pn/telemetry.toml` as `spool_dir` (omitted when null, which
+          means the XDG default `''${XDG_STATE_HOME}/otel-spool`, else
+          `$HOME/.local/state/otel-spool`). Must be an absolute path. The
+          collector watches ONLY `''${XDG_STATE_HOME}/otel-spool`, so an override
+          is never ingested unless the collector configuration is changed to
+          match. A machine with `enable = true` and no collector accumulates
+          spool files up to the sweep bounds.
+        '';
+      };
 
       endpoint = mkOption {
         type = types.nullOr types.str;
         default = null;
-        example = "http://127.0.0.1:4318";
+        visible = false;
         description = ''
-          OTLP/HTTP collector endpoint written to `~/.config/pn/telemetry.toml`
-          (omitted when null). Telemetry is ON only when the file's `enabled`
-          (from `enable`) is true AND an endpoint resolves (`--otlp-endpoint`,
-          then `OTEL_EXPORTER_OTLP_ENDPOINT`, then this file); null leaves it off.
-          The machine repo SHOULD derive this from the observability module's
-          http port option instead of a literal.
+          DEPRECATED and ignored: telemetry no longer uses an endpoint, so this
+          is never written to `~/.config/pn/telemetry.toml`. Setting it emits a
+          warning. Use `spool_dir` to relocate the spool. Will be removed.
         '';
       };
 
@@ -190,6 +206,10 @@ in
   };
 
   config = mkIf cfg.enable {
+    warnings =
+      lib.optional (tcfg.endpoint != null)
+        "phillipgreenii.pn.telemetry.endpoint is deprecated and ignored (telemetry uses a local spool directory now); remove it, and use phillipgreenii.pn.telemetry.spool_dir to relocate the spool.";
+
     # Always built to emit: the wrapper is installed on every system, enabled or
     # not (ADR 0028); whether it emits is the runtime `enabled` key.
     home = {

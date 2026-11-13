@@ -2645,7 +2645,9 @@
             #   * the wrapper is in home.packages and telemetry.toml is written
             #     whether telemetry.enable is true OR false (no install gate);
             #   * `enabled` mirrors telemetry.enable (true / false);
-            #   * a null endpoint omits the endpoint key.
+            #   * spool_dir is rendered only when set;
+            #   * the deprecated endpoint option is accepted, warned about and
+            #     never rendered.
             # Same narrow-stub shape as pg-go-mutate-tui-config-rendered above.
             # TEMPORARY STUB: until Phase 3 (pg2-kqrrs.7) adds
             # pg-nix-log-wrapped to overlays.default, a placeholder
@@ -2693,6 +2695,10 @@
                             default = { };
                           };
                         };
+                        options.warnings = pkgs.lib.mkOption {
+                          type = pkgs.lib.types.listOf pkgs.lib.types.str;
+                          default = [ ];
+                        };
                       }
                       ./home/pn/default.nix
                       {
@@ -2710,19 +2716,21 @@
 
                 on = mkEval pkgsWithOverlay {
                   enable = true;
+                  spool_dir = "/tmp/custom-spool";
+                };
+                noSpoolDir = mkEval pkgsWithOverlay { enable = true; };
+                deprecated = mkEval pkgsWithOverlay {
+                  enable = true;
                   endpoint = "http://127.0.0.1:4318";
                 };
-                noEndpoint = mkEval pkgsWithOverlay { enable = true; };
                 # Off is a RUNTIME state: the wrapper is still installed and the
                 # file is still written, with enabled = false.
-                off = mkEval pkgsWithOverlay {
-                  enable = false;
-                  endpoint = "http://127.0.0.1:4318";
-                };
+                off = mkEval pkgsWithOverlay { enable = false; };
                 defaults = mkEval pkgsWithOverlay { };
                 tomlOf = e: e.config.home.file.".config/pn/telemetry.toml".source;
                 tomlSource = tomlOf on;
-                noEndpointToml = tomlOf noEndpoint;
+                noSpoolDirToml = tomlOf noSpoolDir;
+                deprecatedToml = tomlOf deprecated;
                 offToml = tomlOf off;
                 defaultsToml = tomlOf defaults;
               in
@@ -2738,6 +2746,10 @@
                 throw "phillipgreenii.pn must NOT install pg-nix-shim unconditionally"
               else if !(pkgs.lib.elem "pg-reconcile-repo" (pkgNames defaults)) then
                 throw "phillipgreenii.pn must install pg-reconcile-repo (reconcile-repo skill step 4)"
+              else if on.config.warnings != [ ] || noSpoolDir.config.warnings != [ ] then
+                throw "telemetry must not warn when the deprecated endpoint is unset"
+              else if builtins.length deprecated.config.warnings != 1 then
+                throw "setting the deprecated telemetry.endpoint must emit exactly one warning"
               else if !(off.config.home.file ? ".config/pn/telemetry.toml") then
                 throw "telemetry.enable = false must still render ~/.config/pn/telemetry.toml (runtime switch)"
               else
@@ -2745,7 +2757,8 @@
                   {
                     inherit
                       tomlSource
-                      noEndpointToml
+                      noSpoolDirToml
+                      deprecatedToml
                       offToml
                       defaultsToml
                       wrapperExe
@@ -2754,23 +2767,30 @@
                   ''
                     cat "$tomlSource"
                     grep -qxF 'enabled = true' "$tomlSource"
-                    grep -qxF 'endpoint = "http://127.0.0.1:4318"' "$tomlSource"
+                    grep -qxF 'spool_dir = "/tmp/custom-spool"' "$tomlSource"
                     grep -qxF "wrapper_path = \"$wrapperExe\"" "$tomlSource"
                     echo --- off
                     cat "$offToml"
                     grep -qxF 'enabled = false' "$offToml"
-                    grep -qxF 'endpoint = "http://127.0.0.1:4318"' "$offToml"
                     grep -qxF "wrapper_path = \"$wrapperExe\"" "$offToml"
                     echo --- defaults
                     cat "$defaultsToml"
                     grep -qxF 'enabled = false' "$defaultsToml"
                     echo ---
-                    cat "$noEndpointToml"
-                    if grep -q '^endpoint' "$noEndpointToml"; then
-                      echo "null endpoint must not write an endpoint key" >&2
+                    cat "$noSpoolDirToml"
+                    grep -qxF 'enabled = true' "$noSpoolDirToml"
+                    if grep -q '^spool_dir' "$noSpoolDirToml"; then
+                      echo "null spool_dir must not write a spool_dir key" >&2
                       exit 1
                     fi
-                    grep -qxF "wrapper_path = \"$wrapperExe\"" "$noEndpointToml"
+                    grep -qxF "wrapper_path = \"$wrapperExe\"" "$noSpoolDirToml"
+                    echo --- deprecated endpoint
+                    cat "$deprecatedToml"
+                    if grep -q '^endpoint' "$deprecatedToml"; then
+                      echo "deprecated endpoint must not be rendered" >&2
+                      exit 1
+                    fi
+                    grep -qxF 'enabled = true' "$deprecatedToml"
                     touch "$out"
                   '';
 
