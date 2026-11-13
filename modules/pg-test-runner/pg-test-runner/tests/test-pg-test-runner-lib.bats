@@ -633,3 +633,22 @@ _slots_setup() {
   run ptr_validate_config "$TEST_DIR/ok.json"
   [ "$status" -eq 0 ]
 }
+
+@test "ptr_timeout_source_for names the longest matching key, or global when none matches" {
+  TIMEOUT_SECONDS=300
+  # shellcheck disable=SC2034  # read by ptr_timeout_source_for in the sourced library, not this file
+  PROJECT_TIMEOUTS_JSON='{"a": 400, "packages/a": 900}'
+  [ "$(ptr_timeout_source_for /r/packages/a)" = "packages/a" ]
+  [ "$(ptr_timeout_source_for /r/other/a)" = "a" ]
+  [ "$(ptr_timeout_source_for /r/unrelated)" = "global" ]
+}
+
+@test "no shipped pg-hooks or pg-test-runner text blames a stop on host load" {
+  local root="${BATS_TEST_DIRNAME}/../../../.."
+  run grep -rniE 'host.load' "$root/modules/pg-hooks/pg-hooks/pg-hooks.sh" \
+    "$root/modules/pg-hooks/pg-hooks/pg-hooks.md" \
+    "$root/modules/pg-test-runner/pg-test-runner/pg-test-runner.bash" \
+    "$root/modules/pg-test-runner/pg-test-runner/pg-test-runner.md" \
+    "$root/docs/hooks.md"
+  [ "$status" -eq 1 ]
+}

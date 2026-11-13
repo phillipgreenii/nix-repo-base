@@ -638,7 +638,7 @@ pgh_report_transient() {
     ;;
   esac
   if ((more > 0)); then
-    msg="$msg (and $more more stopped project(s))"
+    msg="$msg (and $more more stopped project(s); see the runner output above)"
   fi
   printf 'pg-hooks: %s hooks stopped: %s\n' "$stage" "$msg" >&2
 }
