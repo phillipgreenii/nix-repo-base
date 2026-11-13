@@ -726,6 +726,23 @@
                   touch $out
                 '';
 
+            # The repo golangci-lint config (used by the commit hook and mkGoLint)
+            # caps the linter at 2 workers, and is still a valid v2 config.
+            golangci-config-concurrency =
+              pkgs.runCommand "check-golangci-config-concurrency"
+                {
+                  nativeBuildInputs = [
+                    pkgs.golangci-lint
+                    pkgs.yq-go
+                  ];
+                }
+                ''
+                  export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+                  yq -e '.run.concurrency == 2' ${./.golangci.yml}
+                  golangci-lint config verify --config ${./.golangci.yml}
+                  touch $out
+                '';
+
             # bats test of the opt-in golangci hook builder (nix/golangci-hook.nix)
             # against the real golangci-lint and go in a throwaway git repo.
             golangci-hook =

@@ -49,6 +49,20 @@ let
     fi
     export GOTOOLCHAIN=local
 
+    # Shared lint cache under the build_tmp root (that root is
+    # exported to shells as PG_TEST_RUNNER_TMP_ROOT). An explicit
+    # GOLANGCI_LINT_CACHE wins; with neither set golangci-lint keeps its own
+    # per-user default. NOTE: build_tmp is swept when idle (top-level entries
+    # untouched past the cutoff are deleted), so this directory is dropped
+    # after an idle period and rebuilt on the next run; no exemption is made.
+    if [ -z "''${GOLANGCI_LINT_CACHE:-}" ] && [ -n "''${PG_TEST_RUNNER_TMP_ROOT:-}" ] && [ -d "$PG_TEST_RUNNER_TMP_ROOT" ]; then
+      export GOLANGCI_LINT_CACHE="''${PG_TEST_RUNNER_TMP_ROOT%/}/golangci-lint-cache"
+    fi
+    if [ -n "''${PG_GOLANGCI_SHOW_CACHE:-}" ]; then
+      printf '%s\n' "''${GOLANGCI_LINT_CACHE:-<unset>}"
+      exit 0
+    fi
+
     base="''${PG_GOLANGCI_BASE_REV:-}"
     if [ -z "$base" ]; then
       for ref in origin/HEAD origin/main origin/master main master; do

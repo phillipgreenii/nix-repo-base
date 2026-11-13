@@ -5,6 +5,11 @@ version: "2"
 # Uses the "standard" default linters (errcheck, govet, ineffassign,
 # staticcheck, unused) explicitly.
 run:
+  # Bound the linter's own parallelism. golangci-lint defaults to every CPU, so
+  # several concurrent hook and check runs piled onto an 11-core host (load
+  # average ~100 on 2026-11-12). 2 keeps a single lint run to two analysis
+  # workers; it only trades wall-clock time for host load.
+  concurrency: 2
   # Custom (non-GOOS/GOARCH) build tags to activate so golangci-lint's
   # go/build package resolution actually loads files gated behind them —
   # without this, such files are invisible to golangci-lint (reported as

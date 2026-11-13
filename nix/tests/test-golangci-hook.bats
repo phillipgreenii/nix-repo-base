@@ -83,3 +83,26 @@ run_hook() {
   [ "$status" -eq 0 ]
   [ ! -e "$work/nix-ran" ]
 }
+
+@test "lint cache defaults to a directory under the build_tmp root when none is set" {
+  cd "$repo"
+  mkdir -p "$work/build_tmp"
+  run env -u GOLANGCI_LINT_CACHE PG_TEST_RUNNER_TMP_ROOT="$work/build_tmp" PG_GOLANGCI_SHOW_CACHE=1 "$HOOK"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$work/build_tmp/golangci-lint-cache" ]
+}
+
+@test "an explicit GOLANGCI_LINT_CACHE wins over the build_tmp default" {
+  cd "$repo"
+  mkdir -p "$work/build_tmp"
+  run env PG_TEST_RUNNER_TMP_ROOT="$work/build_tmp" PG_GOLANGCI_SHOW_CACHE=1 "$HOOK"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$work/lintcache" ]
+}
+
+@test "with no build_tmp root the cache is left to golangci-lint's own default" {
+  cd "$repo"
+  run env -u GOLANGCI_LINT_CACHE -u PG_TEST_RUNNER_TMP_ROOT PG_GOLANGCI_SHOW_CACHE=1 "$HOOK"
+  [ "$status" -eq 0 ]
+  [ "$output" = "<unset>" ]
+}
