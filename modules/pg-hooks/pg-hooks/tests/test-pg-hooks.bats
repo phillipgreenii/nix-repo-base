@@ -695,7 +695,7 @@ _prek_reports() {
   cat >"$PGH_T_BUNDLE/bin/prek" <<PREK
 #!/bin/sh
 if [ -n "\${PG_TEST_RUNNER_TRANSIENT_FILE-}" ]; then
-  printf '%s\n' '$1' >>"\$PG_TEST_RUNNER_TRANSIENT_FILE"
+  printf '%b\n' '$1' >>"\$PG_TEST_RUNNER_TRANSIENT_FILE"
 fi
 printf 'transient-var=%s\n' "\${PG_TEST_RUNNER_TRANSIENT_FILE-<unset>}" >'$GFH_ROOT/seen-var'
 exit 1
@@ -705,18 +705,40 @@ PREK
 
 @test "run pre-land exits 75 when the test runner hit its time cap" {
   _present
-  _prek_reports runner-cap
+  _prek_reports 'runner-cap\tservices/api\t900\tglobal'
   run --separate-stderr "$PGH_T_SUT" run pre-land
   [ "$status" -eq 75 ]
-  [[ $stderr == *"host load (runner-cap)"* ]]
+  [[ $stderr == *"project services/api exceeded its 900s test cap (global); retry, or raise the cap"* ]]
+  [[ $stderr != *"host load"* ]]
+  [[ $stderr != *"load average"* ]]
+}
+
+@test "run pre-land names the projectTimeouts key as the cap source" {
+  _present
+  _prek_reports 'runner-cap\tservices/api\t120\tapi'
+  run --separate-stderr "$PGH_T_SUT" run pre-land
+  [ "$status" -eq 75 ]
+  [[ $stderr == *"exceeded its 120s test cap (api)"* ]]
+}
+
+@test "run pre-land with several stopped projects reports the first and the count of the rest" {
+  _present
+  _prek_reports 'runner-cap\tfirst/proj\t60\tglobal\nrunner-no-slot\tsecond/proj\t600\t4\nrunner-cap\tthird/proj\t60\tglobal'
+  run --separate-stderr "$PGH_T_SUT" run pre-land
+  [ "$status" -eq 75 ]
+  [[ $stderr == *"project first/proj exceeded its 60s test cap"* ]]
+  [[ $stderr == *"and 2 more"* ]]
+  [[ $stderr != *"second/proj"* ]]
 }
 
 @test "run pre-land exits 75 when the test runner found no free slot" {
   _present
-  _prek_reports runner-no-slot
+  _prek_reports 'runner-no-slot\tservices/api\t600\t4'
   run --separate-stderr "$PGH_T_SUT" run pre-land
   [ "$status" -eq 75 ]
-  [[ $stderr == *"host load (runner-no-slot)"* ]]
+  [[ $stderr == *"all runner slots were busy for 600s (maxConcurrentRuns=4)"* ]]
+  [[ $stderr != *"host load"* ]]
+  [[ $stderr != *"load average"* ]]
 }
 
 @test "run pre-land exits 10 for an ordinary hook failure" {
@@ -728,7 +750,7 @@ PREK
 
 @test "the commit-time stage does not set PG_TEST_RUNNER_TRANSIENT_FILE and still exits 10 on failure" {
   _present
-  _prek_reports runner-cap
+  _prek_reports 'runner-cap\tp\t1\tglobal'
   run --separate-stderr "$PGH_T_SUT" run pre-commit
   [ "$status" -eq 10 ]
   [ "$(cat "$GFH_ROOT/seen-var")" = "transient-var=<unset>" ]

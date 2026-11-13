@@ -883,6 +883,17 @@ ptr_timeout_for() {
   ' <<<"$overrides"
 }
 
+# Prints where project $1's cap comes from: the matching `projectTimeouts` key
+# (same selection as ptr_timeout_for), else `global`.
+ptr_timeout_source_for() {
+  local path="$1" overrides='{}'
+  overrides="${PROJECT_TIMEOUTS_JSON:-$overrides}"
+  "$PTR_JQ" -r --arg p "$path" '
+    [ to_entries[] | select(.key as $k | $p == $k or ($p | endswith("/" + $k))) ]
+    | sort_by(.key | length) | (last // {key: "global"}) | .key
+  ' <<<"$overrides"
+}
+
 # Runs one argv template (JSON array, already placeholder-substituted values
 # supplied) in $1 (project root), bounded by ptr_timeout_for. Returns the
 # underlying tool's exit status; a `timeout` expiry (124) is reported as a
@@ -910,11 +921,12 @@ ptr_invoke() {
     if ptr_slot_acquire "$MAX_CONCURRENT_RUNS" "$slot_wait"; then
       have_slot=1
     elif [[ -n ${PG_TEST_RUNNER_TRANSIENT_FILE:-} ]]; then
-      # A caller that asked to be told about host-load stops (pg-hooks run
+      # A caller that asked to be told about transient stops (pg-hooks run
       # pre-land) gets no fail-open run: the slot wait ending is reported as
       # transient, and the project is not run. Other callers are unchanged.
+      # The line is TAB separated: token, path, waited seconds, maxConcurrentRuns.
       ptr_err "no run slot free after ${slot_wait}s (maxConcurrentRuns=$MAX_CONCURRENT_RUNS); not running $path (transient: runner-no-slot)"
-      printf 'runner-no-slot\n' >>"$PG_TEST_RUNNER_TRANSIENT_FILE" 2>/dev/null || true
+      printf 'runner-no-slot\t%s\t%s\t%s\n' "$path" "$slot_wait" "$MAX_CONCURRENT_RUNS" >>"$PG_TEST_RUNNER_TRANSIENT_FILE" 2>/dev/null || true
       return 75
     else
       ptr_err "warning: no run slot free after ${slot_wait}s (maxConcurrentRuns=$MAX_CONCURRENT_RUNS); running $path without one"
@@ -949,7 +961,8 @@ ptr_invoke() {
   if [[ $status -eq 124 ]]; then
     ptr_err "project $path timed out after ${timeout_secs}s cap"
     if [[ -n ${PG_TEST_RUNNER_TRANSIENT_FILE:-} ]]; then
-      printf 'runner-cap\n' >>"$PG_TEST_RUNNER_TRANSIENT_FILE" 2>/dev/null || true
+      # TAB separated: token, path, cap seconds, cap source (global or key).
+      printf 'runner-cap\t%s\t%s\t%s\n' "$path" "$timeout_secs" "$(ptr_timeout_source_for "$path")" >>"$PG_TEST_RUNNER_TRANSIENT_FILE" 2>/dev/null || true
     fi
   fi
   return "$status"

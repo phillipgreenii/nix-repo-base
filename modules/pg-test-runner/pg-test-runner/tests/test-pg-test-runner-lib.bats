@@ -519,7 +519,7 @@ _slots_setup() {
   run ptr_invoke "$PROJ" '["bash","-c","echo ran"]' 1 "" "" "" ""
   [ "$status" -eq 75 ]
   [[ "$output" != *"ran"$'\n'* ]]
-  [ "$(cat "$TEST_DIR/transient")" = "runner-no-slot" ]
+  [ "$(cat "$TEST_DIR/transient")" = "$(printf 'runner-no-slot\t%s\t1\t1' "$PROJ")" ]
 }
 
 @test "ptr_invoke with PG_TEST_RUNNER_TRANSIENT_FILE set reports runner-cap on a timeout" {
@@ -530,7 +530,20 @@ _slots_setup() {
   export PG_TEST_RUNNER_TRANSIENT_FILE="$TEST_DIR/transient"
   run ptr_invoke "$PROJ" '["sleep","5"]' 1 "" "" "" ""
   [ "$status" -eq 124 ]
-  [ "$(cat "$TEST_DIR/transient")" = "runner-cap" ]
+  [ "$(cat "$TEST_DIR/transient")" = "$(printf 'runner-cap\t%s\t1\tglobal' "$PROJ")" ]
+}
+
+@test "ptr_invoke runner-cap detail names the projectTimeouts key when one set the cap" {
+  _slots_setup
+  MAX_CONCURRENT_RUNS=0
+  NICE_LEVEL=0
+  TIMEOUT_SECONDS=30
+  # shellcheck disable=SC2034 # read by ptr_timeout_source_for in the sourced library
+  PROJECT_TIMEOUTS_JSON="$(jq -cn --arg k "$(basename "$PROJ")" '{($k): 1}')"
+  export PG_TEST_RUNNER_TRANSIENT_FILE="$TEST_DIR/transient"
+  run ptr_invoke "$PROJ" '["sleep","5"]' 1 "" "" "" ""
+  [ "$status" -eq 124 ]
+  [ "$(cat "$TEST_DIR/transient")" = "$(printf 'runner-cap\t%s\t1\t%s' "$PROJ" "$(basename "$PROJ")")" ]
 }
 
 @test "ptr_invoke without PG_TEST_RUNNER_TRANSIENT_FILE keeps the fail-open run" {

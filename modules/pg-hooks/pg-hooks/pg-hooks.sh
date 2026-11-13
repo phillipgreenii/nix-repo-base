@@ -48,8 +48,8 @@ Exit codes:
   14  status only: bundle stale
   15  status only: hooks unreachable (core.hooksPath bypasses <common-dir>/hooks)
   16  status only: clone relocated
-  75  run pre-land only: the test runner hit its time cap or found no free
-      slot (host load, transient; retry later)
+  75  run pre-land only: transient stop (a test timeout or no free runner
+      slot); retry later
 
 Environment:
   PG_HOOKS_PROGRESS_AFTER_S  print one progress line after N seconds (default 3; 0 disables)
@@ -592,7 +592,7 @@ cmd_run() {
   fi
   local rc=0 transient=""
   if [[ $stage == pre-land ]]; then
-    # Ask the test runner to report host-load stops (time cap, no free slot)
+    # Ask the test runner to report transient stops (test timeout, no free slot)
     # here, so they exit 75 instead of 10. Other stages leave it unset.
     transient=$(mktemp "${TMPDIR:-/tmp}/pg-hooks-transient.XXXXXX") || transient=""
     if [[ -n $transient ]]; then
@@ -602,13 +602,14 @@ cmd_run() {
   "$prek" "${args[@]}" || rc=$?
   pgh_progress_stop
   if [[ -n $transient ]]; then
-    local reason=""
+    local reason="" extra=0
     if ((rc != 0)) && [[ -s $transient ]]; then
       reason=$(head -n 1 "$transient")
+      extra=$(($(wc -l <"$transient") - 1))
     fi
     rm -f "$transient"
     if [[ -n $reason ]]; then
-      printf 'pg-hooks: %s hooks stopped by host load (%s); retry later\n' "$stage" "$reason" >&2
+      pgh_report_transient "$stage" "$reason" "$extra"
       return 75
     fi
   fi
@@ -617,6 +618,29 @@ cmd_run() {
     return "$PGH_FAILED"
   fi
   return 0
+}
+
+# Prints the stderr message for a transient stop. $2 is line 1 of the transient
+# file: TAB separated token and details (see pg-test-runner); $3 counts further
+# lines. States only what is known: a timeout or no free slot, never a cause.
+pgh_report_transient() {
+  local stage=$1 line=$2 more=$3 token path a b msg
+  IFS=$'\t' read -r token path a b <<<"$line"
+  case $token in
+  runner-cap)
+    msg="project $path exceeded its ${a}s test cap ($b); retry, or raise the cap"
+    ;;
+  runner-no-slot)
+    msg="all runner slots were busy for ${a}s (maxConcurrentRuns=$b), so project $path was not run; retry later"
+    ;;
+  *)
+    msg="transient stop ($line); retry later"
+    ;;
+  esac
+  if ((more > 0)); then
+    msg="$msg (and $more more stopped project(s))"
+  fi
+  printf 'pg-hooks: %s hooks stopped: %s\n' "$stage" "$msg" >&2
 }
 
 # --- fix ---------------------------------------------------------------------

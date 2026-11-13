@@ -198,7 +198,7 @@ bundle exits 12. `explain` of an unknown stage exits 2.
   `pgii-integrate-branch.primaryBranch`. A rev that does not resolve exits 2, as does `--base`
   without a value or on a stage other than `pre-land`. `pg-hooks` never reads
   `PG_GIT_LANDER_TARGET_TIP`; the caller passes the value.
-- Exit 75: the test runner hit its time cap or found no free slot (host load, transient). `pg-hooks`
+- Exit 75: transient stop (a test timeout or no free runner slot). `pg-hooks`
   sets `PG_TEST_RUNNER_TRANSIENT_FILE` for `pre-land` only, so the commit-time hook keeps the runner's
   fail-open behavior and exit 10.
 - `pre-land` does not take `--all-files` (exit 2).
