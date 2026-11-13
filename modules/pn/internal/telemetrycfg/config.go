@@ -64,6 +64,8 @@ type FileConfig struct {
 	Enabled     *bool  `toml:"enabled"`
 	Endpoint    string `toml:"endpoint"`
 	WrapperPath string `toml:"wrapper_path"`
+	// SpoolDir is the optional spool directory (must be absolute).
+	SpoolDir string `toml:"spool_dir"`
 }
 
 // FilePath returns the telemetry.toml path: ${XDG_CONFIG_HOME:-$HOME/.config}/pn/telemetry.toml.
@@ -105,6 +107,7 @@ func LoadFile(path string) (FileConfig, error) {
 type Flags struct {
 	NoTelemetry bool   // --no-telemetry
 	Endpoint    string // --otlp-endpoint URL
+	SpoolDir    string // --otel-spool-dir DIR
 	Verbose     bool   // -v / --verbose
 }
 

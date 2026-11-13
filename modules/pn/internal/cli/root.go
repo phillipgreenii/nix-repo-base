@@ -140,6 +140,7 @@ func addTelemetryFlags(root *cobra.Command) {
 	pf := root.PersistentFlags()
 	pf.Bool("no-telemetry", false, "disable OpenTelemetry export for this run (also: PG_NIX_LOG_DISABLE=1, OTEL_SDK_DISABLED=true)")
 	pf.String("otlp-endpoint", "", "OTLP/HTTP collector endpoint for this run (overrides OTEL_EXPORTER_OTLP_ENDPOINT and ~/.config/pn/telemetry.toml)")
+	pf.String("otel-spool-dir", "", "absolute directory for the OpenTelemetry file spool for this run (overrides telemetry.toml spool_dir; an explicit opt-in beats enabled = false)")
 	pf.BoolP("verbose", "v", false, "verbose diagnostics: print the trace id hint and telemetry reachability notes on stderr")
 }
 

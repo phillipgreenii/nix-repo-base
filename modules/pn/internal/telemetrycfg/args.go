@@ -31,6 +31,13 @@ func ScanArgs(args []string) Flags {
 				f.Endpoint = args[i+1]
 				i++
 			}
+		case a == "--otel-spool-dir":
+			if i+1 < len(args) {
+				f.SpoolDir = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(a, "--otel-spool-dir="):
+			f.SpoolDir = strings.TrimPrefix(a, "--otel-spool-dir=")
 		case strings.HasPrefix(a, "--otlp-endpoint="):
 			f.Endpoint = strings.TrimPrefix(a, "--otlp-endpoint=")
 		}
