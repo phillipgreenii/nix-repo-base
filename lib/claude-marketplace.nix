@@ -103,6 +103,10 @@ let
         pkgs.runCommand "claude-plugin-${pluginName}"
           {
             nativeBuildInputs = [ pkgs.jq ];
+            # pkgs.bash in buildInputs puts it on HOST_PATH, which patchShebangs
+            # resolves `#!/usr/bin/env bash` through (independent of stdenv's
+            # initialPath / strictDeps).
+            buildInputs = [ pkgs.bash ];
             passthru = {
               inherit
                 pluginName
@@ -120,6 +124,7 @@ let
             jq --arg v ${lib.escapeShellArg version} '.version = $v' \
               "$out/.claude-plugin/plugin.json" > "$out/.claude-plugin/plugin.json.tmp"
             mv "$out/.claude-plugin/plugin.json.tmp" "$out/.claude-plugin/plugin.json"
+            patchShebangs "$out"
           '';
     in
     drv;
@@ -224,6 +229,7 @@ let
     pkgs.runCommand "claude-marketplace-${manifest.name}"
       {
         nativeBuildInputs = [ pkgs.jq ];
+        buildInputs = [ pkgs.bash ];
         passthru = {
           inherit marketplaceName;
           plugins = map (info: {
@@ -242,6 +248,7 @@ let
         mkdir -p "$out/.claude-plugin"
         cp ${manifestFile} "$out/.claude-plugin/marketplace.json"
         ${copySteps}
+        patchShebangs "$out"
       '';
 
   # mkDirectoryMarketplaceSettings — pure helper producing the declarative
@@ -647,7 +654,7 @@ let
       routerConfigFile = pkgs.writeText "router-config.json" (builtins.toJSON routerConfig);
       mcpJsonFile = pkgs.writeText ".mcp.json" (builtins.toJSON { mcpServers = mcpServersOut; });
     in
-    pkgs.runCommand "claude-hook-router-plugin-${name}" { } ''
+    pkgs.runCommand "claude-hook-router-plugin-${name}" { buildInputs = [ pkgs.bash ]; } ''
       mkdir -p "$out/.claude-plugin"
       cp ${pluginManifestFile} "$out/.claude-plugin/plugin.json"
 
@@ -659,6 +666,9 @@ let
       cp ${mcpJsonFile} "$out/.mcp.json"
 
       ${copySteps}
+
+      # Rewrite `#!/usr/bin/env bash` of the copied executables to the store bash.
+      patchShebangs "$out"
 
       # Real-copy invariant (§1.2/§2.6): no symlink anywhere under $out may
       # resolve outside $out — every copy above already dereferences, this is

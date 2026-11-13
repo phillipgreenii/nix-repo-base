@@ -35,6 +35,11 @@ collide with a hand-`add`ed one, and so the registration key, manifest name, and
   helper producing the `settings.json` fragment (`extraKnownMarketplaces`
   directory source + `enabledPlugins` + `plugins`).
 
+Built scripts have store-bash shebangs: all three bundling builders (including
+`mkClaudeHookRouterPlugin`) run `patchShebangs "$out"` with `pkgs.bash` in
+`buildInputs`, rewriting `#!/usr/bin/env bash` in executable files so each run
+avoids an extra `/usr/bin/env` process launch. Sources are not edited.
+
 The factory takes **no `self`**: versions are content-derived, never repo-rev
 (ADR-0006). The per-plugin digest is `mkSrcDigest (builtins.path { path = <plugin>; … })`
 — content-addressed, so it changes iff that plugin's content changes and is

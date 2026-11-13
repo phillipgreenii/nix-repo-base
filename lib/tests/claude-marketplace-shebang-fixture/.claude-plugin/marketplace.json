@@ -1,0 +1,14 @@
+{
+  "name": "shebang-fixture",
+  "owner": {
+    "name": "phillipgreenii"
+  },
+  "description": "Fixture marketplace proving the builders rewrite script shebangs",
+  "plugins": [
+    {
+      "name": "shebang-plug",
+      "source": "./shebang-plug",
+      "description": "Plugin carrying executable scripts with env shebangs"
+    }
+  ]
+}

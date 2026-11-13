@@ -114,6 +114,14 @@ the manifest or invent a `-<digest>` fallback.
    };
    ```
 
+   **Built scripts have store-bash shebangs.** `mkClaudePlugin`, `mkClaudeMarketplace`
+   and `mkClaudeHookRouterPlugin` run `patchShebangs` over their output, so every
+   executable script carrying `#!/usr/bin/env bash` is rewritten to the store bash
+   (each run then skips the `/usr/bin/env` launch). Other interpreters (for example
+   `#!/usr/bin/env python3`) and non-executable files are left unchanged. Do not edit
+   the source shebangs: a source cannot name a store path, and tests run the source
+   tree. The check `claude-marketplace-shebang` covers this.
+
 3. **The source `marketplace.json` keeps the bare repo name**, so a direct/manual
    install via `claude plugin marketplace add <repo>` still works — distinct from
    (and non-colliding with) the `-local` nix variant.

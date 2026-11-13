@@ -766,6 +766,87 @@
                   "echo ${pkgs.lib.escapeShellArg (builtins.toJSON failures)} >&2; exit 1"
               );
 
+            # Builds a fixture with executable scripts through all three marketplace
+            # builders and asserts the bash scripts get a store-bash shebang (so each
+            # run skips the /usr/bin/env hop), a non-bash shebang is untouched, exec
+            # bits survive, and plugin.json / version stamps are unaffected. A plain
+            # `cp -r` of the fixture is the negative control (keeps the env shebangs).
+            claude-marketplace-shebang =
+              let
+                builders = mkClaudeMarketplaceBuilders { inherit pkgs lib; };
+                fixtureRoot = ./lib/tests/claude-marketplace-shebang-fixture;
+                pluginSrc = fixtureRoot + "/shebang-plug";
+                plugin = builders.mkClaudePlugin { src = pluginSrc; };
+                marketplace = builders.mkClaudeMarketplace { src = fixtureRoot; };
+                routerPlugin = builders.mkClaudeHookRouterPlugin {
+                  name = "shebang-router";
+                  declared = "0.0.0";
+                  sources = [
+                    {
+                      name = "shebang-plug";
+                      src = pluginSrc;
+                      includeSkills = true;
+                    }
+                  ];
+                };
+                marketplacePlugin = builtins.head marketplace.plugins;
+              in
+              pkgs.runCommand "check-claude-marketplace-shebang" { nativeBuildInputs = [ pkgs.jq ]; } ''
+                fail() { echo "FAIL: $*" >&2; exit 1; }
+
+                # assert_rewritten <dir>: run.sh -> store bash, tool.py untouched, both +x
+                assert_rewritten() {
+                  d="$1"; label="$2"
+                  first=$(head -n1 "$d/run.sh")
+                  case "$first" in
+                    "#!/nix/store/"*/bin/bash) ;;
+                    *) fail "$label: run.sh shebang not store bash: $first" ;;
+                  esac
+                  [ "$(head -n1 "$d/tool.py")" = "#!/usr/bin/env python3" ] \
+                    || fail "$label: tool.py shebang changed: $(head -n1 "$d/tool.py")"
+                  [ -x "$d/run.sh" ] || fail "$label: run.sh lost its exec bit"
+                  [ -x "$d/tool.py" ] || fail "$label: tool.py lost its exec bit"
+                  echo "ok: $label"
+                }
+
+                # Negative control: an unpatched copy keeps env shebangs, so the
+                # assertions above cannot pass vacuously.
+                mkdir control
+                cp -r ${pluginSrc}/. control/
+                [ "$(head -n1 control/scripts/run.sh)" = "#!/usr/bin/env bash" ] \
+                  || fail "negative control: plain copy did not keep env bash shebang"
+                [ "$(head -n1 control/scripts/tool.py)" = "#!/usr/bin/env python3" ] \
+                  || fail "negative control: plain copy changed tool.py shebang"
+                if ( assert_rewritten control/scripts control ) 2>/dev/null; then
+                  fail "negative control: assert_rewritten accepted an unpatched copy"
+                fi
+
+                assert_rewritten ${plugin}/scripts mkClaudePlugin-scripts
+                assert_rewritten ${plugin}/skills/demo/scripts mkClaudePlugin-skill-scripts
+                assert_rewritten ${marketplace}/shebang-plug/scripts mkClaudeMarketplace-scripts
+                assert_rewritten ${marketplace}/shebang-plug/skills/demo/scripts mkClaudeMarketplace-skill-scripts
+                assert_rewritten ${routerPlugin}/skills/shebang-plug/demo/scripts mkClaudeHookRouterPlugin-skill-scripts
+
+                # plugin.json is byte-identical to the version-stamped source manifest.
+                check_manifest() {
+                  jq --arg v ${pkgs.lib.escapeShellArg marketplacePlugin.version} '.version = $v' \
+                    ${pluginSrc}/.claude-plugin/plugin.json > expected.json
+                  cmp expected.json "$1" || fail "$2: plugin.json differs from stamped source"
+                }
+                check_manifest ${plugin}/.claude-plugin/plugin.json mkClaudePlugin
+                check_manifest ${marketplace}/shebang-plug/.claude-plugin/plugin.json mkClaudeMarketplace
+
+                # Version stamps: content-based and identical across builders.
+                [ ${pkgs.lib.escapeShellArg plugin.version} = ${pkgs.lib.escapeShellArg marketplacePlugin.version} ] \
+                  || fail "plugin and marketplace stamps disagree"
+                case ${pkgs.lib.escapeShellArg plugin.version} in
+                  1.0.0+*) ;;
+                  *) fail "unexpected stamp form" ;;
+                esac
+
+                touch $out
+              '';
+
             # A2 (ADR 0071, bead tc-rjzd3.3): pure-eval unit tests for
             # mkClaudeHookRouterPlugin (lib/claude-marketplace.nix), covering what is
             # provable without realizing a derivation -- see
