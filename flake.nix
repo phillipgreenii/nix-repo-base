@@ -2172,6 +2172,12 @@
                     lib.hasInfix "github.com/spf13/pflag" cacheEnv.buildPhase;
                   "populate step is re-run as a hard gate (no silent empty cache)" =
                     lib.hasInfix "go build -mod=vendor cache.go" cacheEnv.postBuild;
+                  "populate step is bounded: preBuild exports GOFLAGS -p from NIX_BUILD_CORES" =
+                    lib.hasInfix "NIX_BUILD_CORES" cacheEnv.preBuild && lib.hasInfix " -p=$_pg_cores" cacheEnv.preBuild;
+                  "the -p bound is fail-open when NIX_BUILD_CORES is unset" =
+                    lib.hasInfix "NIX_BUILD_CORES:-2" cacheEnv.preBuild;
+                  "mkGoTest bounds go test with -p from NIX_BUILD_CORES" =
+                    lib.hasInfix "NIX_BUILD_CORES" test.buildPhase && lib.hasInfix " -p=" test.buildPhase;
                   "mkGoLint builds no cache env" = lint.goCacheDir == "" && lint.disableGoCache == true;
                   "mkGoTest builds no cache env" = test.goCacheDir == "" && test.disableGoCache == true;
                 };
