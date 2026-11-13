@@ -157,3 +157,21 @@ func TestStoreDeepClean_NonInteractiveRefused(t *testing.T) {
 		t.Errorf("refusal should mention --yes; got %v", err)
 	}
 }
+
+// TestStoreDeepClean_HelpDocumentsOptimiseGate guards that --optimise, --force
+// and the idle gate are documented in `pn store deepclean --help`.
+func TestStoreDeepClean_HelpDocumentsOptimiseGate(t *testing.T) {
+	root := newRootCmd("1.0.0")
+	root.SetArgs([]string{"store", "deepclean", "--help"})
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"--optimise", "--force", "AC power", "load average", "75", "optimise_min_free_gb", "taskpolicy -b"} {
+		if !strings.Contains(buf.String(), k) {
+			t.Errorf("deepclean --help missing %q", k)
+		}
+	}
+}

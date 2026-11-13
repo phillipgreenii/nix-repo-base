@@ -258,41 +258,6 @@ func TestDeepClean_LiveRunsSudoGC(t *testing.T) {
 	}
 }
 
-// TestDeepClean_LiveRunsStoreOptimiseAfterGC verifies the live run hard-links
-// duplicate store files via `nix store optimise` AFTER the GC (so it only dedups
-// surviving paths), streaming progress to out. This is the batched replacement
-// for auto-optimise-store, which was disabled so flake-update fetches stay fast.
-func TestDeepClean_LiveRunsStoreOptimiseAfterGC(t *testing.T) {
-	env, f := deepcleanFixture(t, true)
-	var buf, errBuf bytes.Buffer
-	s := NewWithEnv(f, env)
-	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
-		DryRun: false, KeepSince: "0d", Keep: 0,
-	}); err != nil {
-		t.Fatalf("DeepClean: %v", err)
-	}
-	calls := f.Calls()
-	gcIdx, optIdx := -1, -1
-	for i := range calls {
-		c := calls[i]
-		if c.Name == "sudo" && len(c.Args) == 2 && c.Args[0] == "nix-store" && c.Args[1] == "--gc" {
-			gcIdx = i
-		}
-		if c.Name == "nix" && len(c.Args) == 2 && c.Args[0] == "store" && c.Args[1] == "optimise" {
-			optIdx = i
-			if c.Opts.Stdout == nil {
-				t.Error("optimise call must stream (Opts.Stdout != nil)")
-			}
-		}
-	}
-	if optIdx == -1 {
-		t.Fatal("live run must call `nix store optimise`")
-	}
-	if gcIdx == -1 || optIdx < gcIdx {
-		t.Errorf("optimise (idx %d) must run after gc (idx %d)", optIdx, gcIdx)
-	}
-}
-
 // ─── 6. TestDeepClean_RemovesResultSymlinks ─────────────────────────────────────
 
 func TestDeepClean_RemovesResultSymlinks(t *testing.T) {
@@ -784,7 +749,6 @@ func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 		want := "" +
 			"=== Summary ===\n" +
 			"Store before: 12.0 GiB\n" +
-			"Optimising store (hard-linking duplicate files)...\n" +
 			"Store after:  8.0 GiB\n" +
 			"\n" +
 			"Pruned generations:\n" +

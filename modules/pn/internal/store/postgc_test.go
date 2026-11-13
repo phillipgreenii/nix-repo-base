@@ -172,9 +172,8 @@ post_gc_commands = [["bad-tool", "--x"], ["good-tool"]]
 	gc := callIndex(calls, "sudo", "nix-store", "--gc")
 	bad := callIndex(calls, "bad-tool", "--x")
 	good := callIndex(calls, "good-tool")
-	opt := callIndex(calls, "nix", "store", "optimise")
-	if gc < 0 || bad <= gc || good <= bad || opt <= good {
-		t.Errorf("want gc < bad-tool < good-tool < optimise, got gc=%d bad=%d good=%d opt=%d", gc, bad, good, opt)
+	if gc < 0 || bad <= gc || good <= bad {
+		t.Errorf("want gc < bad-tool < good-tool, got gc=%d bad=%d good=%d", gc, bad, good)
 	}
 	if _, statErr := os.Lstat(dir); !os.IsNotExist(statErr) {
 		t.Error("dirs are cleared before commands and must be gone")

@@ -11,6 +11,7 @@ type Env struct {
 	Home          string // $HOME
 	XDGConfigHome string // $XDG_CONFIG_HOME (may be empty)
 	TMPDIR        string // $TMPDIR (may be empty → /tmp)
+	NixStoreDir   string // nix store dir for .links counting (empty → /nix/store)
 }
 
 // RealEnv reads the ambient environment.

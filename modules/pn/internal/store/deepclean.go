@@ -26,6 +26,12 @@ type DeepCleanOptions struct {
 	// default". 0 disables count protection (only the current generation is
 	// always kept).
 	Keep int
+	// Optimise runs the `nix store optimise` step after the GC. Default off:
+	// the step is not incremental and can take hours on a large store.
+	Optimise bool
+	// Force skips the idle gate (AC power, load below MaxIdleLoad) of the
+	// optimise step. The free-space prerequisite is never skipped.
+	Force bool
 }
 
 // keepSinceWeeksRE / keepSinceDaysRE recognize the two accepted suffixes.
@@ -73,8 +79,9 @@ var prunedCategories = []string{
 
 // DeepClean prunes old profile generations, orphaned standalone home-manager
 // profiles, stale ~/.nix-profiles entries, result symlinks, NH temp roots, and
-// (in non-dry-run mode) runs `sudo nix-store --gc` followed by
-// `nix store optimise`, then reports a summary. Right after the GC it also
+// (in non-dry-run mode) runs `sudo nix-store --gc` followed, only with
+// --optimise and when the idle / free-space gates pass, by `nix store optimise`
+// (niced, background QoS), then reports a summary. Right after the GC it also
 // clears the caches / runs the commands configured as post_gc_clear_dirs /
 // post_gc_commands in store.toml (see postgc.go). It also reports (but never
 // prunes) Flox's on-disk footprint -- Flox has no local generation history
@@ -193,6 +200,9 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 		// prompt here as before (unlike read-only `audit --full`).
 		fmt.Fprintf(out, "%s\n", deadPathsSize(ctx, s.runner, false))
 		s.printPostGCPlan(out, cfg)
+		if opts.Optimise {
+			fmt.Fprintln(out, "Would then run nix store optimise (niced) if the idle gate and free-space check pass.")
+		}
 		return nil
 	}
 
@@ -209,16 +219,18 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	if gcErr != nil {
 		return errors.Join(fmt.Errorf("nix-store --gc: %w", gcErr), wrapPostGC(postErr))
 	}
-	// Hard-link duplicate files in the surviving store paths. Runs AFTER the GC
-	// so it never optimises paths that are about to be deleted. This is the
-	// batched replacement for auto-optimise-store (disabled in nix-settings.nix):
-	// optimising per-fetch stalled `pn workspace update` on the "copying to the
-	// store" phase, so it is deferred to this deliberate cleanup instead. No
-	// sudo: in a multi-user (daemon) install the nix-daemon performs the
-	// privileged hard-linking on the caller's behalf.
-	fmt.Fprintln(out, "Optimising store (hard-linking duplicate files)...")
-	if _, err := s.runner.Run(ctx, "nix", []string{"store", "optimise"}, exec.RunOptions{Stdout: out, Stderr: out}); err != nil {
-		return errors.Join(fmt.Errorf("nix store optimise: %w", err), wrapPostGC(postErr))
+	// Optional, gated optimise step: hard-links duplicate files in the
+	// surviving store paths. Runs AFTER the GC so it never optimises paths about
+	// to be deleted. Opt-in (--optimise) because it is not incremental: it walks
+	// and hashes every file in the store. auto-optimise-store stays disabled
+	// (optimising per-fetch stalled `pn workspace update` on "copying to the
+	// store"). No sudo: the nix-daemon does the privileged hard-linking.
+	var optErr error
+	if opts.Optimise {
+		optErr = s.optimiseStep(ctx, out, cfg, opts.Force)
+		if optErr != nil && !IsOptimiseSkipped(optErr) {
+			return errors.Join(optErr, wrapPostGC(postErr))
+		}
 	}
 	fmt.Fprintf(out, "Store after:  %s\n", storeSize(ctx, s.runner))
 	fmt.Fprintln(out)
@@ -229,7 +241,13 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	if summary := runtimeRootsSummary(ctx, s.runner); summary != "" {
 		fmt.Fprintln(out, summary)
 	}
-	return wrapPostGC(postErr)
+	// A skipped optimise step ends the run with its distinct exit code, after
+	// everything else (GC, summary) was done. A post-GC failure is a real failure
+	// and takes precedence over the skip.
+	if postErr != nil {
+		return wrapPostGC(postErr)
+	}
+	return optErr
 }
 
 // wrapPostGC labels a post-GC step failure (nil stays nil).

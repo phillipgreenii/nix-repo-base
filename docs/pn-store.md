@@ -3,20 +3,21 @@
 `pn store` audits and reclaims space in the local Nix store. It has two commands:
 
 - `pn store audit` — read-only report of profile generations, closure sizes, and store volume usage.
-- `pn store deepclean` — prunes old generations and stale GC roots, garbage-collects, then optimises (hard-links duplicate files in) the store.
+- `pn store deepclean` — prunes old generations and stale GC roots, garbage-collects, then, only with `--optimise`, optimises (hard-links duplicate files in) the store.
 
 > Versioning and `--help` are owned by cobra: use `pn --version` and `pn store <cmd> --help`.
 > There are no per-subcommand version flags.
 
 ## Configuration — `~/.config/pn/store.toml`
 
-| Key                  | Type         | Default | Meaning                                                                                                                                      |
-| -------------------- | ------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search_dirs`        | `[string]`   | `[]`    | Roots scanned for devbox project profiles and `result` symlinks. Use absolute paths.                                                         |
-| `keep_days`          | `int`        | `14`    | Time-based retention: generations newer than this are protected from pruning.                                                                |
-| `keep_count`         | `int`        | `3`     | Count-based retention: the N most recent generations are protected from pruning.                                                             |
-| `post_gc_clear_dirs` | `[string]`   | `[]`    | Directories removed (`rm -rf`) right after the GC (`deepclean` only). `~/` expands to `$HOME`; otherwise absolute. A missing dir is skipped. |
-| `post_gc_commands`   | `[[string]]` | `[]`    | Argv-form commands run, in order, after the GC and after `post_gc_clear_dirs`.                                                               |
+| Key                    | Type         | Default | Meaning                                                                                                                                      |
+| ---------------------- | ------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_dirs`          | `[string]`   | `[]`    | Roots scanned for devbox project profiles and `result` symlinks. Use absolute paths.                                                         |
+| `keep_days`            | `int`        | `14`    | Time-based retention: generations newer than this are protected from pruning.                                                                |
+| `keep_count`           | `int`        | `3`     | Count-based retention: the N most recent generations are protected from pruning.                                                             |
+| `optimise_min_free_gb` | `int`        | `10`    | Free GiB `/nix` must have before `deepclean --optimise` starts its optimise step (`deepclean` only).                                         |
+| `post_gc_clear_dirs`   | `[string]`   | `[]`    | Directories removed (`rm -rf`) right after the GC (`deepclean` only). `~/` expands to `$HOME`; otherwise absolute. A missing dir is skipped. |
+| `post_gc_commands`     | `[[string]]` | `[]`    | Argv-form commands run, in order, after the GC and after `post_gc_clear_dirs`.                                                               |
 
 A missing file or missing key falls back to the defaults above. Example:
 
@@ -85,7 +86,7 @@ Emits these sections, in order:
 ## `pn store deepclean`
 
 ```
-pn store deepclean [--dry-run] [--keep-since <Nd|Nw>] [--keep <N>]
+pn store deepclean [--dry-run] [--keep-since <Nd|Nw>] [--keep <N>] [--optimise [--force]]
 ```
 
 | Flag                    | Default             | Meaning                                                                                |
@@ -93,6 +94,8 @@ pn store deepclean [--dry-run] [--keep-since <Nd|Nw>] [--keep <N>]
 | `--dry-run`             | off                 | Show what would be cleaned; perform no deletes and no GC.                              |
 | `--keep-since <Nd\|Nw>` | config `keep_days`  | Time retention. `<N>d` days or `<N>w` weeks (×7). `0d` disables time protection.       |
 | `--keep <N>`            | config `keep_count` | Count retention. `0` disables count protection. The current generation is always kept. |
+| `--optimise`            | off                 | After the GC, run `nix store optimise` (idle-gated, niced; see below).                 |
+| `--force`               | off                 | With `--optimise`: skip the idle gate. The free-space check still applies.             |
 
 It processes these sections, in order, pruning per the retention rule above:
 
@@ -127,13 +130,36 @@ It processes these sections, in order, pruning per the retention rule above:
 Then a `Summary`:
 
 - **Dry run:** `DRY RUN — no changes made`, per-category `Would prune` counts, and a `Reclaimable estimate (dead paths)`.
-- **Live:** `Store before:`, the live-streamed `sudo nix-store --gc` output, an
-  `Optimising store (hard-linking duplicate files)...` line followed by the live-streamed
-  `nix store optimise` output, `Store after:`, per-category `Pruned generations:` counts, and a
-  `Runtime Roots` summary (store paths held only by running processes — restarting apps and
-  re-running may free more). Optimise runs **after** GC so it never optimises soon-to-be-deleted
-  paths, and is the batched replacement for `auto-optimise-store` (disabled so flake-update fetches
-  stay fast).
+- **Live:** `Store before:`, the live-streamed `sudo nix-store --gc` output, `Store after:`,
+  per-category `Pruned generations:` counts, and a `Runtime Roots` summary (store paths held only
+  by running processes — restarting apps and re-running may free more). With `--optimise`, the
+  optimise step's output sits between the GC and `Store after:`.
+
+### The optimise step (`--optimise`)
+
+`nix store optimise` is not incremental: it walks every store path, reads and hashes every regular
+file, and looks each up in `.links/<hash>`. On a 427 GB store with about 454,000 `.links` entries
+it ran for over 3.5 hours under host load. It is therefore **off by default**; a plain
+`pn store deepclean` does the GC only. With `--optimise` it runs after the GC (so it never
+optimises paths about to be deleted), subject to these rules:
+
+- **Idle gate** — skipped, with a message and exit status `75` (not a failure), unless the machine
+  is on AC power (`pmset -g batt`) and the 1-minute load average (`sysctl -n vm.loadavg`) is below 4. A signal that cannot be read counts as not idle. `--force` skips this gate.
+- **Free-space check** — refused, with a message and exit status `75`, when `/nix` has less than
+  `optimise_min_free_gb` GiB free (default 10; a `store.toml` key). `--force` does not skip it: a
+  full volume makes GC and optimise slow and risky.
+- **Priority** — runs as `nice -n 10 taskpolicy -b nix store optimise` (`taskpolicy` on macOS
+  only): background QoS suits a long batch job nobody waits on.
+- **Progress** — prints the start time, elapsed time and `.links` entry count at the start and at
+  the end, so a later run can estimate cost. It does not print a percentage: nix cannot report one.
+
+A skipped optimise still lets the GC, post-GC cleanup and summary finish; only the exit status
+(`75`) differs. A post-GC failure takes precedence (exit `1`).
+
+`auto-optimise-store` stays `false` (optimising per fetch stalled `pn workspace update` on
+"copying to the store"), and `nix.optimise.automatic` MUST NOT be used (it creates a raw launchd
+entry that runs at a time pn cannot gate). To schedule the step, register a weekly job running
+`pn store deepclean --yes --optimise` through the workspace launchd-services mechanism.
 
 ## User journeys
 

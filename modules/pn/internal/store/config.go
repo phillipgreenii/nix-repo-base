@@ -20,18 +20,24 @@ type Config struct {
 	// after PostGCClearDirs. A failing command is reported but does not stop
 	// the remaining ones.
 	PostGCCommands [][]string
+	// OptimiseMinFreeGB is the free space /nix must have before the optional
+	// optimise step starts (default 10).
+	OptimiseMinFreeGB int
 }
 
 type rawConfig struct {
-	SearchDirs      []string   `toml:"search_dirs"`
-	KeepDays        *int       `toml:"keep_days"`
-	KeepCount       *int       `toml:"keep_count"`
-	PostGCClearDirs []string   `toml:"post_gc_clear_dirs"`
-	PostGCCommands  [][]string `toml:"post_gc_commands"`
+	SearchDirs        []string   `toml:"search_dirs"`
+	KeepDays          *int       `toml:"keep_days"`
+	KeepCount         *int       `toml:"keep_count"`
+	PostGCClearDirs   []string   `toml:"post_gc_clear_dirs"`
+	PostGCCommands    [][]string `toml:"post_gc_commands"`
+	OptimiseMinFreeGB *int       `toml:"optimise_min_free_gb"`
 }
 
 // defaultConfig returns the built-in defaults (14d / 3 / no search dirs).
-func defaultConfig() Config { return Config{KeepDays: 14, KeepCount: 3} }
+func defaultConfig() Config {
+	return Config{KeepDays: 14, KeepCount: 3, OptimiseMinFreeGB: DefaultOptimiseMinFreeGB}
+}
 
 // parseStoreConfig parses store.toml bytes, applying defaults for absent keys.
 // Malformed TOML falls back to defaults (best-effort, matching the bash which
@@ -51,6 +57,9 @@ func parseStoreConfig(data []byte) Config {
 	}
 	if raw.KeepCount != nil {
 		c.KeepCount = *raw.KeepCount
+	}
+	if raw.OptimiseMinFreeGB != nil {
+		c.OptimiseMinFreeGB = *raw.OptimiseMinFreeGB
 	}
 	return c
 }

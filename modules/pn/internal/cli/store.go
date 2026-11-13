@@ -72,7 +72,7 @@ func addStoreCmd(parent *cobra.Command) {
 
 Subcommands:
   audit      Read-only report of profile generations, closure sizes, and store usage.
-  deepclean  Prune old generations and stale GC roots, garbage-collect, then optimise the store.
+  deepclean  Prune old generations and stale GC roots, garbage-collect (optionally optimise: --optimise).
 
 Configuration lives in ~/.config/pn/store.toml (search_dirs, keep_days, keep_count,
 post_gc_clear_dirs, post_gc_commands).
@@ -121,6 +121,7 @@ func storeDeepCleanCmd() *cobra.Command {
 	var yes bool
 	var keepSince string
 	var keep int
+	var optimise, force bool
 	cmd := &cobra.Command{
 		Use:   "deepclean",
 		Short: "Aggressive nix store cleanup",
@@ -138,16 +139,26 @@ environment's current build is already its own GC root). Separately prunes
 orphaned Flox activation staging directories under ~/.cache/flox/process/
 (only once confirmed empty and older than --keep-since).
 
-After pruning it runs 'sudo nix-store --gc' then 'nix store optimise' (hard-links
-duplicate files; this is the batched replacement for auto-optimise-store, which
-is disabled so flake-update fetches stay fast).
+After pruning it runs 'sudo nix-store --gc'. The optimise step ('nix store
+optimise', which hard-links duplicate files) is OFF by default: it is not
+incremental, it walks and hashes every file in the store and can take hours.
+Pass --optimise to run it after the GC. It then:
+  - skips (exit status 75, not a failure) unless the machine is on AC power and
+    the 1-minute load average is below 4; --force skips this idle gate;
+  - refuses (exit status 75) when /nix has less than optimise_min_free_gb
+    (default 10) GiB free, even with --force;
+  - runs under 'nice -n 10' and (macOS) 'taskpolicy -b', printing the start
+    time, elapsed time and .links entry count at start and end (no percentage:
+    nix cannot report one).
+This is the batched replacement for auto-optimise-store, which is disabled so
+flake-update fetches stay fast.
 
 Right after the GC it runs the post-GC step configured in ~/.config/pn/store.toml,
 for caches whose binaries may link to store paths the GC just deleted:
   post_gc_clear_dirs = ["~/.cache/some-binary-cache"]   # dirs removed (rm -rf); "~/" expands to $HOME,
                                                         # otherwise absolute; a missing dir is skipped
   post_gc_commands   = [["some-tool", "--clear"]]       # argv-form commands run after the dirs
-A failing entry is reported and does not stop the others (nor 'nix store optimise'),
+A failing entry is reported and does not stop the others (nor the optimise step),
 but makes deepclean exit non-zero. The step also runs if the GC itself fails, and
 --dry-run only lists what would run. Neither key is set by default.
 
@@ -162,17 +173,23 @@ could be freed by restarting applications).`,
 			if !proceed {
 				return nil
 			}
-			return store.New(exec.NewRealRunner()).DeepClean(
+			err = store.New(exec.NewRealRunner()).DeepClean(
 				cmd.Context(),
 				cmd.OutOrStdout(),
 				cmd.ErrOrStderr(),
-				store.DeepCleanOptions{DryRun: dryRun, KeepSince: keepSince, Keep: keep},
+				store.DeepCleanOptions{DryRun: dryRun, KeepSince: keepSince, Keep: keep, Optimise: optimise, Force: force},
 			)
+			if store.IsOptimiseSkipped(err) {
+				return ExitCodeError{Code: store.OptimiseSkippedExitCode, Msg: err.Error()}
+			}
+			return err
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be cleaned without deleting")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the confirmation prompt (required for non-interactive/scripted use)")
 	cmd.Flags().StringVar(&keepSince, "keep-since", "", "Keep generations newer than this (e.g. 14d, 2w)")
 	cmd.Flags().IntVar(&keep, "keep", -1, "Keep N most recent generations (-1 = config default)")
+	cmd.Flags().BoolVar(&optimise, "optimise", false, "After the GC, also run the idle-gated, niced 'nix store optimise' (slow; off by default)")
+	cmd.Flags().BoolVar(&force, "force", false, "With --optimise: skip the idle gate (AC power, 1-minute load below 4); the free-space check still applies")
 	return cmd
 }
