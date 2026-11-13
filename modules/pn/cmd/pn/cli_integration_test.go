@@ -13,7 +13,15 @@ import (
 
 var pnBinary string
 
+// runMainEnv makes the test binary behave as the pn binary built WITHOUT the
+// version ldflags (Version stays "dev"), so a test needs no second go build.
+const runMainEnv = "PN_TEST_RUN_AS_MAIN"
+
 func TestMain(m *testing.M) {
+	if os.Getenv(runMainEnv) == "1" {
+		main()
+		os.Exit(0)
+	}
 	// os.Exit skips deferred functions, so run the suite in a helper whose
 	// deferred temp-dir cleanup actually executes (on both the normal return
 	// and a setup panic) before we exit. Previously the cleanup deferred here
@@ -71,14 +79,15 @@ func TestIntegration_Version(t *testing.T) {
 }
 
 func TestIntegration_RejectsDevVersion(t *testing.T) {
-	tmpDir := t.TempDir()
-	devBinary := filepath.Join(tmpDir, "pn-dev")
-	build := exec.Command("go", "build", "-o", devBinary, ".")
-	build.Env = pnEnv()
-	if err := build.Run(); err != nil {
+	// The test binary is package main with Version left at "dev": re-exec it
+	// as the program instead of paying for a second go build.
+	devBinary, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(devBinary, "--version").CombinedOutput()
+	cmd := exec.Command(devBinary, "--version")
+	cmd.Env = pnEnv(runMainEnv + "=1")
+	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Errorf("expected dev binary to fail; got output %q", string(out))
 	}

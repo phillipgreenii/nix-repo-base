@@ -141,13 +141,25 @@ func TestInstallGate_OldConfigDoesNotSkipTheInstaller(t *testing.T) {
 // generated-config symlink resolved to a file), or "" when there is none.
 func existingNixStoreFile(t *testing.T) string {
 	t.Helper()
-	matches, _ := filepath.Glob("/nix/store/*/*")
-	for _, m := range matches {
-		if fi, err := os.Stat(m); err == nil && fi.Mode().IsRegular() {
-			return m
+	// Read /nix/store in small batches and stop at the first regular entry
+	// (a .drv or a source file): globbing every store path's children takes
+	// seconds on a populated store.
+	d, err := os.Open("/nix/store")
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = d.Close() }()
+	for {
+		ents, err := d.ReadDir(256)
+		for _, e := range ents {
+			if e.Type().IsRegular() {
+				return filepath.Join("/nix/store", e.Name())
+			}
+		}
+		if err != nil {
+			return ""
 		}
 	}
-	return ""
 }
 
 // setWS opens a workspace whose root plays a workforest set: repo "a" is a
