@@ -29,6 +29,10 @@ let
                 default = { };
               };
             };
+            options.warnings = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+            };
             config = {
               _module.args.pkgs = pkgs // {
                 pg-nix-log-wrapped = pkgs.hello;
