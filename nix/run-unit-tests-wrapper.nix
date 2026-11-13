@@ -54,6 +54,19 @@ pkgs.writeShellScript "run-unit-tests" ''
   export PATH="${pkgs.go}/bin:$PATH"
   export GOTOOLCHAIN=local
 
+  # Race detector policy: the commit-time hook runs the suite WITHOUT -race
+  # (a -race run is several times slower and dominated host load), pre-land
+  # keeps it. `pg-hooks run pre-land` is the one caller that sets
+  # PG_TEST_RUNNER_TRANSIENT_FILE, so it selects the race run; an explicit
+  # PG_TEST_RUNNER_RACE from the caller wins.
+  if [[ -z "''${PG_TEST_RUNNER_RACE:-}" ]]; then
+    if [[ -n "''${PG_TEST_RUNNER_TRANSIENT_FILE:-}" ]]; then
+      export PG_TEST_RUNNER_RACE=1
+    else
+      export PG_TEST_RUNNER_RACE=0
+    fi
+  fi
+
   rc=0
   pg-test-runner --config ${configPath} --labels unit --files "$@" || rc=$?
 

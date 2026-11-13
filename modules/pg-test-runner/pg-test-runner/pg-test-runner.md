@@ -80,6 +80,39 @@ else is exit `2`) and `PG_TEST_RUNNER_LOCK_ROOT`. A malformed config value is ex
 }
 ```
 
+## Go parallelism bounds and the run environment
+
+A Go test run otherwise sizes itself to every host CPU and all of host memory, which the slot cap
+does not prevent. The shipped `go` templates therefore pass `-p 4 -parallel 4` (at most 4 package
+builds and 4 parallel tests per package), and the `go` language sets an optional `env` block on its
+test process only:
+
+```json
+{ "name": "go", "env": { "GOMAXPROCS": "4", "GOMEMLIMIT": "2GiB" } }
+```
+
+`env` maps variable names to string values; it is set for that language's runs only (never for
+python, js or bats, and never globally, so Go daemons keep their own limits). A malformed block is
+exit `13`.
+
+## Race detector policy
+
+The unit template spells the race detector as the whole-token placeholder `{race}`. It renders as
+`-race`, except when `PG_TEST_RUNNER_RACE=0`, in which case the token is dropped. With the variable
+unset the race detector stays on (direct and `--all` runs are unchanged). The `run-unit-tests` hook
+wrapper sets it by stage:
+
+| Stage                      | `PG_TEST_RUNNER_RACE` | Go run                    |
+| -------------------------- | --------------------- | ------------------------- |
+| commit-time (`pre-commit`) | `0`                   | `go test` without `-race` |
+| `pg-hooks run pre-land`    | `1`                   | `go test -race`           |
+
+Trade-off: a `-race` run is several times slower and was the largest single contributor to host
+load, so the commit hook skips it; a data race introduced by a commit therefore first surfaces at
+pre-land, not at commit time. The per-project `projectTimeouts` stay as they are (they were
+measured under load with `-race`). A caller that sets `PG_TEST_RUNNER_RACE` itself overrides the
+wrapper.
+
 ## Running several projects at once
 
 `projectConcurrency` (default `1`) is how many projects one pg-test-runner run starts at the same

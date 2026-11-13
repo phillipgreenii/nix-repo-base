@@ -123,7 +123,7 @@ ptr_validate_config() {
     ' "$path" >/dev/null 2>&1 ||
     ptr_die 13 "config languages[].env must be an object mapping variable names to string values: $path"
 
-  local known=(jobs labels label unitExclusion allLabels)
+  local known=(jobs labels label unitExclusion allLabels race)
   local tokens
   tokens="$("$PTR_JQ" -r '
       [ .languages[]? |
@@ -915,6 +915,14 @@ ptr_invoke() {
   cmd=()
   local tok
   for tok in "${raw_tokens[@]}"; do
+    # {race}: a whole-token placeholder for the Go race detector flag. It renders
+    # as `-race` unless PG_TEST_RUNNER_RACE=0, in which case the token is
+    # dropped (not left empty). The commit-time hook sets it to 0 and pre-land
+    # to 1; an unset value keeps the race detector on, the historical behaviour.
+    if [[ $tok == "{race}" ]]; then
+      if [[ ${PG_TEST_RUNNER_RACE:-1} != "0" ]]; then cmd+=("-race"); fi
+      continue
+    fi
     cmd+=("$(ptr_render_token "$tok" "$jobs_val" "$labels_joined" "$label_val" "$unit_excl" "$all_labels")")
   done
 

@@ -204,7 +204,10 @@
         unit = [
           "go"
           "test"
-          "-race"
+          # {race} renders as -race unless PG_TEST_RUNNER_RACE=0 (the
+          # commit-time hook), so races surface at pre-land; see
+          # pg-test-runner.md "Race detector policy".
+          "{race}"
           "-p"
           "4"
           "-parallel"

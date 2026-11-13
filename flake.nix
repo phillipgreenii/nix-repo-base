@@ -2219,6 +2219,8 @@
                 cases = {
                   "go language is registered" = goLang != null;
                   "go unit template carries -p 4 -parallel 4" = bounded goLang.run.unit;
+                  "go unit template spells the race detector as {race}, never a literal -race" =
+                    builtins.elem "{race}" goLang.run.unit && !(builtins.elem "-race" goLang.run.unit);
                   "go labels template carries -p 4 -parallel 4" = bounded goLang.run.labels;
                   "go all template carries -p 4 -parallel 4" = bounded goLang.run.all;
                   "go run env sets GOMAXPROCS=4 and GOMEMLIMIT=2GiB" =

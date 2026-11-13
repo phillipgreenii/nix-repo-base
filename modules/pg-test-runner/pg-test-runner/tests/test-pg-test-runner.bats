@@ -1044,7 +1044,7 @@ _bounded_config() {
       "tools": ["go"],
       "env": { "GOMAXPROCS": "4", "GOMEMLIMIT": "2GiB" },
       "run": {
-        "unit": ["go", "test", "-race", "-p", "4", "-parallel", "4", "./..."],
+        "unit": ["go", "test", "{race}", "-p", "4", "-parallel", "4", "./..."],
         "labels": ["go", "test", "-p", "4", "-parallel", "4", "-tags", "{labels}", "./..."],
         "all": ["go", "test", "-p", "4", "-parallel", "4", "-tags", "{allLabels}", "./..."]
       }
@@ -1124,4 +1124,19 @@ FAKE
   export PG_TEST_RUNNER_CONFIG="$TEST_DIR/bad.json"
   run "$SCRIPT" "$TEST_DIR"
   [ "$status" -eq 13 ]
+}
+
+@test "PG_TEST_RUNNER_RACE=0 drops -race from the go unit run; unset or 1 keeps it" {
+  _bounded_config
+  _fake_recording_tools
+  mkdir -p "$TEST_DIR/repo/.git" "$TEST_DIR/repo/goproj"
+  : >"$TEST_DIR/repo/goproj/go.mod"
+  PG_TEST_RUNNER_RACE=0 run "$SCRIPT" "$TEST_DIR/repo/goproj"
+  [ "$status" -eq 0 ]
+  PG_TEST_RUNNER_RACE=1 run "$SCRIPT" "$TEST_DIR/repo/goproj"
+  [ "$status" -eq 0 ]
+  unset PG_TEST_RUNNER_RACE
+  run "$SCRIPT" "$TEST_DIR/repo/goproj"
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 's/^ARGV=//p' "$TEST_DIR/record-go")" = "$(printf '%s\n' 'test -p 4 -parallel 4 ./...' 'test -race -p 4 -parallel 4 ./...' 'test -race -p 4 -parallel 4 ./...')" ]
 }
