@@ -1022,3 +1022,106 @@ _embed_source() {
   [ "${lines[1]}" = "900" ]
   [ "${lines[2]}" = "300" ]
 }
+
+# --- per-language run environment and Go parallelism bounds ---------------
+
+# A fixture config carrying the SAME go template and env block shape the
+# shipped registry (modules/pg-test-runner/config.nix) uses, plus a second
+# language without an env block. Both tools are fakes on PATH that record
+# their argv and the variables of interest.
+_bounded_config() {
+  cat >"$TEST_DIR/bounded.json" <<'JSON'
+{
+  "version": 1,
+  "jobs": 2,
+  "timeoutSeconds": 60,
+  "ignore": [".git/"],
+  "nonUnitLabels": ["integration"],
+  "languages": [
+    {
+      "name": "go",
+      "markers": ["go.mod"],
+      "tools": ["go"],
+      "env": { "GOMAXPROCS": "4", "GOMEMLIMIT": "2GiB" },
+      "run": {
+        "unit": ["go", "test", "-race", "-p", "4", "-parallel", "4", "./..."],
+        "labels": ["go", "test", "-p", "4", "-parallel", "4", "-tags", "{labels}", "./..."],
+        "all": ["go", "test", "-p", "4", "-parallel", "4", "-tags", "{allLabels}", "./..."]
+      }
+    },
+    {
+      "name": "other",
+      "markers": ["OTHER.marker"],
+      "tools": ["fakeother"],
+      "run": { "unit": ["fakeother", "run"], "labels": ["fakeother", "run"], "all": ["fakeother", "run"] }
+    }
+  ]
+}
+JSON
+  export PG_TEST_RUNNER_CONFIG="$TEST_DIR/bounded.json"
+}
+
+_fake_recording_tools() {
+  mkdir -p "$TEST_DIR/fakebin"
+  for tool in go fakeother; do
+    cat >"$TEST_DIR/fakebin/$tool" <<FAKE
+#!/bin/sh
+{
+  echo "TOOL=$tool"
+  echo "ARGV=\$*"
+  echo "GOMAXPROCS=\${GOMAXPROCS-<unset>}"
+  echo "GOMEMLIMIT=\${GOMEMLIMIT-<unset>}"
+} >>"$TEST_DIR/record-$tool"
+FAKE
+    chmod +x "$TEST_DIR/fakebin/$tool"
+  done
+  export PATH="$TEST_DIR/fakebin:$PATH"
+}
+
+@test "go project run gets -p 4 -parallel 4, GOMAXPROCS=4 and GOMEMLIMIT=2GiB" {
+  _bounded_config
+  _fake_recording_tools
+  mkdir -p "$TEST_DIR/repo/.git" "$TEST_DIR/repo/goproj"
+  : >"$TEST_DIR/repo/goproj/go.mod"
+  unset GOMAXPROCS GOMEMLIMIT
+  run "$SCRIPT" "$TEST_DIR/repo/goproj"
+  [ "$status" -eq 0 ]
+  grep -qx 'ARGV=test -race -p 4 -parallel 4 ./...' "$TEST_DIR/record-go"
+  grep -qx 'GOMAXPROCS=4' "$TEST_DIR/record-go"
+  grep -qx 'GOMEMLIMIT=2GiB' "$TEST_DIR/record-go"
+}
+
+@test "a non-go project run sees neither GOMAXPROCS nor GOMEMLIMIT" {
+  _bounded_config
+  _fake_recording_tools
+  mkdir -p "$TEST_DIR/repo/.git" "$TEST_DIR/repo/otherproj"
+  : >"$TEST_DIR/repo/otherproj/OTHER.marker"
+  unset GOMAXPROCS GOMEMLIMIT
+  run "$SCRIPT" "$TEST_DIR/repo/otherproj"
+  [ "$status" -eq 0 ]
+  [ ! -e "$TEST_DIR/record-go" ]
+  grep -qx 'GOMAXPROCS=<unset>' "$TEST_DIR/record-fakeother"
+  grep -qx 'GOMEMLIMIT=<unset>' "$TEST_DIR/record-fakeother"
+  run grep -c -e '-parallel' "$TEST_DIR/record-fakeother"
+  [ "$output" = "0" ]
+}
+
+@test "the labels and all templates carry the -p/-parallel bound too" {
+  _bounded_config
+  _fake_recording_tools
+  mkdir -p "$TEST_DIR/repo/.git" "$TEST_DIR/repo/goproj"
+  : >"$TEST_DIR/repo/goproj/go.mod"
+  run "$SCRIPT" --labels integration "$TEST_DIR/repo/goproj"
+  [ "$status" -eq 0 ]
+  run "$SCRIPT" --labels all "$TEST_DIR/repo/goproj"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^ARGV=test -p 4 -parallel 4 -tags ' "$TEST_DIR/record-go")" = "2" ]
+}
+
+@test "a malformed languages[].env is a config error (exit 13)" {
+  _bounded_config
+  jq '.languages[0].env = {"GOMAXPROCS": 4}' "$TEST_DIR/bounded.json" >"$TEST_DIR/bad.json"
+  export PG_TEST_RUNNER_CONFIG="$TEST_DIR/bad.json"
+  run "$SCRIPT" "$TEST_DIR"
+  [ "$status" -eq 13 ]
+}

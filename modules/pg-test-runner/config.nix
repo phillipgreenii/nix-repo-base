@@ -187,11 +187,28 @@
         ];
         goEmbed = true;
       };
+      # Per-language run environment (optional `env` object, string values),
+      # set on the test process for THIS language only. A Go test process
+      # otherwise sizes itself to every host CPU and all of host memory: the
+      # 2026-11-12 overload had each `go test` run 11 compile jobs plus 11
+      # GC workers. -p / -parallel (below) bound the build and the per-package
+      # test parallelism; GOMAXPROCS bounds the runtime threads of each test
+      # binary and GOMEMLIMIT makes its GC work harder before it grows. They
+      # live here, not in a global environment, so they never throttle a Go
+      # daemon, and absent for every non-Go language.
+      env = {
+        GOMAXPROCS = "4";
+        GOMEMLIMIT = "2GiB";
+      };
       run = {
         unit = [
           "go"
           "test"
           "-race"
+          "-p"
+          "4"
+          "-parallel"
+          "4"
           "-run"
           "^(Test|Example)"
           "./..."
@@ -202,6 +219,10 @@
         labels = [
           "go"
           "test"
+          "-p"
+          "4"
+          "-parallel"
+          "4"
           "-tags"
           "{labels}"
           "./..."
@@ -213,6 +234,10 @@
         all = [
           "go"
           "test"
+          "-p"
+          "4"
+          "-parallel"
+          "4"
           "-tags"
           "{allLabels}"
           "./..."

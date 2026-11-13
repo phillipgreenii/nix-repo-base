@@ -2194,6 +2194,53 @@
                   ''
               );
 
+            # The shipped pg-test-runner registry bounds Go test parallelism:
+            # every go run template carries -p 4 -parallel 4, and only the go
+            # language sets GOMAXPROCS=4 / GOMEMLIMIT=2GiB (a global value would
+            # throttle Go daemons). Eval-only, over the SAME value the packaged
+            # runner bakes in as its default config.
+            pg-test-runner-go-bound =
+              let
+                cfg = import ./modules/pg-test-runner/config.nix;
+                goLang = lib.findFirst (l: l.name == "go") null cfg.languages;
+                others = builtins.filter (l: l.name != "go") cfg.languages;
+                bounded =
+                  argv:
+                  let
+                    i = lib.lists.findFirstIndex (a: a == "-p") null argv;
+                  in
+                  i != null
+                  && builtins.elemAt argv (i + 1) == "4"
+                  &&
+                    lib.lists.take 2 (lib.lists.drop (i + 2) argv) == [
+                      "-parallel"
+                      "4"
+                    ];
+                cases = {
+                  "go language is registered" = goLang != null;
+                  "go unit template carries -p 4 -parallel 4" = bounded goLang.run.unit;
+                  "go labels template carries -p 4 -parallel 4" = bounded goLang.run.labels;
+                  "go all template carries -p 4 -parallel 4" = bounded goLang.run.all;
+                  "go run env sets GOMAXPROCS=4 and GOMEMLIMIT=2GiB" =
+                    (goLang.env or { }) == {
+                      GOMAXPROCS = "4";
+                      GOMEMLIMIT = "2GiB";
+                    };
+                  "no other language sets a run env" = builtins.all (l: !(l ? env)) others;
+                };
+                failed = builtins.attrNames (lib.filterAttrs (_: ok: !ok) cases);
+              in
+              pkgs.runCommand "check-pg-test-runner-go-bound" { } (
+                if failed == [ ] then
+                  "touch $out"
+                else
+                  ''
+                    echo 'pg-test-runner Go parallelism bound broken. Failed:' >&2
+                    ${lib.concatMapStringsSep "\n" (n: "echo ${lib.escapeShellArg "  - ${n}"} >&2") failed}
+                    exit 1
+                  ''
+              );
+
             # The cache env must actually carry a populated Go build cache. With
             # an empty / all-failed `cachePackages` the tarball is ~100 bytes and
             # every build silently compiles cold; with this fixture's roots

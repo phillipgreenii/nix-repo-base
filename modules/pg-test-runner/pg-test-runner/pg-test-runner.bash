@@ -113,6 +113,16 @@ ptr_validate_config() {
   "$PTR_JQ" -e '(.projectConcurrency // 1) | type == "number" and . >= 1 and . == floor' "$path" >/dev/null 2>&1 ||
     ptr_die 13 "config projectConcurrency must be a positive integer: $path"
 
+  # languages[].env (optional): object of environment variable name -> string
+  # value, set on that language's test process only. A malformed block must
+  # fail loudly, never silently run unthrottled.
+  "$PTR_JQ" -e '
+      all(.languages[]?; (.env // {}) as $e |
+        ($e | type) == "object" and
+        all($e | to_entries[]; (.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) and (.value | type) == "string"))
+    ' "$path" >/dev/null 2>&1 ||
+    ptr_die 13 "config languages[].env must be an object mapping variable names to string values: $path"
+
   local known=(jobs labels label unitExclusion allLabels)
   local tokens
   tokens="$("$PTR_JQ" -r '
@@ -912,7 +922,14 @@ ptr_invoke() {
   # timeout starts, so time spent queued never counts against the project's
   # cap, and before the private TMPDIR exists so a queued run holds no
   # temp dir while it waits. Unset limits (a direct library test) mean no cap and no niceness.
-  local -a nice_prefix=()
+  local -a nice_prefix=() env_prefix=()
+  # Per-language run environment (config languages[].env), passed down from
+  # ptr_execute_one through PTR_RUN_ENV_JSON (a JSON object, "" when none).
+  if [[ -n ${PTR_RUN_ENV_JSON:-} ]]; then
+    local -a env_pairs
+    mapfile -t env_pairs < <("$PTR_JQ" -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$PTR_RUN_ENV_JSON")
+    if [[ ${#env_pairs[@]} -gt 0 ]]; then env_prefix=(env "${env_pairs[@]}"); fi
+  fi
   local slot_wait="${SLOT_WAIT_SECONDS:-600}" have_slot=0
   if [[ ${NICE_LEVEL:-0} -gt 0 ]] && command -v nice >/dev/null 2>&1; then
     nice_prefix=(nice -n "$NICE_LEVEL")
@@ -950,11 +967,11 @@ ptr_invoke() {
   fi
 
   if [[ -n $tmp_dir ]]; then
-    (cd "$path" && TMPDIR="$tmp_dir" "$PTR_TIMEOUT" "$timeout_secs" "${nice_prefix[@]}" "${cmd[@]}")
+    (cd "$path" && TMPDIR="$tmp_dir" "$PTR_TIMEOUT" "$timeout_secs" "${nice_prefix[@]}" "${env_prefix[@]}" "${cmd[@]}")
     status=$?
     rm -rf "$tmp_dir"
   else
-    (cd "$path" && "$PTR_TIMEOUT" "$timeout_secs" "${nice_prefix[@]}" "${cmd[@]}")
+    (cd "$path" && "$PTR_TIMEOUT" "$timeout_secs" "${nice_prefix[@]}" "${env_prefix[@]}" "${cmd[@]}")
     status=$?
   fi
   if [[ $have_slot == 1 ]]; then ptr_slot_release; fi
@@ -1012,6 +1029,10 @@ ptr_execute_one() {
   if [[ -z $run_template || $run_template == "null" ]]; then
     ptr_die 13 "language '$lang' has no run.$mode_key template configured"
   fi
+
+  # Read by ptr_invoke (bash dynamic scope); empty when the language has no env.
+  local PTR_RUN_ENV_JSON
+  PTR_RUN_ENV_JSON="$("$PTR_JQ" -c 'if (.env // {}) == {} then empty else .env end' <<<"$lang_json")"
 
   local label_prefix jobs_val unit_excl all_labels
   label_prefix="$("$PTR_JQ" -r '.labelPrefix // ""' <<<"$lang_json")"
