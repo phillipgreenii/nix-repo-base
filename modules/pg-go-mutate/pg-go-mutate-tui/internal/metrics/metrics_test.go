@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ func TestRecordedMetricsAppearInExposition(t *testing.T) {
 	r.ObserveRunDuration(2 * time.Second)
 	r.SetFilesByStatus("proj", "pkg", "done", 5)
 
-	req := httptest.NewRequest("GET", "/metrics", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/metrics", nil)
 	w := httptest.NewRecorder()
 	r.Handler().ServeHTTP(w, req)
 	body := w.Body.String()
@@ -35,7 +36,7 @@ func TestExpositionNeverContainsASurvivorOrKillMetric(t *testing.T) {
 	r := New()
 	r.RecordCommandExecution("succeeded")
 	r.RecordRunResult("done")
-	req := httptest.NewRequest("GET", "/metrics", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/metrics", nil)
 	w := httptest.NewRecorder()
 	r.Handler().ServeHTTP(w, req)
 	body := strings.ToLower(w.Body.String())

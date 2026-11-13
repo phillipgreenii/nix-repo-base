@@ -22,6 +22,7 @@ package beads
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -64,7 +65,7 @@ type realBD struct {
 
 func (r *realBD) run(args ...string) []byte {
 	r.t.Helper()
-	cmd := exec.Command("bd", args...)
+	cmd := exec.CommandContext(context.Background(), "bd", args...)
 	cmd.Dir = r.repo
 	cmd.Env = r.env
 	var stdout, stderr bytes.Buffer

@@ -3,6 +3,7 @@ package workspace
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -99,7 +100,7 @@ func (c hookGitContext) canonical() string { return filepath.Dir(c.Common) }
 // runGitIn runs `git <args>` in dir and returns stdout (untrimmed). A non-zero
 // exit is an error.
 func runGitIn(dir string, stdin string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(context.Background(), "git", args...)
 	cmd.Dir = dir
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)

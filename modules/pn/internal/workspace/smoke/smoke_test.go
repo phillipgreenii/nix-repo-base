@@ -3,6 +3,7 @@
 package smoke
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -980,7 +981,7 @@ func assertS13Remotes(t *testing.T, wsRoot string, lastResult scenarioResult) {
 			repoDir, lastResult.Stdout, lastResult.Stderr)
 		return
 	}
-	cmd := exec.Command("git", "-C", repoDir, "remote", "-v")
+	cmd := exec.CommandContext(context.Background(), "git", "-C", repoDir, "remote", "-v")
 	cmd.Env = os.Environ()
 	out, err := cmd.Output()
 	if err != nil {

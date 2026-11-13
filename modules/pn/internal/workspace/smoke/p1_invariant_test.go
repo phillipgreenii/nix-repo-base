@@ -3,6 +3,7 @@
 package smoke
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -286,7 +287,7 @@ func p1AssertUnchanged(t *testing.T, repo, verb string, want, got p1Snapshot, r 
 func p1Git(t *testing.T, repoDir string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-C", repoDir}, args...)
-	cmd := exec.Command("git", full...)
+	cmd := exec.CommandContext(context.Background(), "git", full...)
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "TZ=UTC")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -299,7 +300,7 @@ func p1Git(t *testing.T, repoDir string, args ...string) string {
 // p1LocalBranchNames returns the sorted set of local branch names in repoDir.
 func p1LocalBranchNames(t *testing.T, repoDir string) []string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repoDir, "branch", "--format=%(refname:short)")
+	cmd := exec.CommandContext(context.Background(), "git", "-C", repoDir, "branch", "--format=%(refname:short)")
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.Output()
 	if err != nil {
@@ -322,7 +323,7 @@ func p1LocalBranchNames(t *testing.T, repoDir string) []string {
 // content or set of tracked files in the canonical working tree.
 func p1WorkTreeDigest(t *testing.T, repoDir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repoDir, "ls-files", "-z")
+	cmd := exec.CommandContext(context.Background(), "git", "-C", repoDir, "ls-files", "-z")
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.Output()
 	if err != nil {

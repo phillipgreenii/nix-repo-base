@@ -126,7 +126,7 @@ func TestNoTelemetryFlagAccepted(t *testing.T) {
 
 func TestVerbose_UnreachableCollectorLine(t *testing.T) {
 	isolateTelemetryEnv(t)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ url = "github:owner/myterm"
 func TestTomlEnabledFalse_OffPathIsSilentAndConnectionFree(t *testing.T) {
 	home := isolateTelemetryEnv(t)
 	withTraceCmd(t)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

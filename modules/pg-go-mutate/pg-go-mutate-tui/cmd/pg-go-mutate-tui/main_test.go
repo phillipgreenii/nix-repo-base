@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +38,7 @@ func cliCommand(t *testing.T, args ...string) *exec.Cmd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(exe, args...)
+	cmd := exec.CommandContext(context.Background(), exe, args...)
 	cmd.Env = append(os.Environ(), reexecEnv+"=1")
 	return cmd
 }

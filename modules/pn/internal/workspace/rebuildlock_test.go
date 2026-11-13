@@ -450,7 +450,7 @@ func TestRebuildLock_ReleasedWhenHolderIsKilled(t *testing.T) {
 	lockTestEnv(t)
 	root := newLockRoot(t)
 
-	cmd := osexec.Command(os.Args[0], "-test.run=^TestRebuildLockHelperProcess$")
+	cmd := osexec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestRebuildLockHelperProcess$")
 	cmd.Env = append(os.Environ(), lockHelperEnv+"="+root, lockHelperStateEnv+"="+os.Getenv("XDG_STATE_HOME"))
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

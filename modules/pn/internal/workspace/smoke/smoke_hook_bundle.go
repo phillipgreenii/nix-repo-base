@@ -4,6 +4,7 @@ package smoke
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +26,7 @@ import (
 // output, failing the test on a non-zero exit.
 func s37Run(t *testing.T, env []string, dir, name string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	var out bytes.Buffer
@@ -228,7 +229,7 @@ func assertS37HookBundleMatrix(t *testing.T, wsRoot, pnBin string, env []string)
 		}
 	}
 	for what, dir := range map[string]string{"canonical consumer": canon, "set consumer": setConsumer} {
-		cmd := exec.Command("git", "config", "--local", "--get", "core.hooksPath")
+		cmd := exec.CommandContext(context.Background(), "git", "config", "--local", "--get", "core.hooksPath")
 		cmd.Dir = dir
 		cmd.Env = env
 		if out, err := cmd.Output(); err == nil {

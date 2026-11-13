@@ -515,7 +515,7 @@ func TestRealProbe_NixOSParserAcceptsTheHostScript(t *testing.T) {
 		t.Skip("SKIP: not a NixOS host")
 	}
 	var stdout, stderr bytes.Buffer
-	cmd := osexec.Command(script)
+	cmd := osexec.CommandContext(context.Background(), script)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	code := 0
 	if err := cmd.Run(); err != nil {

@@ -2,6 +2,7 @@ package beads
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -41,7 +42,7 @@ func (c *CLIClient) Create(title, body string, labels []string, priority int) (s
 	}
 	args = append(args, "create", "--title", title, "--body-file", "-",
 		"--type", "task", "-p", strconv.Itoa(priority), "-l", strings.Join(labels, ","), "--silent")
-	cmd := exec.Command(bin, args...)
+	cmd := exec.CommandContext(context.Background(), bin, args...)
 	cmd.Env = c.Env
 	cmd.Stdin = strings.NewReader(body)
 	var stdout, stderr bytes.Buffer

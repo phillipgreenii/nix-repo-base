@@ -893,7 +893,7 @@ func TestCheck(t *testing.T) {
 		}
 	})
 	t.Run("unreachable", func(t *testing.T) {
-		l, _ := net.Listen("tcp", "127.0.0.1:0")
+		l, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 		addr := l.Addr().String()
 		_ = l.Close()
 		r := newRig(t, fakecmd.Spec{})
@@ -928,7 +928,7 @@ func TestCheck(t *testing.T) {
 }
 
 func TestDeadCollectorNeverChangesExitCodeOrStderrAndIsBounded(t *testing.T) {
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	l, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	addr := l.Addr().String()
 	_ = l.Close() // nothing listens: connection refused
 	r := newRig(t, fakecmd.Spec{Fixture: golden("local-build.jsonl"), Exit: 7, Stderr: "child-says-hi\n"})

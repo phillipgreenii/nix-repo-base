@@ -3,6 +3,7 @@
 package smoke
 
 import (
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -36,7 +37,7 @@ func expandCollectorEndpoint(t *testing.T, lines []string) []string {
 	if !uses {
 		return lines
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("start loopback OTLP collector stand-in: %v", err)
 	}

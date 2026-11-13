@@ -203,7 +203,7 @@ func newApp(opts appOptions) (*app, error) {
 func runViaPgGoMutate(m *metrics.Registry, reportsDir string) worker.RunFunc {
 	return func(file string) (string, string, error) {
 		start := time.Now()
-		cmd := exec.Command("pg-go-mutate", "--json", file)
+		cmd := exec.CommandContext(context.Background(), "pg-go-mutate", "--json", file)
 		out, err := cmd.Output()
 		m.ObserveRunDuration(time.Since(start))
 		if err != nil {

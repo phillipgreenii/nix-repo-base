@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,7 +125,7 @@ func envSet(env []string) []string {
 
 func runProg(t *testing.T, prog string, env []string, args ...string) result {
 	t.Helper()
-	cmd := exec.Command(prog, args...)
+	cmd := exec.CommandContext(context.Background(), prog, args...)
 	cmd.Env = env
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -352,7 +353,7 @@ func TestShimSignalsAndExitCodes(t *testing.T) {
 			}
 			col := newCollector(t)
 			e, _ := env(t, "PATH="+shimDir+":"+realDir+":/usr/bin:/bin", "OTEL_EXPORTER_OTLP_ENDPOINT="+col.srv.URL, spec.Env())
-			cmd := exec.Command(filepath.Join(shimDir, "nix"), c.args...)
+			cmd := exec.CommandContext(context.Background(), filepath.Join(shimDir, "nix"), c.args...)
 			cmd.Env = e
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)

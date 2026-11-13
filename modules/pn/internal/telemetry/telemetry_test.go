@@ -197,7 +197,7 @@ func TestNoopPath_NoConnectionsNoGoroutinesNoFiles(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestEnabled_ExportsToCollector(t *testing.T) {
 
 // A collector that is down MUST NOT hang pn: the flush is bounded.
 func TestCollectorDown_ShutdownBounded(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -63,7 +64,7 @@ func TestRealNixWritesProgressIntoThePreCreatedScratchFileAndFinalizeFiltersIt(t
 	defer files.Close()
 
 	args := progressBuildArgs()
-	cmd := exec.Command(nix, args[1:]...)
+	cmd := exec.CommandContext(context.Background(), nix, args[1:]...)
 	cmd.Env = []string{
 		"PATH=" + filepath.Dir(nix) + ":/usr/bin:/bin", "HOME=" + t.TempDir(),
 		"NIX_CONFIG=json-log-path = " + files.RawPath,

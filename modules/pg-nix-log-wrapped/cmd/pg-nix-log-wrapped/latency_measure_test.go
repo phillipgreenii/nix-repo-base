@@ -17,6 +17,7 @@ package main
 // the sweep loop (default 300).
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -67,7 +68,7 @@ func TestMeasureShim(t *testing.T) {
 		_, _ = w.Write(nil)
 	}))
 	defer live.Close()
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	l, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	deadURL := "http://" + l.Addr().String()
 	_ = l.Close()
 
@@ -81,7 +82,7 @@ func TestMeasureShim(t *testing.T) {
 			"PG_NIX_LOG_DISABLE=", "PG_NIX_LOG_ACTIVE=")
 	}
 	run := func(env []string, via string, args ...string) time.Duration {
-		cmd := exec.Command(via, args...)
+		cmd := exec.CommandContext(context.Background(), via, args...)
 		cmd.Env = env
 		start := time.Now()
 		if out, err := cmd.CombinedOutput(); err != nil {

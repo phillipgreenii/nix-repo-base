@@ -182,7 +182,7 @@ type result struct {
 }
 
 func wrapperCmd(env []string, args ...string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
-	cmd := exec.Command(wrapper, args...)
+	cmd := exec.CommandContext(context.Background(), wrapper, args...)
 	cmd.Args[0] = "pg-nix-log-wrapped"
 	cmd.Env = env
 	var out, errb bytes.Buffer
@@ -207,7 +207,7 @@ func runWrapper(t *testing.T, env []string, args ...string) result {
 
 func deadAddr(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

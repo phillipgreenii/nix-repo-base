@@ -25,6 +25,10 @@ run:
     - smoke
 linters:
   default: standard
+  enable:
+    # noctx: flags database/sql, net/http and os/exec calls that use the
+    # non-Context form. Not in "standard".
+    - noctx
   settings:
     errcheck:
       # Writes to stdout/stderr via fmt.Fprint* essentially never fail in a

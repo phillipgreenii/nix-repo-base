@@ -150,7 +150,7 @@ func DefaultDeps(version string) Deps {
 		},
 		ReadFile: os.ReadFile,
 		Dial: func(addr string, timeout time.Duration) error {
-			c, err := net.DialTimeout("tcp", addr, timeout)
+			c, err := (&net.Dialer{Timeout: timeout}).DialContext(context.Background(), "tcp", addr)
 			if err != nil {
 				return err
 			}
@@ -452,7 +452,7 @@ func withActive(env []string) []string {
 // run is the observed path: start CMD, tail, finish in the W-9 order.
 func (s *session) run() int {
 	r := s.r
-	cmd := exec.Command(s.cmdPath)
+	cmd := exec.CommandContext(context.Background(), s.cmdPath)
 	cmd.Args = s.opts.Cmd
 	cmd.Env = s.env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.ChildStdin, r.ChildStdout, r.ChildStderr

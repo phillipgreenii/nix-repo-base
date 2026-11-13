@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,7 +59,7 @@ func runIntegrationTests(m *testing.M) int {
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	pnBinary = filepath.Join(tmp, "pn")
-	cmd := exec.Command("go", "build", "-ldflags", "-X main.Version=20260531-test", "-o", pnBinary, ".")
+	cmd := exec.CommandContext(context.Background(), "go", "build", "-ldflags", "-X main.Version=20260531-test", "-o", pnBinary, ".")
 	cmd.Env = pnEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -69,7 +70,7 @@ func runIntegrationTests(m *testing.M) int {
 }
 
 func TestIntegration_Version(t *testing.T) {
-	out, err := exec.Command(pnBinary, "--version").CombinedOutput()
+	out, err := exec.CommandContext(context.Background(), pnBinary, "--version").CombinedOutput()
 	if err != nil {
 		t.Fatalf("--version failed: %v: %s", err, out)
 	}
@@ -85,7 +86,7 @@ func TestIntegration_RejectsDevVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(devBinary, "--version")
+	cmd := exec.CommandContext(context.Background(), devBinary, "--version")
 	cmd.Env = pnEnv(runMainEnv + "=1")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -109,7 +110,7 @@ url = "github:test/test-repo"
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(pnBinary, "workspace", "status")
+	cmd := exec.CommandContext(context.Background(), pnBinary, "workspace", "status")
 	cmd.Dir = workspaceRoot
 	cmd.Env = pnEnv()
 	out, err := cmd.CombinedOutput()

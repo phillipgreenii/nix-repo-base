@@ -30,7 +30,7 @@ type scenarioResult struct {
 // env is the per-scenario scrubbed environment (from buildScrubbedEnv).
 func runCommand(t *testing.T, pnBin, wsRoot string, args []string, env []string) scenarioResult {
 	t.Helper()
-	cmd := exec.Command(pnBin, args...)
+	cmd := exec.CommandContext(context.Background(), pnBin, args...)
 	cmd.Dir = wsRoot
 	cmd.Env = env
 
@@ -59,7 +59,7 @@ func runCommand(t *testing.T, pnBin, wsRoot string, args []string, env []string)
 // env is the per-scenario scrubbed environment.
 func runSetupScript(t *testing.T, setupPath, wsRoot string, env []string) error {
 	t.Helper()
-	cmd := exec.Command("bash", setupPath)
+	cmd := exec.CommandContext(context.Background(), "bash", setupPath)
 	cmd.Dir = wsRoot
 	cmd.Env = env
 	var out bytes.Buffer

@@ -145,7 +145,7 @@ func requireRealNix(t *testing.T, scratch string) {
 	if err != nil {
 		t.Skip("nix is not on PATH")
 	}
-	probe := exec.Command(nix, "eval", "--expr", "1")
+	probe := exec.CommandContext(context.Background(), nix, "eval", "--expr", "1")
 	probe.Env = nixEnv(scratch)
 	if out, err := probe.CombinedOutput(); err != nil {
 		t.Skipf("nix is on PATH but cannot evaluate (%v): %s", err, strings.TrimSpace(string(out)))
@@ -154,7 +154,7 @@ func requireRealNix(t *testing.T, scratch string) {
 
 func runIn(t *testing.T, dir string, env []string, name string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	var so, se bytes.Buffer

@@ -92,7 +92,7 @@ func TestDarwinRebuildScript_DriftGuard(t *testing.T) {
 func TestRealProbe_ParserAcceptsTheInstalledScriptsUsage(t *testing.T) {
 	script := installedDarwinRebuild(t)
 	var stdout, stderr bytes.Buffer
-	cmd := osexec.Command(script, "--help")
+	cmd := osexec.CommandContext(context.Background(), script, "--help")
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	code := 0

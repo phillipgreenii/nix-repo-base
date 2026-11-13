@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,7 +46,7 @@ func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	cmd := exec.Command(pnBinary, "workspace", "pre-commit-check")
+	cmd := exec.CommandContext(context.Background(), pnBinary, "workspace", "pre-commit-check")
 	cmd.Dir = root
 	cmd.Env = pnEnv(
 		"PATH="+bin+":"+os.Getenv("PATH"),

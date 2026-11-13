@@ -34,7 +34,7 @@ func TestHostPort(t *testing.T) {
 }
 
 func TestProbe_ReachableAndNot(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestProbe_ReachableAndNot(t *testing.T) {
 // TestPrepare_UnreachableUnderVerbose: enabled + -v + dead endpoint prints the
 // one-line message to stderr and turns telemetry off for the run.
 func TestPrepare_UnreachableUnderVerbose(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestPrepare_UnreachableUnderVerbose(t *testing.T) {
 // telemetry off silently (pg2-aoza4): pn must not try to export to a machine
 // with no collector, and must not print anything by default.
 func TestPrepare_UnreachableWithoutVerbose(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestPrepare_UnreachableWithoutVerbose(t *testing.T) {
 // printed. This is the "keep working on the machine with the OTel suite" case.
 func TestPrepare_ReachableWithoutVerbose(t *testing.T) {
 	var conns atomic.Int32
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestPrepare_ReachableWithoutVerbose(t *testing.T) {
 // creates no file under HOME.
 func TestNoOpPath_ZeroConnectionsNoGoroutinesNoFiles(t *testing.T) {
 	var conns atomic.Int32
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestNoOpPath_ZeroConnectionsNoGoroutinesNoFiles(t *testing.T) {
 // turns the run's telemetry off but keeps what was probed, so the doctor can
 // still report a configured-on system whose collector is down.
 func TestPrepare_UnreachableKeepsConfiguredEndpointForDoctor(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestPrepare_UnreachableKeepsConfiguredEndpointForDoctor(t *testing.T) {
 // off path: zero connections to the configured endpoint, no output.
 func TestPrepare_EnabledFalseNeverProbes(t *testing.T) {
 	var conns atomic.Int32
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
