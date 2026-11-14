@@ -19,6 +19,10 @@ setup() {
   TEST_DIR="$(mktemp -d)"
   export TEST_DIR
   cd "$TEST_DIR" || return 1
+  # `pg-hooks run pre-land` exports the transient file to the whole run, this suite
+  # included. The tests that need it set it themselves; any other test that hits a cap or
+  # finds no slot MUST NOT write into the OUTER run's file.
+  unset PG_TEST_RUNNER_TRANSIENT_FILE
 
   CONFIG_PATH="$TEST_DIR/config.json"
   cat >"$CONFIG_PATH" <<'JSON'
@@ -651,4 +655,21 @@ _slots_setup() {
     "$root/modules/pg-test-runner/pg-test-runner/pg-test-runner.md" \
     "$root/docs/hooks.md"
   [ "$status" -eq 1 ]
+}
+
+@test "the suite is hermetic against an exported PG_TEST_RUNNER_TRANSIENT_FILE" {
+  command -v bats >/dev/null || skip "bats not on PATH"
+  # Re-run two tests that hit the cap or find no slot without setting the variable, in a
+  # nested bats with the variable exported in the OUTER environment, as a pre-land run does.
+  PG_TEST_RUNNER_TRANSIENT_FILE="$TEST_DIR/leaked-transient" \
+    run bats --filter '^(ptr_invoke runs anyway, with a warning, when no slot frees up within the wait budget|ptr_invoke honours the per-project cap from projectTimeouts)$' "$BATS_TEST_FILENAME"
+  [ "$status" -eq 0 ] || {
+    echo "$output" >&2
+    return 1
+  }
+  [ ! -s "$TEST_DIR/leaked-transient" ] || {
+    echo "leaked into the transient file:" >&2
+    cat "$TEST_DIR/leaked-transient" >&2
+    return 1
+  }
 }
