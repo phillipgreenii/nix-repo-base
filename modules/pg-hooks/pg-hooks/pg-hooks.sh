@@ -17,7 +17,9 @@ pg-hooks: inspect and run the per-clone hook bundle
 Usage: pg-hooks [command] [args]
 
 Commands:
-  status [--porcelain]   Report the bundle state (exit code carries the state)
+  status [--porcelain]   Report the bundle state (exit code carries the state);
+                         --porcelain adds hooks= (runs|skipped|failing|n/a), the
+                         key consumers branch on; see docs/hooks.md
   list                   List the stages that have configured hooks
   explain <stage>        Show what a stage runs and which hooks it holds
   run <stage> [--timings] [files...|--all-files] [-- prek-args]
@@ -51,7 +53,9 @@ Exit codes:
   10  a hook or fixer failed
   11  file(s) skipped (staged and unstaged changes)
   12  bundle broken (pointer invalid or bin/prek not runnable)
-  13  no bundle (run, fix, list, explain)
+  13  no bundle (run, fix, list, explain) in a clone that has a flake.nix
+      (a clone with no flake.nix, or with pg-hooks.enabled=false, is
+      not-enrolled: exit 0 and one "pg-hooks: NOT run: ..." line on stderr)
   14  status only: bundle stale
   15  status only: hooks unreachable (core.hooksPath bypasses <common-dir>/hooks)
   16  status only: clone relocated
@@ -258,11 +262,14 @@ cmd_status() {
   need_repo
   resolve_bundle
 
-  local state="" code=0 clone_path="" reinstall repo stages=""
-  local relocated=0 unreachable=0
+  local state="" code=0 clone_path="" reinstall repo stages="" hooks=""
+  local relocated=0 unreachable=0 not_enrolled=""
   UR_VALUE=""
   UR_ORIGIN=""
-  if hooks_unreachable; then
+  pgh_flag_state
+  if [[ $PGH_FLAG == false ]]; then
+    not_enrolled=opted-out
+  elif hooks_unreachable; then
     unreachable=1
   fi
   if [[ -n $RB_GEN && -f $RB_DIR/$RB_GEN/source.json ]] && ((RB_STATUS == 0 || RB_STATUS == 12)); then
@@ -272,18 +279,34 @@ cmd_status() {
     fi
   fi
 
-  # Precedence: relocated > unreachable > broken > stale > present; with no
-  # bundle: unreachable, else missing.
-  if ((relocated)); then
+  # Precedence: an explicit opt-out (not-enrolled) > relocated > unreachable >
+  # broken > stale > present; with no bundle: unreachable, else not-enrolled
+  # when there is no flake, else missing.
+  # hooks= (what the git hook stub does): runs, skipped, failing or n/a.
+  if [[ -n $not_enrolled ]]; then
+    state=not-enrolled
+    code=$PGH_OK
+    hooks=n/a
+  elif ((relocated)); then
     state=relocated
     code=$PGH_RELOCATED
+    hooks=runs
   elif ((unreachable)); then
     state=unreachable
     code=$PGH_UNREACHABLE
+    hooks=skipped
   elif ((RB_STATUS == 12)); then
     state=broken
     code=$PGH_BROKEN
+    # An invalid pointer leaves the stub with no bundle (skipped); a bundle
+    # whose bin/prek is not executable is run by the stub and exits 12 (failing).
+    if [[ $RB_REASON == pointer* ]]; then
+      hooks=skipped
+    else
+      hooks=failing
+    fi
   elif ((RB_STATUS == 0)); then
+    hooks=runs
     if compute_stale "$RB_DIR" "$RB_GEN"; then
       state=stale
       code=$PGH_STALE
@@ -291,33 +314,45 @@ cmd_status() {
       state=present
       code=$PGH_OK
     fi
+  elif no_flake; then
+    state=not-enrolled
+    code=$PGH_OK
+    hooks=n/a
+    not_enrolled=no-flake
   else
     state=missing
     code=$PGH_NO_BUNDLE
+    hooks=skipped
   fi
 
   local bundle_path="" generation=""
-  if [[ -n $RB_BUNDLE ]]; then
+  if [[ -n $RB_BUNDLE && -z $not_enrolled ]]; then
     bundle_path=$RB_BUNDLE
     generation=$RB_GEN
     stages=$(bundle_stages "$RB_BUNDLE")
   fi
   # A linked worktree without a private bundle reinstalls through its private
   # command; everything else through the selected dir's `reinstall` file.
-  if [[ $state == missing ]] && pgh_is_linked; then
+  if [[ -n $not_enrolled ]]; then
+    reinstall=""
+  elif [[ $state == missing ]] && pgh_is_linked; then
     reinstall=$(pgh_reinstall "$(pgh_private_dir)")
   else
     reinstall=$(pgh_reinstall "$RB_DIR")
   fi
 
   if ((porcelain)); then
-    printf 'state=%s\nbundle=%s\ngeneration=%s\nstages=%s\nreinstall=%s\n' \
-      "$state" "$bundle_path" "$generation" "$stages" "$reinstall"
+    printf 'state=%s\nbundle=%s\ngeneration=%s\nstages=%s\nreinstall=%s\nhooks=%s\n' \
+      "$state" "$bundle_path" "$generation" "$stages" "$reinstall" "$hooks"
   else
-    printf 'state:      %s\nbundle:     %s\ngeneration: %s\nstages:     %s\nreinstall:  %s\n' \
-      "$state" "$bundle_path" "$generation" "$stages" "$reinstall"
+    printf 'state:      %s\nbundle:     %s\ngeneration: %s\nstages:     %s\nreinstall:  %s\nhooks:      %s\n' \
+      "$state" "$bundle_path" "$generation" "$stages" "$reinstall" "$hooks"
+    if [[ $PGH_FLAG == invalid ]]; then
+      printf 'pg-hooks: warning: pg-hooks.enabled is not a valid boolean; treating it as unset\n' >&2
+    fi
     repo=$(bundle_repo "$bundle_path")
     case $state in
+    not-enrolled) pgh_msg_not_enrolled "$not_enrolled" ;;
     relocated) pgh_msg_relocated "$clone_path" "$reinstall" ;;
     unreachable) pgh_msg_unreachable "$PGH_COMMON" "$UR_VALUE" "$UR_ORIGIN" "$(pgh_canonical)" ;;
     broken) pgh_msg_broken "$repo" "$RB_REASON" "$RB_DIR" ;;
@@ -351,9 +386,37 @@ require_bundle() {
   return "$RB_STATUS"
 }
 
+# no_flake: status 0 when this clone has no flake pg-hooks could install from
+# (no flake.nix at the canonical flake dir) or is a bare repository. Needs a
+# loaded git context (need_repo).
+no_flake() {
+  local c
+  if [[ -z ${PGH_TOP:-} ]]; then
+    return 0
+  fi
+  c=$(pgh_canonical) || return 0
+  [[ ! -f $(pgh_flake_dir "$c")/flake.nix ]]
+}
+
+# opted_out_exit: exit 0 with the NOT-run line when pg-hooks.enabled is false.
+# An explicit opt-out outranks any bundle.
+opted_out_exit() {
+  pgh_flag_state
+  if [[ $PGH_FLAG == false ]]; then
+    pgh_msg_not_enrolled opted-out
+    exit 0
+  fi
+  return 0
+}
+
 # no_bundle_exit <stage-or-command>: the explicit-invocation exit for no bundle
-# (D3): the notice, exit 13.
+# (D3): exit 0 with the NOT-run line when the clone has no flake (not
+# enrolled), else the notice and exit 13.
 no_bundle_exit() {
+  if no_flake; then
+    pgh_msg_not_enrolled no-flake
+    exit 0
+  fi
   pgh_msg_no_bundle "$(pgh_repo_name)" "$1"
   exit "$PGH_NO_BUNDLE"
 }
@@ -371,6 +434,7 @@ cmd_list() {
     esac
   fi
   need_repo
+  opted_out_exit
   if ! require_bundle; then
     no_bundle_exit list
   fi
@@ -415,6 +479,7 @@ cmd_explain() {
   fi
   is_known_stage "$stage" || die "explain: unknown stage: $stage"
   need_repo
+  opted_out_exit
   if ! require_bundle; then
     no_bundle_exit explain
   fi
@@ -536,6 +601,7 @@ cmd_run() {
   fi
 
   need_repo --work-tree
+  opted_out_exit
 
   local cfg prek repo
   if require_bundle; then
@@ -873,6 +939,7 @@ cmd_fix() {
   esac
 
   need_repo --work-tree
+  opted_out_exit
   fix_refuse_in_progress
   if ! require_bundle; then
     no_bundle_exit fix

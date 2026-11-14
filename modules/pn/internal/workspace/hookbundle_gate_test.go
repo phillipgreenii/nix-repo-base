@@ -212,6 +212,8 @@ func TestInstallSetHooks_CanonicalCloneGetsNeitherPrivateNorPins(t *testing.T) {
 		[]string{"b"}, lk)
 	dirA := filepath.Join(w.root, "a")
 	initRealRepo(t, dirA)
+	// a repo with no flake.nix is not-enrolled and skips the installer
+	writeFile(t, filepath.Join(dirA, "flake.nix"), "{}\n")
 	sc := fireInstall(t, w)
 	if len(sc) != 1 {
 		t.Fatalf("want 1 sh call, got %d", len(sc))

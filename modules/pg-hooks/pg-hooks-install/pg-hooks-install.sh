@@ -30,7 +30,7 @@ Options:
   -v, --version            Show version information
 
 Exit codes:
-  0  installed
+  0  installed, or nothing to do because the clone opted out (pg-hooks.enabled=false)
   2  refused (linked worktree without --private, or a foreign hook file) or usage
   1  unexpected failure
 
@@ -112,6 +112,15 @@ for ov in ${NORMALISED[@]+"${NORMALISED[@]}"}; do
 done
 
 pgh_ctx --toplevel || die "not inside a git repository" 2
+
+# An opted-out clone (pg-hooks.enabled=false) gets nothing written. This exits 0,
+# not 2: a refusal would break `pn workspace apply` for an opted-out repo, and a
+# global opt-out must not break apply.
+pgh_flag_state
+if [[ $PGH_FLAG == false ]]; then
+  printf 'pg-hooks: NOT installed: clone opted out (pg-hooks.enabled=false). Re-enable: git config --unset pg-hooks.enabled\n' >&2
+  exit 0
+fi
 
 COMMON=$PGH_COMMON
 GITDIR=$PGH_GITDIR

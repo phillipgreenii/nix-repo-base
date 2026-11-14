@@ -450,12 +450,20 @@ _ul_disable_fsmonitor() {
 # is deliberately ignored: callers branch on the parsed value, never on prose
 # or on the code.
 _ul_hook_bundle_state() {
+  _ul_hook_bundle_key state
+}
+
+# _ul_hook_bundle_key <key>: print the value of <key>= from `pg-hooks status
+# --porcelain`, or nothing when pg-hooks is absent or prints no such key (an
+# older pg-hooks has no hooks=). Scans every line: the order of keys is not part
+# of the contract.
+_ul_hook_bundle_key() {
   command -v pg-hooks >/dev/null 2>&1 || return 0
-  local out line
+  local key=$1 out line
   out=$(pg-hooks status --porcelain 2>/dev/null || true)
   while IFS= read -r line; do
-    if [[ $line == state=* ]]; then
-      printf '%s\n' "${line#state=}"
+    if [[ $line == "$key"=* ]]; then
+      printf '%s\n' "${line#"$key"=}"
       return 0
     fi
   done <<<"$out"
@@ -567,7 +575,19 @@ _ul_ensure_pre_commit_hooks() {
     return 0
   fi
   echo "==> hook bundle state: ${bundle_state}"
+  # hooks=n/a means pg-hooks does not apply to this clone (not-enrolled: no
+  # flake, or opted out): nothing to install. An older pg-hooks prints no
+  # hooks= key; the state-name mapping below is the fallback.
+  local hooks_key
+  hooks_key=$(_ul_hook_bundle_key hooks)
+  if [[ $hooks_key == "n/a" ]]; then
+    echo "==> pg-hooks does not apply to this clone (${bundle_state}); not installing hooks"
+    return 0
+  fi
   case $bundle_state in
+  not-enrolled)
+    echo "==> pg-hooks does not apply to this clone (${bundle_state}); not installing hooks"
+    ;;
   stale | broken | relocated | missing)
     if _ul_in_linked_worktree; then
       echo "==> hook bundle is ${bundle_state} in a linked worktree; not reinstalling from here (the shared bundle in the canonical clone serves it: run the installer there)"

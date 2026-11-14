@@ -201,8 +201,8 @@ The full reference (stages, `pg-hooks` commands, messages, exit codes, bundle la
 operator runbook) is [`docs/hooks.md`](docs/hooks.md); the design is
 `docs/superpowers/specs/2026-10-01-per-clone-hook-bundle-design.md`. Summary:
 
-- **Probe, do not guess.** `pg-hooks status --porcelain` reports `state=` (`present`, `stale`,
-  `missing`, `broken`, `unreachable` or `relocated`). Never probe with
+- **Probe, do not guess.** Run `pg-hooks status`; its states, its `hooks=` key and the
+  `pg-hooks.enabled` opt-out are defined in [`docs/hooks.md`](docs/hooks.md). Never probe with
   `test -f .pre-commit-config.yaml`: a repo with a bundle has no such file in its working tree yet
   its hooks are live. Exit `127` means `pg-hooks` is not installed; ask the operator to run
   `pn workspace apply`.

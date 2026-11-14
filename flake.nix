@@ -620,8 +620,18 @@
                   compare "subcommands" doc-cmds code-cmds
 
                   grep '^state=<' "$doc" | sed 's/^state=<\(.*\)>$/\1/' | tr '|' '\n' >doc-states
-                  sed -n 's/^ *state=\([a-z][a-z]*\)$/\1/p' "$cli" >code-states
+                  sed -n 's/^ *state=\([a-z][a-z-]*\)$/\1/p' "$cli" >code-states
                   compare "status states" doc-states code-states
+
+                  # The hooks= key (what the git hook stub does for each state): the
+                  # documented values against the values cmd_status assigns.
+                  table_rows '| `hooks=` ' | sed -n 's#^| `\([a-z/]*\)`.*#\1#p' >doc-hooks
+                  sed -n 's#^ *hooks=\([a-z/]*\)$#\1#p' "$cli" >code-hooks
+                  compare "hooks= values" doc-hooks code-hooks
+                  # Every documented state must appear in the hooks= table.
+                  table_rows '| `hooks=` ' | sed -n 's#^| `[a-z/]*` *| [^|]*| *\([^|]*\)|$#\1#p' \
+                    | tr ',' '\n' | sed 's/^ *//; s/ .*//; s/`//g' | grep -v '^$' >doc-hooks-states
+                  compare "hooks= table states" doc-hooks-states doc-states
 
                   table_rows '| Code ' | sed -n 's/^| `\([0-9]*\)`.*/\1/p' >doc-codes
                   { sed -n 's/^PGH_[A-Z_]*=\([0-9][0-9]*\)$/\1/p' "$lib"; echo 1; } >code-codes

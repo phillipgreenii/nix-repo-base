@@ -99,7 +99,7 @@ _field() {
 
 # --- status ------------------------------------------------------------------
 
-@test "status --porcelain: present exits 0 with all five lines" {
+@test "status --porcelain: present exits 0 with all six lines" {
   _present
   _status
   [ "$status" -eq 0 ]
@@ -108,7 +108,9 @@ _field() {
   [ "$(_field generation)" = gen-1 ]
   [ "$(_field stages)" = "pre-commit,pre-rebase" ]
   [ "$(_field reinstall)" = "(cd $(dirname "$(_common_dir)") && nix run .#install-pre-commit-hooks)" ]
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 5 ]
+  [ "$(_field hooks)" = runs ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 6 ]
+  [ "$(printf '%s\n' "$output" | tail -n 1)" = "hooks=runs" ]
   [ -z "$stderr" ]
 }
 
@@ -131,6 +133,7 @@ _field() {
 }
 
 @test "status --porcelain: missing exits 13 with empty bundle fields" {
+  pgh_t_track_flake_lock
   _status
   [ "$status" -eq 13 ]
   [ "$(_field state)" = missing ]
@@ -152,6 +155,7 @@ _field() {
 }
 
 @test "status --porcelain: a pointer to a deleted generation is missing, not broken" {
+  pgh_t_track_flake_lock
   pgh_t_make_bundle
   rm -rf "$PGH_T_COMMON/pg-hooks/gen-1/bundle"
   _status
@@ -219,6 +223,7 @@ _field() {
 }
 
 @test "status --porcelain: an old .pre-commit-config.yaml does not make a bundle (missing, exit 13)" {
+  pgh_t_track_flake_lock
   printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
   _status
   [ "$status" -eq 13 ]
@@ -248,6 +253,7 @@ _field() {
 }
 
 @test "state precedence with no bundle: unreachable, else missing" {
+  pgh_t_track_flake_lock
   _status
   [ "$(_field state)" = missing ]
 
@@ -349,6 +355,7 @@ pre-land" ]
 }
 
 @test "list and explain with no bundle print the notice and exit 13" {
+  pgh_t_track_flake_lock
   run --separate-stderr "$PGH_T_SUT" list
   [ "$status" -eq 13 ]
   [ -z "$output" ]
@@ -493,6 +500,7 @@ $(pgh_msg_hooks_failed pre-commit fixture 2>&1)" ]
 }
 
 @test "run with no bundle prints the notice and exits 13" {
+  pgh_t_track_flake_lock
   run --separate-stderr "$PGH_T_SUT" run pre-commit
   [ "$status" -eq 13 ]
   [ -z "$output" ]
@@ -523,6 +531,7 @@ $(pgh_msg_hooks_failed pre-commit fixture 2>&1)" ]
 # --- an old config symlink is not a bundle -----------------------------------
 
 @test "run with only an old .pre-commit-config.yaml exits 13 and creates no file in a worktree" {
+  pgh_t_track_flake_lock
   printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
   command git worktree add -q "$GFH_WORK/wt" -b wt-branch
   cd "$GFH_WORK/wt"
@@ -692,6 +701,7 @@ JSON
 }
 
 @test "run pre-land with no bundle exits 13, even with an old .pre-commit-config.yaml" {
+  pgh_t_track_flake_lock
   printf 'repos: []\n' >"$GFH_REPO/.pre-commit-config.yaml"
   run --separate-stderr "$PGH_T_SUT" run pre-land
   [ "$status" -eq 13 ]
@@ -839,6 +849,7 @@ PREK
 # --- stdout/stderr discipline and odd paths ----------------------------------
 
 @test "messages go to stderr; stdout carries only status, list and explain output" {
+  pgh_t_track_flake_lock
   run --separate-stderr "$PGH_T_SUT" run pre-commit
   [ "$status" -eq 13 ]
   [ -z "$output" ]
@@ -1234,6 +1245,7 @@ Fix by hand, git add the file(s), then rerun pg-hooks fix." ]
 }
 
 @test "fix with no bundle prints the notice and exits 13" {
+  pgh_t_track_flake_lock
   run --separate-stderr "$PGH_T_SUT" fix
   [ "$status" -eq 13 ]
   [ -z "$output" ]

@@ -236,6 +236,17 @@ func assertS37HookBundleMatrix(t *testing.T, wsRoot, pnBin string, env []string)
 			t.Errorf("S37: %s has core.hooksPath set to %q", what, strings.TrimSpace(string(out)))
 		}
 	}
+
+	// 8. The opt-out outranks the live bundle in every checkout of the clone that
+	// shares the setting, and clearing it restores the state.
+	s37Run(t, env, canon, "git", "config", "--local", "pg-hooks.enabled", "false")
+	info = s37WantState(t, "canonical clone opted out", canon, workspace.HookBundleNotEnrolled)
+	if info.Hooks != workspace.HookBundleHooksNA {
+		t.Errorf("S37: an opted-out clone must report hooks=n/a, got %q", info.Hooks)
+	}
+	s37WantState(t, "plain worktree of an opted-out clone", plain, workspace.HookBundleNotEnrolled)
+	s37Run(t, env, canon, "git", "config", "--local", "--unset", "pg-hooks.enabled")
+	s37WantState(t, "canonical clone after clearing the opt-out", canon, workspace.HookBundlePresent)
 }
 
 // --- S43: workforest add --no-hooks (pg2-wu21kf) ---

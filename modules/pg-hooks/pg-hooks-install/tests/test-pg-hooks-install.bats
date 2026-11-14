@@ -596,3 +596,34 @@ EOF
   misses="$(wc -l <"$d/misses" | tr -d ' ')"
   [ "$misses" -eq 0 ]
 }
+
+# --- opt-out -----------------------------------------------------------------
+
+@test "opt-out: pg-hooks.enabled=false exits 0 with one NOT-installed line and writes nothing" {
+  _mk_bundle
+  command git -C "$GFH_REPO" config pg-hooks.enabled false
+  run --separate-stderr _install
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$stderr" = "pg-hooks: NOT installed: clone opted out (pg-hooks.enabled=false). Re-enable: git config --unset pg-hooks.enabled" ]
+  [ ! -e "$SHARED" ]
+  [ ! -e "$COMMON/hooks/pre-commit" ]
+}
+
+@test "opt-out: a linked worktree of an opted-out clone exits 0 too (no refusal)" {
+  _mk_bundle
+  command git -C "$GFH_REPO" config pg-hooks.enabled false
+  _add_worktree optout
+  run --separate-stderr bash -c 'cd "$1" && "$2" --bundle "$3"' _ "$WT" "$PGH_T_SUT" "$B"
+  [ "$status" -eq 0 ]
+  [[ $stderr == "pg-hooks: NOT installed: clone opted out"* ]]
+  [ ! -e "$SHARED" ]
+}
+
+@test "opt-out: pg-hooks.enabled=true installs as before" {
+  _mk_bundle
+  command git -C "$GFH_REPO" config pg-hooks.enabled true
+  run _install
+  [ "$status" -eq 0 ]
+  [ "$(_cur)" = gen-1 ]
+}

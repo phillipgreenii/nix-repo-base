@@ -81,6 +81,9 @@ if [[ $1 == status && $2 == --porcelain ]]; then
   echo "generation="
   echo "stages="
   echo "reinstall="
+  # UL_TEST_PG_HOOKS_HOOKS: the hooks= key, printed LAST like the real tool
+  # (unset: an older pg-hooks that has no such key).
+  [[ -n ${UL_TEST_PG_HOOKS_HOOKS:-} ]] && echo "hooks=$UL_TEST_PG_HOOKS_HOOKS"
 fi
 exit 0
 MOCK
@@ -260,6 +263,34 @@ _run_ensure_in_bundle_mode() {
   [ "$status" -eq 0 ]
   [[ $output =~ "linked worktree" ]]
   [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: hooks=n/a (not-enrolled) does not reinstall" {
+  cd "$TEST_DIR" || return 1
+  UL_TEST_PG_HOOKS_HOOKS="n/a"
+  export UL_TEST_PG_HOOKS_HOOKS
+  _run_ensure_in_bundle_mode not-enrolled
+  [ "$status" -eq 0 ]
+  [[ $output =~ "hook bundle state: not-enrolled" ]]
+  [[ $output =~ "pg-hooks does not apply" ]]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: hooks=n/a wins over a state name that would reinstall" {
+  cd "$TEST_DIR" || return 1
+  UL_TEST_PG_HOOKS_HOOKS="n/a"
+  export UL_TEST_PG_HOOKS_HOOKS
+  _run_ensure_in_bundle_mode missing
+  [ "$status" -eq 0 ]
+  [ ! -e "$UL_TEST_REINSTALL_MARKER" ]
+}
+
+@test "_ul_ensure_pre_commit_hooks bundle mode: an older pg-hooks without hooks= still maps by state name" {
+  cd "$TEST_DIR" || return 1
+  unset UL_TEST_PG_HOOKS_HOOKS
+  _run_ensure_in_bundle_mode missing
+  [ "$status" -eq 0 ]
+  [ -e "$UL_TEST_REINSTALL_MARKER" ]
 }
 
 @test "_ul_ensure_pre_commit_hooks bundle mode: no state (no pg-hooks) warns and continues without installing" {

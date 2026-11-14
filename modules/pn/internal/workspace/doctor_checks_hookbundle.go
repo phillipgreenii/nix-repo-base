@@ -45,6 +45,10 @@ func (ws *Workspace) bundleHookFindings(repo, repoDir string) ([]Finding, bool) 
 	if err != nil {
 		return nil, false
 	}
+	if info.OptedOut {
+		// An explicit opt-out (pg-hooks.enabled=false) is not a finding.
+		return nil, true
+	}
 	c, err := readHookGitContext(repoDir)
 	if err != nil {
 		return nil, false

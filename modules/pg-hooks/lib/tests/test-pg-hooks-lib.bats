@@ -517,3 +517,51 @@ _stale_fixture() {
   run pgh_write_pointer "$d" gen-1
   [ "$status" -eq 1 ]
 }
+
+# --- opt-out (pg-hooks.enabled) ---------------------------------------------
+
+@test "stub: opt-out text equals pgh_msg_not_enrolled opted-out, gating stages only" {
+  pgh_t_track_flake_lock
+  pgh_t_make_bundle
+  command git -C "$GFH_REPO" config pg-hooks.enabled false
+  local expected stage
+  expected="$(pgh_msg_not_enrolled opted-out 2>&1)"
+  for stage in pre-commit pre-push; do
+    pgh_t_install_stub "$stage"
+    run --separate-stderr "$PGH_T_COMMON/hooks/$stage"
+    [ "$status" -eq 0 ]
+    [ "$stderr" = "$expected" ]
+  done
+  for stage in commit-msg post-commit; do
+    pgh_t_install_stub "$stage"
+    run --separate-stderr "$PGH_T_COMMON/hooks/$stage"
+    [ "$status" -eq 0 ]
+    [ -z "$stderr" ]
+  done
+}
+
+@test "stub: opt-out never runs the runner, even when the runner would fail" {
+  pgh_t_track_flake_lock
+  pgh_t_make_bundle
+  printf '#!/bin/sh\necho RAN >>"%s/ran"\nexit 10\n' "$GFH_ROOT" >"$PGH_T_BUNDLE/bin/pg-hooks-run"
+  command git -C "$GFH_REPO" config pg-hooks.enabled off
+  pgh_t_install_stub pre-commit
+  run --separate-stderr "$PGH_T_COMMON/hooks/pre-commit"
+  [ "$status" -eq 0 ]
+  [ ! -e "$GFH_ROOT/ran" ]
+  # the same bundle with the flag unset runs the runner and fails the stage
+  command git -C "$GFH_REPO" config --unset pg-hooks.enabled
+  run --separate-stderr "$PGH_T_COMMON/hooks/pre-commit"
+  [ "$status" -eq 10 ]
+  [ -e "$GFH_ROOT/ran" ]
+}
+
+@test "stub: an invalid flag value is treated as enabled" {
+  pgh_t_track_flake_lock
+  pgh_t_make_bundle
+  printf '#!/bin/sh\nexit 10\n' >"$PGH_T_BUNDLE/bin/pg-hooks-run"
+  command git -C "$GFH_REPO" config pg-hooks.enabled maybe
+  pgh_t_install_stub pre-commit
+  run --separate-stderr "$PGH_T_COMMON/hooks/pre-commit"
+  [ "$status" -eq 10 ]
+}

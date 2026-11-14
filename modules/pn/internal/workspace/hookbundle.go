@@ -38,6 +38,26 @@ const (
 	HookBundleUnreachable HookBundleState = "unreachable"
 	// HookBundleRelocated: the clone moved since the bundle was rooted.
 	HookBundleRelocated HookBundleState = "relocated"
+	// HookBundleNotEnrolled: pg-hooks does not apply to this clone, either
+	// because the clone opted out (git config boolean pg-hooks.enabled=false,
+	// which outranks every other state) or because it has no bundle and no
+	// flake.nix to install one from. Exit 0, hooks=n/a.
+	HookBundleNotEnrolled HookBundleState = "not-enrolled"
+)
+
+// Values of HookBundleInfo.Hooks: the `hooks=` key of `pg-hooks status
+// --porcelain`, defined by what the git hook stub actually does.
+const (
+	// HookBundleHooksRuns: the commit-time hooks run (present, stale, relocated).
+	HookBundleHooksRuns = "runs"
+	// HookBundleHooksSkipped: hooks are expected but do not run (missing,
+	// unreachable, broken by an invalid pointer).
+	HookBundleHooksSkipped = "skipped"
+	// HookBundleHooksFailing: hooks run and block the commit (broken because
+	// bin/prek is not executable; the runner exits 12).
+	HookBundleHooksFailing = "failing"
+	// HookBundleHooksNA: pg-hooks does not apply to the clone (not-enrolled).
+	HookBundleHooksNA = "n/a"
 )
 
 // hookPointerRe is the only legal content of a pointer (`current`) file.
@@ -70,6 +90,13 @@ type HookBundleInfo struct {
 	Linked bool
 	// BrokenReason says why the state is broken.
 	BrokenReason string
+	// Hooks is the porcelain hooks= value for the state (runs, skipped,
+	// failing or n/a).
+	Hooks string
+	// OptedOut is true when pg-hooks.enabled is false for the checkout;
+	// NotEnrolledReason is "opted-out" or "no-flake" in state not-enrolled.
+	OptedOut          bool
+	NotEnrolledReason string
 	// ClonePath and BuiltAt come from source.json.
 	ClonePath string
 	BuiltAt   string
@@ -341,9 +368,11 @@ func hooksUnreachable(dir string, c hookGitContext) (bool, string, string) {
 // directly from <git-dir>/pg-hooks (`current`, `<gen>/source.json`,
 // `<gen>/bundle/meta.json`), with no dependency on `pg-hooks` on PATH. The
 // private bundle (a linked worktree's own) wins over the shared one, like the
-// stub. Precedence: relocated > unreachable > broken > stale > present; with no
-// usable bundle: unreachable, else missing (an old .pre-commit-config.yaml
-// symlink is not a bundle). An error means repoDir is not a git work tree (the
+// stub. Precedence: an opt-out (pg-hooks.enabled=false, not-enrolled) >
+// relocated > unreachable > broken > stale > present; with no usable bundle:
+// unreachable, else not-enrolled when there is no flake, else missing (an old
+// .pre-commit-config.yaml symlink is not a bundle). info.Hooks carries the
+// porcelain hooks= value. An error means repoDir is not a git work tree (the
 // state is empty).
 func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error) {
 	var info HookBundleInfo
@@ -376,6 +405,7 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 		info.BrokenReason = fmt.Sprintf("pointer %s/current is invalid", info.Dir)
 	}
 
+	info.OptedOut = hookOptedOut(repoDir)
 	unreachable, urValue, urOrigin := hooksUnreachable(repoDir, c)
 	info.UnreachableValue, info.UnreachableOrigin = urValue, urOrigin
 
@@ -392,20 +422,70 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 	relocated := haveSrc && (bundleRC == hookPtrOK || bundleRC == hookPtrInvalid) &&
 		src.ClonePath != "" && physicalDir(src.ClonePath) != physicalDir(c.Common)
 
+	// Precedence: an explicit opt-out outranks everything, then relocated,
+	// unreachable, broken, stale, present; with no bundle: not-enrolled when
+	// there is no flake, else missing.
 	switch {
+	case info.OptedOut:
+		info.NotEnrolledReason = "opted-out"
+		info.Hooks = HookBundleHooksNA
+		return HookBundleNotEnrolled, info, nil
 	case relocated:
+		info.Hooks = HookBundleHooksRuns
 		return HookBundleRelocated, info, nil
 	case unreachable:
+		info.Hooks = HookBundleHooksSkipped
 		return HookBundleUnreachable, info, nil
 	case bundleRC == hookPtrInvalid:
+		// An invalid pointer leaves the stub with no bundle (skipped); a bundle
+		// whose bin/prek is not executable is run by the stub and exits 12.
+		if ptr == hookPtrInvalid {
+			info.Hooks = HookBundleHooksSkipped
+		} else {
+			info.Hooks = HookBundleHooksFailing
+		}
 		return HookBundleBroken, info, nil
 	case bundleRC == hookPtrOK:
+		info.Hooks = HookBundleHooksRuns
 		if hookBundleStale(&info, c, src, haveSrc) {
 			return HookBundleStale, info, nil
 		}
 		return HookBundlePresent, info, nil
+	case c.Top == "" || !hookFlakeExists(c.canonical()):
+		info.NotEnrolledReason = "no-flake"
+		info.Hooks = HookBundleHooksNA
+		return HookBundleNotEnrolled, info, nil
 	}
+	info.Hooks = HookBundleHooksSkipped
 	return HookBundleMissing, info, nil
+}
+
+// hookOptedOut reports whether git config boolean pg-hooks.enabled is false
+// for dir. Unset (git exit 1) and an invalid value (git exit 128) both mean
+// enabled; a failure to run git does too.
+func hookOptedOut(dir string) bool {
+	out, err := runGitIn(dir, "", "config", "--type=bool", "--get", "pg-hooks.enabled")
+	return err == nil && strings.TrimSpace(out) == "false"
+}
+
+// hookFlakeExists reports whether canonical has a flake.nix, or exactly one
+// immediate subdirectory does (the same rule as pgh_flake_dir in
+// pg-hooks-lib.bash).
+func hookFlakeExists(canonical string) bool {
+	if fi, err := os.Stat(filepath.Join(canonical, "flake.nix")); err == nil && fi.Mode().IsRegular() {
+		return true
+	}
+	matches, err := filepath.Glob(filepath.Join(canonical, "*", "flake.nix"))
+	if err != nil {
+		return false
+	}
+	n := 0
+	for _, m := range matches {
+		if fi, err := os.Stat(m); err == nil && fi.Mode().IsRegular() {
+			n++
+		}
+	}
+	return n == 1
 }
 
 // hookBundleStale fills info.StampDiffers / info.ChangedOverrides and reports

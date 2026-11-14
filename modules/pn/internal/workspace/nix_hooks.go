@@ -113,6 +113,8 @@ const installPreCommitHooksAttr = "install-pre-commit-hooks"
 //     and every recorded override's HEAD and dirty state equal to now) skips.
 //     In a linked worktree the bundle must be the worktree's OWN private one:
 //     the shared bundle being present does not give a set its private bundle.
+//   - A clone that is not-enrolled (pg-hooks.enabled=false, or no flake.nix)
+//     skips: the installer exits 0 and writes nothing for an opted-out clone.
 //   - stale, broken and relocated run the installer, and so does a bundle whose
 //     GC root dangles.
 //   - With NO bundle pointer at all (state missing, or unreachable by a
@@ -121,7 +123,15 @@ const installPreCommitHooksAttr = "install-pre-commit-hooks"
 //     an old .pre-commit-config.yaml symlink reads as missing (R4).
 func installHookUpToDate(dir string) bool {
 	state, info, err := ReadHookBundleState(dir)
-	if err != nil || info.Gen == "" {
+	if err != nil {
+		return false
+	}
+	if state == HookBundleNotEnrolled {
+		// pg-hooks does not apply (opted out, or no flake): the installer would
+		// write nothing, so apply must not run it every time.
+		return true
+	}
+	if info.Gen == "" {
 		return false
 	}
 	return state == HookBundlePresent && (!info.Linked || info.Private)

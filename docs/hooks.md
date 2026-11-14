@@ -109,42 +109,94 @@ diagnose:           pg-hooks status
 `key:` with padding). Callers MUST parse `--porcelain` and MUST NOT parse prose:
 
 ```text
-state=<present|stale|missing|broken|unreachable|relocated>
+state=<present|stale|missing|broken|unreachable|relocated|not-enrolled>
 bundle=<path of the selected bundle, or empty>
 generation=<gen-N, or empty>
 stages=<comma list, or empty>
 reinstall=<the exact command that rebuilds the bundle>
+hooks=<runs|skipped|failing|n/a>
 ```
 
 The human form also prints the matching message from the [messages](#messages) table to stderr.
-`status` exits non-zero for most states by design, so a caller reads the `state=` line, not the exit
-code.
+`status` exits non-zero for most states by design, so a caller reads the `hooks=` line (or the
+`state=` line, for diagnosis), not the exit code. `hooks=` is last, and a caller MUST scan every line
+rather than stop at `state=`.
 
-| State         | Exit | Meaning                                                                                 |
-| ------------- | ---- | --------------------------------------------------------------------------------------- |
-| `present`     | 0    | A valid bundle whose stamp matches.                                                     |
-| `broken`      | 12   | The pointer is invalid, or `bin/prek` or `bin/pg-hooks-run` is not executable.          |
-| `missing`     | 13   | No bundle. A leftover `.pre-commit-config.yaml` does not count as one.                  |
-| `stale`       | 14   | The bundle's stamp, or a recorded override, differs from now.                           |
-| `unreachable` | 15   | git does not run hooks from `<common-dir>/hooks` (a `core.hooksPath` bypasses it).      |
-| `relocated`   | 16   | The recorded `clone_path` differs from this clone's common dir (moved or copied clone). |
+`hooks=` is the one key a program branches on. It is defined by what the git hook stub does, so a
+new state is added to this table and to the tool's mapping only, and no consumer lists states. A
+consumer MUST branch on `hooks=` when present and MUST fall back to its own state-name mapping when
+the key is absent (an older `pg-hooks`).
 
-State precedence is `relocated`, then `unreachable`, then `broken`, then `stale`, then `present`.
-With no bundle: `unreachable` if hooks are unreachable, else `missing`.
+| `hooks=`  | Meaning                                                                                              | States                                                        |
+| --------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `runs`    | the commit-time hooks run (the bundle may be stale or the clone relocated, but the pointer is valid) | present, stale, relocated                                     |
+| `skipped` | hooks are expected but do NOT run                                                                    | missing, unreachable, broken (an invalid or dangling pointer) |
+| `failing` | hooks run and BLOCK the commit (the runner exits 12 because `bin/prek` is not executable)            | broken                                                        |
+| `n/a`     | pg-hooks does not apply to this clone                                                                | not-enrolled                                                  |
+
+| State          | Exit | Meaning                                                                                                          |
+| -------------- | ---- | ---------------------------------------------------------------------------------------------------------------- |
+| `not-enrolled` | 0    | pg-hooks does not apply: the clone opted out (`pg-hooks.enabled=false`), or it has no bundle and no `flake.nix`. |
+| `present`      | 0    | A valid bundle whose stamp matches.                                                                              |
+| `broken`       | 12   | The pointer is invalid, or `bin/prek` or `bin/pg-hooks-run` is not executable.                                   |
+| `missing`      | 13   | No bundle. A leftover `.pre-commit-config.yaml` does not count as one.                                           |
+| `stale`        | 14   | The bundle's stamp, or a recorded override, differs from now.                                                    |
+| `unreachable`  | 15   | git does not run hooks from `<common-dir>/hooks` (a `core.hooksPath` bypasses it).                               |
+| `relocated`    | 16   | The recorded `clone_path` differs from this clone's common dir (moved or copied clone).                          |
+
+State precedence is an explicit opt-out (`not-enrolled`), then `relocated`, then `unreachable`, then
+`broken`, then `stale`, then `present`. With no bundle: `unreachable` if hooks are unreachable, else
+`not-enrolled` when the clone has no `flake.nix`, else `missing`. A stale `core.hooksPath` therefore
+stays visible in a clone with no flake, and only the explicit flag hides it.
 
 ```mermaid
 flowchart TD
-  A["status"] --> B{"clone_path differs from common dir?"}
-  B -->|"yes"| R["relocated, exit 16"]
+  A["status"] --> F{"pg-hooks.enabled is false?"}
+  F -->|"yes"| N1["not-enrolled (opted out), exit 0, hooks=n/a"]
+  F -->|"no / unset"| B{"clone_path differs from common dir?"}
+  B -->|"yes"| R["relocated, exit 16, hooks=runs"]
   B -->|"no"| C{"core.hooksPath bypasses common-dir/hooks?"}
-  C -->|"yes"| U["unreachable, exit 15"]
+  C -->|"yes"| U["unreachable, exit 15, hooks=skipped"]
   C -->|"no"| D{"bundle resolved?"}
-  D -->|"pointer invalid or prek not runnable"| BR["broken, exit 12"]
-  D -->|"valid bundle"| E{"stamp or override differs?"}
-  E -->|"yes"| ST["stale, exit 14"]
-  E -->|"no"| P["present, exit 0"]
-  D -->|"no bundle"| M["missing, exit 13"]
+  D -->|"broken"| BR["broken, exit 12, hooks=skipped or failing"]
+  D -->|"valid"| E{"stamp or override differs?"}
+  E -->|"yes"| ST["stale, exit 14, hooks=runs"]
+  E -->|"no"| P["present, exit 0, hooks=runs"]
+  D -->|"no bundle"| G{"flake.nix at the canonical flake dir?"}
+  G -->|"no"| N2["not-enrolled (no flake), exit 0, hooks=n/a"]
+  G -->|"yes"| M["missing, exit 13, hooks=skipped"]
 ```
+
+The flake check uses the same rule as the reinstall command: a `flake.nix` at the canonical root, or
+in exactly one immediate subdirectory, counts as enrolled. A bare repository reports `not-enrolled`.
+
+### Opting a clone out
+
+`pg-hooks.enabled` is a git boolean. Unset means enabled; `false` (also `no`, `off`, `0`, any case)
+opts the clone out. An invalid value counts as unset, with one warning in the human `status` output
+(never in `--porcelain`). An explicit `false` outranks every other state, including `relocated` and
+`unreachable`.
+
+For an opted-out or not-enrolled clone, `status`, `run`, `fix`, `list` and `explain` print one
+`pg-hooks: NOT run: ...` line on stderr and exit 0, and never invoke prek. The git hook stub exits 0
+without running the runner and prints the same line for the gating stages (`pre-commit`, `pre-push`)
+only. `pg-hooks-install` exits 0 with one NOT-installed line and writes nothing, so `pn workspace apply`
+is unaffected. Strict mode (fail when disabled) is not built; a caller that needs it matches
+the `NOT run` line.
+
+Scope the flag with ordinary git configuration:
+
+1. This clone only: `git config pg-hooks.enabled false` (in a linked worktree, add
+   `extensions.worktreeConfig` and use `git config --worktree` to keep it to that worktree).
+2. Every clone under a directory, through a conditional include in `~/.config/git/config`:
+   `[includeIf "gitdir:/path/to/volume/"]` with a `path` to a file holding `[pg-hooks]` and
+   `enabled = false`. It covers every clone and linked worktree under that directory and nothing
+   else.
+3. Every clone for the user: `git config --global pg-hooks.enabled false`.
+
+The global dispatcher runs its identity check before it chains to the stub, so the opt-out does not
+skip that check. A clone with a local `core.hooksPath` runs neither the dispatcher nor the stub, so
+the flag there only changes the reported state.
 
 A `core.hooksPath` that resolves to `<common-dir>/hooks` is fine. A global or system value is fine
 only when it names the dispatcher, meaning a directory that holds an executable `pre-commit` (the
@@ -164,7 +216,8 @@ bundle exits 12. `explain` of an unknown stage exits 2.
   `--all-files`, prek runs over the staged files.
 - `--all-files` passes through. Giving both file paths and `--all-files` exits 2.
 - `--` forwards everything after it to prek unchanged. Any other `-option` before `--` exits 2 (`pre-land` also takes `--base <rev>`).
-- `run` needs a bundle. With none it prints the no-bundle notice and exits 13; a leftover
+- `run` needs a bundle. With none it prints the no-bundle notice and exits 13 (when the clone has a
+  `flake.nix`; a not-enrolled clone prints its `NOT run` line and exits 0); a leftover
   `.pre-commit-config.yaml` is never read.
 - A failing hook prints the hooks-failed hint after prek's output and exits 10.
 - After `PG_HOOKS_PROGRESS_AFTER_S` seconds (default 3, `0` disables) one progress line is printed
@@ -216,7 +269,8 @@ bundle exits 12. `explain` of an unknown stage exits 2.
   mislabeled hook is caught. A selector that matches no hook exits 0 without running prek.
   The land's fixer step runs `pg-hooks run pre-land --only fix` and its verify step `--only check`.
 - `ff-merge-to-main` FF-1b runs this command. On exit 13 it records the notice line in the land
-  outcome and continues; on exit 10 it stops the land. When `pg-hooks` is not on PATH (exit 127) a
+  outcome and continues. A not-enrolled clone exits 0, which the land records as a pass; the
+  NOT-run line then appears only in the raw log; on exit 10 it stops the land. When `pg-hooks` is not on PATH (exit 127) a
   caller MUST report `pg-hooks not installed on this machine; ask the operator to run pn workspace
 apply` and continue.
 
@@ -252,7 +306,7 @@ checkout and restages only the files a fixer changed. It calls the fixer tools d
 - `fix` appends one JSON line per fixer per run (`tool`, `files`, `seconds`, `exit`) to
   `${XDG_STATE_HOME:-$HOME/.local/state}/pg-hooks/timings.jsonl`. An unwritable state directory does
   not fail the run.
-- `fix` needs a bundle: with no bundle it exits 13, and with an invalid `fixers.json` it exits 12.
+- `fix` needs a bundle: with no bundle it exits 13 (0 for a not-enrolled clone), and with an invalid `fixers.json` it exits 12.
 
 A fixer MUST NOT be run from a git hook and MUST NOT be attached to a prek stage.
 
@@ -388,6 +442,9 @@ tests match them.
 | worktree differs from the shared bundle | `pg-hooks: this worktree's hook definitions differ from the shared bundle; the old hooks ran. To test your hook changes: <private reinstall command>`                 |
 | unreachable hooks                       | `pg-hooks: git does not run hooks from <common-dir>/hooks (core.hooksPath=<value> from <origin>). Operator: git -C <canonical> config --local --unset core.hooksPath` |
 | relocated clone                         | `pg-hooks: this clone moved from <clone_path>; its bundle is no longer GC-rooted. Rebuild: <reinstall>`                                                               |
+| not enrolled, opted out                 | `pg-hooks: NOT run: this clone opted out (pg-hooks.enabled=false). Re-enable: git config --unset pg-hooks.enabled`                                                    |
+| not enrolled, no flake                  | `pg-hooks: NOT run: no flake.nix in this clone, so pg-hooks does not apply. Silence: git config pg-hooks.enabled false.`                                              |
+| installer, opted out                    | `pg-hooks: NOT installed: clone opted out (pg-hooks.enabled=false). Re-enable: git config --unset pg-hooks.enabled`                                                   |
 | hooks failed                            | `pg-hooks: <stage> hooks failed in <repo>. Auto-fixable formatting: run 'pg-hooks fix', then git add and commit again. Other failures: fix by hand.`                  |
 | progress (after 3 s, once)              | `pg-hooks: running <stage> hooks in <repo>...`                                                                                                                        |
 
@@ -400,13 +457,13 @@ installer's own refusals are in [Installer](#installer).
 
 | Code | Meaning                                                                               |
 | ---- | ------------------------------------------------------------------------------------- |
-| `0`  | success or nothing to do                                                              |
+| `0`  | success or nothing to do (includes a not-enrolled clone)                              |
 | `1`  | generic failure, no branchable meaning                                                |
 | `2`  | usage error, unknown stage, refused operation, or not in a git repository             |
 | `10` | a hook or fixer failed                                                                |
 | `11` | file(s) skipped because they have staged and unstaged changes                         |
 | `12` | bundle broken (pointer invalid, or `bin/prek` not runnable)                           |
-| `13` | no bundle (`run`, `fix`, `list`, `explain`)                                           |
+| `13` | no bundle in a clone that has a `flake.nix` (`run`, `fix`, `list`, `explain`)         |
 | `14` | `status` only: bundle stale                                                           |
 | `15` | `status` only: hooks unreachable (`core.hooksPath` does not resolve to the hooks dir) |
 | `16` | `status` only: clone relocated                                                        |

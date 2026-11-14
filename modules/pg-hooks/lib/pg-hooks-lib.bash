@@ -349,6 +349,35 @@ pgh_msg_relocated() {
     "$1" "$2" >&2
 }
 
+# pgh_flag_state: read the pg-hooks.enabled git boolean into PGH_FLAG:
+# true, false, unset (not configured: enabled) or invalid (git rejected the
+# value: treated as unset by callers). Never aborts a `set -e` caller and keeps
+# git's own "bad boolean config value" fatal off stderr.
+pgh_flag_state() {
+  local v="" rc=0
+  v=$(git config --type=bool --get pg-hooks.enabled 2>/dev/null) || rc=$?
+  case $rc in
+  0) PGH_FLAG=$v ;;
+  1) PGH_FLAG="unset" ;;
+  *) PGH_FLAG=invalid ;;
+  esac
+  return 0
+}
+
+# pgh_msg_not_enrolled <opted-out|no-flake>: the one stderr line that says the
+# hooks did NOT run and why. The stub (stub.sh.in) carries a hand-written copy
+# of the opted-out text; a test asserts they are identical.
+pgh_msg_not_enrolled() {
+  case $1 in
+  opted-out)
+    printf 'pg-hooks: NOT run: this clone opted out (pg-hooks.enabled=false). Re-enable: git config --unset pg-hooks.enabled\n' >&2
+    ;;
+  *)
+    printf 'pg-hooks: NOT run: no flake.nix in this clone, so pg-hooks does not apply. Silence: git config pg-hooks.enabled false.\n' >&2
+    ;;
+  esac
+}
+
 # --- progress line (noise policy: at most one line after N seconds) ---------
 
 PGH_PROGRESS_PID=""

@@ -76,6 +76,20 @@ if [ -z "$bundle" ]; then
   exit 0
 fi
 
+# Opt-out: pg-hooks.enabled=false skips the runner. Read only here, after the
+# pointer check, so the no-bundle path pays no second git process. Only the
+# gating stages say so; the others stay silent. This text is duplicated from
+# pgh_msg_not_enrolled in pg-hooks-lib.bash; a test asserts they match.
+enabled=$(git config --type=bool --get pg-hooks.enabled 2>/dev/null) || enabled=
+if [ "$enabled" = false ]; then
+  case $stage in
+  pre-commit | pre-push)
+    printf 'pg-hooks: NOT run: this clone opted out (pg-hooks.enabled=false). Re-enable: git config --unset pg-hooks.enabled\n' >&2
+    ;;
+  esac
+  exit 0
+fi
+
 PG_HOOKS_BUNDLE=$bundle
 export PG_HOOKS_BUNDLE
 exec "$bundle/bin/pg-hooks-run" "$stage" "$@"

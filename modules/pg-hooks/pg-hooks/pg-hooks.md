@@ -69,13 +69,16 @@ and exits `10`. Per-fixer timings are appended to `~/.local/state/pg-hooks/timin
 | `10` | A hook or fixer failed.                                                                       |
 | `11` | File(s) skipped (staged and unstaged changes).                                                |
 | `12` | Bundle broken (pointer invalid or `bin/prek` not runnable).                                   |
-| `13` | No bundle. `run`, `fix`, `list` and `explain` print the notice and exit 13.                   |
+| `13` | No bundle (flake present). `run`, `fix`, `list` and `explain` print the notice and exit 13.   |
 | `14` | `status` only: bundle stale.                                                                  |
 | `15` | `status` only: hooks unreachable (`core.hooksPath` bypasses `<common-dir>/hooks`).            |
 | `16` | `status` only: clone relocated (`clone_path` differs).                                        |
 | `75` | `run pre-land` only: transient stop (a test timeout or no free runner slot).                  |
 
-`status --porcelain` prints `state=`, `bundle=`, `generation=`, `stages=` and `reinstall=` lines.
-`state` is one of `present`, `stale`, `missing`, `broken`, `unreachable`, `relocated`.
+`status --porcelain` prints `state=`, `bundle=`, `generation=`, `stages=`, `reinstall=` and `hooks=`
+lines (`hooks=` last). Programs branch on `hooks=`; the states, the `hooks=` table and the
+`pg-hooks.enabled` opt-out are defined once, in `docs/hooks.md` of the repo that ships this tool. A
+clone that opted out or has no `flake.nix` reports `not-enrolled`, exits 0 and prints one
+`pg-hooks: NOT run: ...` line.
 Messages go to stderr and start with `pg-hooks:`; stdout carries only `status`, `list` and
 `explain` output.
