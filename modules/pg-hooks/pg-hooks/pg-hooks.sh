@@ -26,6 +26,13 @@ Commands:
   run pre-land [--timings] [--base <rev>] [<ref>]
                          Run the pre-commit hooks over the branch diff (--base
                          starts the range at <rev> instead of the primary branch)
+  run <stage> --only fix|check
+                         Run only the hooks classified fix (they may rewrite files:
+                         formatters, generators) or only those classified check (they
+                         MUST NOT change the tree; exit 10 if one does). Every hook is
+                         classified in the bundle's hook-kinds.json; an unclassified
+                         hook exits 12. The default fixers are treefmt,
+                         trailing-whitespace and end-of-file-fixer.
   fix                    Apply the repo's fixers to the staged files and restage them
                          (also installed as: pre-commit-fix)
 
@@ -468,7 +475,7 @@ cmd_run() {
   shift
   is_known_stage "$stage" || die "run: unknown stage: $stage"
 
-  local all_files=0 ref="" arg timings=0 base="" have_base=0
+  local all_files=0 ref="" arg timings=0 base="" have_base=0 only=""
   if [[ ${PG_HOOKS_TIMINGS:-} == 1 ]]; then
     timings=1
   fi
@@ -486,6 +493,16 @@ cmd_run() {
       ;;
     --all-files) all_files=1 ;;
     --timings) timings=1 ;;
+    --only)
+      if [[ $# -lt 2 ]]; then
+        die "run: --only needs fix or check"
+      fi
+      case $2 in
+      fix | check) only=$2 ;;
+      *) die "run: --only takes fix or check, not: $2" ;;
+      esac
+      shift
+      ;;
     --base)
       if [[ $stage != pre-land ]]; then
         die "run: --base is only for pre-land"
@@ -565,6 +582,33 @@ cmd_run() {
   if ((all_files)); then
     args+=(--all-files)
   fi
+  local -a only_ids=()
+  if [[ -n $only ]]; then
+    local kinds_file=$RB_BUNDLE/hook-kinds.json unclassified id
+    if [[ ! -f $kinds_file ]] || ! jq -e 'type == "object"' "$kinds_file" >/dev/null 2>&1; then
+      pgh_msg_broken "$repo" "hook-kinds.json is missing or invalid (--only needs every hook classified fix or check)" "$RB_DIR"
+      return "$PGH_BROKEN"
+    fi
+    unclassified=$(jq -r --arg s "$prek_stage" --slurpfile k "$kinds_file" '
+      (.[$s] // [])[] | (if type == "string" then . else .id end)
+      | select(($k[0][.] // "") as $v | $v != "fix" and $v != "check")
+    ' "$RB_BUNDLE/stages.json" 2>/dev/null) || unclassified=""
+    if [[ -n $unclassified ]]; then
+      pgh_msg_broken "$repo" "hook(s) not classified fix or check in hook-kinds.json: ${unclassified//$'\n'/ }" "$RB_DIR"
+      return "$PGH_BROKEN"
+    fi
+    while IFS= read -r id; do
+      only_ids+=("$id")
+    done < <(jq -r --arg s "$prek_stage" --arg o "$only" --slurpfile k "$kinds_file" '
+      (.[$s] // [])[] | (if type == "string" then . else .id end)
+      | select($k[0][.] == $o)
+    ' "$RB_BUNDLE/stages.json")
+    if ((${#only_ids[@]} == 0)); then
+      return 0
+    fi
+    # Hook ids are positional; keep them ahead of --files, which takes many values.
+    args=("${args[@]:0:4}" "${only_ids[@]}" "${args[@]:4}")
+  fi
   if ((${#raw[@]} > 0)); then
     args+=("${raw[@]}")
   fi
@@ -599,8 +643,15 @@ cmd_run() {
       export PG_TEST_RUNNER_TRANSIENT_FILE=$transient
     fi
   fi
+  local before="" after=""
+  if [[ $only == check ]]; then
+    before=$(tree_fingerprint)
+  fi
   "$prek" "${args[@]}" || rc=$?
   pgh_progress_stop
+  if [[ $only == check ]]; then
+    after=$(tree_fingerprint)
+  fi
   if [[ -n $transient ]]; then
     local reason="" extra=0
     if ((rc != 0)) && [[ -s $transient ]]; then
@@ -617,7 +668,21 @@ cmd_run() {
     pgh_msg_hooks_failed "$stage" "$repo"
     return "$PGH_FAILED"
   fi
+  if [[ $only == check && $before != "$after" ]]; then
+    printf 'pg-hooks: --only check changed the working tree: a hook classified check rewrote files; classify it fix (hookKinds) or fix the hook.\n' >&2
+    return "$PGH_FAILED"
+  fi
   return 0
+}
+
+# tree_fingerprint: a hash of the working tree's state (status, diff against
+# HEAD, untracked file contents), for the --only check read-only guard.
+tree_fingerprint() {
+  {
+    git status --porcelain=v1 -z --untracked-files=all
+    git diff --no-ext-diff HEAD
+    git ls-files -z --others --exclude-standard | xargs -0 cat
+  } 2>/dev/null | git hash-object --stdin
 }
 
 # Prints the stderr message for a transient stop. $2 is line 1 of the transient

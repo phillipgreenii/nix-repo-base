@@ -78,6 +78,7 @@
       # defaults to true; the explicit line is kept as documentation.
       phillipgreenii.pre-commit = {
         bundle.enable = true;
+        hookKinds.run-unit-tests = "check";
         stampPaths = [
           "flake-modules/pre-commit.nix"
           "modules/pg-git-check-identity"
@@ -943,7 +944,7 @@
                   test -x "$b/bin/prek"
                   test -x "$b/bin/pg-hooks-run"
                   test -f "$b/lib/pg-hooks-lib.bash"
-                  for f in prek-config.json stages.json fixers.json meta.json; do
+                  for f in prek-config.json stages.json fixers.json hook-kinds.json meta.json; do
                     test -s "$b/$f" || { echo "missing or empty: $f" >&2; exit 1; }
                   done
                   jq -e '.repos | length > 0' "$b/prek-config.json" >/dev/null

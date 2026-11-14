@@ -84,6 +84,11 @@ if [ -e "\$ctl/sleep" ]; then
   read -r s <"\$ctl/sleep"
   sleep "\$s"
 fi
+for a in "\$@"; do
+  if [ -f "\$ctl/hook-\$a" ]; then
+    sh "\$ctl/hook-\$a"
+  fi
+done
 rc=0
 if [ -f "\$ctl/exit" ]; then
   read -r rc <"\$ctl/exit"

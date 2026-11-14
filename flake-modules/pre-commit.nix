@@ -154,6 +154,28 @@ in
         Resolved into the bundle's `fixers.json` (a flat ordered list) at evaluation time.
       '';
     };
+    hookKinds = lib.mkOption {
+      type = lib.types.attrsOf (
+        lib.types.enum [
+          "fix"
+          "check"
+        ]
+      );
+      default = { };
+      example = {
+        run-unit-tests = "check";
+        gofumpt = "fix";
+      };
+      description = ''
+        Classifies each prek hook for `pg-hooks run <stage> --only fix|check`: `fix` hooks
+        may rewrite files (formatters, generators), `check` hooks MUST NOT change the tree.
+        The base hooks are classified here already (fixers: treefmt, trailing-whitespace,
+        end-of-file-fixer); a consumer MUST classify every hook it adds through
+        `extraHooks`. An enabled hook with no classification fails evaluation (only when
+        `bundle.enable`). A hook that both rewrites and verifies MUST be classified `fix`.
+        Written to the bundle's `hook-kinds.json`.
+      '';
+    };
     stampPaths = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -556,6 +578,22 @@ in
           ;
       }) resolvedFixers;
 
+      # hook-kinds.json: every prek hook classified fix (may rewrite files) or check
+      # (MUST NOT). The base hooks are classified here; `hookKinds` adds the rest.
+      baseHookKinds = {
+        treefmt = "fix";
+        trailing-whitespace = "fix";
+        end-of-file-fixer = "fix";
+        statix = "check";
+        deadnix = "check";
+        shellcheck = "check";
+        check-merge-conflicts = "check";
+        check-case-conflicts = "check";
+        check-git-identity = "check";
+        check-grafana-alert-uids = "check";
+      };
+      hookKindsData = baseHookKinds // topLevelCfg.hookKinds;
+
       metaData = {
         # Empty: the runner and CLI fall back to the canonical clone's basename.
         repo = "";
@@ -592,6 +630,10 @@ in
                 fixer.before
               ]
         ) addedFixers
+        ++ lib.mapAttrsToList (
+          id: _:
+          "prek hook '${id}' is not classified fix or check; add it to phillipgreenii.pre-commit.hookKinds (a hook that both rewrites and verifies is `fix`)."
+        ) (lib.filterAttrs (id: _: !(hookKindsData ? ${id})) enabledHooks)
         ++ lib.optional (
           lib.length resolvedFixers != lib.length allFixers
         ) "fixer anchors do not resolve (a cycle, or an anchor chain that never reaches a default fixer)."
@@ -616,12 +658,15 @@ in
               fixers = fixersData;
               stages = stagesData;
               meta = metaData;
+              hookKinds = hookKindsData;
             };
             stagesJson = builtins.toJSON stagesData;
             fixersJson = builtins.toJSON fixersData;
+            hookKindsJson = builtins.toJSON hookKindsData;
             metaJson = builtins.toJSON metaData;
             passAsFile = [
               "stagesJson"
+              "hookKindsJson"
               "fixersJson"
               "metaJson"
             ];
@@ -638,6 +683,7 @@ in
             jq empty $out/prek-config.json
             jq . "$stagesJsonPath" >$out/stages.json
             jq . "$fixersJsonPath" >$out/fixers.json
+            jq . "$hookKindsJsonPath" >$out/hook-kinds.json
             jq . "$metaJsonPath" >$out/meta.json
           '';
     in

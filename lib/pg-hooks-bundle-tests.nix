@@ -53,6 +53,7 @@ let
     evalFixture {
       precommit = {
         bundle.enable = true;
+        hookKinds.fixture-hook = "check";
         extraHooks.fixture-hook = {
           enable = true;
           name = "fixture-hook";
@@ -283,6 +284,43 @@ in
     expected = {
       control = true;
       unknown = false;
+    };
+  };
+
+  "test every enabled hook must be classified fix or check" = {
+    expr = {
+      control = evaluates (
+        bundleOf (withHook {
+          entry = "true";
+        })
+      );
+      unclassified = evaluates (
+        bundleOf (evalFixture {
+          precommit = {
+            bundle.enable = true;
+            extraHooks.unclassified-hook = {
+              enable = true;
+              name = "unclassified-hook";
+              entry = "true";
+              pass_filenames = false;
+            };
+          };
+        })
+      );
+      baseKinds =
+        (bundleOf (withHook {
+          entry = "true";
+        })).bundleData.hookKinds.treefmt;
+      consumerKind =
+        (bundleOf (withHook {
+          entry = "true";
+        })).bundleData.hookKinds.fixture-hook;
+    };
+    expected = {
+      control = true;
+      unclassified = false;
+      baseKinds = "fix";
+      consumerKind = "check";
     };
   };
 

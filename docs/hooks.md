@@ -202,6 +202,19 @@ bundle exits 12. `explain` of an unknown stage exits 2.
   sets `PG_TEST_RUNNER_TRANSIENT_FILE` for `pre-land` only, so the commit-time hook keeps the runner's
   fail-open behavior and exit 10.
 - `pre-land` does not take `--all-files` (exit 2).
+- `--only fix|check` (any stage) runs a subset of the stage's hooks. `fix` runs exactly the hooks
+  classified `fix` (they may rewrite files: formatters, generators); `check` runs exactly those
+  classified `check` (they MUST NOT change the tree). With no selector every hook runs, unchanged.
+  The classification is the bundle's `hook-kinds.json` (`{ hook-id: "fix" | "check" }`), built from
+  the base hooks and `phillipgreenii.pre-commit.hookKinds`. The base fixers are `treefmt`,
+  `trailing-whitespace` and `end-of-file-fixer`; `statix`, `deadnix`, `shellcheck`,
+  `check-merge-conflicts`, `check-case-conflicts`, `check-git-identity` and
+  `check-grafana-alert-uids` are checks. A hook that both rewrites and verifies MUST be `fix`.
+  An unclassified hook never defaults: evaluation fails, and `--only` against a bundle that lacks
+  the classification of any hook exits 12. `--only check` fingerprints the working tree before and
+  after and exits 10 (message `--only check changed the working tree`) if it differs, so a
+  mislabeled hook is caught. A selector that matches no hook exits 0 without running prek.
+  The land's fixer step runs `pg-hooks run pre-land --only fix` and its verify step `--only check`.
 - `ff-merge-to-main` FF-1b runs this command. On exit 13 it records the notice line in the land
   outcome and continues; on exit 10 it stops the land. When `pg-hooks` is not on PATH (exit 127) a
   caller MUST report `pg-hooks not installed on this machine; ask the operator to run pn workspace
@@ -418,6 +431,7 @@ lib/pg-hooks-lib.bash     the library shared with the pg-hooks command
 prek-config.json          the rendered prek config (embeds hook store paths, which roots their closure)
 stages.json               stage -> [{ id, reason }]
 fixers.json               the resolved, ordered fixer list
+hook-kinds.json           hook id -> "fix" | "check" (for pg-hooks run --only)
 meta.json                 { repo, stampPaths, stages }
 ```
 
@@ -544,6 +558,7 @@ Each repo configures hooks in its `flake.nix` through `phillipgreenii.pre-commit
 | `extraHooks`           | Extra prek hooks. Each hook's `stages` decides where it runs.                                                                                                       |
 | `excludes`             | Path excludes (prek regexes).                                                                                                                                       |
 | `fixers`               | Extra fixers for `pg-hooks fix`: `{ name, command, mode, includes, excludes, after, before }`.                                                                      |
+| `hookKinds`            | `{ hook-id = "fix" \| "check"; }` for every hook added via `extraHooks` (base hooks are pre-classified); an unclassified enabled hook fails evaluation.             |
 | `stampPaths`           | Repo-relative paths hashed into the stamp in addition to `flake.lock` and `flake.nix`.                                                                              |
 | `bundle.enable`        | Render the bundle and make `install-pre-commit-hooks` install it. Default `true` (ADR 0032); `false` installs no hooks (the installer prints a notice and exits 0). |
 | `driftGuard.enable`    | Contribute the `hook-drift-guard` flake check (see [Drift guard](#drift-guard)). Default `false`.                                                                   |

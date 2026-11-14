@@ -41,6 +41,10 @@
 
 `pg-hooks run pre-land`
 
+- Run only the hooks that may rewrite files (fixers: `treefmt`, `trailing-whitespace`, `end-of-file-fixer`, plus any a repo classifies `fix`), or only the hooks that must not (`check`; exit `10` if one dirties the tree). Every hook is classified in the bundle's `hook-kinds.json`; an unclassified hook exits `12`:
+
+`pg-hooks run pre-land --only {{fix|check}}`
+
 - Apply the repo's fixers to the staged files and restage them (also installed as `pre-commit-fix`):
 
 `git add {{path/to/file}} && pg-hooks fix`

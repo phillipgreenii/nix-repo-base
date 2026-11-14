@@ -548,6 +548,86 @@ $(pgh_msg_hooks_failed pre-commit fixture 2>&1)" ]
   [ "$(_logged_args | sed -n 4p)" = "$(_common_dir)/pg-hooks/gen-1/bundle/prek-config.json" ]
 }
 
+# --- run --only fix|check ----------------------------------------------------
+
+# _only_bundle: a bundle with one fixer hook (rewrites fmt.txt) and one check
+# hook (records a run). The fake prek runs $PGH_T_CTL/hook-<id> for each hook id
+# it is given, so what ran is observable.
+_only_bundle() {
+  _present
+  cat >"$PGH_T_BUNDLE/stages.json" <<'JSON'
+{"pre-commit": [{"id": "fmt-hook", "reason": "format"}, {"id": "lint-hook", "reason": "lint"}]}
+JSON
+  printf '{"fmt-hook":"fix","lint-hook":"check"}\n' >"$PGH_T_BUNDLE/hook-kinds.json"
+  printf 'echo fixer >>"%s/ran"\nprintf rewritten >"%s/fmt.txt"\n' "$GFH_ROOT" "$GFH_REPO" >"$PGH_T_CTL/hook-fmt-hook"
+  printf 'echo check >>"%s/ran"\n' "$GFH_ROOT" >"$PGH_T_CTL/hook-lint-hook"
+  command git commit -q --allow-empty -m second
+}
+
+@test "run pre-land --only fix runs just the fixer, which may change files" {
+  _only_bundle
+  run --separate-stderr "$PGH_T_SUT" run pre-land --only fix
+  [ "$status" -eq 0 ]
+  [ "$(cat "$GFH_ROOT/ran")" = "fixer" ]
+  [ "$(cat "$GFH_REPO/fmt.txt")" = "rewritten" ]
+}
+
+@test "run pre-land --only check runs just the check and leaves the tree byte-identical" {
+  _only_bundle
+  local before after
+  before=$(command git status --porcelain=v1 -z --untracked-files=all | command git hash-object --stdin)
+  run --separate-stderr "$PGH_T_SUT" run pre-land --only check
+  [ "$status" -eq 0 ]
+  [ "$(cat "$GFH_ROOT/ran")" = "check" ]
+  [ ! -e "$GFH_REPO/fmt.txt" ]
+  after=$(command git status --porcelain=v1 -z --untracked-files=all | command git hash-object --stdin)
+  [ "$before" = "$after" ]
+}
+
+@test "run pre-land with no selector passes no hook-id filter, so prek runs every hook" {
+  _only_bundle
+  run --separate-stderr "$PGH_T_SUT" run pre-land
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args)" = "$(printf '%s\n' -q run -c "$(_common_dir)/pg-hooks/gen-1/bundle/prek-config.json" --hook-stage pre-commit --from-ref main --to-ref HEAD)" ]
+}
+
+@test "run pre-land --only passes the selected hook ids ahead of the range flags" {
+  _only_bundle
+  run --separate-stderr "$PGH_T_SUT" run pre-land --only check
+  [ "$status" -eq 0 ]
+  [ "$(_logged_args)" = "$(printf '%s\n' -q run -c "$(_common_dir)/pg-hooks/gen-1/bundle/prek-config.json" lint-hook --hook-stage pre-commit --from-ref main --to-ref HEAD)" ]
+}
+
+@test "run --only fails loudly (exit 12) when a hook is unclassified" {
+  _only_bundle
+  printf '{"fmt-hook":"fix"}\n' >"$PGH_T_BUNDLE/hook-kinds.json"
+  run --separate-stderr "$PGH_T_SUT" run pre-land --only check
+  [ "$status" -eq 12 ]
+  [[ $stderr == *"lint-hook"* ]]
+  [ ! -e "$GFH_ROOT/ran" ]
+}
+
+@test "run --only exits 12 when the bundle has no hook-kinds.json" {
+  _only_bundle
+  rm "$PGH_T_BUNDLE/hook-kinds.json"
+  run --separate-stderr "$PGH_T_SUT" run pre-land --only fix
+  [ "$status" -eq 12 ]
+}
+
+@test "run pre-land --only check exits 10 when a check hook dirties the tree" {
+  _only_bundle
+  printf 'echo check >>"%s/ran"\nprintf dirty >"%s/fmt.txt"\n' "$GFH_ROOT" "$GFH_REPO" >"$PGH_T_CTL/hook-lint-hook"
+  run --separate-stderr "$PGH_T_SUT" run pre-land --only check
+  [ "$status" -eq 10 ]
+  [[ $stderr == *"--only check changed the working tree"* ]]
+}
+
+@test "run --only rejects a value other than fix or check (exit 2)" {
+  _only_bundle
+  run --separate-stderr "$PGH_T_SUT" run pre-land --only both
+  [ "$status" -eq 2 ]
+}
+
 # --- run pre-land ------------------------------------------------------------
 
 @test "run pre-land passes --from-ref <primary> --to-ref HEAD" {
