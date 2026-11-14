@@ -23,6 +23,10 @@ setup() {
   # included. The tests that need it set it themselves; any other test that hits a cap or
   # finds no slot MUST NOT write into the OUTER run's file.
   unset PG_TEST_RUNNER_TRANSIENT_FILE
+  # The run-limit overrides win over the config, so a caller's exported value would change
+  # what the config-driven tests resolve. Tests that need one set it themselves.
+  unset PG_TEST_RUNNER_MAX_CONCURRENT_RUNS PG_TEST_RUNNER_NICE_LEVEL \
+    PG_TEST_RUNNER_SLOT_WAIT_SECONDS PG_TEST_RUNNER_PROJECT_CONCURRENCY
 
   CONFIG_PATH="$TEST_DIR/config.json"
   cat >"$CONFIG_PATH" <<'JSON'
@@ -662,7 +666,8 @@ _slots_setup() {
   # Re-run two tests that hit the cap or find no slot without setting the variable, in a
   # nested bats with the variable exported in the OUTER environment, as a pre-land run does.
   PG_TEST_RUNNER_TRANSIENT_FILE="$TEST_DIR/leaked-transient" \
-    run bats --filter '^(ptr_invoke runs anyway, with a warning, when no slot frees up within the wait budget|ptr_invoke honours the per-project cap from projectTimeouts)$' "$BATS_TEST_FILENAME"
+    PG_TEST_RUNNER_MAX_CONCURRENT_RUNS=9 PG_TEST_RUNNER_NICE_LEVEL=9 PG_TEST_RUNNER_SLOT_WAIT_SECONDS=9 \
+    run bats --filter '^(ptr_invoke runs anyway, with a warning, when no slot frees up within the wait budget|ptr_invoke honours the per-project cap from projectTimeouts|ptr_load_limits reads the config values)$' "$BATS_TEST_FILENAME"
   [ "$status" -eq 0 ] || {
     echo "$output" >&2
     return 1
