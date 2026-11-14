@@ -48,7 +48,7 @@ WRAPPER
   unset PG_TEST_RUNNER_CONFIG PG_TEST_RUNNER_DEFAULT_CONFIG \
     PG_TEST_RUNNER_PROJECT_CONCURRENCY PG_TEST_RUNNER_MAX_CONCURRENT_RUNS \
     PG_TEST_RUNNER_NICE_LEVEL PG_TEST_RUNNER_SLOT_WAIT_SECONDS \
-    PG_TEST_RUNNER_LOCK_ROOT PG_TEST_RUNNER_TMP_ROOT
+    PG_TEST_RUNNER_LOCK_ROOT PG_TEST_RUNNER_TMP_ROOT PG_TEST_RUNNER_TRANSIENT_FILE
 
   # A minimal, deterministic config using only go + bats (both available to
   # this check via testDeps) -- see pg-test-runner/default.nix. timeoutSeconds
@@ -599,8 +599,13 @@ _conc_repo() {
     PG_TEST_RUNNER_SLOT_WAIT_SECONDS=1 \
     PG_TEST_RUNNER_LOCK_ROOT="$TEST_DIR/leaked-lock-root" \
     PG_TEST_RUNNER_TMP_ROOT="$TEST_DIR/leaked-tmp-root" \
-    run bats --filter '^(projectConcurrency defaults to one project at a time|maxConcurrentRuns=1 serialises two separate pg-test-runner processes)$' "$BATS_TEST_FILENAME"
+    PG_TEST_RUNNER_TRANSIENT_FILE="$TEST_DIR/leaked-transient" \
+    run bats --filter '^(projectConcurrency defaults to one project at a time|maxConcurrentRuns=1 serialises two separate pg-test-runner processes|without projectTimeouts the global timeoutSeconds cap kills a slow project \(exit 10\))$' "$BATS_TEST_FILENAME"
   [ "$status" -eq 0 ] || { echo "$output" >&2; return 1; }
+  # `pg-hooks run pre-land` exports the transient file. A test that makes the runner hit
+  # its cap or find no slot MUST NOT write into it, or the outer hook run reports a stop
+  # (exit 75) for a suite that passed.
+  [ ! -s "$TEST_DIR/leaked-transient" ] || { echo "leaked into the transient file:" >&2; cat "$TEST_DIR/leaked-transient" >&2; return 1; }
   [[ "$output" == *"projectConcurrency defaults to one project at a time"* ]]
   [[ "$output" == *"maxConcurrentRuns=1 serialises two separate"* ]]
 }
