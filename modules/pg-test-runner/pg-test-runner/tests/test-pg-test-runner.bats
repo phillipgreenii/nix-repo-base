@@ -1083,7 +1083,7 @@ FAKE
   _fake_recording_tools
   mkdir -p "$TEST_DIR/repo/.git" "$TEST_DIR/repo/goproj"
   : >"$TEST_DIR/repo/goproj/go.mod"
-  unset GOMAXPROCS GOMEMLIMIT
+  unset GOMAXPROCS GOMEMLIMIT PG_TEST_RUNNER_RACE
   run "$SCRIPT" "$TEST_DIR/repo/goproj"
   [ "$status" -eq 0 ]
   grep -qx 'ARGV=test -race -p 4 -parallel 4 ./...' "$TEST_DIR/record-go"

@@ -653,11 +653,18 @@ _slots_setup() {
 
 @test "no shipped pg-hooks or pg-test-runner text blames a stop on host load" {
   local root="${BATS_TEST_DIRNAME}/../../../.."
-  run grep -rniE 'host.load' "$root/modules/pg-hooks/pg-hooks/pg-hooks.sh" \
-    "$root/modules/pg-hooks/pg-hooks/pg-hooks.md" \
-    "$root/modules/pg-test-runner/pg-test-runner/pg-test-runner.bash" \
-    "$root/modules/pg-test-runner/pg-test-runner/pg-test-runner.md" \
+  local files=(
+    "$root/modules/pg-hooks/pg-hooks/pg-hooks.sh"
+    "$root/modules/pg-hooks/pg-hooks/pg-hooks.md"
+    "$root/modules/pg-test-runner/pg-test-runner/pg-test-runner.bash"
+    "$root/modules/pg-test-runner/pg-test-runner/pg-test-runner.md"
     "$root/docs/hooks.md"
+  )
+  local f
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || skip "sibling module sources not beside this suite (nix sandbox layout): $f"
+  done
+  run grep -niE 'host.load' "${files[@]}"
   [ "$status" -eq 1 ]
 }
 
