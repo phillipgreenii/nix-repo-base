@@ -123,3 +123,4 @@ For the capture recipe, reading the output, and the warning about goroutine dump
 
 - [ADR 0034](adr/0034-opt-in-pprof-endpoint-for-go-daemons.md): the decision to adopt the standard.
 - [Go daemon profiling runbook](go-daemon-profiling-runbook.md): capture and reading profiles.
+- [Go convention for time in tests](go-testing-time.md): `testing/synctest` first, injected clock for persisted or cross-process time.
