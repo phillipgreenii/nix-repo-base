@@ -28,6 +28,7 @@ run:
   # needed, so it is deliberately NOT listed here.
   build-tags:
     - smoke
+    - realnix
 linters:
   default: standard
   enable:

@@ -1,3 +1,5 @@
+//go:build realnix
+
 package main
 
 // Real-nix tests of `pn workspace flake-check --no-build` (bead pg2-8uc2d), and
