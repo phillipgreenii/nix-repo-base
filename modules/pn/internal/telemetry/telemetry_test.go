@@ -311,8 +311,10 @@ func TestCollectorDown_ShutdownBounded(t *testing.T) {
 	}
 }
 
-// A collector that accepts but never answers is also bounded.
+// A collector that accepts but never answers is also bounded. The bound is
+// injected short so the test does not wait out the production ShutdownTimeout.
 func TestCollectorHung_ShutdownBounded(t *testing.T) {
+	const bound = 200 * time.Millisecond
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -323,7 +325,7 @@ func TestCollectorHung_ShutdownBounded(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	tel, err := telemetry.New(context.Background(), "test", srv.URL)
+	tel, err := telemetry.NewWithShutdownTimeout(context.Background(), "test", srv.URL, bound)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,8 +335,16 @@ func TestCollectorHung_ShutdownBounded(t *testing.T) {
 
 	start := time.Now()
 	_ = tel.Shutdown(context.Background())
-	if d := time.Since(start); d > telemetry.ShutdownTimeout+2*time.Second {
-		t.Errorf("Shutdown took %v with a hung collector, want <= ~%v", d, telemetry.ShutdownTimeout)
+	if d := time.Since(start); d > bound+2*time.Second {
+		t.Errorf("Shutdown took %v with a hung collector, want <= ~%v", d, bound)
+	}
+}
+
+// The production bound is part of the contract: New uses ShutdownTimeout, and
+// that value is 3 seconds.
+func TestShutdownTimeout_ProductionDefaultUnchanged(t *testing.T) {
+	if telemetry.ShutdownTimeout != 3*time.Second {
+		t.Errorf("ShutdownTimeout = %v, want 3s", telemetry.ShutdownTimeout)
 	}
 }
 

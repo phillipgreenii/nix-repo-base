@@ -130,7 +130,14 @@ type Telemetry struct {
 // Telemetry. On an Init error the no-op Telemetry is returned together with
 // the error so callers may log it and carry on (telemetry must never stop pn).
 func New(ctx context.Context, version, endpoint string, opts ...otelsetup.Option) (*Telemetry, error) {
-	opts = append([]otelsetup.Option{otelsetup.WithTimeout(ShutdownTimeout)}, opts...)
+	return NewWithShutdownTimeout(ctx, version, endpoint, ShutdownTimeout, opts...)
+}
+
+// NewWithShutdownTimeout is New with an explicit bound on the final flush. Production
+// code uses New (ShutdownTimeout); tests inject a short bound so they need not wait
+// out the real one.
+func NewWithShutdownTimeout(ctx context.Context, version, endpoint string, timeout time.Duration, opts ...otelsetup.Option) (*Telemetry, error) {
+	opts = append([]otelsetup.Option{otelsetup.WithTimeout(timeout)}, opts...)
 	ot, err := otelsetup.Init(ctx, otelsetup.Config{
 		Endpoint:    endpoint,
 		ServiceName: ServiceName,
@@ -139,7 +146,7 @@ func New(ctx context.Context, version, endpoint string, opts ...otelsetup.Option
 	if err != nil {
 		return Disabled(), err
 	}
-	t := &Telemetry{enabled: ot.Enabled(), timeout: ShutdownTimeout}
+	t := &Telemetry{enabled: ot.Enabled(), timeout: timeout}
 	t.tracer = ot.Tracer
 	t.commandDuration = mustHistogram(ot.Meter)
 	t.planBuilds = mustPlanBuilds(ot.Meter)
