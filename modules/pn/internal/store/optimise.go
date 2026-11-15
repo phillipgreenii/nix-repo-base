@@ -130,7 +130,7 @@ func countLinks(storeDir string) int {
 	if err != nil {
 		return -1
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	n := 0
 	for {
 		names, err := d.Readdirnames(8192)

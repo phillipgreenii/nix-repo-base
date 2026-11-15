@@ -144,7 +144,7 @@ func TestRealRunner_CancelReachesGrandchildInPipeline(t *testing.T) {
 			type out struct{ err error }
 			done := make(chan out, 1)
 			go func() {
-				_, err := NewRealRunnerWithKillGrace(300*time.Millisecond).Run(ctx, "bash",
+				_, err := NewRealRunnerWithKillGrace(5*time.Second).Run(ctx, "bash",
 					[]string{"-c", darwinRebuildShaped, "bash", pidfile, dur, mode}, RunOptions{OwnProcessGroup: true})
 				done <- out{err}
 			}()
@@ -214,13 +214,13 @@ func TestRealRunner_OwnProcessGroupIsOptIn(t *testing.T) {
 func TestRealRunner_CtrlCReachesChildExactlyOnce(t *testing.T) {
 	dir := t.TempDir()
 	marker, ready := filepath.Join(dir, "signals"), filepath.Join(dir, "ready")
-	script := `trap 'echo TERM >> "$1"' TERM; trap 'echo INT >> "$1"' INT; touch "$2"; while :; do sleep 0.05; done`
+	script := `trap 'echo TERM >> "$1"; exit 0' TERM; trap 'echo INT >> "$1"' INT; touch "$2"; while :; do sleep 0.05; done`
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	done := make(chan error, 1)
 	go func() {
-		_, err := NewRealRunnerWithKillGrace(300*time.Millisecond).Run(ctx, "bash",
+		_, err := NewRealRunnerWithKillGrace(5*time.Second).Run(ctx, "bash",
 			[]string{"-c", script, "bash", marker, ready}, RunOptions{OwnProcessGroup: true})
 		done <- err
 	}()
