@@ -1,3 +1,5 @@
+//go:build realbin
+
 package main
 
 import (

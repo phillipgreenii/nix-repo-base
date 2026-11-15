@@ -1995,6 +1995,28 @@
               ];
             };
 
+            # Real-binary gate for pn: the cmd/pn tests that build and drive the real pn
+            # binary (`cli_realbin_test.go`, `sigterm_realbin_test.go`,
+            # `//go:build realbin`; about 9 s at idle, each spawning pn plus git) are
+            # integration tests, so they sit outside the unit gate `pn-go-tests` and run
+            # here (ADR 0024). The binary is built once by TestMain under this tag.
+            # .golangci.yml `run.build-tags` MUST list the tag.
+            pn-realbin-tests = goBuilders.mkGoTest {
+              pname = "pn-realbin";
+              src = ./modules/pn;
+              gomod2nixToml = ./modules/pn/gomod2nix.toml;
+              testDeps = [
+                pkgs.git
+              ];
+              testFlags = [
+                "-tags"
+                "realbin"
+                "-count=1"
+                "-run"
+                "TestIntegration_"
+              ];
+            };
+
             # Full Go test gate for pjira (explicit mkGoTest so it stays real even if
             # pjira ever grows a second cmd/* entrypoint — mirrors pn-go-tests).
             pjira-go-tests = goBuilders.mkGoTest {

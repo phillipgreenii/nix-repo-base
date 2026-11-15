@@ -29,6 +29,7 @@ run:
   build-tags:
     - smoke
     - realnix
+    - realbin
 linters:
   default: standard
   enable:
