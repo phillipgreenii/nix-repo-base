@@ -747,6 +747,10 @@ func workspaceDoctorCmd(terminal *string) *cobra.Command {
 			if st := telemetrycfg.RunStateFrom(cmd.Context()); st != nil {
 				res := st.Res
 				opts.Telemetry = &res
+				sp := telemetrycfg.ResolveSpool(telemetrycfg.Inputs{
+					Flags: telemetrycfg.ScanArgs(os.Args[1:]), IsRoot: os.Geteuid() == 0,
+				})
+				opts.Spool = &sp
 			}
 			report, derr := workspace.Doctor(cmd.Context(), root, exec.NewRealRunner(), opts)
 			if derr != nil {

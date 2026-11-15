@@ -110,6 +110,9 @@ type DoctorOptions struct {
 	// Telemetry is the CLI-resolved telemetry configuration (ADR 0028). Nil
 	// or !Enabled makes the telemetry check silent.
 	Telemetry *telemetrycfg.Resolution
+	// Spool is the spool-mode resolution (telemetrycfg.ResolveSpool). Nil
+	// skips the spool-directory health check.
+	Spool *telemetrycfg.SpoolResolution
 }
 
 // doctorEnv is the shared context passed to every check.
@@ -122,7 +125,8 @@ type doctorEnv struct {
 	skipped  map[string]bool
 	lock     *Lock // effective lock (derived if the disk lock is stale)
 
-	telemetry *telemetrycfg.Resolution // resolved telemetry config; nil = not provided
+	telemetry *telemetrycfg.Resolution      // resolved telemetry config; nil = not provided
+	spool     *telemetrycfg.SpoolResolution // spool-mode resolution; nil = not provided
 
 	// wrapperCheck memoizes the wrapper's --check for this run (telemetry and
 	// shim checks share it). shimRootConfig overrides the root shim
@@ -198,6 +202,7 @@ func Doctor(ctx context.Context, root string, runner exec.Runner, opts DoctorOpt
 		lock:     effLock,
 
 		telemetry: opts.Telemetry,
+		spool:     opts.Spool,
 	}
 
 	checks := ws.registerChecks()

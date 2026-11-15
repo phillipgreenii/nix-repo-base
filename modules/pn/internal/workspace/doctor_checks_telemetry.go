@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -30,9 +32,12 @@ const wrapperCheckTimeout = 15 * time.Second
 // without OTel sees doctor output identical to before. "On" means configured
 // on: a collector that pn's start-up probe found unreachable (which turns
 // telemetry off for that run) is still reported here, because the system is
-// configured to emit and the collector is down. So is `enabled = true` with no
-// endpoint anywhere. Findings are warnings, never errors: telemetry is
+// configured to emit and the collector is down. Findings are warnings, never errors: telemetry is
 // optional and a broken collector must not fail workspace health.
+//
+// Spool mode (telemetry.toml `enabled = true`, no endpoint) is judged by
+// ResolveSpool: it is healthy, and silent, when the spool directory is usable;
+// an unusable spool_dir (relative, or not writable) is the one warning.
 func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Finding {
 	res := env.telemetry
 	if res == nil {
@@ -44,17 +49,16 @@ func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Findi
 			Message: msg, Manual: manual,
 		}}
 	}
+	// Spool mode (telemetry.toml enabled = true; no endpoint is involved): the
+	// only thing to verify is that the spool directory is usable.
+	if f := env.spoolFinding(); f != nil {
+		return []Finding{*f}
+	}
 	if !res.Enabled {
-		switch {
-		case res.ProbeErr != nil:
+		if res.ProbeErr != nil {
 			return warn(
 				fmt.Sprintf("telemetry is enabled (endpoint %s from %s) but the collector is unreachable: %v", res.ProbeEndpoint, res.ProbeSource, res.ProbeErr),
 				"start the observability stack, or set phillipgreenii.pn.telemetry.enable = false (telemetry.toml enabled = false) and apply",
-			)
-		case res.Forced == "" && res.FileEnabled != nil && *res.FileEnabled:
-			return warn(
-				"telemetry.toml has enabled = true but no endpoint resolves; telemetry stays off",
-				"set phillipgreenii.pn.telemetry.endpoint (or OTEL_EXPORTER_OTLP_ENDPOINT) and apply, or set enable = false",
 			)
 		}
 		return nil
@@ -89,6 +93,56 @@ func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Findi
 		)
 	}
 	return nil
+}
+
+// spoolFinding reports an unusable spool directory when telemetry is
+// configured on in spool mode (telemetry.toml enabled = true, or the per-run
+// flag); nil when spool mode is off, not resolved, or the directory is usable.
+func (env *doctorEnv) spoolFinding() *Finding {
+	sp := env.spool
+	if sp == nil || sp.Forced != "" {
+		return nil
+	}
+	err := sp.Err
+	if err == nil && sp.Enabled {
+		err = spoolDirUsable(sp.Dir)
+	}
+	if err == nil {
+		return nil
+	}
+	return &Finding{
+		CheckID: telemetryCheckID, Severity: SevWarning,
+		Message: fmt.Sprintf("telemetry is enabled but the spool directory is unusable: %v; telemetry stays off", err),
+		Manual:  "set phillipgreenii.pn.telemetry.spool_dir (telemetry.toml spool_dir) to an absolute, writable directory and apply, or set enable = false",
+	}
+}
+
+// spoolDirUsable checks without writing anything that dir is, or can be
+// created as, a writable directory: the nearest existing ancestor must be a
+// directory the process can write to.
+func spoolDirUsable(dir string) error {
+	p := dir
+	for {
+		fi, err := os.Stat(p)
+		switch {
+		case err == nil:
+			if !fi.IsDir() {
+				return fmt.Errorf("%s is not a directory", p)
+			}
+			if err := syscall.Access(p, 2); err != nil { // 2 = W_OK
+				return fmt.Errorf("%s is not writable: %w", p, err)
+			}
+			return nil
+		case errors.Is(err, os.ErrNotExist):
+			parent := filepath.Dir(p)
+			if parent == p {
+				return err
+			}
+			p = parent
+		default:
+			return err
+		}
+	}
 }
 
 // wrapperCheck is one run of `pg-nix-log-wrapped --check`, shared by the

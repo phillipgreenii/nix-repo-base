@@ -156,16 +156,52 @@ func TestCheckTelemetry_ConfiguredOnButUnreachableWarns(t *testing.T) {
 	}
 }
 
-// enabled = true with no endpoint anywhere is a misconfiguration worth a warning.
-func TestCheckTelemetry_EnabledWithoutEndpointWarns(t *testing.T) {
-	ws, _ := telemetryWS(t)
-	got := ws.checkTelemetry(context.Background(), &doctorEnv{ws: ws, telemetry: &telemetrycfg.Resolution{FileEnabled: &trueVal}})
-	if len(got) != 1 || !strings.Contains(got[0].Message, "no endpoint") {
-		t.Fatalf("expected a no-endpoint warning, got %+v", got)
+// Spool mode: enabled = true, no endpoint anywhere, usable spool directory
+// (not yet created: its parent is writable) yields no finding.
+func TestCheckTelemetry_SpoolModeUsableSpoolIsSilent(t *testing.T) {
+	ws, f := telemetryWS(t)
+	spool := &telemetrycfg.SpoolResolution{
+		Enabled: true, Dir: filepath.Join(t.TempDir(), "otel-spool"), Source: telemetrycfg.SpoolSourceFile,
 	}
-	// A force-off control wins: the operator asked for off, so stay silent.
-	got = ws.checkTelemetry(context.Background(), &doctorEnv{ws: ws, telemetry: &telemetrycfg.Resolution{FileEnabled: &trueVal, Forced: "--no-telemetry"}})
-	if len(got) != 0 {
+	env := &doctorEnv{ws: ws, telemetry: &telemetrycfg.Resolution{FileEnabled: &trueVal}, spool: spool}
+	if got := ws.checkTelemetry(context.Background(), env); len(got) != 0 {
+		t.Fatalf("usable spool must be silent, got %+v", got)
+	}
+	if len(f.Calls()) != 0 {
+		t.Fatalf("spool mode must run nothing: %+v", f.Calls())
+	}
+	// A force-off control wins: stay silent.
+	env.spool = &telemetrycfg.SpoolResolution{Forced: "--no-telemetry"}
+	if got := ws.checkTelemetry(context.Background(), env); len(got) != 0 {
 		t.Fatalf("forced off must be silent, got %+v", got)
+	}
+}
+
+// Spool mode with an unusable spool directory warns, names spool_dir and
+// never the retired endpoint option.
+func TestCheckTelemetry_SpoolModeUnusableSpoolWarns(t *testing.T) {
+	ws, _ := telemetryWS(t)
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, sp := range map[string]*telemetrycfg.SpoolResolution{
+		"relative": {Err: errors.New(`spool directory "rel/dir" is not absolute`)},
+		"unwritable": {
+			Enabled: true, Dir: filepath.Join(blocker, "otel-spool"), Source: telemetrycfg.SpoolSourceFile,
+		},
+	} {
+		env := &doctorEnv{ws: ws, telemetry: &telemetrycfg.Resolution{FileEnabled: &trueVal}, spool: sp}
+		got := ws.checkTelemetry(context.Background(), env)
+		if len(got) != 1 || got[0].Severity != SevWarning || got[0].CheckID != "telemetry" {
+			t.Fatalf("%s: expected one telemetry warning, got %+v", name, got)
+		}
+		text := got[0].Message + " " + got[0].Manual
+		if !strings.Contains(text, "spool_dir") {
+			t.Errorf("%s: should name spool_dir: %q", name, text)
+		}
+		if strings.Contains(text, "endpoint") || strings.Contains(text, "OTEL_EXPORTER_OTLP_ENDPOINT") {
+			t.Errorf("%s: must not mention the endpoint option: %q", name, text)
+		}
 	}
 }
