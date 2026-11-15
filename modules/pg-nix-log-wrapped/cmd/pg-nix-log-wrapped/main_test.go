@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -49,14 +48,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	wrapper = filepath.Join(dir, "pg-nix-log-wrapped")
-	goTool := filepath.Join(runtime.GOROOT(), "bin", "go")
-	if _, err := os.Stat(goTool); err != nil {
-		if goTool, err = exec.LookPath("go"); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	build := exec.Command(goTool, "build", "-o", wrapper, ".")
+	build := exec.CommandContext(context.Background(), goTool, "build", "-o", wrapper, ".")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "building the wrapper: %v\n%s", err, out)

@@ -11,6 +11,7 @@
 package fakecmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -239,14 +240,12 @@ func NewDir() (*Dir, error) {
 		return nil, err
 	}
 	d := &Dir{path: dir, bin: filepath.Join(dir, "fake-bin")}
-	goTool := filepath.Join(runtime.GOROOT(), "bin", "go")
-	if _, err := os.Stat(goTool); err != nil {
-		if goTool, err = exec.LookPath("go"); err != nil {
-			_ = os.RemoveAll(dir)
-			return nil, err
-		}
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
 	}
-	cmd := exec.Command(goTool, "build", "-o", d.bin, "./fakenix")
+	cmd := exec.CommandContext(context.Background(), goTool, "build", "-o", d.bin, "./fakenix")
 	cmd.Dir = filepath.Dir(file)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
