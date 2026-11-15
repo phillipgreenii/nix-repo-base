@@ -87,7 +87,7 @@ func s37Field(line, key string) string {
 
 func s37WantState(t *testing.T, what, dir string, want workspace.HookBundleState) workspace.HookBundleInfo {
 	t.Helper()
-	got, info, err := workspace.ReadHookBundleState(dir)
+	got, info, err := workspace.ReadHookBundleState(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("S37: %s: ReadHookBundleState(%s): %v", what, dir, err)
 	}

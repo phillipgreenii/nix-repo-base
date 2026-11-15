@@ -421,12 +421,12 @@ func bundleHookWS(t *testing.T, attr string) (*Workspace, string) {
 // missing), must run the installer.
 func TestInstallHookUpToDate(t *testing.T) {
 	t.Run("not a git work tree", func(t *testing.T) {
-		if installHookUpToDate(t.TempDir()) {
+		if installHookUpToDate(t.Context(), t.TempDir()) {
 			t.Error("a non-repo directory must run the installer")
 		}
 	})
 	t.Run("no bundle", func(t *testing.T) {
-		if installHookUpToDate(hbRepo(t)) {
+		if installHookUpToDate(t.Context(), hbRepo(t)) {
 			t.Error("a clone with no bundle must run the installer")
 		}
 	})
@@ -435,21 +435,21 @@ func TestInstallHookUpToDate(t *testing.T) {
 		if err := os.Symlink("/nix/store/deadbeefdeadbeefdeadbeefdeadbeef-gone/config.yaml", filepath.Join(dir, ".pre-commit-config.yaml")); err != nil {
 			t.Fatal(err)
 		}
-		if installHookUpToDate(dir) {
+		if installHookUpToDate(t.Context(), dir) {
 			t.Error("an old config symlink is not a bundle: the installer must run")
 		}
 	})
 	t.Run("present bundle", func(t *testing.T) {
 		dir := hbRepo(t)
 		writeFakeBundle(t, dir, hbBundleOpts{})
-		if !installHookUpToDate(dir) {
+		if !installHookUpToDate(t.Context(), dir) {
 			t.Error("a present bundle must skip the installer")
 		}
 	})
 	t.Run("stale bundle", func(t *testing.T) {
 		dir := hbRepo(t)
 		writeFakeBundle(t, dir, hbBundleOpts{Stamp: "not-the-current-stamp"})
-		if installHookUpToDate(dir) {
+		if installHookUpToDate(t.Context(), dir) {
 			t.Error("a stale bundle must run the installer")
 		}
 	})
@@ -458,11 +458,11 @@ func TestInstallHookUpToDate(t *testing.T) {
 		writeFakeBundle(t, dir, hbBundleOpts{})
 		wt := filepath.Join(filepath.Dir(dir), "wt")
 		runGitT(t, dir, "worktree", "add", "-q", "-b", "feat", wt)
-		if installHookUpToDate(wt) {
+		if installHookUpToDate(t.Context(), wt) {
 			t.Error("a linked worktree needs its OWN private bundle: the installer must run")
 		}
 		writeFakeBundle(t, wt, hbBundleOpts{Private: true})
-		if !installHookUpToDate(wt) {
+		if !installHookUpToDate(t.Context(), wt) {
 			t.Error("a linked worktree with a present private bundle must skip the installer")
 		}
 	})

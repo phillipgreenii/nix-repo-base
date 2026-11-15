@@ -2,6 +2,7 @@
 package workspace
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -40,8 +41,8 @@ func (ws *Workspace) installHookDeclared(repo string) bool {
 // when repoDir is not a git work tree (nothing to audit). A checkout with no
 // bundle pointer (declared but never installed, or holding only an old
 // .pre-commit-config.yaml symlink) is reported as having no hook bundle.
-func (ws *Workspace) bundleHookFindings(repo, repoDir string) ([]Finding, bool) {
-	state, info, err := ReadHookBundleState(repoDir)
+func (ws *Workspace) bundleHookFindings(ctx context.Context, repo, repoDir string) ([]Finding, bool) {
+	state, info, err := ReadHookBundleState(ctx, repoDir)
 	if err != nil {
 		return nil, false
 	}
@@ -49,7 +50,7 @@ func (ws *Workspace) bundleHookFindings(repo, repoDir string) ([]Finding, bool) 
 		// An explicit opt-out (pg-hooks.enabled=false) is not a finding.
 		return nil, true
 	}
-	c, err := readHookGitContext(repoDir)
+	c, err := readHookGitContext(ctx, repoDir)
 	if err != nil {
 		return nil, false
 	}

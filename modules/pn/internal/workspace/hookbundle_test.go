@@ -75,7 +75,7 @@ func writeFakeBundle(t *testing.T, dir string, o hbBundleOpts) string {
 	stamp := o.Stamp
 	if stamp == "" {
 		var err error
-		stamp, err = hookStamp(top, append([]string{"flake.lock", "flake.nix"}, o.StampPaths...))
+		stamp, err = hookStamp(t.Context(), top, append([]string{"flake.lock", "flake.nix"}, o.StampPaths...))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +98,7 @@ func writeFakeBundle(t *testing.T, dir string, o hbBundleOpts) string {
 
 func wantState(t *testing.T, dir string, want HookBundleState) HookBundleInfo {
 	t.Helper()
-	got, info, err := ReadHookBundleState(dir)
+	got, info, err := ReadHookBundleState(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("ReadHookBundleState(%s): %v", dir, err)
 	}
@@ -109,11 +109,11 @@ func wantState(t *testing.T, dir string, want HookBundleState) HookBundleInfo {
 }
 
 func TestReadHookBundleState_NotARepoIsAnError(t *testing.T) {
-	st, _, err := ReadHookBundleState(t.TempDir())
+	st, _, err := ReadHookBundleState(t.Context(), t.TempDir())
 	if err == nil || st != "" {
 		t.Fatalf("a non-repo must return an error and no state; got %q, %v", st, err)
 	}
-	if _, _, err := ReadHookBundleState(filepath.Join(t.TempDir(), "absent")); err == nil {
+	if _, _, err := ReadHookBundleState(t.Context(), filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("a missing directory must return an error")
 	}
 }

@@ -43,14 +43,14 @@ import (
 // is a pin edit PLUS a `uv lock` relock PLUS (across a formatter boundary) a
 // reformat of the affected sources, which is a reviewable change, not a
 // mechanical repair. Every finding carries a `Manual` hint instead.
-func (ws *Workspace) checkRuffPin(_ context.Context, _ *doctorEnv) []Finding {
+func (ws *Workspace) checkRuffPin(ctx context.Context, _ *doctorEnv) []Finding {
 	var out []Finding
 	for _, name := range orderedRepoNames(ws.config.Repos) {
 		repoDir := filepath.Join(ws.root, name)
 		if !isGitRepo(repoDir) {
 			continue
 		}
-		out = append(out, ws.ruffPinFindings(name, repoDir)...)
+		out = append(out, ws.ruffPinFindings(ctx, name, repoDir)...)
 	}
 	return out
 }
@@ -58,13 +58,13 @@ func (ws *Workspace) checkRuffPin(_ context.Context, _ *doctorEnv) []Finding {
 // ruffPinFindings audits one repo. It returns nothing when the repo declares no
 // ruff dependency (the invariant does not apply) or when its bundle config
 // runs no nixpkgs ruff hook (there is no second toolchain to unify).
-func (ws *Workspace) ruffPinFindings(repo, repoDir string) []Finding {
+func (ws *Workspace) ruffPinFindings(ctx context.Context, repo, repoDir string) []Finding {
 	pins := findRuffRequirements(repoDir)
 	if len(pins) == 0 {
 		return nil
 	}
 
-	versions, status := nixpkgsRuffVersions(repoDir)
+	versions, status := nixpkgsRuffVersions(ctx, repoDir)
 	switch status {
 	case ruffConfigAbsent:
 		// The bundle's prek-config.json exists only once the hooks are installed
@@ -153,8 +153,8 @@ var nixStoreRuffRe = regexp.MustCompile(`/nix/store/[0-9a-z]+-ruff-([0-9][^/"'\s
 // bundle's prek-config.json (per-clone hook bundle, design 7.4), or "" when the
 // checkout has no usable bundle. It carries the hook `entry` store paths, so the
 // ruff version is read from it.
-func hookConfigPath(repoDir string) string {
-	if _, info, err := ReadHookBundleState(repoDir); err == nil && info.Bundle != "" {
+func hookConfigPath(ctx context.Context, repoDir string) string {
+	if _, info, err := ReadHookBundleState(ctx, repoDir); err == nil && info.Bundle != "" {
 		p := filepath.Join(info.Bundle, "prek-config.json")
 		if _, err := os.Stat(p); err == nil {
 			return p
@@ -166,8 +166,8 @@ func hookConfigPath(repoDir string) string {
 // nixpkgsRuffVersions returns the sorted distinct nixpkgs ruff versions the
 // repo's hook bundle executes. A checkout with no usable bundle, or an
 // unreadable config, is reported as absent rather than as a mismatch.
-func nixpkgsRuffVersions(repoDir string) ([]string, ruffConfigStatus) {
-	path := hookConfigPath(repoDir)
+func nixpkgsRuffVersions(ctx context.Context, repoDir string) ([]string, ruffConfigStatus) {
+	path := hookConfigPath(ctx, repoDir)
 	if path == "" {
 		return nil, ruffConfigAbsent
 	}

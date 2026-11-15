@@ -126,8 +126,8 @@ func (c hookGitContext) canonical() string { return filepath.Dir(c.Common) }
 
 // runGitIn runs `git <args>` in dir and returns stdout (untrimmed). A non-zero
 // exit is an error.
-func runGitIn(dir string, stdin string, args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
+func runGitIn(ctx context.Context, dir string, stdin string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -143,8 +143,8 @@ func runGitIn(dir string, stdin string, args ...string) (string, error) {
 // readHookGitContext resolves the absolute git context of dir with one git
 // process. Every path is requested with --path-format=absolute: the canonical
 // clone otherwise yields a relative ".git".
-func readHookGitContext(dir string) (hookGitContext, error) {
-	out, err := runGitIn(dir, "", "rev-parse", "--path-format=absolute",
+func readHookGitContext(ctx context.Context, dir string) (hookGitContext, error) {
+	out, err := runGitIn(ctx, dir, "", "rev-parse", "--path-format=absolute",
 		"--git-common-dir", "--absolute-git-dir", "--show-toplevel")
 	if err != nil {
 		return hookGitContext{}, fmt.Errorf("hook bundle: %s is not a git work tree: %w", dir, err)
@@ -162,8 +162,8 @@ func readHookGitContext(dir string) (hookGitContext, error) {
 
 // isLinkedWorktree reports whether dir is a linked git worktree. A directory
 // that does not exist, or is not a work tree, is not.
-func isLinkedWorktree(dir string) bool {
-	c, err := readHookGitContext(dir)
+func isLinkedWorktree(ctx context.Context, dir string) bool {
+	c, err := readHookGitContext(ctx, dir)
 	return err == nil && c.linked()
 }
 
@@ -267,9 +267,9 @@ func hookStampPaths(bundle string) []string {
 // `git ls-files -s -- <inputs> | git hash-object --stdin`, run in the work tree
 // root. It reads the index, so a staged edit counts. "unknown" when none of the
 // inputs is tracked.
-func hookStamp(top string, inputs []string) (string, error) {
+func hookStamp(ctx context.Context, top string, inputs []string) (string, error) {
 	args := append([]string{"ls-files", "-s", "--"}, inputs...)
-	listing, err := runGitIn(top, "", args...)
+	listing, err := runGitIn(ctx, top, "", args...)
 	if err != nil {
 		return "unknown", nil
 	}
@@ -277,7 +277,7 @@ func hookStamp(top string, inputs []string) (string, error) {
 	if listing == "" {
 		return "unknown", nil
 	}
-	out, err := runGitIn(top, listing+"\n", "hash-object", "--stdin")
+	out, err := runGitIn(ctx, top, listing+"\n", "hash-object", "--stdin")
 	if err != nil {
 		return "", err
 	}
@@ -285,11 +285,11 @@ func hookStamp(top string, inputs []string) (string, error) {
 }
 
 // overrideNow reads an override path's current HEAD and dirty state.
-func overrideNow(path string) (head string, dirty bool) {
-	if out, err := runGitIn(path, "", "rev-parse", "HEAD"); err == nil {
+func overrideNow(ctx context.Context, path string) (head string, dirty bool) {
+	if out, err := runGitIn(ctx, path, "", "rev-parse", "HEAD"); err == nil {
 		head = strings.TrimSpace(out)
 	}
-	if out, err := runGitIn(path, "", "status", "--porcelain"); err == nil {
+	if out, err := runGitIn(ctx, path, "", "status", "--porcelain"); err == nil {
 		dirty = strings.TrimSpace(out) != ""
 	}
 	return head, dirty
@@ -297,10 +297,10 @@ func overrideNow(path string) (head string, dirty bool) {
 
 // changedHookOverrides names every recorded override whose HEAD differs from
 // now or whose dirty state differs from the recorded one.
-func changedHookOverrides(ovs []HookOverride) []string {
+func changedHookOverrides(ctx context.Context, ovs []HookOverride) []string {
 	var out []string
 	for _, o := range ovs {
-		head, dirty := overrideNow(o.Path)
+		head, dirty := overrideNow(ctx, o.Path)
 		if head != o.Head || dirty != o.Dirty {
 			out = append(out, o.Name)
 		}
@@ -329,8 +329,8 @@ func absoluteConfigOrigin(scope, origin string, c hookGitContext) string {
 // resolves to the common hooks dir is fine; a global or system one is fine too
 // when it names a dispatcher (a directory holding an executable pre-commit that
 // chains to <common-dir>/hooks).
-func hooksUnreachable(dir string, c hookGitContext) (bool, string, string) {
-	out, err := runGitIn(dir, "", "config", "--show-scope", "--show-origin", "--get", "core.hooksPath")
+func hooksUnreachable(ctx context.Context, dir string, c hookGitContext) (bool, string, string) {
+	out, err := runGitIn(ctx, dir, "", "config", "--show-scope", "--show-origin", "--get", "core.hooksPath")
 	if err != nil {
 		return false, "", ""
 	}
@@ -374,9 +374,9 @@ func hooksUnreachable(dir string, c hookGitContext) (bool, string, string) {
 // .pre-commit-config.yaml symlink is not a bundle). info.Hooks carries the
 // porcelain hooks= value. An error means repoDir is not a git work tree (the
 // state is empty).
-func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error) {
+func ReadHookBundleState(ctx context.Context, repoDir string) (HookBundleState, HookBundleInfo, error) {
 	var info HookBundleInfo
-	c, err := readHookGitContext(repoDir)
+	c, err := readHookGitContext(ctx, repoDir)
 	if err != nil {
 		return "", info, err
 	}
@@ -405,8 +405,8 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 		info.BrokenReason = fmt.Sprintf("pointer %s/current is invalid", info.Dir)
 	}
 
-	info.OptedOut = hookOptedOut(repoDir)
-	unreachable, urValue, urOrigin := hooksUnreachable(repoDir, c)
+	info.OptedOut = hookOptedOut(ctx, repoDir)
+	unreachable, urValue, urOrigin := hooksUnreachable(ctx, repoDir, c)
 	info.UnreachableValue, info.UnreachableOrigin = urValue, urOrigin
 
 	var src hookSourceJSON
@@ -447,7 +447,7 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 		return HookBundleBroken, info, nil
 	case bundleRC == hookPtrOK:
 		info.Hooks = HookBundleHooksRuns
-		if hookBundleStale(&info, c, src, haveSrc) {
+		if hookBundleStale(ctx, &info, c, src, haveSrc) {
 			return HookBundleStale, info, nil
 		}
 		return HookBundlePresent, info, nil
@@ -463,8 +463,8 @@ func ReadHookBundleState(repoDir string) (HookBundleState, HookBundleInfo, error
 // hookOptedOut reports whether git config boolean pg-hooks.enabled is false
 // for dir. Unset (git exit 1) and an invalid value (git exit 128) both mean
 // enabled; a failure to run git does too.
-func hookOptedOut(dir string) bool {
-	out, err := runGitIn(dir, "", "config", "--type=bool", "--get", "pg-hooks.enabled")
+func hookOptedOut(ctx context.Context, dir string) bool {
+	out, err := runGitIn(ctx, dir, "", "config", "--type=bool", "--get", "pg-hooks.enabled")
 	return err == nil && strings.TrimSpace(out) == "false"
 }
 
@@ -492,15 +492,15 @@ func hookFlakeExists(canonical string) bool {
 // whether the bundle is stale: its stamp inputs changed, or a recorded
 // override's HEAD or dirty state differs from now. A bundle with no readable
 // source.json, or in a bare repository, is not reported stale.
-func hookBundleStale(info *HookBundleInfo, c hookGitContext, src hookSourceJSON, haveSrc bool) bool {
+func hookBundleStale(ctx context.Context, info *HookBundleInfo, c hookGitContext, src hookSourceJSON, haveSrc bool) bool {
 	if !haveSrc || c.Top == "" {
 		return false
 	}
 	inputs := append([]string{"flake.lock", "flake.nix"}, hookStampPaths(info.Bundle)...)
-	cur, err := hookStamp(c.Top, inputs)
+	cur, err := hookStamp(ctx, c.Top, inputs)
 	if err == nil && cur != "" && cur != "unknown" && cur != src.Stamp {
 		info.StampDiffers = true
 	}
-	info.ChangedOverrides = changedHookOverrides(src.Overrides)
+	info.ChangedOverrides = changedHookOverrides(ctx, src.Overrides)
 	return info.StampDiffers || len(info.ChangedOverrides) > 0
 }

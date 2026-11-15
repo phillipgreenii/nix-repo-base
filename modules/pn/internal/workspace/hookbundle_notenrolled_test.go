@@ -104,17 +104,17 @@ func TestInstallHookUpToDate_NotEnrolledSkipsTheInstaller(t *testing.T) {
 	t.Run("opted out with no bundle", func(t *testing.T) {
 		dir := hbRepo(t)
 		runGitT(t, dir, "config", "pg-hooks.enabled", "false")
-		if !installHookUpToDate(dir) {
+		if !installHookUpToDate(t.Context(), dir) {
 			t.Error("an opted-out clone must not run the installer on every apply")
 		}
 	})
 	t.Run("no flake", func(t *testing.T) {
-		if !installHookUpToDate(hbNoFlakeRepo(t)) {
+		if !installHookUpToDate(t.Context(), hbNoFlakeRepo(t)) {
 			t.Error("a clone with no flake has nothing to install")
 		}
 	})
 	t.Run("enrolled with no bundle still installs", func(t *testing.T) {
-		if installHookUpToDate(hbRepo(t)) {
+		if installHookUpToDate(t.Context(), hbRepo(t)) {
 			t.Error("a missing bundle must run the installer")
 		}
 	})

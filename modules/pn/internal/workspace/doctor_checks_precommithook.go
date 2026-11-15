@@ -21,7 +21,7 @@ import (
 // .pre-commit-config.yaml symlink has no bundle and is reported as such (R4:
 // there is no legacy state). A repo that does not declare the installer, and a
 // directory that is not a git work tree, produce no finding.
-func (ws *Workspace) checkPreCommitHookLive(_ context.Context, _ *doctorEnv) []Finding {
+func (ws *Workspace) checkPreCommitHookLive(ctx context.Context, _ *doctorEnv) []Finding {
 	var out []Finding
 	for _, name := range orderedRepoNames(ws.config.Repos) {
 		repoDir := filepath.Join(ws.root, name)
@@ -31,7 +31,7 @@ func (ws *Workspace) checkPreCommitHookLive(_ context.Context, _ *doctorEnv) []F
 		if !ws.installHookDeclared(name) {
 			continue
 		}
-		if fs, ok := ws.bundleHookFindings(name, repoDir); ok {
+		if fs, ok := ws.bundleHookFindings(ctx, name, repoDir); ok {
 			out = append(out, fs...)
 		}
 	}

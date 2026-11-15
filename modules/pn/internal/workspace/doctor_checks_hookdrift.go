@@ -32,19 +32,19 @@ const hookDriftCheckID = "hook-drift"
 // retires the ADR 0016 gitignore rule runs (ADR 0032, R2). Every workspace repo
 // that is a git work tree is audited, whether or not it declares the installer,
 // along with its linked worktrees.
-func (ws *Workspace) checkHookDrift(_ context.Context, _ *doctorEnv) []Finding {
+func (ws *Workspace) checkHookDrift(ctx context.Context, _ *doctorEnv) []Finding {
 	var out []Finding
 	for _, name := range orderedRepoNames(ws.config.Repos) {
 		repoDir := filepath.Join(ws.root, name)
 		if !isGitRepo(repoDir) {
 			continue
 		}
-		c, err := readHookGitContext(repoDir)
+		c, err := readHookGitContext(ctx, repoDir)
 		if err != nil {
 			continue
 		}
-		out = append(out, relativeHooksPathFindings(name, repoDir, c)...)
-		for _, checkout := range hookCheckouts(repoDir) {
+		out = append(out, relativeHooksPathFindings(ctx, name, repoDir, c)...)
+		for _, checkout := range hookCheckouts(ctx, repoDir) {
 			out = append(out, githooksDirFindings(name, checkout)...)
 			out = append(out, handMadeConfigFindings(name, checkout)...)
 		}
@@ -61,9 +61,9 @@ func hookDriftFinding(repo string, sev Severity, msg, manual string) Finding {
 
 // hookCheckouts returns repoDir followed by its linked worktrees that still
 // exist on disk, from one `git worktree list --porcelain`.
-func hookCheckouts(repoDir string) []string {
+func hookCheckouts(ctx context.Context, repoDir string) []string {
 	out := []string{repoDir}
-	listing, err := runGitIn(repoDir, "", "worktree", "list", "--porcelain")
+	listing, err := runGitIn(ctx, repoDir, "", "worktree", "list", "--porcelain")
 	if err != nil {
 		return out
 	}
@@ -100,8 +100,8 @@ func githooksDirFindings(repo, checkout string) []Finding {
 
 // relativeHooksPathFindings reports every relative core.hooksPath value visible
 // from repoDir, in any scope (--get-all, so a shadowed value counts too).
-func relativeHooksPathFindings(repo, repoDir string, c hookGitContext) []Finding {
-	out, err := runGitIn(repoDir, "", "config", "--show-scope", "--show-origin", "--get-all", "core.hooksPath")
+func relativeHooksPathFindings(ctx context.Context, repo, repoDir string, c hookGitContext) []Finding {
+	out, err := runGitIn(ctx, repoDir, "", "config", "--show-scope", "--show-origin", "--get-all", "core.hooksPath")
 	if err != nil {
 		return nil
 	}

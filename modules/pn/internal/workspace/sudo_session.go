@@ -75,7 +75,7 @@ func startSudoSession(ctx context.Context, runner exec.Runner, out io.Writer, st
 		_, err := s.runner.Run(ctx, "sudo", []string{"-v"}, exec.RunOptions{Dir: "/", Stdin: s.stdin, Stdout: out, Stderr: out})
 		if err != nil {
 			if ctx.Err() != nil {
-				s.invalidate()
+				s.invalidate(ctx)
 				return nil, ctx.Err()
 			}
 			return nil, fmt.Errorf("sudo authentication: %w", err)
@@ -83,12 +83,12 @@ func startSudoSession(ctx context.Context, runner exec.Runner, out io.Writer, st
 		// 3. Verify that sudo cached the credentials. A cancel is checked FIRST so
 		// it is never mistaken for "sudo caches nothing".
 		if err := ctx.Err(); err != nil {
-			s.invalidate()
+			s.invalidate(ctx)
 			return nil, err
 		}
 		if err := s.noPrompt(ctx); err != nil {
 			if cerr := ctx.Err(); cerr != nil {
-				s.invalidate()
+				s.invalidate(ctx)
 				return nil, cerr
 			}
 			fmt.Fprintln(out, "apply: sudo does not cache credentials here; it will ask again after the build")
@@ -113,9 +113,11 @@ func (s *sudoSession) noPrompt(ctx context.Context) error {
 	return err
 }
 
-// invalidate runs `sudo -k` with a context that survives a cancelled apply.
-func (s *sudoSession) invalidate() {
-	kctx, cancel := context.WithTimeout(s.stopCtx, sudoStopTimeout)
+// invalidate runs `sudo -k` with a context derived from ctx that survives its
+// cancellation (context.WithoutCancel), so a cancelled apply still drops the
+// credentials pn created.
+func (s *sudoSession) invalidate(ctx context.Context) {
+	kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sudoStopTimeout)
 	defer cancel()
 	_, _ = s.runner.Run(kctx, "sudo", []string{"-k"}, exec.RunOptions{Dir: "/", Stdin: s.stdin})
 }
@@ -170,7 +172,7 @@ func (s *sudoSession) Stop() {
 		s.cancel()
 		<-s.done
 		if s.created {
-			s.invalidate()
+			s.invalidate(s.stopCtx)
 		}
 	})
 }

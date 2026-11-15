@@ -121,8 +121,8 @@ const installPreCommitHooksAttr = "install-pre-commit-hooks"
 //     core.hooksPath), and for a directory that is not a git work tree, the
 //     installer runs: there is nothing to skip. A clone that still holds only
 //     an old .pre-commit-config.yaml symlink reads as missing (R4).
-func installHookUpToDate(dir string) bool {
-	state, info, err := ReadHookBundleState(dir)
+func installHookUpToDate(ctx context.Context, dir string) bool {
+	state, info, err := ReadHookBundleState(ctx, dir)
 	if err != nil {
 		return false
 	}
@@ -326,7 +326,7 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 				// See installHookUpToDate.
 				m := nixRunTokenRe.FindStringSubmatch(raw)
 				isInstall := m != nil && m[1] == installPreCommitHooksAttr
-				if isInstall && installHookUpToDate(dir) {
+				if isInstall && installHookUpToDate(ctx, dir) {
 					continue
 				}
 				var vars nixHookVars
@@ -335,7 +335,7 @@ func (ws *Workspace) RunEventHooks(ctx context.Context, phase HookPhase, cmd str
 					// A linked worktree (a set member) never touches the shared
 					// bundle: it builds its own private one, recording the set's
 					// pins so a later producer change shows up as stale.
-					if isInstall && isLinkedWorktree(dir) {
+					if isInstall && isLinkedWorktree(ctx, dir) {
 						vars.InstallArgs = privateInstallArgs(vars.OverrideArgs)
 					}
 				}
