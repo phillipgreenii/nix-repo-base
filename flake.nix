@@ -20,6 +20,17 @@
     git-hooks.inputs.nixpkgs.follows = "nixpkgs";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
+    # Source of the bd 1.3.1 package for the real-bd integration check only. nix-overlay
+    # itself imports this repo, so the flake graph has a cycle; the follows below keep
+    # it to single nixpkgs / flake-parts nodes and drop its NUR input.
+    phillipgreenii-nix-overlay = {
+      url = "github:phillipgreenii/nix-overlay";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-parts.follows = "flake-parts";
+        nur.follows = "";
+      };
+    };
     gomod2nix = {
       url = "github:nix-community/gomod2nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -588,6 +599,33 @@
                 "-count=1"
                 "-run"
                 "RealNix"
+              ];
+            };
+
+            # Real-bd gate for pg-go-mutate-tui: the internal/beads tests that run a
+            # real `bd init` (embedded dolt) in a throwaway git repo plus several bd
+            # subprocesses (`realbd_test.go`, `//go:build integration`; about 10 s each
+            # alone) are integration tests, so they sit outside the unit gate
+            # `pg-go-mutate-tui-go-tests` and run here (ADR 0024) and
+            # run only on demand: `nix build .#integration-checks.pg-go-mutate-tui-integration-tests`
+            # (it compiles bd from source, about 23 minutes cold, no binary cache). bd 1.3.1
+            # comes from the nix-overlay input (operator ruling, Phillip, 2026-11-17: "all
+            # things beads/bd should be on 1.3.1"), not nixpkgs' older bd. bd and git MUST be
+            # on PATH or the tests skip. .golangci.yml `run.build-tags` MUST list the tag.
+            pg-go-mutate-tui-integration-tests = goBuilders.mkGoTest {
+              pname = "pg-go-mutate-tui-integration";
+              src = ./modules/pg-go-mutate/pg-go-mutate-tui;
+              gomod2nixToml = ./modules/pg-go-mutate/pg-go-mutate-tui/gomod2nix.toml;
+              testDeps = [
+                pkgs.git
+                inputs.phillipgreenii-nix-overlay.packages.${system}.beads
+              ];
+              testFlags = [
+                "-tags"
+                "integration"
+                "-count=1"
+                "-run"
+                "TestRealBD"
               ];
             };
           };

@@ -87,7 +87,9 @@ scenario skip.
   out precisely because its environmental surface is larger, so it MUST NOT be able to take the
   primary unit-test gate down with it, and a distinct attribute name makes the gate discoverable.
   The overlap cost (the module's untagged suite running twice) is accepted as cheap relative to
-  the suite running never. In this repo those gates are `integration-checks.pn-smoke-tests` and
+  the suite running never. In this repo those gates are `integration-checks.pn-smoke-tests`,
+  `integration-checks.pg-go-mutate-tui-integration-tests` (the real-bd suite, on bd 1.3.1 from the
+  nix-overlay input) and
   `integration-checks.pn-realnix-tests` (the `realnix` suite: real nix and git across processes, 3 m 52 s measured to build on 2026-11-19).
 - A capability a scenario needs but the sandbox cannot supply **MUST** be declared **per
   scenario** — a marker file next to the scenario, gated by a stubbable package-level probe that

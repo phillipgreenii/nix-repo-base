@@ -1,3 +1,5 @@
+//go:build integration
+
 package beads
 
 // Real-bd regression guard for the per-package triage bead (bead pg2-tkm9g0,
@@ -87,6 +89,15 @@ func (r *realBD) run(args ...string) []byte {
 	return stdout.Bytes()
 }
 
+// try runs bd with the hermetic environment and returns its combined output.
+func (r *realBD) try(args ...string) ([]byte, error) {
+	r.t.Helper()
+	cmd := exec.CommandContext(context.Background(), "bd", args...)
+	cmd.Dir = r.repo
+	cmd.Env = r.env
+	return cmd.CombinedOutput()
+}
+
 func newRealBD(t *testing.T) *realBD {
 	t.Helper()
 	if _, err := exec.LookPath("bd"); err != nil {
@@ -94,7 +105,11 @@ func newRealBD(t *testing.T) *realBD {
 	}
 	repo := gittest.New(t, gitfixture.RepoOptions{Suite: "pg-go-mutate-tui-beads"})
 	r := &realBD{t: t, repo: repo.Dir, env: hermeticBDEnv(t.TempDir())}
-	r.run("metrics", "off")
+	// Older bd releases (the nixpkgs 1.0.x the integration check ships) have no
+	// `metrics` command and send no metrics; only that case may be skipped.
+	if out, err := r.try("metrics", "off"); err != nil && !bytes.Contains(out, []byte("unknown command")) {
+		t.Fatalf("bd metrics off: %v\n%s", err, out)
+	}
 	r.run("init", "--prefix", "tt", "--non-interactive", "-q", "--skip-agents", "--skip-hooks")
 
 	raw, err := os.ReadFile(filepath.Join(r.repo, ".beads", "metadata.json"))

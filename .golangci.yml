@@ -30,6 +30,7 @@ run:
     - smoke
     - realnix
     - realbin
+    - integration
 linters:
   default: standard
   enable:
