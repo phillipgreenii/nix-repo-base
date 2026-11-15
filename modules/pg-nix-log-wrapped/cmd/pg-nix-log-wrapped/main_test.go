@@ -1,8 +1,8 @@
 package main
 
-// Process-level tests: the real wrapper (this test binary re-executed under
-// the name "pg-nix-log-wrapped") runs a fake nix (the same binary, copied and
-// symlinked as "fake-*"). Nothing here talks to a real network or a real OTel
+// Process-level tests: the real wrapper (the product binary, built once
+// without -race) runs a fake nix (the small fakenix helper, symlinked as
+// "fake-*"). Nothing here talks to a real network or a real OTel
 // stack: collectors are loopback httptest servers.
 
 import (
@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,30 +36,41 @@ import (
 
 var (
 	fakes   *fakecmd.Dir
-	wrapper string // path of this test binary
+	wrapper string // path of the wrapper binary built in TestMain
 )
 
 func TestMain(m *testing.M) {
-	if fakecmd.Run() {
-		return
-	}
-	// The wrapper's own name, or a shim name (a symlink to this binary).
-	switch filepath.Base(os.Args[0]) {
-	case "pg-nix-log-wrapped", "nix", "darwin-rebuild":
-		main()
-		return
-	}
-	var err error
-	if wrapper, err = os.Executable(); err != nil {
+	// The wrapper under test is the real product binary, built once without
+	// -race: exec'ing the race-instrumented test binary costs about 1.4 s per
+	// run, which dominated this package's time.
+	dir, err := os.MkdirTemp("", "wrapper-bin-*")
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	wrapper = filepath.Join(dir, "pg-nix-log-wrapped")
+	goTool := filepath.Join(runtime.GOROOT(), "bin", "go")
+	if _, err := os.Stat(goTool); err != nil {
+		if goTool, err = exec.LookPath("go"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	build := exec.Command(goTool, "build", "-o", wrapper, ".")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "building the wrapper: %v\n%s", err, out)
+		_ = os.RemoveAll(dir)
 		os.Exit(1)
 	}
 	if fakes, err = fakecmd.NewDir(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		_ = os.RemoveAll(dir)
 		os.Exit(1)
 	}
 	code := m.Run()
 	fakes.Close()
+	_ = os.RemoveAll(dir)
 	os.Exit(code)
 }
 

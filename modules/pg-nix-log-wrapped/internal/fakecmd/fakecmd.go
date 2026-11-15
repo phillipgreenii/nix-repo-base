@@ -1,9 +1,9 @@
 // Package fakecmd is a test double for nix. It is imported only by tests.
 //
-// A test binary re-executes itself under a name starting with "fake-" (a copy
-// or symlink of the test binary). TestMain calls Run first: when the process
-// was started as a fake it never returns, otherwise it reports false and the
-// tests proceed. Behaviour is described by a Spec in the FAKE_SPEC variable,
+// The fake is the small fakenix helper binary, built once per test process
+// without -race and run under a name starting with "fake-" (a symlink to it).
+// Run reports false when the process is not a fake, and never returns when it
+// is. Behaviour is described by a Spec in the FAKE_SPEC variable,
 // which the wrapper passes through to CMD untouched.
 //
 // The fake finds the log file exactly the way nix would: the LAST
@@ -12,11 +12,13 @@ package fakecmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -224,31 +226,34 @@ type Dir struct {
 	mu   sync.Mutex
 }
 
-// NewDir copies the current executable into a fresh temporary directory.
+// NewDir builds the small fakenix helper (internal/fakecmd/fakenix) into a
+// fresh temporary directory, without -race. Using the race-instrumented test
+// binary as the child made every wrapped run pay about 1.4 s of exec cost.
 func NewDir() (*Dir, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return nil, errors.New("fakecmd: cannot locate source directory")
 	}
 	dir, err := os.MkdirTemp("", "fakecmd-*")
 	if err != nil {
 		return nil, err
 	}
 	d := &Dir{path: dir, bin: filepath.Join(dir, "fake-bin")}
-	src, err := os.Open(exe)
-	if err != nil {
-		return nil, err
+	goTool := filepath.Join(runtime.GOROOT(), "bin", "go")
+	if _, err := os.Stat(goTool); err != nil {
+		if goTool, err = exec.LookPath("go"); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, err
+		}
 	}
-	defer func() { _ = src.Close() }()
-	dst, err := os.OpenFile(d.bin, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
-	if err != nil {
-		return nil, err
+	cmd := exec.Command(goTool, "build", "-o", d.bin, "./fakenix")
+	cmd.Dir = filepath.Dir(file)
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, fmt.Errorf("fakecmd: building fakenix: %v\n%s", err, out)
 	}
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = dst.Close()
-		return nil, err
-	}
-	return d, dst.Close()
+	return d, nil
 }
 
 // Close removes the directory.

@@ -31,9 +31,6 @@ import (
 var fakes *fakecmd.Dir
 
 func TestMain(m *testing.M) {
-	if fakecmd.Run() {
-		return
-	}
 	d, err := fakecmd.NewDir()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
