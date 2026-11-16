@@ -144,8 +144,10 @@ func TestCheckTelemetry_SpoolModeUsableSpoolIsSilent(t *testing.T) {
 	if got := ws.checkTelemetry(context.Background(), env); len(got) != 0 {
 		t.Fatalf("usable spool must be silent, got %+v", got)
 	}
-	if len(f.Calls()) != 0 {
-		t.Fatalf("spool mode must run nothing: %+v", f.Calls())
+	for _, c := range f.Calls() {
+		if c.Name != "launchctl" {
+			t.Fatalf("spool mode may only ask launchctl: %+v", f.Calls())
+		}
 	}
 	// A force-off control wins: stay silent.
 	env.spool = &telemetrycfg.SpoolResolution{Forced: "--no-telemetry"}

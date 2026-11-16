@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetrycfg"
 )
 
 // telemetryCheckID is the doctor check id for the telemetry wiring.
@@ -43,21 +44,27 @@ func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Findi
 	if res == nil {
 		return nil
 	}
+	// Spool mode (telemetry.toml enabled = true; no endpoint is involved): the
+	// only thing to verify is that the spool directory is usable.
+	if f := env.spoolFinding(); f != nil {
+		return []Finding{*f}
+	}
+	out := ws.spoolHealthFindings(ctx, env)
+	if !res.Enabled {
+		return out
+	}
+	return append(out, ws.wrapperFindings(ctx, env, res)...)
+}
+
+// wrapperFindings runs the wrapper's own `--check` and reports a missing or
+// failing wrapper.
+func (ws *Workspace) wrapperFindings(ctx context.Context, env *doctorEnv, res *telemetrycfg.Resolution) []Finding {
 	warn := func(msg, manual string) []Finding {
 		return []Finding{{
 			CheckID: telemetryCheckID, Severity: SevWarning,
 			Message: msg, Manual: manual,
 		}}
 	}
-	// Spool mode (telemetry.toml enabled = true; no endpoint is involved): the
-	// only thing to verify is that the spool directory is usable.
-	if f := env.spoolFinding(); f != nil {
-		return []Finding{*f}
-	}
-	if !res.Enabled {
-		return nil
-	}
-
 	wrapper := res.WrapperPath
 	if wrapper == "" {
 		return warn(
@@ -104,9 +111,13 @@ func (env *doctorEnv) spoolFinding() *Finding {
 	if err == nil {
 		return nil
 	}
+	msg := fmt.Sprintf("telemetry is enabled but the spool directory is unusable: %v; telemetry stays off", err)
+	if sp.Err == nil {
+		msg = fmt.Sprintf("spool not writable: %s: %v; telemetry stays off", sp.Dir, err)
+	}
 	return &Finding{
 		CheckID: telemetryCheckID, Severity: SevWarning,
-		Message: fmt.Sprintf("telemetry is enabled but the spool directory is unusable: %v; telemetry stays off", err),
+		Message: msg,
 		Manual:  "set phillipgreenii.pn.telemetry.spool_dir (telemetry.toml spool_dir) to an absolute, writable directory and apply, or set enable = false",
 	}
 }

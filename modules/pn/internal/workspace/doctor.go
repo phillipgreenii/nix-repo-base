@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetrycfg"
@@ -132,6 +133,8 @@ type doctorEnv struct {
 	// shim checks share it). shimRootConfig overrides the root shim
 	// configuration path (tests only; empty selects /etc/pg-nix-shim.json).
 	wrapperCheck   *wrapperCheck
+	now            func() time.Time    // doctor clock; nil = time.Now
+	getenv         func(string) string // environment; nil = empty (tests)
 	shimRootConfig string
 }
 
@@ -203,6 +206,7 @@ func Doctor(ctx context.Context, root string, runner exec.Runner, opts DoctorOpt
 
 		telemetry: opts.Telemetry,
 		spool:     opts.Spool,
+		getenv:    os.Getenv,
 	}
 
 	checks := ws.registerChecks()
