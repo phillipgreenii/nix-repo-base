@@ -13,8 +13,8 @@
 #     findings block; pre-existing ones stay red in the module's checks.*-golangci
 #     derivation (that is not an exclude);
 #   - golangci-lint and go come from the hook's store closure with
-#     GOTOOLCHAIN=local, and PATH is reset to that closure plus coreutils, git,
-#     findutils; NO nix is on it (HK-2: a git hook MUST NOT invoke nix);
+#     GOTOOLCHAIN=local, and PATH is reset to that closure plus a C compiler
+#     (cgo), coreutils, git, findutils; NO nix is on it (HK-2: a git hook MUST NOT invoke nix);
 #   - skips with a notice inside the nix build sandbox (checks.pre-commit has no
 #     network and cannot load the package graph); the checks.*-golangci
 #     derivation still enforces lint there.
@@ -26,6 +26,9 @@
   pkgs,
   go ? pkgs.go,
   golangci-lint ? pkgs.golangci-lint,
+  # C compiler for packages importing cgo code (nix go defaults to CC=clang and
+  # CGO_ENABLED=1); on the reset PATH instead of /usr/bin so nix stays off it.
+  cc ? pkgs.stdenv.cc,
 }:
 let
   script = pkgs.writeShellScript "golangci-lint-new-findings" ''
@@ -34,6 +37,7 @@ let
       pkgs.lib.makeBinPath [
         go
         golangci-lint
+        cc
         pkgs.git
         pkgs.coreutils
         pkgs.findutils
