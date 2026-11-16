@@ -188,7 +188,7 @@ passthrough (...)` or `shim: wrapping ...`). It prints nothing otherwise.
   shim: allowlist: darwin-rebuild build, ..., nix build, nix flake check
   shim: allowlist-ignored: develop (never wrapped or unknown)
   shim: root-config: /etc/pg-nix-shim.json -> /nix/store/...-pg-nix-shim.json (store regular file)
-  shim: root-run: would wrap (rootEndpoint http://127.0.0.1:4318)
+  shim: root-run: would wrap (enabled by rootSpool)
   status: telemetry=ok shim=fail
   ```
 
@@ -200,8 +200,8 @@ store symlink)` for a copy or a file outside `/nix/store/`; a root run passes th
 
 - `pn workspace doctor` runs the same `--check` once and turns the shim lines into warnings (check
   id `shim`): a name that is not a shim, "root config not a store symlink", no root configuration
-  while a user shim is installed, and a home-manager `telemetry.toml` endpoint that differs from
-  `rootEndpoint`. Root runs write their logs mode 0600 under `/var/log/pg-nix-log-wrapped`, which a
+  while a user shim is installed, and a root configuration that sets neither `rootSpool` nor
+  `rootEndpoint` while the user spool is enabled. Root runs write their logs mode 0600 under `/var/log/pg-nix-log-wrapped`, which a
   non-root doctor cannot read, so the doctor cannot tell whether root runs were wrapped. With
   telemetry off or no shim module in use it reports nothing new.
 
@@ -248,7 +248,7 @@ own evaluation, which is the same on both sides). Harness:
 | no-op `nix build`, dead collector (closed port)      | 63.1 / 103.9 ms    | 78.0 / 126.8 ms            | 13.6 / 43.9 ms  |
 | `nix --version` (off the allowlist, one process hop) | 75.6 / 209.7 ms    | 87.9 / 158.3 ms            | 11.3 / 42.7 ms  |
 
-- The "live" collector is a local stub OTLP/HTTP receiver that answers 200 to everything, not a real
+- The "live" collector is a local stub OTLP/HTTP receiver that answers 200 to everything (the HTTP transport this table measured is retired, see ADR 0044), not a real
   collector; "dead" is a closed loopback port, which refuses at once. A collector that blackholes
   packets can cost up to the 2 s flush bound instead; it was not measured.
 - A no-op build emits almost no activity, so these runs pay initialisation, the sweep and the

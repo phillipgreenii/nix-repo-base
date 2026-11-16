@@ -1,8 +1,12 @@
 # ADR-0030: `pg-nix-log-wrapped` — a fail-open nix telemetry wrapper
 
 **Date:** 2026-10-01
-**Status:** Accepted 2026-10-29 (amended 2026-10-27 inline, and 2026-11-05 for shim mode; root-apply statements superseded by [ADR 0038](0038-apply-builds-as-the-user-and-runs-only-profile-set-and-activate-as-root.md); body-vs-code drift recorded in "Amendment 2026-10-29")
+**Status:** Accepted 2026-10-29 (transport and endpoint wording superseded by [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md), 2026-11-16; amended 2026-10-27 inline, and 2026-11-05 for shim mode; root-apply statements superseded by [ADR 0038](0038-apply-builds-as-the-user-and-runs-only-profile-set-and-activate-as-root.md); body-vs-code drift recorded in "Amendment 2026-10-29")
 **Deciders:** phillipgreenii
+
+> Transport note (2026-11-16): every mention of an OTLP endpoint, `--otlp-endpoint`, `rootEndpoint`
+> or an `otelcol :4318` push in this ADR is history. Export is a file spool now, see
+> [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md).
 
 ## Context
 
@@ -269,7 +273,7 @@ a transparent shim when entered through a symlink named `nix` or `darwin-rebuild
   check, so a wrapper never execs a shim that points at a different wrapper build. In shim mode the
   real binary is exec'd with the PATH-found absolute path as `argv[0]` (so `darwin-rebuild`'s `$0`
   keeps its `/sw/bin/darwin-rebuild` suffix); nothing found exits 127.
-- **Root.** A shim with euid 0 reads `/etc/pg-nix-shim.json` only: it takes the `EvalSymlinks`
+- **Root.** (Endpoint wording superseded 2026-11-16 by [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md): the file now holds `rootSpool`, and `rootEndpoint` is a deprecated alias.) A shim with euid 0 reads `/etc/pg-nix-shim.json` only: it takes the `EvalSymlinks`
   result, accepts it only as a regular file under `/nix/store/`, and reads from that RESOLVED path.
   It never reads anything under a home directory and ignores `shim.toml` and `PG_NIX_SHIM_VERBS`.
   The file holds `rootEndpoint` and optional `verbs`; with an endpoint the shim passes it as

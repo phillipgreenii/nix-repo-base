@@ -3,6 +3,13 @@
 Status: revision 5, after four independent review rounds. Owner repo: `nix-repo-base` (the wrapper,
 the pn telemetry wiring and `darwinModules.default` already live there). Date: 2026-11-04.
 
+> Historical for the transport (2026-11-16): this design describes telemetry export as OTLP over
+> HTTP to an endpoint (`--otlp-endpoint`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `rootEndpoint`). That
+> transport is superseded by the file spool of [ADR 0044](../../adr/0044-file-spool-transport-for-pn-and-the-nix-wrapper.md).
+> Every endpoint mention below is kept as the record of what was decided on 2026-11-04. The shim
+> mechanics (PATH shim, allowlist, root configuration file) are unchanged except where the
+> amendment inside the root-configuration section says otherwise.
+
 ## Why this exists
 
 `pg-nix-log-wrapped` (ADR 0030) turns a nix run into OpenTelemetry spans. Today something has to

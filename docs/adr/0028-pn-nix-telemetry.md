@@ -1,7 +1,7 @@
 # ADR-0028: pn / nix build telemetry — spike findings, configuration precedence and escape hatches
 
 **Date:** 2026-10-01
-**Status:** Accepted (amended 2026-10-08, `pg2-arayh`: runtime configuration contract, see "Amendment 2026-10-08")
+**Status:** Accepted (transport sections superseded by [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md), 2026-11-16; amended 2026-10-08, `pg2-arayh`: runtime configuration contract, see "Amendment 2026-10-08")
 **Deciders:** phillipgreenii
 
 ## Context
@@ -355,6 +355,10 @@ procedure regenerates them.
 
 ### Configuration precedence (Phase 2d)
 
+> SUPERSEDED 2026-11-16 by [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md): telemetry no longer
+> resolves an OTLP endpoint. The flag, environment variable and `endpoint` key named below are
+> deprecated and enable nothing; the spool directory replaces them. Kept as history.
+
 > Amended 2026-10-08 (`pg2-arayh`): `enabled = false` in `telemetry.toml` adds a per-system off
 > switch to the order below; see "Amendment 2026-10-08: runtime configuration contract", which is
 > authoritative for precedence.
@@ -400,6 +404,10 @@ flake check `pn-telemetry-hm-options` proves the default resolves, the file rend
 mirroring `enable`, and the wrapper is installed whether `enable` is true or false.
 
 ### Amendment 2026-10-08: runtime configuration contract (`pg2-arayh`)
+
+> SUPERSEDED in part 2026-11-16 by [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md): everything below that
+> names an endpoint, `--otlp-endpoint`, `OTEL_EXPORTER_OTLP_ENDPOINT`, the `endpoint` key or a
+> reachability check is historical. The runtime-switch model (`enabled`, always built) still holds.
 
 Operator rulings (Phillip, 2026-10-08): the tooling is ALWAYS built and installed so it can emit
 telemetry; whether it does is a per-system RUNTIME setting in `~/.config/pn/telemetry.toml`
@@ -551,6 +559,9 @@ trace reads `pn.verb > pn.repo > pn.exec > nix.invocation > nix.build / nix.subs
 `exec.RunOptions.WrapNix` flag is set ONLY at build, apply, flake check, format, the `nix` verb,
 propagate and tree's `nix flake lock`; the decorator rewrites nothing else. Tests assert the flag is
 false on the probes and the store calls (FakeRunner call recording).
+
+> SUPERSEDED 2026-11-16 by [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md): pn passes `--otel-spool-dir DIR`, never
+> `--otlp-endpoint URL`, and `PN_NIX_LOG_OTLP_ENDPOINT` is now `PN_NIX_LOG_SPOOL_DIR`.
 
 **Rewrite shape.** For a non-sudo call `name args...` the decorator runs
 
@@ -753,6 +764,8 @@ The process query is deliberately exact-name and root-scoped. A substring match 
 other sessions' builds, so it cannot show a leak. Unscoped user-owned `nix` processes belong to
 concurrent sessions and MUST be compared against a baseline of PIDs, not expected to be empty. This
 closes the "pn's own cancel code against a root wrapper" gap that item 3 left open.
+
+> HISTORICAL (2026-11-16, [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md)): `--check` now reports spool writability and pending files, not endpoint reachability.
 
 **4. `--check` accuracy.** Agent. The collector-down case uses a dead port (confirmed with `lsof`
 that nothing listens), so the real collector was not stopped; it exercises the same TCP probe path.

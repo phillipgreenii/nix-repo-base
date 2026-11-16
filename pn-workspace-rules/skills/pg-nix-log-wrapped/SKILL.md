@@ -38,7 +38,7 @@ runs the command, with its own explicit timeout or `bgrun` for a long one.
 - Explicit `pg-nix-log-wrapped -- nix ...` stays supported and yields one span set, not two.
 - `pn workspace` verbs route their own nix calls through the wrapper; do not prefix `pn` or `pnwf`.
 - Telemetry is a per-system runtime setting in `~/.config/pn/telemetry.toml` (`enabled`,
-  `endpoint`, `wrapper_path`; ADR 0028 "Amendment 2026-10-08"); with `enabled = false` the shim is a
+  `spool_dir`, `wrapper_path`; ADR 0028 "Amendment 2026-10-08" and ADR 0044); with `enabled = false` the shim is a
   silent passthrough.
 
 Reference for the details below: `modules/pg-nix-log-wrapped/README.md` and ADR 0030
