@@ -188,6 +188,14 @@ build|switch|check`. Opt-in verbs: `nix run`, `nix fmt`, `nix flake lock`, `nix 
    not a copy. It takes its own `rootEndpoint` option because it cannot read the home-manager
    `pn.telemetry.endpoint`; the machine repo sets both from one value and the doctor check reports
    a mismatch it can see.
+
+   Amendment (2026-11-16, spool transport): root runs now write to a root spool and never to an
+   endpoint. The file gains `rootSpool = true`, rendered by the nix-darwin module from the new
+   boolean option `rootSpool`. `rootEndpoint` is DEPRECATED: still accepted, ignored as a
+   transport, with a `warnings` entry, and while non-null it still renders `rootSpool = true` so
+   root telemetry is never silently off before the machine config drops it. With neither set the
+   file carries no spool key. The matrix is pinned by the `pg-nix-shim-modules` eval check.
+
 5. **Override-input guard stays ON in shim mode,** for allowlisted verbs, as in explicit use. It only
    converts a would-be exit 0 into exit 3 when `--override-input` names no input, and the protection
    was what the agent prefix rule gave. `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` stays the hatch.

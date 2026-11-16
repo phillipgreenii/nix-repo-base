@@ -6,7 +6,7 @@
 #     system dirs at order 1200, as modules/environment/default.nix does;
 #   * environment.etc: attrsOf submodule with enable/text/target/source where
 #     source defaults to a writeText derivation (modules/lib/write-text.nix);
-#   * assertions: listOf anything (modules/system/default.nix).
+#   * assertions, warnings: listOf anything (modules/system/default.nix).
 { lib, pkgs }:
 {
   options = {
@@ -42,6 +42,10 @@
     };
     assertions = lib.mkOption {
       type = lib.types.listOf lib.types.anything;
+      default = [ ];
+    };
+    warnings = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
       default = [ ];
     };
   };

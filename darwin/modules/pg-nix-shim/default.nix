@@ -10,7 +10,7 @@
 #   * does NOT add the package to `environment.systemPackages` (the real `nix`
 #     and `darwin-rebuild` MUST stay in /run/current-system/sw/bin, where the
 #     shim's lookup finds them) and uses no `lib.hiPrio`;
-#   * writes /etc/pg-nix-shim.json (`rootEndpoint`, and `verbs` when non-empty)
+#   * writes /etc/pg-nix-shim.json (`rootSpool`, and `verbs` when non-empty)
 #     through `environment.etc."pg-nix-shim.json".text`;
 #   * asserts, at evaluation, the two properties a wrong setup would break.
 #
@@ -54,6 +54,8 @@ let
     ;
   cfg = config.phillipgreenii.pg-nix-shim;
 
+  rootSpoolOn = cfg.rootSpool || cfg.rootEndpoint != null;
+
   etcName = "pg-nix-shim.json";
   systemSw = "/run/current-system/sw/bin";
   shimBin = "${cfg.package}/bin";
@@ -85,15 +87,26 @@ in
   options.phillipgreenii.pg-nix-shim = {
     enable = mkEnableOption "the pg-nix-shim `nix` and `darwin-rebuild` wrappers first on the system PATH";
     package = mkPackageOption pkgs "pg-nix-shim" { };
+    rootSpool = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Whether the shim records telemetry when it runs as root. Renders
+        `rootSpool = true` in /etc/pg-nix-shim.json; root runs then write to
+        the root spool. False (with `rootEndpoint` null) omits the key, and a
+        root shim then passes through unobserved.
+      '';
+    };
     rootEndpoint = mkOption {
       type = types.nullOr types.str;
       default = null;
       example = "http://127.0.0.1:4318";
       description = ''
-        OTLP/HTTP endpoint the shim passes when it runs as root, written to
-        /etc/pg-nix-shim.json. Null omits the key, and a root shim then passes
-        through unobserved. The machine repo SHOULD set it from the same value
-        as the home-manager `pn.telemetry.endpoint`.
+        DEPRECATED: accepted and ignored as a transport (root runs write to
+        the spool, never to this endpoint). While non-null it still turns
+        `rootSpool` on, so root telemetry is not silently lost; set
+        `rootSpool = true` instead and drop this option. It is removed in a
+        later change.
       '';
     };
     extraVerbs = mkOption {
@@ -110,9 +123,13 @@ in
     environment.systemPath = mkBefore [ shimBin ];
 
     environment.etc.${etcName}.text = builtins.toJSON (
-      lib.optionalAttrs (cfg.rootEndpoint != null) { inherit (cfg) rootEndpoint; }
+      lib.optionalAttrs rootSpoolOn { rootSpool = true; }
       // lib.optionalAttrs (cfg.extraVerbs != [ ]) { verbs = cfg.extraVerbs; }
     );
+
+    warnings = lib.optional (cfg.rootEndpoint != null) ''
+      phillipgreenii.pg-nix-shim.rootEndpoint is deprecated and ignored as a transport (root runs write to the spool). Set phillipgreenii.pg-nix-shim.rootSpool = true and remove rootEndpoint.
+    '';
 
     assertions = [
       {

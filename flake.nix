@@ -2489,9 +2489,26 @@
                 enableOn = {
                   phillipgreenii.pg-nix-shim = {
                     enable = true;
-                    rootEndpoint = "http://127.0.0.1:4318";
+                    rootSpool = true;
                   };
                 };
+                onEndpointOnly = darwinEval [
+                  {
+                    phillipgreenii.pg-nix-shim = {
+                      enable = true;
+                      rootEndpoint = "http://127.0.0.1:4318";
+                    };
+                  }
+                ];
+                onBoth = darwinEval [
+                  {
+                    phillipgreenii.pg-nix-shim = {
+                      enable = true;
+                      rootSpool = true;
+                      rootEndpoint = "http://127.0.0.1:4318";
+                    };
+                  }
+                ];
 
                 off = darwinEval [ ];
                 on = darwinEval [ enableOn ];
@@ -2603,17 +2620,32 @@
                 throw "darwin module disturbed the remaining systemPath entries"
               else if !(lib.hasPrefix "${builtins.storeDir}/" (etcSrc on)) then
                 throw "environment.etc pg-nix-shim.json source is not a store path: ${etcSrc on}"
-              else if etcJson on != { rootEndpoint = "http://127.0.0.1:4318"; } then
-                throw "unexpected /etc/pg-nix-shim.json content for rootEndpoint only"
+              else if on.config.environment.etc."pg-nix-shim.json".text != ''{"rootSpool":true}'' then
+                throw "unexpected rendered /etc/pg-nix-shim.json text for rootSpool only"
+              else if on.config.warnings != [ ] then
+                throw "rootSpool only must not warn"
+              else if onEndpointOnly.config.environment.etc."pg-nix-shim.json".text != ''{"rootSpool":true}'' then
+                throw "deprecated rootEndpoint alone must render rootSpool = true and no endpoint"
+              else if
+                lib.length onEndpointOnly.config.warnings != 1
+                || !(lib.hasInfix "rootEndpoint is deprecated" (lib.head onEndpointOnly.config.warnings))
+              then
+                throw "deprecated rootEndpoint must emit exactly one deprecation warning"
+              else if onBoth.config.environment.etc."pg-nix-shim.json".text != ''{"rootSpool":true}'' then
+                throw "rootSpool plus rootEndpoint must render rootSpool = true only"
+              else if lib.length onBoth.config.warnings != 1 then
+                throw "rootSpool plus rootEndpoint must still warn about rootEndpoint"
               else if
                 etcJson onVerbs != {
-                  rootEndpoint = "http://127.0.0.1:4318";
+                  rootSpool = true;
                   verbs = [ "eval" ];
                 }
               then
                 throw "unexpected /etc/pg-nix-shim.json content with extraVerbs"
-              else if etcJson onNoEndpoint != { } then
-                throw "null rootEndpoint must omit the key"
+              else if onNoEndpoint.config.environment.etc."pg-nix-shim.json".text != "{}" then
+                throw "neither rootSpool nor rootEndpoint must render no spool key"
+              else if onNoEndpoint.config.warnings != [ ] then
+                throw "neither option set must not warn"
               else if failed on != [ ] || !(forced on) then
                 throw "assertions failed on a correct configuration"
               # Negative tests: each bad case must carry its message and throw.
@@ -2635,7 +2667,7 @@
                   }
                   ''
                     grep -qxF 'verbs = ["eval", "fmt"]' "$toml"
-                    grep -qF 'rootEndpoint' "$etc"
+                    grep -qF 'rootSpool' "$etc"
                     case "$etc" in /nix/store/*) ;; *) echo "etc source not in store" >&2; exit 1 ;; esac
                     touch "$out"
                   '';
