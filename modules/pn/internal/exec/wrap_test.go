@@ -29,7 +29,7 @@ func (r *recRunner) Run(_ context.Context, name string, args []string, opts RunO
 }
 
 const (
-	testEndpoint = "http://127.0.0.1:4318"
+	testSpoolDir = "/state/otel-spool"
 	storeWrapper = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pg-nix-log-wrapped-1/bin/pg-nix-log-wrapped"
 )
 
@@ -42,13 +42,13 @@ type wrapEnv struct {
 	rec   *telemetrytest.Recorder
 }
 
-// newWrapEnv returns an environment where telemetry is on, endpoint is
-// testEndpoint, and wrapper is the configured wrapper_path. Every path is
+// newWrapEnv returns an environment where telemetry is on, spool dir is
+// testSpoolDir, and wrapper is the configured wrapper_path. Every path is
 // "executable"; evalSymlinks is the identity unless a test overrides it.
 func newWrapEnv(t *testing.T, wrapper string) *wrapEnv {
 	t.Helper()
 	tel, rec := telemetrytest.New()
-	res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint, Source: telemetrycfg.SourceFlag, WrapperPath: wrapper}
+	res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir, Source: telemetrycfg.SourceFlag, WrapperPath: wrapper}
 	ctx := telemetry.WithTelemetry(context.Background(), tel)
 	ctx = telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(res))
 	ctx, end := telemetry.StartExec(ctx, "test") // a valid span context for --traceparent
@@ -104,7 +104,7 @@ func TestWrap_UserForm_ExactArgv(t *testing.T) {
 	tp := traceparentOf(t, c.Args)
 	want := append([]string{
 		"--traceparent", tp,
-		"--otlp-endpoint", testEndpoint,
+		"--otel-spool-dir", testSpoolDir,
 		"--log-dir", "/state/pn/nix-logs",
 		"--",
 		"darwin-rebuild",
@@ -131,7 +131,7 @@ func TestWrap_SudoForm_ExactArgv(t *testing.T) {
 	want := append([]string{
 		storeWrapper,
 		"--traceparent", tp,
-		"--otlp-endpoint", testEndpoint,
+		"--otel-spool-dir", testSpoolDir,
 		"--",
 	}, args...)
 	if c.Name != "sudo" || !reflect.DeepEqual(c.Args, want) {
@@ -142,7 +142,7 @@ func TestWrap_SudoForm_ExactArgv(t *testing.T) {
 // The traceparent names the pn.exec span in ctx, so nix.invocation nests under it.
 func TestWrap_TraceparentIsTheExecSpan(t *testing.T) {
 	tel, rec := telemetrytest.New()
-	res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint, WrapperPath: "/w/pg-nix-log-wrapped"}
+	res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir, WrapperPath: "/w/pg-nix-log-wrapped"}
 	ctx := telemetry.WithTelemetry(context.Background(), tel)
 	ctx = telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(res))
 	ctx, verb := tel.StartVerb(ctx, "workspace build")
@@ -232,7 +232,7 @@ func TestWrap_SudoFormTable(t *testing.T) {
 				t.Fatal(err)
 			}
 			c := e.only(t)
-			wrapped := containsArg(c.Args, "--otlp-endpoint")
+			wrapped := containsArg(c.Args, "--otel-spool-dir")
 			if wrapped != tc.wantWrap {
 				t.Fatalf("%s %q: wrapped = %v, want %v (got %s %q)", tc.cmd, tc.args, wrapped, tc.wantWrap, c.Name, c.Args)
 			}
@@ -262,12 +262,12 @@ func TestWrap_FailsOpenToIdenticalCall(t *testing.T) {
 			res := telemetrycfg.Resolution{Enabled: false, WrapperPath: "/w", Forced: "--no-telemetry"}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}},
-		{"no endpoint", "nix", func(e *wrapEnv) context.Context {
+		{"no spool dir", "nix", func(e *wrapEnv) context.Context {
 			res := telemetrycfg.Resolution{Enabled: true, WrapperPath: "/w"}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}},
 		{"no wrapperPath configured", "nix", func(e *wrapEnv) context.Context {
-			res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint}
+			res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}},
 		{"Telemetry not enabled", "nix", func(e *wrapEnv) context.Context {
@@ -278,7 +278,7 @@ func TestWrap_FailsOpenToIdenticalCall(t *testing.T) {
 			return e.ctx
 		}},
 		{"relative wrapper path", "nix", func(e *wrapEnv) context.Context {
-			res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint, WrapperPath: "rel/wrapper"}
+			res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir, WrapperPath: "rel/wrapper"}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}},
 		{"sudo: wrapper outside /nix/store", "sudo", func(e *wrapEnv) context.Context {
@@ -449,7 +449,7 @@ func TestWrap_ArgvByteForByteWithRealProcesses(t *testing.T) {
 
 	// Wrapped: telemetry on, wrapper configured.
 	tel, _ := telemetrytest.New()
-	res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint, WrapperPath: wrapper}
+	res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir, WrapperPath: wrapper}
 	ctx := telemetry.WithTelemetry(context.Background(), tel)
 	ctx = telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(res))
 	var wrappedOut bytes.Buffer
@@ -486,7 +486,7 @@ func TestWrap_ArgvByteForByteWithRealProcesses(t *testing.T) {
 
 // wrapperArgvGolden is the argv pn hands the wrapper for the USER build step of
 // apply (and of build), one argument per line, with the three run-specific values
-// replaced by {traceparent}, {otlp-endpoint} and {log-dir}. The wrapper module's
+// replaced by {traceparent}, {spool-dir} and {log-dir}. The wrapper module's
 // contract test (modules/pg-nix-log-wrapped/cmd/pg-nix-log-wrapped/contract_test.go)
 // reads THE SAME FILE, feeds it to config.ParseArgs and to the real wrapper
 // binary, so a change to either side that breaks the other fails a test
@@ -512,12 +512,12 @@ func TestWrap_UserBuildArgvMatchesTheWrapperContractGolden(t *testing.T) {
 				t.Fatalf("unexpected traceparent %q", c.Args[i])
 			}
 			lines = append(lines, "{traceparent}")
-		case "--otlp-endpoint":
+		case "--otel-spool-dir":
 			i++
-			if c.Args[i] != testEndpoint {
-				t.Fatalf("unexpected endpoint %q", c.Args[i])
+			if c.Args[i] != testSpoolDir {
+				t.Fatalf("unexpected spool dir %q", c.Args[i])
 			}
-			lines = append(lines, "{otlp-endpoint}")
+			lines = append(lines, "{spool-dir}")
 		case "--log-dir":
 			i++
 			if c.Args[i] != "/state/pn/nix-logs" {
@@ -593,12 +593,12 @@ func TestWrap_StartedByEnv(t *testing.T) {
 		{skipTelemetryOff, "nix", func(e *wrapEnv) context.Context {
 			return telemetry.WithTelemetry(e.ctx, telemetry.Disabled())
 		}},
-		{skipNoEndpoint, "nix", func(e *wrapEnv) context.Context {
+		{skipNoSpoolDir, "nix", func(e *wrapEnv) context.Context {
 			res := telemetrycfg.Resolution{Enabled: true, WrapperPath: "/w"}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}},
 		{skipNoWrapperPath, "nix", func(e *wrapEnv) context.Context {
-			res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint}
+			res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}},
 		{skipUnrecognized, "git", func(e *wrapEnv) context.Context { return e.ctx }},
@@ -607,7 +607,7 @@ func TestWrap_StartedByEnv(t *testing.T) {
 			return e.ctx
 		}},
 		{skipNotAbsolute, "nix", func(e *wrapEnv) context.Context {
-			res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint, WrapperPath: "rel/wrapper"}
+			res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir, WrapperPath: "rel/wrapper"}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}},
 		{skipNotExecutable, "nix", func(e *wrapEnv) context.Context {
@@ -634,5 +634,31 @@ func TestWrap_StartedByEnv(t *testing.T) {
 				t.Errorf("Env = %v, want only caller's", c.Opts.Env)
 			}
 		})
+	}
+}
+
+// TestWrap_NeverPassesOTLPEndpoint pins the cutover: pn hands the wrapper only
+// --otel-spool-dir (the ROOT wrapper gets it as an enable signal too), never
+// the deprecated --otlp-endpoint, so an apply prints no per-nix-call notice.
+func TestWrap_NeverPassesOTLPEndpoint(t *testing.T) {
+	user := newWrapEnv(t, "/wrapper/pg-nix-log-wrapped")
+	if _, err := user.r.Run(user.ctx, "darwin-rebuild", []string{"build"}, RunOptions{WrapNix: true}); err != nil {
+		t.Fatal(err)
+	}
+	sudo := newWrapEnv(t, "/profiles/bin/pg-nix-log-wrapped")
+	sudo.r.evalSymlinks = func(string) (string, error) { return storeWrapper, nil }
+	if _, err := sudo.r.Run(sudo.ctx, "sudo", []string{"darwin-rebuild", "switch"}, RunOptions{WrapNix: true}); err != nil {
+		t.Fatal(err)
+	}
+	for name, argv := range map[string][]string{
+		"user": user.only(t).Args,
+		"sudo": sudo.only(t).Args,
+	} {
+		if containsArg(argv, "--otlp-endpoint") {
+			t.Errorf("%s argv carries --otlp-endpoint: %q", name, argv)
+		}
+		if !containsArg(argv, "--otel-spool-dir") {
+			t.Errorf("%s argv lacks --otel-spool-dir: %q", name, argv)
+		}
 	}
 }

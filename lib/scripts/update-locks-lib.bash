@@ -485,7 +485,7 @@ _ul_in_linked_worktree() {
 # `pn` exports TRACEPARENT (the update-locks.sh pn.exec span) to this script and,
 # when telemetry is on and the wrapper is usable, PN_NIX_LOG_WRAPPER (its
 # absolute path; the wrapper is deliberately not on PATH) and
-# PN_NIX_LOG_OTLP_ENDPOINT. Routing this script's own nix calls through
+# PN_NIX_LOG_SPOOL_DIR. Routing this script's own nix calls through
 # pg-nix-log-wrapped makes their nix.invocation spans nest under that span in the
 # pn.verb trace; a bare nix emits none.
 #
@@ -498,7 +498,7 @@ _ul_in_linked_worktree() {
 #   - telemetry is not forced off (PG_NIX_LOG_DISABLE=1|true, OTEL_SDK_DISABLED=true);
 #   - a wrapper is found: PN_NIX_LOG_WRAPPER if it names an executable file, else
 #     pg-nix-log-wrapped on PATH.
-# The wrapper itself fails open too (no endpoint, unwritable log dir, ...): it
+# The wrapper itself fails open too (no spool directory, unwritable log dir, ...): it
 # then execs nix unmodified with empty stderr.
 #
 # REDUNDANT WHEN A SHIM IS ON PATH: with the pg-nix-shim home-manager module
@@ -519,8 +519,8 @@ _ul_nix_wrap_prefix() {
     [[ -f $wrapper && -x $wrapper ]] || return 0
   fi
   _UL_NIX_PREFIX=("$wrapper")
-  if [[ -n ${PN_NIX_LOG_OTLP_ENDPOINT:-} ]]; then
-    _UL_NIX_PREFIX+=(--otlp-endpoint "$PN_NIX_LOG_OTLP_ENDPOINT")
+  if [[ -n ${PN_NIX_LOG_SPOOL_DIR:-} ]]; then
+    _UL_NIX_PREFIX+=(--otel-spool-dir "$PN_NIX_LOG_SPOOL_DIR")
   fi
   _UL_NIX_PREFIX+=(--)
 }

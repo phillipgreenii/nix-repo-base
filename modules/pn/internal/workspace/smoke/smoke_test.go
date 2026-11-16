@@ -489,7 +489,7 @@ func TestSmoke_S37_HookBundleMatrix(t *testing.T) {
 
 // TestSmoke_S38_NixWrapperArgvRewrite: with telemetry on and a wrapper configured,
 // pn workspace build runs the build_command through the wrapper with
-// --traceparent/--otlp-endpoint/--log-dir/-- and the command keeps its own argv
+// --traceparent/--otel-spool-dir/--log-dir/-- and the command keeps its own argv
 // (pg2-kqrrs.8). A fake wrapper stands in for pg-nix-log-wrapped.
 func TestSmoke_S38_NixWrapperArgvRewrite(t *testing.T) {
 	runScenario(t, "s38-nix-wrapper-argv-rewrite")
@@ -502,9 +502,17 @@ func TestSmoke_S39_NixWrapperMissing(t *testing.T) {
 }
 
 // TestSmoke_S40_NixWrapperTelemetryOff: --no-telemetry -> the build runs
-// unwrapped even though a wrapper and an endpoint are configured.
+// unwrapped even though a wrapper and a spool directory are configured.
 func TestSmoke_S40_NixWrapperTelemetryOff(t *testing.T) {
 	runScenario(t, "s40-nix-wrapper-telemetry-off")
+}
+
+// TestSmoke_S48_SpoolDefaultPath: telemetry.toml enabled = true and nothing else:
+// one pn run leaves valid trace and metric spool files under the default spool
+// directory with nothing extra on stderr; disabled writes nothing; a leftover
+// endpoint key prints exactly one deprecation notice.
+func TestSmoke_S48_SpoolDefaultPath(t *testing.T) {
+	runScenario(t, "s48-spool-default-path")
 }
 
 // TestSmoke_S42_BuildAsUserApply: with activate_command set, apply builds as the
@@ -653,11 +661,9 @@ func runScenarioEnv(t *testing.T, name string, extraEnv []string) {
 		"pn-workspace.toml",
 	})
 
-	// pn probes a telemetry endpoint with one TCP connect and turns telemetry
-	// (and so the nix wrapper) off when nothing answers (pg2-aoza4). A scenario
-	// that needs telemetry ON therefore writes the endpoint as a placeholder and
-	// gets a live loopback listener here, instead of a dead hard-coded port.
-	commandLines = expandCollectorEndpoint(t, commandLines)
+	// A scenario that needs telemetry ON for one command writes the spool
+	// directory as a placeholder and gets a fresh temporary path here.
+	commandLines = expandSpoolDir(t, commandLines)
 
 	// Execute all commands; only assert exit code of the LAST command.
 	var lastResult scenarioResult
@@ -786,6 +792,8 @@ func runExtraAssertions(t *testing.T, name, scenarioDir, wsRoot, pnBin string, e
 		assertS37HookBundleMatrix(t, wsRoot, pnBin, env)
 	case "s38-nix-wrapper-argv-rewrite":
 		assertS38WrapperArgvRewrite(t, wsRoot, env)
+	case "s48-spool-default-path":
+		assertS48SpoolDefaultPath(t, wsRoot, pnBin, env, lastResult)
 	case "s39-nix-wrapper-missing":
 		assertUnwrappedBuild(t, "S39", wsRoot)
 	case "s40-nix-wrapper-telemetry-off":

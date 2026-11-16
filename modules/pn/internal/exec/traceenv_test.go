@@ -161,13 +161,13 @@ func wrapperCtx(t *testing.T, wrapper string) context.Context {
 	t.Helper()
 	ctx, _ := onCtx(t)
 	return telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(telemetrycfg.Resolution{
-		Enabled: true, Endpoint: testEndpoint, Source: telemetrycfg.SourceFlag, WrapperPath: wrapper,
+		Enabled: true, SpoolDir: testSpoolDir, Source: telemetrycfg.SourceFlag, WrapperPath: wrapper,
 	}))
 }
 
-// With a usable wrapper the child also learns where it is and which endpoint
+// With a usable wrapper the child also learns where it is and which spool dir
 // to hand it, so update-locks.sh can run its nix calls under it.
-func TestTraceEnvRunner_UsableWrapper_ExportsWrapperAndEndpoint(t *testing.T) {
+func TestTraceEnvRunner_UsableWrapper_ExportsWrapperAndSpoolDir(t *testing.T) {
 	ctx := wrapperCtx(t, storeWrapper)
 	inner := &recRunner{}
 	r := &traceEnvRunner{inner: inner, usable: func(string) bool { return true }}
@@ -175,7 +175,7 @@ func TestTraceEnvRunner_UsableWrapper_ExportsWrapperAndEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := inner.calls[0].Opts.Env
-	if env[EnvNixWrapper] != storeWrapper || env[EnvNixWrapperEndpoint] != testEndpoint || env["A"] != "1" {
+	if env[EnvNixWrapper] != storeWrapper || env[EnvNixWrapperSpoolDir] != testSpoolDir || env["A"] != "1" {
 		t.Errorf("env = %v", env)
 	}
 	if !traceparentRe.MatchString(env["TRACEPARENT"]) {
@@ -212,7 +212,7 @@ func TestTraceEnvRunner_UnusableWrapper_ExportsOnlyTraceparent(t *testing.T) {
 // Telemetry off: the wrapper is never advertised, opts are untouched.
 func TestTraceEnvRunner_TelemetryOff_WrapperNotAdvertised(t *testing.T) {
 	ctx := telemetrycfg.WithRunState(context.Background(), telemetrycfg.NewRunState(telemetrycfg.Resolution{
-		Enabled: true, Endpoint: testEndpoint, WrapperPath: storeWrapper,
+		Enabled: true, SpoolDir: testSpoolDir, WrapperPath: storeWrapper,
 	}))
 	inner := &recRunner{}
 	r := &traceEnvRunner{inner: inner, usable: func(string) bool { return true }}
@@ -235,7 +235,7 @@ func TestNixWrapperArgv(t *testing.T) {
 	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{real, "--otlp-endpoint", testEndpoint, "--log-dir", "/state/pn/nix-logs", "--"}
+	want := []string{real, "--otel-spool-dir", testSpoolDir, "--log-dir", "/state/pn/nix-logs", "--"}
 	if got := NixWrapperArgv(wrapperCtx(t, real)); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}

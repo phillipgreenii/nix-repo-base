@@ -55,19 +55,13 @@ func (ws *Workspace) checkTelemetry(ctx context.Context, env *doctorEnv) []Findi
 		return []Finding{*f}
 	}
 	if !res.Enabled {
-		if res.ProbeErr != nil {
-			return warn(
-				fmt.Sprintf("telemetry is enabled (endpoint %s from %s) but the collector is unreachable: %v", res.ProbeEndpoint, res.ProbeSource, res.ProbeErr),
-				"start the observability stack, or set phillipgreenii.pn.telemetry.enable = false (telemetry.toml enabled = false) and apply",
-			)
-		}
 		return nil
 	}
 
 	wrapper := res.WrapperPath
 	if wrapper == "" {
 		return warn(
-			fmt.Sprintf("telemetry is enabled (endpoint %s from %s) but no wrapper_path is configured; pn will not wrap nix runs", res.Endpoint, res.Source),
+			fmt.Sprintf("telemetry is enabled (spool %s from %s) but no wrapper_path is configured; pn will not wrap nix runs", res.SpoolDir, res.Source),
 			"set phillipgreenii.pn.telemetry.wrapperPath (default: the pg-nix-log-wrapped package) and apply",
 		)
 	}

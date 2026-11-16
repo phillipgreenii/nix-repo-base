@@ -2,15 +2,15 @@ package telemetry_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -250,21 +250,11 @@ func TestNoopPath_NoConnectionsNoGoroutinesNoFiles(t *testing.T) {
 	}
 }
 
-// With an endpoint, a verb's spans and the duration metric reach the collector.
-func TestEnabled_ExportsToCollector(t *testing.T) {
-	var traces, metrics atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/traces":
-			traces.Add(1)
-		case "/v1/metrics":
-			metrics.Add(1)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	tel, err := telemetry.New(context.Background(), "test", srv.URL)
+// With a spool directory, a verb's spans and the duration metric land as valid
+// OTLP-JSON files under traces/ and metrics/.
+func TestEnabled_WritesSpoolFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "otel-spool")
+	tel, err := telemetry.New(context.Background(), "test", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,26 +269,37 @@ func TestEnabled_ExportsToCollector(t *testing.T) {
 	if err := tel.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	if traces.Load() == 0 {
-		t.Error("collector received no /v1/traces request")
-	}
-	if metrics.Load() == 0 {
-		t.Error("collector received no /v1/metrics request")
+	for _, sub := range []string{"traces", "metrics"} {
+		files, _ := filepath.Glob(filepath.Join(dir, sub, "*.jsonl"))
+		if len(files) == 0 {
+			t.Fatalf("no spool file under %s/%s", dir, sub)
+		}
+		for _, f := range files {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+				if !json.Valid([]byte(line)) {
+					t.Errorf("%s: invalid JSON line %q", f, line)
+				}
+			}
+		}
 	}
 }
 
-// A collector that is down MUST NOT hang pn: the flush is bounded.
-func TestCollectorDown_ShutdownBounded(t *testing.T) {
-	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
+// An unwritable spool directory MUST NOT hang or fail pn: Shutdown is bounded,
+// and the failure reaches the caller through WithOnError.
+func TestSpoolUnwritable_ShutdownBoundedAndReported(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	endpoint := "http://" + lis.Addr().String()
-	_ = lis.Close() // nothing listens: connection refused
-
-	tel, err := telemetry.New(context.Background(), "test", endpoint)
+	var errs atomic.Int32
+	tel, err := telemetry.New(context.Background(), "test", filepath.Join(blocker, "otel-spool"),
+		otelsetup.WithOnError(func(error) { errs.Add(1) }))
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("Init rejected the unwritable directory up front: %v", err)
 	}
 	ctx := telemetry.WithTelemetry(context.Background(), tel)
 	_, verb := tel.StartVerb(ctx, "workspace status")
@@ -307,36 +308,10 @@ func TestCollectorDown_ShutdownBounded(t *testing.T) {
 	start := time.Now()
 	_ = tel.Shutdown(context.Background())
 	if d := time.Since(start); d > telemetry.ShutdownTimeout+2*time.Second {
-		t.Errorf("Shutdown took %v with the collector down, want <= ~%v", d, telemetry.ShutdownTimeout)
+		t.Errorf("Shutdown took %v with an unwritable spool, want <= ~%v", d, telemetry.ShutdownTimeout)
 	}
-}
-
-// A collector that accepts but never answers is also bounded. The bound is
-// injected short so the test does not wait out the production ShutdownTimeout.
-func TestCollectorHung_ShutdownBounded(t *testing.T) {
-	const bound = 200 * time.Millisecond
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-release:
-		case <-r.Context().Done():
-		}
-	}))
-	defer srv.Close()
-	defer close(release)
-
-	tel, err := telemetry.NewWithShutdownTimeout(context.Background(), "test", srv.URL, bound)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := telemetry.WithTelemetry(context.Background(), tel)
-	_, verb := tel.StartVerb(ctx, "workspace status")
-	verb.End(0, nil)
-
-	start := time.Now()
-	_ = tel.Shutdown(context.Background())
-	if d := time.Since(start); d > bound+2*time.Second {
-		t.Errorf("Shutdown took %v with a hung collector, want <= ~%v", d, bound)
+	if errs.Load() == 0 {
+		t.Error("OnError was not called for an unwritable spool directory")
 	}
 }
 

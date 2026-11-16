@@ -103,7 +103,7 @@ const (
 const (
 	skipNotRequested   = "not_requested" // internal only: WrapNix false, nothing is recorded
 	skipTelemetryOff   = "telemetry_off"
-	skipNoEndpoint     = "no_endpoint"
+	skipNoSpoolDir     = "no_spool_dir"
 	skipNoWrapperPath  = "no_wrapper_path"
 	skipUnrecognized   = "unrecognized_form"
 	skipSudoNotInStore = "sudo_wrapper_not_in_store"
@@ -144,7 +144,10 @@ func (r *wrapRunner) rewrite(ctx context.Context, name string, args []string, op
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		flags = append(flags, "--traceparent", fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags()))
 	}
-	flags = append(flags, "--otlp-endpoint", st.Res.Endpoint)
+	// The user wrapper writes to this spool directory. The ROOT wrapper ignores
+	// the value (it always uses its own root spool); for root the flag is only
+	// the ENABLE signal. pn never passes --otlp-endpoint.
+	flags = append(flags, "--otel-spool-dir", st.Res.SpoolDir)
 	if !sudo {
 		// A root wrapper ignores --log-dir and always logs to its own
 		// root-owned directory (ADR 0030), so pass it only to a user wrapper.
@@ -171,21 +174,21 @@ func (r *wrapRunner) rewrite(ctx context.Context, name string, args []string, op
 }
 
 // wrapState returns the run's telemetry state when nix wrapping is configured
-// at all: telemetry enabled, an endpoint resolved and a wrapper path named.
+// at all: telemetry enabled, a spool directory resolved and a wrapper path named.
 func wrapState(ctx context.Context) (*telemetrycfg.RunState, bool) {
 	st, why := wrapStateReason(ctx)
 	return st, why == ""
 }
 
 // wrapStateReason is wrapState with the reason it is not configured: "" when it
-// is, else telemetry_off, no_endpoint or no_wrapper_path.
+// is, else telemetry_off, no_spool_dir or no_wrapper_path.
 func wrapStateReason(ctx context.Context) (*telemetrycfg.RunState, string) {
 	st := telemetrycfg.RunStateFrom(ctx)
 	switch {
 	case st == nil || !st.Res.Enabled || !telemetry.From(ctx).Enabled():
 		return nil, skipTelemetryOff
-	case st.Res.Endpoint == "":
-		return nil, skipNoEndpoint
+	case st.Res.SpoolDir == "":
+		return nil, skipNoSpoolDir
 	case st.Res.WrapperPath == "":
 		return nil, skipNoWrapperPath
 	}
@@ -193,21 +196,21 @@ func wrapStateReason(ctx context.Context) (*telemetrycfg.RunState, string) {
 }
 
 // userWrapper returns the absolute path of the configured wrapper and the
-// resolved OTLP endpoint for a NON-root child (never under sudo), or ok=false
-// when the wrapper must not be used: telemetry off, no endpoint or wrapper
+// resolved spool directory for a NON-root child (never under sudo), or ok=false
+// when the wrapper must not be used: telemetry off, no spool directory or wrapper
 // path, a relative path, or a file that is not an executable regular file.
-func userWrapper(ctx context.Context, usable func(string) bool) (path, endpoint string, ok bool) {
+func userWrapper(ctx context.Context, usable func(string) bool) (path, spoolDir string, ok bool) {
 	st, ok := wrapState(ctx)
 	if !ok || !filepath.IsAbs(st.Res.WrapperPath) || !usable(st.Res.WrapperPath) {
 		return "", "", false
 	}
-	return st.Res.WrapperPath, st.Res.Endpoint, true
+	return st.Res.WrapperPath, st.Res.SpoolDir, true
 }
 
 // NixWrapperArgv returns the argv prefix that runs a nix command under
 // pg-nix-log-wrapped for a non-root child, up to and including "--":
 //
-//	<wrapper> --otlp-endpoint URL [--log-dir DIR] --
+//	<wrapper> --otel-spool-dir DIR [--log-dir DIR] --
 //
 // It carries no --traceparent: the child (a hook or update-locks.sh) gets
 // TRACEPARENT from the environment (WithTraceEnv), which the wrapper honours.
@@ -215,11 +218,11 @@ func userWrapper(ctx context.Context, usable func(string) bool) (path, endpoint 
 // prepends it is byte-identical to before with telemetry off or the wrapper
 // absent (ADR 0028).
 func NixWrapperArgv(ctx context.Context) []string {
-	path, endpoint, ok := userWrapper(ctx, isExecutableFile)
+	path, spoolDir, ok := userWrapper(ctx, isExecutableFile)
 	if !ok {
 		return nil
 	}
-	argv := []string{path, "--otlp-endpoint", endpoint}
+	argv := []string{path, "--otel-spool-dir", spoolDir}
 	if dir := telemetrycfg.NixLogDir(os.Getenv); dir != "" {
 		argv = append(argv, "--log-dir", dir)
 	}

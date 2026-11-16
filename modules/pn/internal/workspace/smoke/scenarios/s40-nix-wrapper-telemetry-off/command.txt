@@ -1,9 +1,9 @@
-# Bootstrap (telemetry-free: no endpoint is configured), then build with an
-# explicit endpoint (a live loopback listener, see expandCollectorEndpoint) so telemetry is ON for the build and the fake wrapper from
-# telemetry.toml is used. `workspace allow` is REQUIRED before build (TOFU trust
+# Bootstrap (telemetry-free: telemetry.toml does not enable it), then build with
+# an explicit spool directory (see expandSpoolDir) so telemetry is ON for the
+# build and the fake wrapper from telemetry.toml is used. `workspace allow` is REQUIRED before build (TOFU trust
 # gate on the config-sourced build_command).
 workspace init
 workspace clone
 workspace lock
 workspace allow
-workspace build --otlp-endpoint @OTLP_ENDPOINT@ --no-telemetry
+workspace build --otel-spool-dir @SPOOL_DIR@ --no-telemetry

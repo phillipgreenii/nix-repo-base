@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	telOK    = "endpoint: http://127.0.0.1:4318 (from file)\nreachable: yes\nlog-dir: /x (writable: yes)\n"
+	telOK    = "spool-dir: /state/otel-spool (from file)\nwritable: yes\nlog-dir: /x (writable: yes)\n"
 	shimsOK  = "shim: nix: shim at /s/nix\nshim: darwin-rebuild: shim at /s/darwin-rebuild\nshim: allowlist: nix build\n"
 	rootAbs  = "shim: root-config: absent (/etc/pg-nix-shim.json)\nshim: root-run: would pass through (no root configuration)\n"
-	rootGood = "shim: root-config: /etc/pg-nix-shim.json -> /nix/store/a-x.json (store regular file)\nshim: root-run: would wrap (rootEndpoint http://127.0.0.1:4318)\n"
+	rootGood = "shim: root-config: /etc/pg-nix-shim.json -> /nix/store/a-x.json (store regular file)\nshim: root-run: would wrap (rootSpool)\n"
 )
 
 // shimCheckRun runs the telemetry then the shim check on one doctorEnv with
@@ -107,26 +107,33 @@ func rootCfg(t *testing.T, body string) func(*telemetrycfg.Resolution, *doctorEn
 	return func(_ *telemetrycfg.Resolution, env *doctorEnv) { env.shimRootConfig = p }
 }
 
-func TestCheckShim_EndpointMismatch(t *testing.T) {
+func TestCheckShim_RootTelemetryKeyMissing(t *testing.T) {
 	out := telOK + shimsOK + rootGood + "status: telemetry=ok shim=ok\n"
-	_, shim, _ := shimCheckRun(t, out, 0, rootCfg(t, `{"rootEndpoint":"http://127.0.0.1:9999"}`))
-	if len(shim) != 1 || !strings.Contains(shim[0].Message, "http://127.0.0.1:4318") || !strings.Contains(shim[0].Message, "http://127.0.0.1:9999") {
-		t.Fatalf("mismatch not reported: %+v", shim)
+	_, shim, _ := shimCheckRun(t, out, 0, rootCfg(t, `{}`))
+	if len(shim) != 1 || !strings.Contains(shim[0].Message, "rootSpool") || !strings.Contains(shim[0].Message, "/state/otel-spool") {
+		t.Fatalf("missing root telemetry key not reported: %+v", shim)
 	}
-	if _, shim, _ = shimCheckRun(t, out, 0, rootCfg(t, `{"rootEndpoint":"http://127.0.0.1:4318"}`)); len(shim) != 0 {
-		t.Errorf("equal endpoints reported: %+v", shim)
+	// Either the new key or the legacy key counts as "root telemetry wanted".
+	for _, body := range []string{`{"rootSpool":true}`, `{"rootEndpoint":"http://127.0.0.1:4318"}`} {
+		if _, shim, _ = shimCheckRun(t, out, 0, rootCfg(t, body)); len(shim) != 0 {
+			t.Errorf("%s reported: %+v", body, shim)
+		}
 	}
-	// Unreadable root file, or the user endpoint not from telemetry.toml: nothing to compare.
+	// A leftover endpoint value is not compared with anything.
+	if _, shim, _ = shimCheckRun(t, out, 0, rootCfg(t, `{"rootEndpoint":"http://127.0.0.1:9999"}`)); len(shim) != 0 {
+		t.Errorf("legacy key value compared: %+v", shim)
+	}
+	// Unreadable root file, a per-run flag spool, or telemetry off: nothing to say.
 	if _, shim, _ = shimCheckRun(t, out, 0, func(_ *telemetrycfg.Resolution, env *doctorEnv) {
 		env.shimRootConfig = filepath.Join(t.TempDir(), "nope")
 	}); len(shim) != 0 {
 		t.Errorf("unreadable file reported: %+v", shim)
 	}
 	if _, shim, _ = shimCheckRun(t, out, 0, func(res *telemetrycfg.Resolution, env *doctorEnv) {
-		rootCfg(t, `{"rootEndpoint":"http://other"}`)(res, env)
-		res.Source = telemetrycfg.SourceEnv
+		rootCfg(t, `{}`)(res, env)
+		res.Source = telemetrycfg.SourceFlag
 	}); len(shim) != 0 {
-		t.Errorf("env-sourced endpoint compared: %+v", shim)
+		t.Errorf("flag-sourced spool compared: %+v", shim)
 	}
 }
 
@@ -148,9 +155,9 @@ func TestCheckShim_SilentWhenTelemetryOffOrOldWrapper(t *testing.T) {
 }
 
 func TestCheckTelemetry_RealTelemetryFailureStillWarnsWithStatusLine(t *testing.T) {
-	out := "endpoint: http://127.0.0.1:4318 (from file)\nreachable: no (refused)\nlog-dir: /x (writable: yes)\n" + shimsOK + "status: telemetry=fail shim=ok\n"
+	out := "spool-dir: /state/otel-spool (from file)\nwritable: no (denied)\nlog-dir: /x (writable: yes)\n" + shimsOK + "status: telemetry=fail shim=ok\n"
 	tel, _, _ := shimCheckRun(t, out, 1, nil)
-	if len(tel) != 1 || !strings.Contains(tel[0].Message, "reachable: no") || strings.Contains(tel[0].Message, "shim:") {
+	if len(tel) != 1 || !strings.Contains(tel[0].Message, "writable: no") || strings.Contains(tel[0].Message, "shim:") {
 		t.Fatalf("tel = %+v", tel)
 	}
 }

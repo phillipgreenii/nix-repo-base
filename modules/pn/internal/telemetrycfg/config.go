@@ -1,46 +1,33 @@
 // Package telemetrycfg resolves pn's OpenTelemetry configuration (ADR 0028):
-// whether telemetry is on, which OTLP endpoint it uses, which wrapper binary
-// pn may use for nix, and the small user-facing helpers around it (the trace
-// hint, the collector probe, the sudo-wrapper path guard).
+// whether telemetry is on, which spool directory it writes to, which wrapper
+// binary pn may use for nix, and the small user-facing helpers around it (the
+// trace hint, the deprecation notices, the sudo-wrapper path guard).
 //
 // It deliberately has NO OpenTelemetry dependency: it only decides WHETHER and
 // WHERE to export. The span/metric machinery lives in the telemetry facade.
 // Keeping the decision separate makes the no-telemetry path trivially free of
-// side effects (the Null Object rule: with no endpoint, nothing is created, no
-// goroutine is started, no connection is opened and no file is written).
+// side effects (the Null Object rule: when off, nothing is created, no
+// goroutine is started and no file is written).
 //
-// Precedence, first match wins (the file is read by non-root only):
-//
-//  1. forced off, in any case: --no-telemetry, PG_NIX_LOG_DISABLE=1,
-//     OTEL_SDK_DISABLED=true;
-//  2. --otlp-endpoint flag (an explicit per-run opt-in: beats the file's
-//     enabled = false);
-//  3. telemetry.toml `enabled = false` (the per-system runtime switch: off,
-//     even when OTEL_EXPORTER_OTLP_ENDPOINT or the file's endpoint is set);
-//  4. OTEL_EXPORTER_OTLP_ENDPOINT;
-//  5. telemetry.toml `endpoint`.
-//
-// An absent `enabled` key means "on iff an endpoint resolves" (the original
-// rule); `enabled = true` without any endpoint resolves to off (there is no
-// default endpoint) and the doctor reports it.
+// The precedence is documented on ResolveSpool. The retired endpoint
+// configuration (--otlp-endpoint, OTEL_EXPORTER_OTLP_ENDPOINT, the file's
+// endpoint key) no longer enables telemetry; each prints a deprecation notice.
 package telemetrycfg
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
 // Environment variable names read by the resolver.
 const (
-	EnvEndpoint      = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	EnvEndpoint      = "OTEL_EXPORTER_OTLP_ENDPOINT" // deprecated; only triggers a notice
 	EnvSDKDisabled   = "OTEL_SDK_DISABLED"
 	EnvWrapDisable   = "PG_NIX_LOG_DISABLE"
 	EnvTraceHint     = "PN_TRACE_HINT"
@@ -48,17 +35,19 @@ const (
 	envHome          = "HOME"
 )
 
-// Source names where the resolved endpoint came from.
+// Source names where the resolved spool directory came from.
 const (
 	SourceNone = ""
-	SourceFlag = "flag"
-	SourceEnv  = "env"
-	SourceFile = "file"
+	SourceFlag = SpoolSourceFlag
+	SourceFile = SpoolSourceFile
+	// SourceDefault is the ${XDG_STATE_HOME:-$HOME/.local/state}/otel-spool
+	// default, used when telemetry.toml says enabled = true with no spool_dir.
+	SourceDefault = SpoolSourceDefault
 )
 
 // FileConfig is the parsed ~/.config/pn/telemetry.toml. The file is generated
 // by the home-manager module (phillipgreenii.pn.telemetry.*); every key is
-// optional. Enabled is a pointer so "absent" (derive from the endpoint) is
+// optional. Enabled is a pointer so "absent" (off) is
 // distinguishable from an explicit false.
 type FileConfig struct {
 	Enabled     *bool  `toml:"enabled"`
@@ -113,42 +102,37 @@ type Flags struct {
 
 // Resolution is the outcome of Resolve.
 type Resolution struct {
-	// Enabled is true iff an endpoint resolved and nothing forced telemetry off
-	// (including telemetry.toml `enabled = false`).
+	// Enabled is true iff a usable spool directory resolved and nothing forced
+	// telemetry off (including telemetry.toml `enabled = false`).
 	Enabled bool
-	// Endpoint is the OTLP endpoint; empty when !Enabled.
-	Endpoint string
-	// Source is SourceFlag, SourceEnv or SourceFile when Enabled.
+	// SpoolDir is the absolute spool directory; empty when !Enabled.
+	SpoolDir string
+	// Source is SourceFlag, SourceFile or SourceDefault when Enabled.
 	Source string
 	// WrapperPath is the configured pg-nix-log-wrapped path from telemetry.toml
 	// (empty if none or if the file was not read). It is only a candidate: pn
 	// MUST apply ValidateSudoWrapper before running it as root.
 	WrapperPath string
 	// Forced names the control that forced telemetry off ("" if none). It is
-	// ForcedByFile when telemetry.toml says `enabled = false`, and
-	// ForcedUnreachable when the collector probe failed (Prepare).
+	// ForcedByFile when telemetry.toml says `enabled = false`.
 	Forced string
 	// FileEnabled is telemetry.toml's `enabled` key (nil if absent or the file
 	// was not read).
 	FileEnabled *bool
-	// ProbeErr is the collector-probe failure that turned telemetry off for
-	// the run (Prepare); ProbeEndpoint and ProbeSource name what was probed.
-	// The doctor uses them to report a configured-on but unreachable collector,
-	// which Enabled=false alone would hide.
-	ProbeErr      error
-	ProbeEndpoint string
-	ProbeSource   string
+	// SpoolErr is an unusable spool directory (relative path, or no resolvable
+	// default). Telemetry is off whenever it is set; the doctor reports it.
+	SpoolErr error
+	// Notices are the deprecation lines that apply to this run (see
+	// DeprecationNotices); Prepare prints them.
+	Notices []string
 	// Verbose mirrors Flags.Verbose.
 	Verbose bool
 	// FileErr is a non-fatal telemetry.toml parse/read error, for -v diagnostics.
 	FileErr error
 }
 
-// Forced reasons that are not a flag or an environment variable.
-const (
-	ForcedByFile      = "telemetry.toml enabled = false"
-	ForcedUnreachable = "collector unreachable"
-)
+// ForcedByFile is the Forced reason for telemetry.toml `enabled = false`.
+const ForcedByFile = "telemetry.toml enabled = false"
 
 // Inputs are the dependencies of Resolve, injectable for tests.
 type Inputs struct {
@@ -160,19 +144,19 @@ type Inputs struct {
 	IsRoot bool
 }
 
-// Resolve applies the precedence and force-off rules. It performs no network
-// call and creates no file; the only side effect is reading telemetry.toml
-// when no flag or env endpoint decided the question.
+// Resolve applies the spool-mode precedence (ResolveSpool) and gathers the
+// wrapper path and deprecation notices. It opens no connection and creates no
+// file; the only side effect is reading telemetry.toml (non-root only).
 func Resolve(in Inputs) Resolution {
 	getenv := in.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
+		in.Getenv = getenv
 	}
 	res := Resolution{Verbose: in.Flags.Verbose}
 
 	// The wrapper path is only ever sourced from the file; read it whenever
-	// the file is readable so the doctor can report on it even when the
-	// endpoint came from the environment.
+	// the file is readable so the doctor can report on it.
 	var file FileConfig
 	if !in.IsRoot {
 		var err error
@@ -181,57 +165,26 @@ func Resolve(in Inputs) Resolution {
 	}
 	res.WrapperPath = file.WrapperPath
 	res.FileEnabled = file.Enabled
+	res.Notices = DeprecationNotices(in.Flags, getenv, file.Endpoint)
 
-	switch {
-	case in.Flags.NoTelemetry:
-		res.Forced = "--no-telemetry"
-	case getenv(EnvWrapDisable) == "1":
-		res.Forced = EnvWrapDisable + "=1"
-	case strings.EqualFold(getenv(EnvSDKDisabled), "true"):
-		res.Forced = EnvSDKDisabled + "=true"
-	}
-	if res.Forced != "" {
-		return res
-	}
-
-	if in.Flags.Endpoint == "" && file.Enabled != nil && !*file.Enabled {
-		res.Forced = ForcedByFile
-		return res
-	}
-
-	switch {
-	case in.Flags.Endpoint != "":
-		res.Endpoint, res.Source = in.Flags.Endpoint, SourceFlag
-	case getenv(EnvEndpoint) != "":
-		res.Endpoint, res.Source = getenv(EnvEndpoint), SourceEnv
-	case file.Endpoint != "":
-		res.Endpoint, res.Source = file.Endpoint, SourceFile
-	}
-	res.Enabled = res.Endpoint != ""
+	sp := ResolveSpool(in)
+	res.Enabled, res.SpoolDir, res.Source = sp.Enabled, sp.Dir, sp.Source
+	res.Forced, res.SpoolErr = sp.Forced, sp.Err
 	return res
 }
 
 // Prepare is the entry-point helper: it scans args for the telemetry flags,
-// resolves the configuration and, whenever telemetry is enabled, probes the
-// collector with one bounded TCP connect (pg2-aoza4). An unreachable collector
-// turns telemetry off for the run, so pn never tries to write to a machine
-// that has no local OTel suite running; the one-line
-// `telemetry disabled: collector unreachable (...)` note goes to stderr only
-// under -v, so the message (when printed) is true and a default run stays
-// silent. The disabled path (no endpoint, or forced off) never probes.
-func Prepare(ctx context.Context, args []string, getenv func(string) string, isRoot bool, stderr io.Writer) Resolution {
+// resolves the configuration and prints the deprecation notices that apply
+// (one line each, prefix NoticePrefix, always to stderr). It never probes or
+// connects to anything: telemetry writes to a local file spool. An unusable
+// spool directory turns telemetry off for the run (noted under -v only).
+func Prepare(args []string, getenv func(string) string, isRoot bool, stderr io.Writer) Resolution {
 	res := Resolve(Inputs{Flags: ScanArgs(args), Getenv: getenv, IsRoot: isRoot})
-	if res.Enabled {
-		if err := Probe(ctx, res.Endpoint, ProbeTimeout); err != nil {
-			if res.Verbose {
-				_, _ = fmt.Fprintln(stderr, UnreachableMessage(res.Endpoint))
-			}
-			res.ProbeErr, res.ProbeEndpoint, res.ProbeSource = err, res.Endpoint, res.Source
-			res.Enabled = false
-			res.Endpoint = ""
-			res.Source = SourceNone
-			res.Forced = ForcedUnreachable
-		}
+	for _, n := range res.Notices {
+		_, _ = fmt.Fprintln(stderr, n)
+	}
+	if res.SpoolErr != nil && res.Verbose {
+		_, _ = fmt.Fprintf(stderr, "telemetry disabled: %v\n", res.SpoolErr)
 	}
 	return res
 }

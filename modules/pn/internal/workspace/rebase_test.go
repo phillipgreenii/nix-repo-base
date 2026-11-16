@@ -361,10 +361,10 @@ func TestRebase_CancelledContextDoesNotAbort(t *testing.T) {
 	}
 }
 
-// TestRebase_ProbeErrorAfterFailureDoesNotAbort: a post-probe error is
+// TestRebase_ProbeFailureAfterFailureDoesNotAbort: a post-probe error is
 // "state unknown" -> do not abort, return the original error. A pre-probe
 // error proceeds to Sync.
-func TestRebase_ProbeErrorDoesNotAbort(t *testing.T) {
+func TestRebase_ProbeFailureDoesNotAbort(t *testing.T) {
 	syncFail := errors.New("exit status 1")
 	m := &fakeGitMutator{syncWaitErr: syncFail}
 	w, f, repoDir := newRebaseFixture(t, m)

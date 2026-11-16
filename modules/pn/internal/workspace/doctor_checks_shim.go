@@ -86,10 +86,10 @@ func (ws *Workspace) checkShim(ctx context.Context, env *doctorEnv) []Finding {
 	} else if rootAbsent && anyShim {
 		out = append(out, warn(
 			"pg-nix-shim: no root configuration ("+rootState+"); root runs (sudo nix, sudo darwin-rebuild) pass through unwrapped ("+rootLogNote+")",
-			"enable the nix-darwin pg-nix-shim module (set rootEndpoint) and apply",
+			"enable the nix-darwin pg-nix-shim module (enable root telemetry: rootSpool) and apply",
 		))
 	}
-	if f, ok := ws.shimEndpointMismatch(env, rootState, rootRun); ok {
+	if f, ok := ws.shimRootTelemetryMissing(env, rootState, rootRun); ok {
 		out = append(out, f)
 	}
 	return out
@@ -106,11 +106,14 @@ func shimLines(stdout string) []string {
 	return out
 }
 
-// shimEndpointMismatch compares the home-manager endpoint (telemetry.toml)
-// with rootEndpoint in the root configuration, when both are readable.
-func (ws *Workspace) shimEndpointMismatch(env *doctorEnv, rootState, rootRun string) (Finding, bool) {
+// shimRootTelemetryMissing reports a root configuration that does not turn
+// root telemetry on while the user spool is enabled by telemetry.toml (not by a per-run flag): it
+// carries neither the new rootSpool key nor the legacy rootEndpoint key, so
+// root runs (sudo nix, sudo darwin-rebuild) pass through unwrapped. The values
+// are not compared: the root wrapper always uses its own root spool.
+func (ws *Workspace) shimRootTelemetryMissing(env *doctorEnv, rootState, rootRun string) (Finding, bool) {
 	res := env.telemetry
-	if !strings.Contains(rootState, "(store regular file)") || res.Source != "file" || res.Endpoint == "" {
+	if !strings.Contains(rootState, "(store regular file)") || !res.Enabled || res.Source == "flag" {
 		return Finding{}, false
 	}
 	path := env.shimRootConfig
@@ -122,15 +125,16 @@ func (ws *Workspace) shimEndpointMismatch(env *doctorEnv, rootState, rootRun str
 		return Finding{}, false
 	}
 	var rc struct {
+		RootSpool    bool   `json:"rootSpool"`
 		RootEndpoint string `json:"rootEndpoint"`
 	}
-	if json.Unmarshal(b, &rc) != nil || rc.RootEndpoint == "" || rc.RootEndpoint == res.Endpoint {
+	if json.Unmarshal(b, &rc) != nil || rc.RootSpool || rc.RootEndpoint != "" {
 		return Finding{}, false
 	}
 	return Finding{
 		CheckID: shimCheckID, Severity: SevWarning,
-		Message: fmt.Sprintf("pg-nix-shim: the home-manager telemetry endpoint (%s, telemetry.toml) differs from the nix-darwin rootEndpoint (%s, %s); user and root runs are sent to different collectors (%s)",
-			res.Endpoint, rc.RootEndpoint, path, rootLogNote),
-		Manual: "set phillipgreenii.pn.telemetry.endpoint and the nix-darwin pg-nix-shim rootEndpoint from one value, then apply",
+		Message: fmt.Sprintf("pg-nix-shim: telemetry is enabled for the user (spool %s, telemetry.toml) but the nix-darwin root configuration (%s) sets neither rootSpool nor rootEndpoint; root runs are not recorded (%s)",
+			res.SpoolDir, path, rootLogNote),
+		Manual: "set the nix-darwin pg-nix-shim root telemetry option (rootSpool = true) and apply",
 	}, true
 }

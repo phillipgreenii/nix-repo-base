@@ -294,7 +294,7 @@ func TestAsUser_NixOSProbeFailures(t *testing.T) {
 }
 
 // The darwin probe error text stays byte-identical.
-func TestAsUser_DarwinProbeErrorTextUnchanged(t *testing.T) {
+func TestAsUser_DarwinProbeFailureTextUnchanged(t *testing.T) {
 	e := newAsUserEnv(t, asUserTOML, nil)
 	e.f.probe = func(context.Context, exec.RunOptions) (exec.Result, error) {
 		return cmdErrResult("p", nil, exec.Result{ExitCode: 1, Stderr: []byte("nothing useful\n")})

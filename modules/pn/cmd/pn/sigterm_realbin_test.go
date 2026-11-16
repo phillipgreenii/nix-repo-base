@@ -4,12 +4,9 @@ package main
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -19,16 +16,9 @@ import (
 )
 
 // End to end with the real binary: a SIGTERM-killed pn still flushes its
-// spans to the collector, within the bounded timeout.
+// spans to the spool, within the bounded timeout.
 func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
-	var traces atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/traces" {
-			traces.Add(1)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	spool := filepath.Join(t.TempDir(), "otel-spool")
 
 	// The workspace's only repo is the hermetic fixture repo (x/gittest); the
 	// workspace root is the fixture tree that contains it, at <root>/repo.
@@ -48,7 +38,7 @@ func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	cmd := exec.CommandContext(context.Background(), pnBinary, "workspace", "pre-commit-check")
+	cmd := exec.CommandContext(context.Background(), pnBinary, "--otel-spool-dir", spool, "workspace", "pre-commit-check")
 	cmd.Dir = root
 	cmd.Env = pnEnv(
 		"PATH="+bin+":"+os.Getenv("PATH"),
@@ -56,12 +46,12 @@ func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
 		// telemetry.toml is read from $XDG_CONFIG_HOME when set, which wins over
 		// $HOME/.config. A developer shell exports it, so without this override pn
 		// reads the real ~/.config/pn/telemetry.toml (e.g. enabled = false, which
-		// beats OTEL_EXPORTER_OTLP_ENDPOINT) and exports nothing.
+		// is off unless --otel-spool-dir is given) and exports nothing.
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		// Clear the force-off switches a developer shell may export.
 		"OTEL_SDK_DISABLED=",
 		"PG_NIX_LOG_DISABLE=",
-		"OTEL_EXPORTER_OTLP_ENDPOINT="+srv.URL,
+		"OTEL_EXPORTER_OTLP_ENDPOINT=",
 		"PN_WORKSPACE_ROOT="+root,
 	)
 	if err := cmd.Start(); err != nil {
@@ -92,7 +82,7 @@ func TestIntegration_SIGTERMStillFlushes(t *testing.T) {
 		_ = cmd.Process.Kill()
 		t.Fatal("pn did not exit within 30s of SIGTERM")
 	}
-	if traces.Load() == 0 {
-		t.Error("collector received no spans from the SIGTERM-killed pn")
+	if files, _ := filepath.Glob(filepath.Join(spool, "traces", "*.jsonl")); len(files) == 0 {
+		t.Error("no trace spool file from the SIGTERM-killed pn")
 	}
 }

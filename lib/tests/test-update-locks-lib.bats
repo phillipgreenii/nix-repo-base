@@ -1586,17 +1586,17 @@ MOCK
   [ "${#_UL_NIX_PREFIX[@]}" -eq 0 ]
 }
 
-@test "_ul_nix_wrap_prefix uses PN_NIX_LOG_WRAPPER and the endpoint pn resolved" {
+@test "_ul_nix_wrap_prefix uses PN_NIX_LOG_WRAPPER and the spool directory pn resolved" {
   _install_mock_wrapper "$MOCK_BIN/my-wrapper"
   export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
   export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
-  export PN_NIX_LOG_OTLP_ENDPOINT=http://127.0.0.1:4318
+  export PN_NIX_LOG_SPOOL_DIR=/state/otel-spool
   source "$UL_LOCKS_LIB"
   _ul_nix_wrap_prefix
-  [ "${_UL_NIX_PREFIX[*]}" = "$MOCK_BIN/my-wrapper --otlp-endpoint http://127.0.0.1:4318 --" ]
+  [ "${_UL_NIX_PREFIX[*]}" = "$MOCK_BIN/my-wrapper --otel-spool-dir /state/otel-spool --" ]
 }
 
-@test "_ul_nix_wrap_prefix omits --otlp-endpoint when pn gave none" {
+@test "_ul_nix_wrap_prefix omits --otel-spool-dir when pn gave none" {
   _install_mock_wrapper "$MOCK_BIN/my-wrapper"
   export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
   export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
@@ -1651,7 +1651,7 @@ MOCK
   _recording_nix_mock
   export TRACEPARENT=00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01
   export PN_NIX_LOG_WRAPPER="$MOCK_BIN/my-wrapper"
-  export PN_NIX_LOG_OTLP_ENDPOINT=http://127.0.0.1:4318
+  export PN_NIX_LOG_SPOOL_DIR=/state/otel-spool
   source "$UL_LOCKS_LIB"
   ul_setup "test-project" "$TEST_DIR"
   : > "$WRAP_LOG" # ignore ul_setup's own nix calls
@@ -1659,7 +1659,7 @@ MOCK
   ul_run_step "nix-flake-update" "update-locks: flake" nix flake update --flag "two words"
 
   [ "$_UL_STEPS_SUCCEEDED" -eq 1 ]
-  grep -qxF "wrapper: --otlp-endpoint http://127.0.0.1:4318 -- nix flake update --flag two words" "$WRAP_LOG"
+  grep -qxF "wrapper: --otel-spool-dir /state/otel-spool -- nix flake update --flag two words" "$WRAP_LOG"
   grep -qxF "nix: flake update --flag two words" "$WRAP_LOG"
 }
 

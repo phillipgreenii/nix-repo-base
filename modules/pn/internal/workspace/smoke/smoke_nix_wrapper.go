@@ -3,33 +3,29 @@
 package smoke
 
 import (
-	"context"
-	"net"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// collectorEndpointPlaceholder is the token a scenario's command.txt uses for an
-// OTLP endpoint that must be reachable.
-const collectorEndpointPlaceholder = "@OTLP_ENDPOINT@"
+// spoolDirPlaceholder is the token a scenario's command.txt uses for the spool
+// directory pn is given with --otel-spool-dir.
+const spoolDirPlaceholder = "@SPOOL_DIR@"
 
-// expandCollectorEndpoint replaces collectorEndpointPlaceholder in lines with
-// the URL of a live loopback listener. pn only keeps telemetry on (and so only
-// routes nix through the wrapper) when a TCP connect to the endpoint succeeds
-// (pg2-aoza4), and a hard-coded port such as 127.0.0.1:9 never answers, so
-// S38-S40 would silently exercise the telemetry-off path. The listener accepts
-// and immediately closes connections, like the probe's connect-and-close. When
-// no line uses the placeholder no listener is started and lines is returned
-// unchanged.
-func expandCollectorEndpoint(t *testing.T, lines []string) []string {
+// expandSpoolDir replaces spoolDirPlaceholder in lines with an absolute path
+// under a fresh temporary directory. The directory is not created: pn creates
+// the spool on first write, and S38-S40 only inspect the argv pn hands the
+// wrapper. When no line uses the placeholder lines is returned unchanged.
+func expandSpoolDir(t *testing.T, lines []string) []string {
 	t.Helper()
 	uses := false
 	for _, l := range lines {
-		if strings.Contains(l, collectorEndpointPlaceholder) {
+		if strings.Contains(l, spoolDirPlaceholder) {
 			uses = true
 			break
 		}
@@ -37,24 +33,10 @@ func expandCollectorEndpoint(t *testing.T, lines []string) []string {
 	if !uses {
 		return lines
 	}
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("start loopback OTLP collector stand-in: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
-	endpoint := "http://" + ln.Addr().String()
+	dir := filepath.Join(t.TempDir(), "otel-spool")
 	out := make([]string, len(lines))
 	for i, l := range lines {
-		out[i] = strings.ReplaceAll(l, collectorEndpointPlaceholder, endpoint)
+		out[i] = strings.ReplaceAll(l, spoolDirPlaceholder, dir)
 	}
 	return out
 }
@@ -83,9 +65,6 @@ func readArgvFile(t *testing.T, path string) (args []string, ok bool) {
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"), true
 }
 
-// loopbackEndpointRE is the live loopback collector stand-in's endpoint.
-var loopbackEndpointRE = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]+$`)
-
 // traceparentRE is a W3C traceparent: version 00, 32-hex trace id, 16-hex span id, flags.
 var traceparentRE = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
 
@@ -104,10 +83,13 @@ func assertS38WrapperArgvRewrite(t *testing.T, wsRoot string, env []string) {
 	if wrapper[0] != "--traceparent" || !traceparentRE.MatchString(wrapper[1]) {
 		t.Errorf("S38: wrapper argv does not start with a valid --traceparent: %q", wrapper)
 	}
-	// wrapper[3] is the endpoint pn was given: the loopback listener's URL, whose
-	// port is only known at run time (see expandCollectorEndpoint).
-	if wrapper[2] != "--otlp-endpoint" || !loopbackEndpointRE.MatchString(wrapper[3]) {
-		t.Errorf("S38: wrapper argv has no loopback --otlp-endpoint after the traceparent: %q", wrapper)
+	// wrapper[3] is the spool directory pn was given (a temporary path only
+	// known at run time, see expandSpoolDir); pn never passes --otlp-endpoint.
+	if wrapper[2] != "--otel-spool-dir" || !filepath.IsAbs(wrapper[3]) || filepath.Base(wrapper[3]) != "otel-spool" {
+		t.Errorf("S38: wrapper argv has no absolute --otel-spool-dir after the traceparent: %q", wrapper)
+	}
+	if slices.Contains(wrapper, "--otlp-endpoint") {
+		t.Errorf("S38: pn passed the retired --otlp-endpoint: %q", wrapper)
 	}
 	wantTail := []string{
 		"--log-dir", filepath.Join(envValue(env, "XDG_STATE_HOME"), "pn", "nix-logs"),
@@ -133,5 +115,58 @@ func assertUnwrappedBuild(t *testing.T, scenario, wsRoot string) {
 	darwin, ok := readArgvFile(t, filepath.Join(wsRoot, "darwin.argv"))
 	if !ok || !reflect.DeepEqual(darwin, []string{"build"}) {
 		t.Errorf("%s: darwin-rebuild argv = %q (ran=%v), want [build]", scenario, darwin, ok)
+	}
+}
+
+// assertS48SpoolDefaultPath: with telemetry enabled and no other setting, one
+// pn run leaves valid OTLP-JSON trace and metric files under
+// $XDG_STATE_HOME/otel-spool and prints nothing on stderr; the same run with
+// --no-telemetry writes nothing; a leftover telemetry.toml endpoint key prints
+// exactly one deprecation notice and nothing else.
+func assertS48SpoolDefaultPath(t *testing.T, wsRoot, pnBin string, env []string, last scenarioResult) {
+	t.Helper()
+	if last.ExitCode != 0 || len(last.Stderr) != 0 {
+		t.Fatalf("S48: enabled run: exit=%d stderr=%q, want 0 and empty", last.ExitCode, last.Stderr)
+	}
+	spool := filepath.Join(envValue(env, "XDG_STATE_HOME"), "otel-spool")
+	for _, sub := range []string{"traces", "metrics"} {
+		files, _ := filepath.Glob(filepath.Join(spool, sub, "*.jsonl"))
+		if len(files) == 0 {
+			t.Fatalf("S48: no spool file under %s/%s", spool, sub)
+		}
+		for _, f := range files {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+				var v map[string]any
+				if err := json.Unmarshal([]byte(line), &v); err != nil || len(v) == 0 {
+					t.Errorf("S48: %s: not a JSON object line: %q (%v)", f, line, err)
+				}
+			}
+		}
+	}
+
+	// Disabled: a fresh state directory stays empty and stderr stays empty.
+	freshState := t.TempDir()
+	off := overrideEnv(env, []string{"XDG_STATE_HOME=" + freshState})
+	res := runCommand(t, pnBin, wsRoot, []string{"--no-telemetry", "workspace", "init"}, off)
+	if res.ExitCode != 0 || len(res.Stderr) != 0 {
+		t.Errorf("S48: disabled run: exit=%d stderr=%q, want 0 and empty", res.ExitCode, res.Stderr)
+	}
+	if entries, _ := os.ReadDir(freshState); len(entries) != 0 {
+		t.Errorf("S48: disabled run wrote under XDG_STATE_HOME: %v", entries)
+	}
+
+	// A leftover endpoint key: exactly one notice, still no stray output.
+	cfg := filepath.Join(envValue(env, "XDG_CONFIG_HOME"), "pn", "telemetry.toml")
+	if err := os.WriteFile(cfg, []byte("enabled = false\nendpoint = \"http://127.0.0.1:1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = runCommand(t, pnBin, wsRoot, []string{"workspace", "init"}, off)
+	lines := strings.Split(strings.TrimSpace(string(res.Stderr)), "\n")
+	if res.ExitCode != 0 || len(lines) != 1 || !strings.HasPrefix(lines[0], "pn: telemetry: ") || !strings.Contains(lines[0], "endpoint") {
+		t.Errorf("S48: leftover endpoint key: exit=%d stderr=%q, want exactly one pn: telemetry: notice", res.ExitCode, res.Stderr)
 	}
 }

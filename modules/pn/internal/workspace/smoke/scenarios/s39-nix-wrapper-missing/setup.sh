@@ -9,8 +9,8 @@
 #   - pg-nix-log-wrapped  records ITS argv in $WSROOT/wrapper.argv, drops its own
 #     flags up to the first "--", and execs the rest (the real wrapper's contract)
 # ~/.config/pn/telemetry.toml (under the scrubbed XDG_CONFIG_HOME) names the fake
-# wrapper. The endpoint is NOT in the file: only the final command passes
-# --otlp-endpoint, so init/clone/lock/allow stay telemetry-free and fast.
+# wrapper. Telemetry is NOT enabled in the file: only the final command passes
+# --otel-spool-dir, so init/clone/lock/allow stay telemetry-free and fast.
 set -euo pipefail
 
 WSROOT="$PWD"

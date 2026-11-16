@@ -126,12 +126,12 @@ func TestWrap_SpanRecordsWrappedAndSkipReason(t *testing.T) {
 		{"no run state", "nix", nixArgs, RunOptions{WrapNix: true}, func(e *wrapEnv) context.Context {
 			return telemetrycfg.WithRunState(e.ctx, nil)
 		}, false, "telemetry_off"},
-		{"no endpoint", "nix", nixArgs, RunOptions{WrapNix: true}, func(e *wrapEnv) context.Context {
+		{"no spool dir", "nix", nixArgs, RunOptions{WrapNix: true}, func(e *wrapEnv) context.Context {
 			res := telemetrycfg.Resolution{Enabled: true, WrapperPath: "/w"}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
-		}, false, "no_endpoint"},
+		}, false, "no_spool_dir"},
 		{"no wrapper path", "nix", nixArgs, RunOptions{WrapNix: true}, func(e *wrapEnv) context.Context {
-			res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint}
+			res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}, false, "no_wrapper_path"},
 		{"unrecognized form: sudo -E", "sudo", append([]string{"-E", "darwin-rebuild"}, nixArgs...), RunOptions{WrapNix: true}, func(e *wrapEnv) context.Context { return e.ctx }, false, "unrecognized_form"},
@@ -145,7 +145,7 @@ func TestWrap_SpanRecordsWrappedAndSkipReason(t *testing.T) {
 			return e.ctx
 		}, false, "sudo_wrapper_not_in_store"},
 		{"relative wrapper path", "nix", nixArgs, RunOptions{WrapNix: true}, func(e *wrapEnv) context.Context {
-			res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint, WrapperPath: "rel/wrapper"}
+			res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir, WrapperPath: "rel/wrapper"}
 			return telemetrycfg.WithRunState(e.ctx, telemetrycfg.NewRunState(res))
 		}, false, "wrapper_not_absolute"},
 		{"wrapper not executable", "nix", nixArgs, RunOptions{WrapNix: true}, func(e *wrapEnv) context.Context {

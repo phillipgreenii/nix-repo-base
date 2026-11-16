@@ -1,8 +1,12 @@
 package telemetrycfg
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -25,44 +29,99 @@ func writeTOML(t *testing.T, body string) map[string]string {
 	return map[string]string{"XDG_CONFIG_HOME": xdg}
 }
 
-func TestResolve_Precedence(t *testing.T) {
-	fileEnv := writeTOML(t, "endpoint = \"http://file:4318\"\nwrapper_path = \"/nix/store/x-w/bin/w\"\n")
-	withEnvVar := map[string]string{"XDG_CONFIG_HOME": fileEnv["XDG_CONFIG_HOME"], EnvEndpoint: "http://env:4318"}
-
-	tests := []struct {
-		name       string
-		in         Inputs
-		wantOn     bool
-		wantEP     string
-		wantSource string
-	}{
-		{"flag beats env and file", Inputs{Flags: Flags{Endpoint: "http://flag:4318"}, Getenv: envMap(withEnvVar)}, true, "http://flag:4318", SourceFlag},
-		{"env beats file", Inputs{Getenv: envMap(withEnvVar)}, true, "http://env:4318", SourceEnv},
-		{"file alone", Inputs{Getenv: envMap(fileEnv)}, true, "http://file:4318", SourceFile},
-		{"nothing resolves", Inputs{Getenv: envMap(map[string]string{"XDG_CONFIG_HOME": t.TempDir()})}, false, "", SourceNone},
-		{"root never reads the user file", Inputs{IsRoot: true, Getenv: envMap(fileEnv)}, false, "", SourceNone},
-		{"root still honours env", Inputs{IsRoot: true, Getenv: envMap(withEnvVar)}, true, "http://env:4318", SourceEnv},
+func TestResolve_MapsSpoolResolution(t *testing.T) {
+	env := writeTOML(t, "enabled = true\nspool_dir = \"/srv/spool\"\nwrapper_path = \"/nix/store/x-w/bin/w\"\n")
+	got := Resolve(Inputs{Getenv: envMap(env)})
+	if !got.Enabled || got.SpoolDir != "/srv/spool" || got.Source != SourceFile || got.WrapperPath != "/nix/store/x-w/bin/w" {
+		t.Fatalf("Resolve = %+v", got)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := Resolve(tc.in)
-			if got.Enabled != tc.wantOn || got.Endpoint != tc.wantEP || got.Source != tc.wantSource {
-				t.Fatalf("Resolve = %+v; want enabled=%v endpoint=%q source=%q", got, tc.wantOn, tc.wantEP, tc.wantSource)
-			}
-		})
+	if got := Resolve(Inputs{Flags: Flags{SpoolDir: "/flag/s"}, Getenv: envMap(env)}); got.SpoolDir != "/flag/s" || got.Source != SourceFlag {
+		t.Fatalf("flag must beat spool_dir: %+v", got)
+	}
+	if got := Resolve(Inputs{Flags: Flags{SpoolDir: "rel"}, Getenv: envMap(env)}); got.Enabled || got.SpoolErr == nil {
+		t.Fatalf("relative flag dir must leave telemetry off with SpoolErr: %+v", got)
+	}
+	if got := Resolve(Inputs{Getenv: envMap(map[string]string{"XDG_CONFIG_HOME": t.TempDir()})}); got.Enabled || got.Source != SourceNone {
+		t.Fatalf("no file must be off: %+v", got)
+	}
+}
+
+// TestResolve_EndpointNoLongerEnables pins the cutover: the retired endpoint
+// inputs never turn telemetry on, and each yields exactly its notice.
+func TestResolve_EndpointNoLongerEnables(t *testing.T) {
+	env := writeTOML(t, "endpoint = \"http://file:4318\"\n")
+	env[EnvEndpoint] = "http://env:4318"
+	got := Resolve(Inputs{Flags: Flags{Endpoint: "http://flag:4318"}, Getenv: envMap(env)})
+	if got.Enabled || got.SpoolDir != "" {
+		t.Fatalf("endpoint inputs must not enable telemetry: %+v", got)
+	}
+	want := []string{NoticeFlagEndpoint(), NoticeEnvEndpoint(), NoticeLeftoverEndpointKey()}
+	if !reflect.DeepEqual(got.Notices, want) {
+		t.Fatalf("Notices = %q; want %q", got.Notices, want)
+	}
+	// enabled = true with a leftover endpoint key: on, plus the one notice.
+	env2 := writeTOML(t, "enabled = true\nendpoint = \"http://file:4318\"\n")
+	env2["XDG_STATE_HOME"] = "/st"
+	got = Resolve(Inputs{Getenv: envMap(env2)})
+	if !got.Enabled || got.SpoolDir != "/st/otel-spool" || !reflect.DeepEqual(got.Notices, []string{NoticeLeftoverEndpointKey()}) {
+		t.Fatalf("Resolve = %+v", got)
+	}
+}
+
+func TestPrepare_PrintsNoticesAndNothingElse(t *testing.T) {
+	env := writeTOML(t, "endpoint = \"http://file:4318\"\n")
+	var stderr bytes.Buffer
+	res := Prepare([]string{"workspace"}, envMap(env), false, &stderr)
+	if res.Enabled || stderr.String() != NoticeLeftoverEndpointKey()+"\n" {
+		t.Fatalf("res=%+v stderr=%q", res, stderr.String())
+	}
+	stderr.Reset()
+	Prepare([]string{"--otlp-endpoint", "http://x:4318"}, envMap(map[string]string{"XDG_CONFIG_HOME": t.TempDir()}), false, &stderr)
+	if stderr.String() != NoticeFlagEndpoint()+"\n" {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+// TestPrepare_NoopPathWritesNothing is the Null Object contract: unconfigured
+// or forced-off, resolving telemetry prints nothing (even under -v), leaks no
+// goroutine and creates no file under HOME.
+func TestPrepare_NoopPathWritesNothing(t *testing.T) {
+	home := t.TempDir()
+	env := map[string]string{"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, ".config")}
+	before := runtime.NumGoroutine()
+	for _, args := range [][]string{{"-v", "workspace", "status"}, {"-v", "--no-telemetry", "workspace", "status"}} {
+		var stderr bytes.Buffer
+		if res := Prepare(args, envMap(env), false, &stderr); res.Enabled || stderr.Len() != 0 {
+			t.Fatalf("args %v: res=%+v stderr=%q", args, res, stderr.String())
+		}
+	}
+	if after := runtime.NumGoroutine(); after > before {
+		t.Fatalf("goroutine leak: before=%d after=%d", before, after)
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("files created under HOME: %v %v", entries, err)
+	}
+}
+
+func TestPrepare_UnusableSpoolDirNotedUnderVerboseOnly(t *testing.T) {
+	var quiet, loud bytes.Buffer
+	Prepare([]string{"--otel-spool-dir", "rel"}, envMap(nil), false, &quiet)
+	Prepare([]string{"-v", "--otel-spool-dir", "rel"}, envMap(nil), false, &loud)
+	if quiet.Len() != 0 || !strings.HasPrefix(loud.String(), "telemetry disabled: ") {
+		t.Fatalf("quiet=%q loud=%q", quiet.String(), loud.String())
 	}
 }
 
 func TestResolve_ForcedOff(t *testing.T) {
-	base := writeTOML(t, "endpoint = \"http://file:4318\"\n")
-	base[EnvEndpoint] = "http://env:4318"
+	base := writeTOML(t, "enabled = true\n")
 	for _, tc := range []struct {
 		name   string
 		flags  Flags
 		extra  map[string]string
 		forced string
 	}{
-		{"--no-telemetry", Flags{NoTelemetry: true, Endpoint: "http://flag:4318"}, nil, "--no-telemetry"},
+		{"--no-telemetry", Flags{NoTelemetry: true, SpoolDir: "/flag/s"}, nil, "--no-telemetry"},
 		{"PG_NIX_LOG_DISABLE", Flags{}, map[string]string{EnvWrapDisable: "1"}, "PG_NIX_LOG_DISABLE=1"},
 		{"OTEL_SDK_DISABLED", Flags{}, map[string]string{EnvSDKDisabled: "true"}, "OTEL_SDK_DISABLED=true"},
 		{"OTEL_SDK_DISABLED case-insensitive", Flags{}, map[string]string{EnvSDKDisabled: "TRUE"}, "OTEL_SDK_DISABLED=true"},
@@ -76,7 +135,7 @@ func TestResolve_ForcedOff(t *testing.T) {
 				env[k] = v
 			}
 			got := Resolve(Inputs{Flags: tc.flags, Getenv: envMap(env)})
-			if got.Enabled || got.Endpoint != "" {
+			if got.Enabled || got.SpoolDir != "" {
 				t.Fatalf("expected telemetry forced off, got %+v", got)
 			}
 			if got.Forced != tc.forced {
@@ -85,14 +144,14 @@ func TestResolve_ForcedOff(t *testing.T) {
 		})
 	}
 	// Not-quite-values do not force off.
-	got := Resolve(Inputs{Getenv: envMap(map[string]string{EnvWrapDisable: "0", EnvSDKDisabled: "false", EnvEndpoint: "http://e:4318", "XDG_CONFIG_HOME": t.TempDir()})})
+	got := Resolve(Inputs{Getenv: envMap(map[string]string{EnvWrapDisable: "0", EnvSDKDisabled: "false", "XDG_CONFIG_HOME": writeTOML(t, "enabled = true")["XDG_CONFIG_HOME"], "XDG_STATE_HOME": "/st"})})
 	if !got.Enabled {
 		t.Fatalf("PG_NIX_LOG_DISABLE=0 / OTEL_SDK_DISABLED=false must not force off: %+v", got)
 	}
 }
 
 func TestResolve_WrapperPathFromFile(t *testing.T) {
-	env := writeTOML(t, "endpoint = \"http://file:4318\"\nwrapper_path = \"/nix/store/abc-w/bin/pg-nix-log-wrapped\"\n")
+	env := writeTOML(t, "enabled = true\nwrapper_path = \"/nix/store/abc-w/bin/pg-nix-log-wrapped\"\n")
 	got := Resolve(Inputs{Getenv: envMap(env)})
 	if got.WrapperPath != "/nix/store/abc-w/bin/pg-nix-log-wrapped" {
 		t.Fatalf("WrapperPath = %q", got.WrapperPath)
@@ -100,7 +159,7 @@ func TestResolve_WrapperPathFromFile(t *testing.T) {
 }
 
 func TestResolve_MalformedFileIsNonFatal(t *testing.T) {
-	env := writeTOML(t, "endpoint = [this is not toml")
+	env := writeTOML(t, "enabled = [this is not toml")
 	got := Resolve(Inputs{Getenv: envMap(env)})
 	if got.Enabled {
 		t.Fatalf("malformed file must not enable telemetry: %+v", got)
@@ -139,8 +198,8 @@ func TestScanArgs(t *testing.T) {
 		{"no-telemetry anywhere", []string{"workspace", "status", "--no-telemetry"}, Flags{NoTelemetry: true}},
 		{"leading global flags", []string{"--no-telemetry", "-v", "workspace", "status"}, Flags{NoTelemetry: true, Verbose: true}},
 		{"long verbose", []string{"workspace", "--verbose", "status"}, Flags{Verbose: true}},
-		{"endpoint spaced", []string{"--otlp-endpoint", "http://x:4318", "workspace"}, Flags{Endpoint: "http://x:4318"}},
-		{"endpoint equals", []string{"--otlp-endpoint=http://x:4318", "workspace"}, Flags{Endpoint: "http://x:4318"}},
+		{"endpoint spaced (deprecated, still scanned)", []string{"--otlp-endpoint", "http://x:4318", "workspace"}, Flags{Endpoint: "http://x:4318"}},
+		{"endpoint equals (deprecated, still scanned)", []string{"--otlp-endpoint=http://x:4318", "workspace"}, Flags{Endpoint: "http://x:4318"}},
 		{"stops at --", []string{"workspace", "status", "--", "-v"}, Flags{}},
 		{"workspace nix forwards -v to nix", []string{"workspace", "nix", "build", "-v"}, Flags{}},
 		{"leading flag before workspace nix still counts", []string{"--no-telemetry", "workspace", "nix", "build", "-v"}, Flags{NoTelemetry: true}},
@@ -175,64 +234,12 @@ func TestNixLogDir(t *testing.T) {
 	}
 }
 
-// TestResolve_EnabledKeyMatrix is the precedence matrix for telemetry.toml
-// `enabled` against the flag, the environment and the force-off controls
-// (ADR 0028, "Runtime configuration contract").
-func TestResolve_EnabledKeyMatrix(t *testing.T) {
-	const (
-		fileEP = "http://file:4318"
-		envEP  = "http://env:4318"
-		flagEP = "http://flag:4318"
-	)
-	tests := []struct {
-		name       string
-		toml       string // "" = no file at all
-		flags      Flags
-		env        map[string]string
-		isRoot     bool
-		wantOn     bool
-		wantEP     string
-		wantSource string
-		wantForced string
-	}{
-		{name: "absent key, file endpoint: on (legacy rule)", toml: `endpoint = "` + fileEP + `"`, wantOn: true, wantEP: fileEP, wantSource: SourceFile},
-		{name: "enabled true, file endpoint: on", toml: "enabled = true\nendpoint = \"" + fileEP + "\"", wantOn: true, wantEP: fileEP, wantSource: SourceFile},
-		{name: "enabled true, env endpoint, no file endpoint: on", toml: "enabled = true", env: map[string]string{EnvEndpoint: envEP}, wantOn: true, wantEP: envEP, wantSource: SourceEnv},
-		{name: "enabled true, flag endpoint: on", toml: "enabled = true", flags: Flags{Endpoint: flagEP}, wantOn: true, wantEP: flagEP, wantSource: SourceFlag},
-		{name: "enabled true, env beats file endpoint", toml: "enabled = true\nendpoint = \"" + fileEP + "\"", env: map[string]string{EnvEndpoint: envEP}, wantOn: true, wantEP: envEP, wantSource: SourceEnv},
-		{name: "enabled true, no endpoint anywhere: off, not forced", toml: "enabled = true"},
-		{name: "enabled false, file endpoint: off", toml: "enabled = false\nendpoint = \"" + fileEP + "\"", wantForced: ForcedByFile},
-		{name: "enabled false beats env endpoint", toml: "enabled = false\nendpoint = \"" + fileEP + "\"", env: map[string]string{EnvEndpoint: envEP}, wantForced: ForcedByFile},
-		{name: "enabled false, flag endpoint wins (explicit per-run opt-in)", toml: "enabled = false\nendpoint = \"" + fileEP + "\"", flags: Flags{Endpoint: flagEP}, wantOn: true, wantEP: flagEP, wantSource: SourceFlag},
-		{name: "force-off beats enabled true", toml: "enabled = true\nendpoint = \"" + fileEP + "\"", flags: Flags{NoTelemetry: true}, wantForced: "--no-telemetry"},
-		{name: "force-off beats enabled false (force-off reason wins)", toml: "enabled = false", env: map[string]string{EnvWrapDisable: "1"}, wantForced: EnvWrapDisable + "=1"},
-		{name: "force-off beats flag endpoint and enabled false", toml: "enabled = false", flags: Flags{Endpoint: flagEP}, env: map[string]string{EnvSDKDisabled: "true"}, wantForced: EnvSDKDisabled + "=true"},
-		{name: "no file: env endpoint on", env: map[string]string{EnvEndpoint: envEP}, wantOn: true, wantEP: envEP, wantSource: SourceEnv},
-		{name: "root never reads the file, so enabled false is not seen", toml: "enabled = false", env: map[string]string{EnvEndpoint: envEP}, isRoot: true, wantOn: true, wantEP: envEP, wantSource: SourceEnv},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			env := map[string]string{"XDG_CONFIG_HOME": t.TempDir()}
-			if tc.toml != "" {
-				env = writeTOML(t, tc.toml)
-			}
-			for k, v := range tc.env {
-				env[k] = v
-			}
-			got := Resolve(Inputs{Flags: tc.flags, Getenv: envMap(env), IsRoot: tc.isRoot})
-			if got.Enabled != tc.wantOn || got.Endpoint != tc.wantEP || got.Source != tc.wantSource || got.Forced != tc.wantForced {
-				t.Fatalf("Resolve = %+v; want on=%v endpoint=%q source=%q forced=%q", got, tc.wantOn, tc.wantEP, tc.wantSource, tc.wantForced)
-			}
-		})
-	}
-}
-
 func TestResolve_FileEnabledIsReported(t *testing.T) {
 	for _, tc := range []struct {
 		body string
 		want *bool
 	}{
-		{"endpoint = \"http://e\"", nil},
+		{"wrapper_path = \"/w\"", nil},
 		{"enabled = true", boolPtr(true)},
 		{"enabled = false", boolPtr(false)},
 	} {

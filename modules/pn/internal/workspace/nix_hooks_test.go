@@ -538,11 +538,11 @@ func TestRunEventHooks_NixRunUsesWrapperWhenTelemetryOn(t *testing.T) {
 	tel, _ := telemetrytest.New()
 	ctx := telemetry.WithTelemetry(context.Background(), tel)
 	ctx = telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(telemetrycfg.Resolution{
-		Enabled: true, Endpoint: "http://127.0.0.1:4318", Source: telemetrycfg.SourceFlag, WrapperPath: wrapper,
+		Enabled: true, SpoolDir: "/state/otel-spool", Source: telemetrycfg.SourceFlag, WrapperPath: wrapper,
 	}))
 
 	got := shCommandOf(t, ctx, w, f)
-	prefix := "'" + wrapper + "' '--otlp-endpoint' 'http://127.0.0.1:4318' '--log-dir' '" +
+	prefix := "'" + wrapper + "' '--otel-spool-dir' '/state/otel-spool' '--log-dir' '" +
 		filepath.Join(os.Getenv("XDG_STATE_HOME"), "pn", "nix-logs") + "' '--' nix run "
 	if !strings.HasPrefix(got, prefix) {
 		t.Errorf("command = %q\nwant prefix %q", got, prefix)
@@ -561,7 +561,7 @@ func TestRunEventHooks_NixRunBareWhenWrapperUnavailable(t *testing.T) {
 	on := func(wrapperPath string) context.Context {
 		ctx := telemetry.WithTelemetry(context.Background(), tel)
 		return telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(telemetrycfg.Resolution{
-			Enabled: true, Endpoint: "http://127.0.0.1:4318", WrapperPath: wrapperPath,
+			Enabled: true, SpoolDir: "/state/otel-spool", WrapperPath: wrapperPath,
 		}))
 	}
 	cases := map[string]context.Context{

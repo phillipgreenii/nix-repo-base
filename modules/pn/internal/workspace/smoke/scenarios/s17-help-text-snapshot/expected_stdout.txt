@@ -3,6 +3,7 @@ clone
 lock
 --no-telemetry
 --otlp-endpoint
+--otel-spool-dir
 --verbose
 OTEL_EXPORTER_OTLP_ENDPOINT
 OTEL_SDK_DISABLED

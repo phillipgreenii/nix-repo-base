@@ -143,7 +143,7 @@ func TestWrap_FallbackToolStillRunsWrapped(t *testing.T) {
 	env["ARGV_OUT"], env["WRAPPER_OUT"] = argvOut, wrapperOut
 
 	tel, _ := telemetrytest.New()
-	res := telemetrycfg.Resolution{Enabled: true, Endpoint: testEndpoint, WrapperPath: wrapper}
+	res := telemetrycfg.Resolution{Enabled: true, SpoolDir: testSpoolDir, WrapperPath: wrapper}
 	ctx := telemetry.WithTelemetry(context.Background(), tel)
 	ctx = telemetrycfg.WithRunState(ctx, telemetrycfg.NewRunState(res))
 	var out bytes.Buffer

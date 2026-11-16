@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,29 +123,20 @@ func TestNoTelemetryFlagAccepted(t *testing.T) {
 	}
 }
 
-func TestVerbose_UnreachableCollectorLine(t *testing.T) {
-	isolateTelemetryEnv(t)
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+// TestEnvEndpoint_PrintsExactlyOneNoticeAndStaysOff: OTEL_EXPORTER_OTLP_ENDPOINT
+// no longer enables telemetry; it yields exactly one deprecation line on
+// stderr, with or without -v, and nothing is connected to or written.
+func TestEnvEndpoint_PrintsExactlyOneNoticeAndStaysOff(t *testing.T) {
+	home := isolateTelemetryEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	want := telemetrycfg.NoticeEnvEndpoint() + "\n"
+	for _, args := range [][]string{{"--version"}, {"-v", "--version"}} {
+		if _, e, _ := run(t, args...); e != want {
+			t.Errorf("%v: stderr = %q; want %q", args, e, want)
+		}
 	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://"+addr)
-
-	// Without -v: silent.
-	if _, e, _ := run(t, "--version"); e != "" {
-		t.Errorf("no -v: stderr must be empty, got %q", e)
-	}
-	// With -v: exactly the one line.
-	_, e, _ := run(t, "-v", "--version")
-	want := "telemetry disabled: collector unreachable (http://" + addr + ")\n"
-	if e != want {
-		t.Errorf("-v stderr = %q; want %q", e, want)
-	}
-	// --no-telemetry wins: no probe, no line.
-	if _, e, _ := run(t, "-v", "--no-telemetry", "--version"); e != "" {
-		t.Errorf("--no-telemetry -v: stderr must be empty, got %q", e)
+	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		t.Errorf("files created under HOME: %v", entries)
 	}
 }
 
@@ -303,38 +293,21 @@ url = "github:owner/myterm"
 	}
 }
 
-// TestTomlEnabledFalse_OffPathIsSilentAndConnectionFree: with telemetry.toml
-// `enabled = false` (and an endpoint present in both the file and the
-// environment, pointing at a live listener) a pn run prints nothing about
-// telemetry, even under -v, records no trace id and opens zero connections.
-func TestTomlEnabledFalse_OffPathIsSilentAndConnectionFree(t *testing.T) {
+// TestTomlEnabledFalse_OffPathWritesNothing: with telemetry.toml
+// `enabled = false` (and a leftover endpoint key) a pn run records no trace id,
+// creates no spool directory and prints only the one deprecation notice for
+// the leftover key.
+func TestTomlEnabledFalse_OffPathWritesNothing(t *testing.T) {
 	home := isolateTelemetryEnv(t)
 	withTraceCmd(t)
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = ln.Close() }()
-	conns := make(chan struct{}, 8)
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			conns <- struct{}{}
-			_ = c.Close()
-		}
-	}()
-	ep := "http://" + ln.Addr().String()
+	spool := filepath.Join(home, "spool")
 	dir := filepath.Join(home, ".config", "pn")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "telemetry.toml"), []byte("enabled = false\nendpoint = \""+ep+"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "telemetry.toml"), []byte("enabled = false\nspool_dir = \""+spool+"\"\nendpoint = \"http://127.0.0.1:1\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", ep)
 
 	out, errOut, err := run(t, "-v", "tracecmd")
 	if err != nil {
@@ -343,12 +316,10 @@ func TestTomlEnabledFalse_OffPathIsSilentAndConnectionFree(t *testing.T) {
 	if out != "payload\n" {
 		t.Errorf("stdout = %q", out)
 	}
-	if strings.Contains(errOut, "telemetry") || strings.Contains(errOut, "collector") {
-		t.Errorf("off path must print no telemetry output, got stderr %q", errOut)
+	if !strings.HasPrefix(errOut, telemetrycfg.NoticeLeftoverEndpointKey()+"\n") || strings.Count(errOut, "pn: telemetry: ") != 1 {
+		t.Errorf("want exactly the leftover-endpoint notice, got stderr %q", errOut)
 	}
-	select {
-	case <-conns:
-		t.Error("off path opened a connection to the configured endpoint")
-	default:
+	if _, err := os.Stat(spool); err == nil {
+		t.Error("off path created the spool directory")
 	}
 }

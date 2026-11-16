@@ -20,9 +20,9 @@ const traceparentEnv = "TRACEPARENT"
 const (
 	// EnvNixWrapper is the absolute path of pg-nix-log-wrapped.
 	EnvNixWrapper = "PN_NIX_LOG_WRAPPER"
-	// EnvNixWrapperEndpoint is the OTLP endpoint pn resolved, passed to the
-	// wrapper as --otlp-endpoint.
-	EnvNixWrapperEndpoint = "PN_NIX_LOG_OTLP_ENDPOINT"
+	// EnvNixWrapperSpoolDir is the spool directory pn resolved, passed to the
+	// wrapper as --otel-spool-dir.
+	EnvNixWrapperSpoolDir = "PN_NIX_LOG_SPOOL_DIR"
 )
 
 // traceEnvRunner is a decorator that exports TRACEPARENT, taken from the
@@ -58,9 +58,9 @@ func (r *traceEnvRunner) Run(ctx context.Context, name string, args []string, op
 				env[k] = v
 			}
 			env[traceparentEnv] = fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
-			if path, endpoint, ok := userWrapper(ctx, r.usable); ok {
+			if path, spoolDir, ok := userWrapper(ctx, r.usable); ok {
 				env[EnvNixWrapper] = path
-				env[EnvNixWrapperEndpoint] = endpoint
+				env[EnvNixWrapperSpoolDir] = spoolDir
 			}
 			opts.Env = env
 		}

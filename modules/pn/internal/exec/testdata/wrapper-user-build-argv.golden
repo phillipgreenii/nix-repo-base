@@ -1,7 +1,7 @@
 --traceparent
 {traceparent}
---otlp-endpoint
-{otlp-endpoint}
+--otel-spool-dir
+{spool-dir}
 --log-dir
 {log-dir}
 --

@@ -126,20 +126,21 @@ type Telemetry struct {
 	mu      sync.Mutex
 }
 
-// New builds telemetry for endpoint (telemetrycfg.Resolution.Endpoint). An empty endpoint yields the no-op
-// Telemetry. On an Init error the no-op Telemetry is returned together with
+// New builds telemetry that writes OTLP files to spoolDir (telemetrycfg.Resolution.SpoolDir,
+// an absolute directory). An empty spoolDir yields the no-op Telemetry. Callers
+// SHOULD pass otelsetup.WithOnError to learn of spool write failures. On an Init error the no-op Telemetry is returned together with
 // the error so callers may log it and carry on (telemetry must never stop pn).
-func New(ctx context.Context, version, endpoint string, opts ...otelsetup.Option) (*Telemetry, error) {
-	return NewWithShutdownTimeout(ctx, version, endpoint, ShutdownTimeout, opts...)
+func New(ctx context.Context, version, spoolDir string, opts ...otelsetup.Option) (*Telemetry, error) {
+	return NewWithShutdownTimeout(ctx, version, spoolDir, ShutdownTimeout, opts...)
 }
 
 // NewWithShutdownTimeout is New with an explicit bound on the final flush. Production
 // code uses New (ShutdownTimeout); tests inject a short bound so they need not wait
 // out the real one.
-func NewWithShutdownTimeout(ctx context.Context, version, endpoint string, timeout time.Duration, opts ...otelsetup.Option) (*Telemetry, error) {
+func NewWithShutdownTimeout(ctx context.Context, version, spoolDir string, timeout time.Duration, opts ...otelsetup.Option) (*Telemetry, error) {
 	opts = append([]otelsetup.Option{otelsetup.WithTimeout(timeout)}, opts...)
 	ot, err := otelsetup.Init(ctx, otelsetup.Config{
-		Endpoint:    endpoint,
+		SpoolDir:    spoolDir,
 		ServiceName: ServiceName,
 		Version:     version,
 	}, opts...)
