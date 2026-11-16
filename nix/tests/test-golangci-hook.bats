@@ -106,3 +106,13 @@ run_hook() {
   [ "$status" -eq 0 ]
   [ "$output" = "<unset>" ]
 }
+
+@test "typechecks a touched module that imports cgo code (C compiler on the reset PATH)" {
+  mkdir -p "$repo/modc"
+  printf 'module example.com/modc\n\ngo 1.21\n' >"$repo/modc/go.mod"
+  printf 'package modc\n\n/*\n#include <stdlib.h>\n*/\nimport "C"\nimport "unsafe"\n\nfunc F() {\n\tp := C.malloc(8)\n\tC.free(unsafe.Pointer(p))\n}\n' >"$repo/modc/c.go"
+  git -C "$repo" add -A
+  run_hook modc/c.go
+  echo "$output"
+  [ "$status" -eq 0 ]
+}
