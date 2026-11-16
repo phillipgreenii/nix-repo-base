@@ -3,15 +3,15 @@
 > Run a nix command unchanged and turn its --json-log-path activity stream into OpenTelemetry spans and metrics.
 > More information: <https://github.com/phillipgreenii/nix-repo-base>.
 
-- Run a nix command and export spans and metrics to the endpoint in `OTEL_EXPORTER_OTLP_ENDPOINT` or `~/.config/pn/telemetry.toml`:
+- Run a nix command and write spans and metrics as files into the spool directory (`spool_dir` in `~/.config/pn/telemetry.toml` with `enabled = true`, else `$XDG_STATE_HOME/otel-spool`):
 
 `pg-nix-log-wrapped nix build {{.#package}}`
 
-- Pick the endpoint explicitly and join an existing trace:
+- Pick the spool directory explicitly and join an existing trace:
 
-`pg-nix-log-wrapped --otlp-endpoint {{http://127.0.0.1:4318}} --traceparent {{00-<trace-id>-<span-id>-01}} -- nix build {{.#package}}`
+`pg-nix-log-wrapped --otel-spool-dir {{/path/to/otel-spool}} --traceparent {{00-<trace-id>-<span-id>-01}} -- nix build {{.#package}}`
 
-- Check the resolved endpoint, whether it is reachable, and whether the log directory is writable:
+- Check the resolved spool directory, whether it is writable, how many files wait in it (and how old the oldest is), and whether the log directory is writable:
 
 `pg-nix-log-wrapped --check`
 

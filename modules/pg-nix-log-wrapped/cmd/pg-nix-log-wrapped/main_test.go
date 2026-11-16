@@ -3,18 +3,15 @@ package main
 // Process-level tests: the real wrapper (the product binary, built once
 // without -race) runs a fake nix (the small fakenix helper, symlinked as
 // "fake-*"). Nothing here talks to a real network or a real OTel
-// stack: collectors are loopback httptest servers.
+// stack: the "collector" is a reader of the spool directory the wrapper writes.
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,13 +21,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/config"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/fakecmd"
 	colmetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 var (
@@ -76,71 +75,131 @@ func golden(name string) string {
 	return p
 }
 
-// collector is a loopback OTLP/HTTP sink.
+// collector reads the spool directory the wrapper writes, as the real
+// collector's otlpjsonfile receiver would: every finished *.jsonl file under
+// traces/ and metrics/, one OTLP JSON request per line.
 type collector struct {
-	srv *httptest.Server
-	mu  sync.Mutex
-	// per request: the spans / metric batches received, with their resources.
+	// base is the XDG state directory; dir is the spool under it (the default
+	// spool directory, so a wrapper started with XDG_STATE_HOME=base and
+	// telemetry enabled writes here).
+	base, dir string
+	mu        sync.Mutex
+	// the spans / metric batches found, with their resources, as of load().
 	spans   []*tracepb.Span
 	traceRs []*tracepb.ResourceSpans
 	metrics []*metricspb.ResourceMetrics
-	// refuseTraces is how many leading /v1/traces POSTs are answered with
-	// HTTP 503 (the collector memory limiter's refusal) before accepting.
-	refuseTraces int
-	// tracePosts counts every /v1/traces POST, refused or accepted.
-	tracePosts int
 }
 
 func newCollector(t *testing.T) *collector {
 	t.Helper()
-	c := &collector{}
-	c.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body io.Reader = r.Body
-		if r.Header.Get("Content-Encoding") == "gzip" {
-			if gz, err := gzip.NewReader(r.Body); err == nil {
-				body = gz
-			}
-		}
-		raw, _ := io.ReadAll(body)
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		switch r.URL.Path {
-		case "/v1/traces":
-			c.tracePosts++
-			if c.tracePosts <= c.refuseTraces {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				return
-			}
-			req := &coltrace.ExportTraceServiceRequest{}
-			if proto.Unmarshal(raw, req) == nil {
-				for _, rs := range req.ResourceSpans {
-					c.traceRs = append(c.traceRs, rs)
-					for _, ss := range rs.ScopeSpans {
-						c.spans = append(c.spans, ss.Spans...)
-					}
-				}
-			}
-		case "/v1/metrics":
-			req := &colmetrics.ExportMetricsServiceRequest{}
-			if proto.Unmarshal(raw, req) == nil {
-				c.metrics = append(c.metrics, req.ResourceMetrics...)
-			}
-		}
-		w.Header().Set("Content-Type", "application/x-protobuf")
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(c.srv.Close)
-	return c
+	base := t.TempDir()
+	return &collector{base: base, dir: filepath.Join(base, "otel-spool")}
 }
 
-// setRefuse sets how many leading /v1/traces POSTs are refused with 503.
-func (c *collector) setRefuse(n int) {
+// spoolEnv is the env entry that points env() (and startHeldOn) at this
+// collector's spool and enables telemetry there.
+func (c *collector) spoolEnv() string { return spoolEnvKey + "=" + c.dir }
+
+// spoolEnvKey is a pseudo variable env() consumes: it writes a telemetry.toml
+// enabling telemetry with that spool_dir into the test home.
+const spoolEnvKey = "PG_TEST_SPOOL"
+
+// writeTelemetryToml enables telemetry for home, spooling to dir.
+func writeTelemetryToml(t *testing.T, home, dir string) {
+	t.Helper()
+	cfg := filepath.Join(home, ".config", "pn")
+	if err := os.MkdirAll(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("enabled = true\nspool_dir = %q\n", dir)
+	if err := os.WriteFile(filepath.Join(cfg, "telemetry.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// hexToBase64 rewrites the OTLP JSON id fields (hex strings) as base64, the
+// form protojson expects for bytes.
+func hexToBase64(v any) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			if str, ok := e.(string); ok && (k == "traceId" || k == "spanId" || k == "parentSpanId") {
+				if b, err := hex.DecodeString(str); err == nil {
+					x[k] = base64.StdEncoding.EncodeToString(b)
+				}
+				continue
+			}
+			hexToBase64(e)
+		}
+	case []any:
+		for _, e := range x {
+			hexToBase64(e)
+		}
+	}
+}
+
+func decodeLine(line []byte, into interface {
+	ProtoReflect() protoreflect.Message
+},
+) error {
+	var v any
+	if err := json.Unmarshal(line, &v); err != nil {
+		return err
+	}
+	hexToBase64(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(b, into)
+}
+
+// load re-reads the spool.
+func (c *collector) load() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.refuseTraces = n
+	c.spans, c.traceRs, c.metrics = nil, nil, nil
+	each := func(sig string, f func(line []byte)) {
+		files, _ := filepath.Glob(filepath.Join(c.dir, sig, "*.jsonl"))
+		for _, name := range files {
+			b, err := os.ReadFile(name)
+			if err != nil {
+				continue
+			}
+			for _, l := range bytes.Split(b, []byte("\n")) {
+				if len(bytes.TrimSpace(l)) > 0 {
+					f(l)
+				}
+			}
+		}
+	}
+	each("traces", func(l []byte) {
+		req := &coltrace.ExportTraceServiceRequest{}
+		if decodeLine(l, req) == nil {
+			for _, rs := range req.ResourceSpans {
+				c.traceRs = append(c.traceRs, rs)
+				for _, ss := range rs.ScopeSpans {
+					c.spans = append(c.spans, ss.Spans...)
+				}
+			}
+		}
+	})
+	each("metrics", func(l []byte) {
+		req := &colmetrics.ExportMetricsServiceRequest{}
+		if decodeLine(l, req) == nil {
+			c.metrics = append(c.metrics, req.ResourceMetrics...)
+		}
+	})
+}
+
+// files lists the finished run files of one signal directory.
+func (c *collector) files(sig string) []string {
+	m, _ := filepath.Glob(filepath.Join(c.dir, sig, "*.jsonl"))
+	return m
 }
 
 func (c *collector) spansNamed(name string) []*tracepb.Span {
+	c.load()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var out []*tracepb.Span
@@ -172,10 +231,17 @@ func env(t *testing.T, extra ...string) (e []string, home string) {
 	}
 	// Later entries override defaults of the same name (getenv takes the FIRST).
 	overridden := map[string]bool{}
+	var kept []string
 	for _, kv := range extra {
-		k, _, _ := strings.Cut(kv, "=")
+		k, v, _ := strings.Cut(kv, "=")
+		if k == spoolEnvKey {
+			writeTelemetryToml(t, home, v)
+			continue
+		}
 		overridden[k] = true
+		kept = append(kept, kv)
 	}
+	extra = kept
 	for _, kv := range defaults {
 		if k, _, _ := strings.Cut(kv, "="); !overridden[k] {
 			e = append(e, kv)
@@ -214,37 +280,37 @@ func runWrapper(t *testing.T, env []string, args ...string) result {
 	return result{out.String(), errb.String(), code, err}
 }
 
-func deadAddr(t *testing.T) string {
-	t.Helper()
-	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := l.Addr().String()
-	_ = l.Close()
-	return a
-}
-
 func TestPassThroughOfStreamsAndExitCodes(t *testing.T) {
 	spec := fakecmd.Spec{Stdout: "the-stdout\n", Stderr: "the-stderr\n", Exit: 5}
-	dead := "http://" + deadAddr(t)
 	col := newCollector(t)
+	// A regular file where the spool directory belongs: every write fails.
+	notADir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	for name, e := range map[string][]string{
-		"disabled (real exec)":    {"PG_NIX_LOG_DISABLE=1", "OTEL_EXPORTER_OTLP_ENDPOINT=" + col.srv.URL},
-		"no endpoint (real exec)": {},
-		"dead collector":          {"OTEL_EXPORTER_OTLP_ENDPOINT=" + dead},
-		"live collector":          {"OTEL_EXPORTER_OTLP_ENDPOINT=" + col.srv.URL},
+		"disabled (real exec)":     {"PG_NIX_LOG_DISABLE=1", col.spoolEnv()},
+		"not enabled (real exec)":  {},
+		"unwritable spool":         {spoolEnvKey + "=" + notADir},
+		"live spool":               {col.spoolEnv()},
+		"deprecated endpoint flag": {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			base, _ := env(t, spec.Env())
-			res := runWrapper(t, append(base, e...), "fake-nix", "build")
+			args := []string{"fake-nix", "build"}
+			wantStderr := "the-stderr\n"
+			if name == "deprecated endpoint flag" {
+				args = append([]string{"--otlp-endpoint", "http://127.0.0.1:1"}, args...)
+				wantStderr = config.DeprecatedOTLPNotice + wantStderr
+			}
+			base, _ := env(t, append([]string{spec.Env()}, e...)...)
+			res := runWrapper(t, base, args...)
 			if res.code != 5 {
 				t.Errorf("exit = %d, want 5 (err %v)", res.code, res.err)
 			}
 			// Byte-identical to running the command directly: the wrapper adds
 			// NOTHING to either stream, including OTel export errors.
-			if res.stdout != "the-stdout\n" || res.stderr != "the-stderr\n" {
+			if res.stdout != "the-stdout\n" || res.stderr != wantStderr {
 				t.Errorf("stdout=%q stderr=%q", res.stdout, res.stderr)
 			}
 		})
@@ -269,7 +335,7 @@ func TestFailOpenExecsWithUnmodifiedEnvironment(t *testing.T) {
 }
 
 func TestCommandNotFoundMatchesExec(t *testing.T) {
-	e, _ := env(t, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:1")
+	e, _ := env(t, newCollector(t).spoolEnv())
 	res := runWrapper(t, e, "fake-no-such-command")
 	if res.code != 127 || res.stderr != "exec: \"fake-no-such-command\": executable file not found in $PATH\n" || res.stdout != "" {
 		t.Errorf("code=%d stderr=%q", res.code, res.stderr)
@@ -277,7 +343,7 @@ func TestCommandNotFoundMatchesExec(t *testing.T) {
 }
 
 func TestSigkilledChildGives137(t *testing.T) {
-	e, _ := env(t, "OTEL_EXPORTER_OTLP_ENDPOINT=http://"+deadAddr(t), fakecmd.Spec{KillSelf: 9, Fixture: golden("killed-mid-build.jsonl")}.Env())
+	e, _ := env(t, newCollector(t).spoolEnv(), fakecmd.Spec{KillSelf: 9, Fixture: golden("killed-mid-build.jsonl")}.Env())
 	res := runWrapper(t, e, "fake-nix", "build")
 	if res.code != 137 || res.stderr != "" {
 		t.Errorf("code=%d stderr=%q", res.code, res.stderr)
@@ -303,12 +369,13 @@ func startHeldOn(t *testing.T, spec fakecmd.Spec, col *collector, flush string) 
 	t.Helper()
 	fakes.Command(t, "fake-nix")
 	home := t.TempDir()
+	writeTelemetryToml(t, home, col.dir)
 	spec.Ready = filepath.Join(home, "ready")
 	spec.SignalLog = filepath.Join(home, "signals")
 	spec.HoldForMS = 20000
 	e := []string{
 		"PATH=" + fakes.Path() + ":/usr/bin:/bin", "HOME=" + home, "XDG_STATE_HOME=" + filepath.Join(home, "state"),
-		"OTEL_EXPORTER_OTLP_ENDPOINT=" + col.srv.URL, "PG_NIX_LOG_FLUSH_TIMEOUT=" + flush, spec.Env(),
+		"PG_NIX_LOG_FLUSH_TIMEOUT=" + flush, spec.Env(),
 	}
 	cmd, _, _ := wrapperCmd(e, "fake-nix")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // own group: tests can signal "the terminal's" group
@@ -527,61 +594,31 @@ func TestSignalledRunExportsAbortedBuildSpans(t *testing.T) {
 	}
 }
 
-// The 503 behavior, pinned (README "Spans can be fewer than log files"): the
-// exporter retries a refusal inside the flush budget, so a refusal that ends
-// in time loses nothing even on the signal path, and a refusal that outlasts
-// the budget drops the WHOLE trace batch (the invocation and every aborted
-// build) without changing the exit status or delaying exit past the budget.
-func TestCollector503OnASignalledRun(t *testing.T) {
-	t.Run("one refusal is retried and nothing is lost", func(t *testing.T) {
-		lines, want := runningBuilds("alpha-1.0", "beta-2.1")
-		col := newCollector(t)
-		col.setRefuse(1)
-		r := startHeldOn(t, fakecmd.Spec{DieOnSignal: true, Lines: lines}, col, "2s")
-		if err := syscall.Kill(r.cmd.Process.Pid, syscall.SIGTERM); err != nil {
-			t.Fatal(err)
-		}
-		if code := r.wait(t); code != 143 {
-			t.Errorf("exit = %d, want 143", code)
-		}
-		col.mu.Lock()
-		posts := col.tracePosts
-		col.mu.Unlock()
-		if posts < 2 {
-			t.Errorf("collector saw %d /v1/traces POST(s), want >= 2 (a retry after the 503)", posts)
-		}
-		assertAbortedExport(t, col, syscall.SIGTERM, want)
-	})
-	t.Run("a refusal that outlasts the budget drops the whole trace batch", func(t *testing.T) {
-		lines, _ := runningBuilds("alpha-1.0", "beta-2.1")
-		col := newCollector(t)
-		col.setRefuse(1 << 30)
-		r := startHeldOn(t, fakecmd.Spec{DieOnSignal: true, Lines: lines}, col, "500ms")
-		start := time.Now()
-		if err := syscall.Kill(r.cmd.Process.Pid, syscall.SIGTERM); err != nil {
-			t.Fatal(err)
-		}
-		if code := r.wait(t); code != 143 {
-			t.Errorf("exit = %d, want 143 (a dropped export never changes the exit status)", code)
-		}
-		if d := time.Since(start); d > 3*time.Second {
-			t.Errorf("wrapper took %v to give up, want inside the flush budget", d)
-		}
-		col.mu.Lock()
-		posts := col.tracePosts
-		col.mu.Unlock()
-		if posts < 2 {
-			t.Errorf("collector saw %d /v1/traces POST(s), want >= 2 (retried until the budget ended)", posts)
-		}
-		if n := len(col.spansNamed("nix.invocation")) + len(col.spansNamed("nix.build")); n != 0 {
-			t.Errorf("collector holds %d spans, want 0: the refused batch is dropped whole", n)
-		}
-		r.assertLogsFinalized(t) // the retained log is then the only record
-	})
+// A spool the wrapper cannot write on a signalled run: nothing is exported,
+// the exit status is still the child's 128+signal, the wrapper exits inside
+// the flush budget and says nothing.
+func TestUnwritableSpoolOnASignalledRun(t *testing.T) {
+	lines, _ := runningBuilds("alpha-1.0", "beta-2.1")
+	col := newCollector(t)
+	if err := os.WriteFile(col.dir, []byte("x"), 0o600); err != nil { // a file where the spool belongs
+		t.Fatal(err)
+	}
+	r := startHeldOn(t, fakecmd.Spec{DieOnSignal: true, Lines: lines}, col, "500ms")
+	start := time.Now()
+	if err := syscall.Kill(r.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := r.wait(t); code != 143 {
+		t.Errorf("exit = %d, want 143 (a dropped export never changes the exit status)", code)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("wrapper took %v to give up, want inside the flush budget", d)
+	}
+	r.assertLogsFinalized(t) // the retained log is then the only record
 }
 
 func TestChildDoesNotInheritIgnoredSIGINT(t *testing.T) {
-	e, home := env(t, "OTEL_EXPORTER_OTLP_ENDPOINT="+newCollector(t).srv.URL)
+	e, home := env(t, newCollector(t).spoolEnv())
 	dump := filepath.Join(home, "dump.json")
 	e = append(e, fakecmd.Spec{Dump: dump}.Env())
 	if res := runWrapper(t, e, "fake-nix"); res.code != 0 {
@@ -607,7 +644,7 @@ func TestOTLPEndToEnd(t *testing.T) {
 	e, home := env(t, fakecmd.Spec{Fixture: golden("failed-build-keep-going.jsonl"), Exit: 1}.Env())
 	run := func() {
 		t.Helper()
-		res := runWrapper(t, e, "--otlp-endpoint", col.srv.URL, "--traceparent", "00-"+tid+"-"+sid+"-01", "fake-nix", "build")
+		res := runWrapper(t, e, "--otel-spool-dir", col.dir, "--traceparent", "00-"+tid+"-"+sid+"-01", "fake-nix", "build")
 		if res.code != 1 || res.stderr != "" || res.stdout != "" {
 			t.Fatalf("code=%d stderr=%q stdout=%q", res.code, res.stderr, res.stdout)
 		}
@@ -616,6 +653,7 @@ func TestOTLPEndToEnd(t *testing.T) {
 	run() // two processes of the same service
 
 	// Resource: service.name set in code; nothing unique per process.
+	col.load()
 	col.mu.Lock()
 	defer col.mu.Unlock()
 	if len(col.traceRs) == 0 || len(col.metrics) == 0 {
@@ -713,30 +751,6 @@ func TestOTLPEndToEnd(t *testing.T) {
 	_ = home
 }
 
-// A single transient 503 from the collector (its memory limiter refuses data
-// in bursts) must not drop the span batch: the exporter retries inside the
-// flush budget, so the nix.invocation span still arrives.
-func TestTransient503OnTracesIsRetriedInsideTheFlushBudget(t *testing.T) {
-	col := newCollector(t)
-	col.mu.Lock()
-	col.refuseTraces = 1
-	col.mu.Unlock()
-	e, _ := env(t, fakecmd.Spec{Fixture: golden("failed-build-keep-going.jsonl"), Exit: 1}.Env(), "PG_NIX_LOG_FLUSH_TIMEOUT=2s")
-	res := runWrapper(t, e, "--otlp-endpoint", col.srv.URL, "fake-nix", "build")
-	if res.code != 1 || res.stderr != "" {
-		t.Fatalf("code=%d stderr=%q", res.code, res.stderr)
-	}
-	col.mu.Lock()
-	posts := col.tracePosts
-	col.mu.Unlock()
-	if posts < 2 {
-		t.Errorf("collector saw %d /v1/traces POST(s), want >= 2 (a retry after the 503)", posts)
-	}
-	if got := len(col.spansNamed("nix.invocation")); got != 1 {
-		t.Errorf("collector received %d nix.invocation spans, want 1", got)
-	}
-}
-
 func TestThreeHundredPlusActivitiesAllReachTheCollector(t *testing.T) {
 	// 5000 substitutions exceed the SDK default queue (2048) by far: they all
 	// arrive only because the wrapper sets a larger span queue (W-8).
@@ -755,7 +769,7 @@ func TestThreeHundredPlusActivitiesAllReachTheCollector(t *testing.T) {
 		t.Fatal(err)
 	}
 	e, _ := env(t, fakecmd.Spec{Fixture: fixture}.Env(), "PG_NIX_LOG_FLUSH_TIMEOUT=20s")
-	res := runWrapper(t, e, "--otlp-endpoint", col.srv.URL, "--min-substitute-span=0", "fake-nix")
+	res := runWrapper(t, e, "--otel-spool-dir", col.dir, "--min-substitute-span=0", "fake-nix")
 	if res.code != 0 || res.stderr != "" {
 		t.Fatalf("code=%d stderr=%q", res.code, res.stderr)
 	}
@@ -773,7 +787,7 @@ func TestCanaryRealNixBuildProducesABuildSpan(t *testing.T) {
 		t.Skip("inside a nix builder: no nested store operations")
 	}
 	col := newCollector(t)
-	e, home := env(t, "OTEL_EXPORTER_OTLP_ENDPOINT="+col.srv.URL, "PATH="+filepath.Dir(nix)+":/usr/bin:/bin")
+	e, home := env(t, col.spoolEnv(), "PATH="+filepath.Dir(nix)+":/usr/bin:/bin")
 	expr := fmt.Sprintf(`derivation { name = "pgnlw-canary-%d"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo canary > $out" ]; }`, time.Now().UnixNano())
 	res := runWrapper(t, e, "nix", "build", "--impure", "--no-link", "--extra-experimental-features", "nix-command flakes", "--expr", expr)
 	if res.code != 0 {
@@ -805,5 +819,36 @@ func TestPathShadowDoesNotRecurseThroughTheRealBinary(t *testing.T) {
 	out, err := cmd.Output()
 	if err != nil || string(out) != "real\n" {
 		t.Errorf("out=%q err=%v", out, err)
+	}
+}
+
+// A fake nix emitting internal-json events makes the real wrapper binary leave
+// finished spool files for the collector: one per flush under traces/ and
+// metrics/, user modes (0600 files, 0700 directories), no scratch files left.
+func TestFakeNixRunLeavesSpoolFiles(t *testing.T) {
+	col := newCollector(t)
+	e, _ := env(t, col.spoolEnv(), fakecmd.Spec{Fixture: golden("local-build.jsonl")}.Env())
+	if res := runWrapper(t, e, "fake-nix", "build"); res.code != 0 || res.stderr != "" {
+		t.Fatalf("code=%d stderr=%q", res.code, res.stderr)
+	}
+	for _, sig := range []string{"traces", "metrics"} {
+		files := col.files(sig)
+		if len(files) == 0 {
+			t.Fatalf("no %s spool file appeared in %s", sig, col.dir)
+		}
+		for _, f := range files {
+			if fi, err := os.Stat(f); err != nil || fi.Mode().Perm() != 0o600 || fi.Size() == 0 {
+				t.Errorf("%s: %v %v", f, fi, err)
+			}
+		}
+		if fi, err := os.Stat(filepath.Join(col.dir, sig)); err != nil || fi.Mode().Perm() != 0o700 {
+			t.Errorf("%s directory: %v %v", sig, fi, err)
+		}
+		if tmp, _ := filepath.Glob(filepath.Join(col.dir, sig, ".*")); len(tmp) != 0 {
+			t.Errorf("scratch files left behind: %v", tmp)
+		}
+	}
+	if n := len(col.spansNamed("nix.invocation")); n != 1 {
+		t.Errorf("nix.invocation spans = %d", n)
 	}
 }

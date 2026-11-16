@@ -396,3 +396,79 @@ func TestSweepCountsLiveRawTowardTheCapButNeverEvictsIt(t *testing.T) {
 		t.Errorf("raw not counted: evicted %d a=%v b=%v", n, exists(a2), exists(b2))
 	}
 }
+
+func ownedBy(uid int) func(os.FileInfo) (int, bool) {
+	return func(os.FileInfo) (int, bool) { return uid, true }
+}
+
+func TestPrepareRootSpoolCreatesAReadableDirectoryDespiteUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	dir := filepath.Join(t.TempDir(), "spool")
+	if err := PrepareRootSpool(dir, ownedBy(0)); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(dir)
+	if err != nil || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("mode %v err %v, want 0755", fi.Mode().Perm(), err)
+	}
+}
+
+func TestPrepareRootSpoolWidensANarrowRootOwnedDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spool")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareRootSpool(dir, ownedBy(0)); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o755 {
+		t.Errorf("mode %v", fi.Mode().Perm())
+	}
+}
+
+func TestPrepareRootSpoolRefuses(t *testing.T) {
+	base := t.TempDir()
+	t.Run("symlink", func(t *testing.T) {
+		link := filepath.Join(base, "link")
+		if err := os.Symlink(base, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := PrepareRootSpool(link, ownedBy(0)); err == nil {
+			t.Error("a symlink was accepted")
+		}
+	})
+	t.Run("regular file", func(t *testing.T) {
+		f := filepath.Join(base, "file")
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := PrepareRootSpool(f, ownedBy(0)); err == nil {
+			t.Error("a file was accepted")
+		}
+	})
+	t.Run("owned by another uid", func(t *testing.T) {
+		d := filepath.Join(base, "other")
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := PrepareRootSpool(d, ownedBy(501)); err == nil {
+			t.Error("a non-root-owned directory was accepted")
+		}
+		if err := PrepareRootSpool(d, func(os.FileInfo) (int, bool) { return 0, false }); err == nil {
+			t.Error("an unknown owner was accepted")
+		}
+	})
+	t.Run("group writable", func(t *testing.T) {
+		d := filepath.Join(base, "gw")
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := PrepareRootSpool(d, ownedBy(0)); err == nil {
+			t.Error("a group-writable directory was accepted")
+		}
+	})
+}

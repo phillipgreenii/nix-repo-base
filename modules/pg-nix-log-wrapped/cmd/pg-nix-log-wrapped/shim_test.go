@@ -3,7 +3,7 @@ package main
 // Shim-mode process tests: the real binary (this test binary) is entered
 // through symlinks named nix / darwin-rebuild, in front of a stub "real" tool
 // that is a shell script. Nothing needs a real nix, a daemon or a network:
-// the collector is a loopback httptest server.
+// the "collector" is the spool directory the wrapper writes.
 
 import (
 	"bytes"
@@ -175,7 +175,7 @@ func TestShimDispatchRealBinary(t *testing.T) {
 				linkShim(t, shimDir, c.tool, wrapper)
 				extra := append([]string{
 					"PATH=" + shimDir + ":" + realDir + ":/usr/bin:/bin",
-					"OTEL_EXPORTER_OTLP_ENDPOINT=" + col.srv.URL,
+					col.spoolEnv(),
 				}, c.env...)
 				if debug {
 					extra = append(extra, "PG_NIX_LOG_DEBUG=1")
@@ -252,7 +252,7 @@ func TestDarwinRebuildKeepsItsSwBinSuffix(t *testing.T) {
 			writeStub(t, realDir, "darwin-rebuild", rec, 0)
 			shimDir := filepath.Join(base, "shim")
 			linkShim(t, shimDir, "darwin-rebuild", wrapper)
-			e, _ := env(t, "PATH="+shimDir+":"+realDir+":/usr/bin:/bin", "OTEL_EXPORTER_OTLP_ENDPOINT="+col.srv.URL)
+			e, _ := env(t, "PATH="+shimDir+":"+realDir+":/usr/bin:/bin", col.spoolEnv())
 			if res := runProg(t, filepath.Join(shimDir, "darwin-rebuild"), e, verb); res.code != 0 {
 				t.Fatalf("exit %d: %s", res.code, res.stderr)
 			}
@@ -284,7 +284,7 @@ func TestExplicitWrapperBehindAShimYieldsOneInvocation(t *testing.T) {
 				target = copyWrapper(t, filepath.Join(base, "build2"))
 			}
 			linkShim(t, shimDir, "nix", target)
-			e, _ := env(t, "PATH="+shimDir+":"+realDir+":/usr/bin:/bin", "OTEL_EXPORTER_OTLP_ENDPOINT="+col.srv.URL)
+			e, _ := env(t, "PATH="+shimDir+":"+realDir+":/usr/bin:/bin", col.spoolEnv())
 			cmd, _, errb := wrapperCmd(e, "nix", "build")
 			if err := cmd.Run(); err != nil {
 				t.Fatalf("%v: %s", err, errb)
@@ -308,7 +308,7 @@ func TestTwoShimsDoNotLoop(t *testing.T) {
 	linkShim(t, shimB, "nix", buildB)
 	col := newCollector(t)
 	path := shimA + ":" + shimB + ":/usr/bin:/bin"
-	e, _ := env(t, "PATH="+path, "OTEL_EXPORTER_OTLP_ENDPOINT="+col.srv.URL)
+	e, _ := env(t, "PATH="+path, col.spoolEnv())
 	done := make(chan result, 1)
 	go func() { done <- runProg(t, filepath.Join(shimA, "nix"), e, "build") }()
 	select {
@@ -323,7 +323,7 @@ func TestTwoShimsDoNotLoop(t *testing.T) {
 	rec := filepath.Join(base, "rec")
 	realDir := filepath.Join(base, "real")
 	writeStub(t, realDir, "nix", rec, 0)
-	e, _ = env(t, "PATH="+shimA+":"+shimB+":"+realDir+":/usr/bin:/bin", "OTEL_EXPORTER_OTLP_ENDPOINT="+col.srv.URL)
+	e, _ = env(t, "PATH="+shimA+":"+shimB+":"+realDir+":/usr/bin:/bin", col.spoolEnv())
 	if res := runProg(t, filepath.Join(shimA, "nix"), e, "build"); res.code != 0 {
 		t.Fatalf("exit %d: %s", res.code, res.stderr)
 	}
@@ -352,7 +352,7 @@ func TestShimSignalsAndExitCodes(t *testing.T) {
 				HoldForMS: 20000, DieOnSignal: true, ExitOnINT: false,
 			}
 			col := newCollector(t)
-			e, _ := env(t, "PATH="+shimDir+":"+realDir+":/usr/bin:/bin", "OTEL_EXPORTER_OTLP_ENDPOINT="+col.srv.URL, spec.Env())
+			e, _ := env(t, "PATH="+shimDir+":"+realDir+":/usr/bin:/bin", col.spoolEnv(), spec.Env())
 			cmd := exec.CommandContext(context.Background(), filepath.Join(shimDir, "nix"), c.args...)
 			cmd.Env = e
 			if err := cmd.Start(); err != nil {

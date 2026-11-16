@@ -36,14 +36,14 @@ const (
 )
 
 // loadPNArgv reads the golden and substitutes the three run-specific values.
-func loadPNArgv(t *testing.T, endpoint, logDir string) []string {
+func loadPNArgv(t *testing.T, spoolDir, logDir string) []string {
 	t.Helper()
 	data, err := os.ReadFile(pnWrapperArgvGolden)
 	if err != nil {
 		t.Fatalf("the shared pn argv golden is missing (%v): the nix check must include modules/pn/internal/exec/testdata/wrapper-user-build-argv.golden in this module's source (flake.nix, lib.fileset); this test never skips", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-	sub := strings.NewReplacer("{traceparent}", contractTraceparent, "{otlp-endpoint}", endpoint, "{log-dir}", logDir)
+	sub := strings.NewReplacer("{traceparent}", contractTraceparent, "{otlp-endpoint}", spoolDir, "{spool-dir}", spoolDir, "{log-dir}", logDir)
 	for i, l := range lines {
 		lines[i] = sub.Replace(l)
 	}
@@ -53,13 +53,18 @@ func loadPNArgv(t *testing.T, endpoint, logDir string) []string {
 // config.ParseArgs accepts the argv exactly as pn builds it and recovers the
 // flags and CMD pn meant.
 func TestPNUserBuildArgvParses(t *testing.T) {
-	argv := loadPNArgv(t, "http://127.0.0.1:4318", "/state/pn/nix-logs")
+	argv := loadPNArgv(t, "/state/otel-spool", "/state/pn/nix-logs")
 	o, err := config.ParseArgs(argv)
 	if err != nil {
 		t.Fatalf("ParseArgs rejects the argv pn produces: %v\nargv: %q", err, argv)
 	}
-	if o.Traceparent != contractTraceparent || o.OTLPEndpoint != "http://127.0.0.1:4318" || o.LogDir != "/state/pn/nix-logs" {
+	if o.Traceparent != contractTraceparent || o.LogDir != "/state/pn/nix-logs" {
 		t.Errorf("flags not recovered: %+v", o)
+	}
+	// pn names the spool with --otel-spool-dir; until pn's golden moves off the
+	// deprecated --otlp-endpoint the wrapper must still parse it (a no-op).
+	if o.OtelSpoolDir != "/state/otel-spool" && !o.DeprecatedOTLPFlag {
+		t.Errorf("neither the spool flag nor the deprecated endpoint flag recovered: %+v", o)
 	}
 	wantCmd := []string{"darwin-rebuild", "build", "--flake", "/x/leaf#host", "--override-input", "dep-input", "git+file:///x/dep"}
 	if !reflect.DeepEqual(o.Cmd, wantCmd) {
@@ -79,7 +84,14 @@ func TestPNUserBuildArgvRunsTheRealWrapper(t *testing.T) {
 	col := newCollector(t)
 	e, home := env(t)
 	logDir := filepath.Join(home, "state", "pn", "nix-logs")
-	argv := loadPNArgv(t, col.srv.URL, logDir)
+	argv := loadPNArgv(t, col.dir, logDir)
+	// While pn's golden still carries the deprecated --otlp-endpoint, name the
+	// spool instead, as pn will after its cutover.
+	for i, a := range argv {
+		if a == "--otlp-endpoint" {
+			argv[i] = "--otel-spool-dir"
+		}
+	}
 	o, err := config.ParseArgs(argv)
 	if err != nil {
 		t.Fatal(err)
@@ -116,8 +128,9 @@ func TestPNUserBuildArgvRunsTheRealWrapper(t *testing.T) {
 		t.Errorf("retained logs in %s = %v, want exactly one (--log-dir not honoured)", logDir, logs)
 	}
 
-	// --traceparent honoured and the endpoint reached: the invocation span is a
+	// --traceparent honoured and the spool written: the invocation span is a
 	// child of the span pn named.
+	col.load()
 	col.mu.Lock()
 	defer col.mu.Unlock()
 	found := false
@@ -131,6 +144,6 @@ func TestPNUserBuildArgvRunsTheRealWrapper(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("no nix.invocation span reached the collector (--otlp-endpoint not honoured)")
+		t.Error("no nix.invocation span reached the collector (--otel-spool-dir not honoured)")
 	}
 }

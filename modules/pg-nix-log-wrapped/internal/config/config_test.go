@@ -3,7 +3,9 @@ package config
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,8 +20,14 @@ func TestParseArgs(t *testing.T) {
 		{"plain command", []string{"nix", "build", "."}, Options{Cmd: []string{"nix", "build", "."}}, false},
 		{
 			"all flags then --",
-			[]string{"--traceparent", "tp", "--otlp-endpoint=http://h:1", "--log-dir", "/d", "--", "nix", "x"},
-			Options{Traceparent: "tp", OTLPEndpoint: "http://h:1", LogDir: "/d", Cmd: []string{"nix", "x"}},
+			[]string{"--traceparent", "tp", "--otel-spool-dir=/s", "--log-dir", "/d", "--", "nix", "x"},
+			Options{Traceparent: "tp", OtelSpoolDir: "/s", RootSpool: true, LogDir: "/d", Cmd: []string{"nix", "x"}},
+			false,
+		},
+		{
+			"deprecated endpoint flag is remembered, never an endpoint",
+			[]string{"--otlp-endpoint", "http://h:1", "nix"},
+			Options{DeprecatedOTLPFlag: true, Cmd: []string{"nix"}},
 			false,
 		},
 		{"repeated -- belongs to CMD", []string{"--", "nix", "--", "a", "--"}, Options{Cmd: []string{"nix", "--", "a", "--"}}, false},
@@ -71,59 +79,96 @@ func files(m map[string]string) func(string) ([]byte, error) {
 	}
 }
 
+const tomlPath = "/home/u/.config/pn/telemetry.toml"
+
 func TestResolvePrecedenceNonRoot(t *testing.T) {
-	toml := files(map[string]string{"/home/u/.config/pn/telemetry.toml": `endpoint = "http://file:4318"`})
-	env := envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://env:4318", "TRACEPARENT": "env-tp"})
+	toml := files(map[string]string{tomlPath: "enabled = true\nspool_dir = \"/file/spool\"\n"})
+	env := envOf(map[string]string{"TRACEPARENT": "env-tp", "XDG_STATE_HOME": "/xdg", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://env:4318"})
 	base := Inputs{Getenv: env, Euid: 501, Home: "/home/u", ReadFile: toml}
 
 	in := base
-	in.Opts = Options{OTLPEndpoint: "http://flag:4318", Traceparent: "flag-tp"}
-	if r := Resolve(in); r.Endpoint != "http://flag:4318" || r.EndpointSource != SourceFlag || r.Traceparent != "flag-tp" {
+	in.Opts = Options{OtelSpoolDir: "/flag/spool", Traceparent: "flag-tp"}
+	if r := Resolve(in); r.SpoolDir != "/flag/spool" || r.SpoolSource != SourceFlag || r.Traceparent != "flag-tp" || r.Root {
 		t.Errorf("flag must win: %+v", r)
 	}
-	if r := Resolve(base); r.Endpoint != "http://env:4318" || r.EndpointSource != SourceEnv || r.Traceparent != "env-tp" {
-		t.Errorf("env must beat file: %+v", r)
+	if r := Resolve(base); r.SpoolDir != "/file/spool" || r.SpoolSource != SourceFile || r.Traceparent != "env-tp" {
+		t.Errorf("file spool_dir must beat the default: %+v", r)
 	}
 	in = base
+	in.ReadFile = files(map[string]string{tomlPath: "enabled = true\n"})
+	if r := Resolve(in); r.SpoolDir != "/xdg/otel-spool" || r.SpoolSource != SourceDefault {
+		t.Errorf("XDG default: %+v", r)
+	}
 	in.Getenv = envOf(nil)
-	if r := Resolve(in); r.Endpoint != "http://file:4318" || r.EndpointSource != SourceFile {
-		t.Errorf("file is the last resort: %+v", r)
+	if r := Resolve(in); r.SpoolDir != "/home/u/.local/state/otel-spool" || r.SpoolSource != SourceDefault {
+		t.Errorf("HOME default: %+v", r)
+	}
+	in.Getenv = envOf(map[string]string{"XDG_STATE_HOME": "relative"})
+	if r := Resolve(in); r.SpoolDir != "/home/u/.local/state/otel-spool" {
+		t.Errorf("a relative XDG_STATE_HOME must be ignored: %+v", r)
+	}
+	in.Home = ""
+	if r := Resolve(in); r.SpoolDir != "" || r.Off == "" {
+		t.Errorf("no home and no XDG: %+v", r)
+	}
+	in = base
+	in.ReadFile = files(map[string]string{tomlPath: "enabled = true\nspool_dir = \"rel/dir\"\n"})
+	if r := Resolve(in); r.SpoolDir != "/xdg/otel-spool" {
+		t.Errorf("a relative spool_dir must be ignored: %+v", r)
 	}
 }
 
-func TestResolveRootReadsFlagsOnly(t *testing.T) {
-	// A root wrapper must not read env (sudo drops it) nor any user-owned file.
+func TestResolveRelativeFlagBecomesAbsolute(t *testing.T) {
+	in := Inputs{Getenv: envOf(nil), Euid: 501, Home: "/home/u", Opts: Options{OtelSpoolDir: "rel"}}
+	if r := Resolve(in); !filepath.IsAbs(r.SpoolDir) || filepath.Base(r.SpoolDir) != "rel" {
+		t.Errorf("got %+v", r)
+	}
+}
+
+func TestResolveRootIgnoresSpoolFlagValueEnvAndFile(t *testing.T) {
+	// A root wrapper must not read env (sudo drops it) nor any user-owned file,
+	// and the spool flag only switches telemetry on; its value is ignored.
 	read := false
 	in := Inputs{
-		Getenv: envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://env:4318", "TRACEPARENT": "env-tp"}),
+		Getenv: envOf(map[string]string{"TRACEPARENT": "env-tp", "XDG_STATE_HOME": "/xdg"}),
 		Euid:   0, Home: "/Users/u",
-		ReadFile: func(string) ([]byte, error) { read = true; return []byte(`endpoint = "http://file"`), nil },
+		ReadFile: func(string) ([]byte, error) { read = true; return []byte("enabled = true"), nil },
 	}
-	if r := Resolve(in); r.Endpoint != "" || r.Traceparent != "" || read {
+	if r := Resolve(in); r.SpoolDir != "" || r.Traceparent != "" || read || r.Off != OffRootNotWanted || !r.Root {
 		t.Errorf("root resolved from env/file: %+v read=%v", r, read)
 	}
-	in.Opts = Options{OTLPEndpoint: "http://flag:4318", Traceparent: "tp"}
-	if r := Resolve(in); r.Endpoint != "http://flag:4318" || r.Traceparent != "tp" || read {
-		t.Errorf("root must honour flags: %+v read=%v", r, read)
+	in.Opts = Options{OtelSpoolDir: "/user/spool", RootSpool: true, Traceparent: "tp"}
+	r := Resolve(in)
+	if r.SpoolDir != DefaultRootSpoolDir || r.SpoolSource != SourceRoot || r.Traceparent != "tp" || read || !r.Root {
+		t.Errorf("root must use its own spool, whatever the flag says: %+v read=%v", r, read)
+	}
+	in.Opts = Options{OTLPEndpoint: "http://legacy"}
+	if r := Resolve(in); r.SpoolDir != DefaultRootSpoolDir {
+		t.Errorf("the legacy root enable input must still enable: %+v", r)
+	}
+	in.Opts = Options{RootSpool: true}
+	in.RootSpoolDir = "/test/root-spool"
+	if r := Resolve(in); r.SpoolDir != "/test/root-spool" {
+		t.Errorf("test override: %+v", r)
 	}
 }
 
 func TestResolveInjectedHomeAndGarbageToml(t *testing.T) {
 	in := Inputs{
 		Getenv: envOf(nil), Euid: 501, Home: "/injected",
-		ReadFile: files(map[string]string{"/injected/.config/pn/telemetry.toml": `endpoint = "http://injected:4318"`}),
+		ReadFile: files(map[string]string{"/injected/.config/pn/telemetry.toml": "enabled = true"}),
 	}
-	if r := Resolve(in); r.Endpoint != "http://injected:4318" {
+	if r := Resolve(in); r.SpoolDir != "/injected/.local/state/otel-spool" {
 		t.Errorf("injected home not used: %+v", r)
 	}
-	for _, garbage := range []string{"\x00\x01 not = = toml [[[", `endpoint = 42`, ``, `other = "x"`} {
+	for _, garbage := range []string{"\x00\x01 not = = toml [[[", `enabled = 42`, ``, `other = "x"`, `endpoint = "http://x"`} {
 		in.ReadFile = files(map[string]string{"/injected/.config/pn/telemetry.toml": garbage})
-		if r := Resolve(in); r.Endpoint != "" {
-			t.Errorf("garbage %q yielded endpoint %q", garbage, r.Endpoint)
+		if r := Resolve(in); r.SpoolDir != "" || r.Off == "" {
+			t.Errorf("garbage %q yielded %+v", garbage, r)
 		}
 	}
 	in.Home = ""
-	if r := Resolve(in); r.Endpoint != "" {
+	if r := Resolve(in); r.SpoolDir != "" {
 		t.Errorf("no home must mean no file: %+v", r)
 	}
 }
@@ -146,38 +191,41 @@ func TestDisabled(t *testing.T) {
 	}
 }
 
-// TestResolveEnabledKey is the wrapper side of the ADR 0028 precedence
-// contract: flag > toml enabled=false > env > toml endpoint, root = flags only.
+// TestResolveEnabledKey pins the wrapper side of the enable contract: the
+// flag enables, otherwise only telemetry.toml enabled = true does; the old
+// endpoint key and OTEL_EXPORTER_OTLP_ENDPOINT never enable.
 func TestResolveEnabledKey(t *testing.T) {
-	const path = "/home/u/.config/pn/telemetry.toml"
 	env := envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://env:4318"})
 	cases := []struct {
 		name       string
 		toml       string
-		getenv     func(string) string
 		opts       Options
 		euid       int
-		wantEP     string
+		wantDir    string
 		wantSource string
 		wantOff    string
 	}{
-		{"enabled=false beats env", "enabled = false\nendpoint = \"http://file:4318\"", env, Options{}, 501, "", "", OffByFile},
-		{"enabled=false beats file endpoint", "enabled = false\nendpoint = \"http://file:4318\"", envOf(nil), Options{}, 501, "", "", OffByFile},
-		{"flag beats enabled=false", "enabled = false", env, Options{OTLPEndpoint: "http://flag:4318"}, 501, "http://flag:4318", SourceFlag, ""},
-		{"enabled=true + env", "enabled = true", env, Options{}, 501, "http://env:4318", SourceEnv, ""},
-		{"enabled=true + file endpoint", "enabled = true\nendpoint = \"http://file:4318\"", envOf(nil), Options{}, 501, "http://file:4318", SourceFile, ""},
-		{"enabled=true, nothing else", "enabled = true", envOf(nil), Options{}, 501, "", "", ""},
-		{"env beats file endpoint when enabled=true", "enabled = true\nendpoint = \"http://file:4318\"", env, Options{}, 501, "http://env:4318", SourceEnv, ""},
-		{"absent key keeps legacy behaviour", "endpoint = \"http://file:4318\"", envOf(nil), Options{}, 501, "http://file:4318", SourceFile, ""},
-		{"wrongly typed enabled is garbage: fail open to env", "enabled = \"no\"", env, Options{}, 501, "http://env:4318", SourceEnv, ""},
-		{"root ignores the file", "enabled = false", env, Options{}, 0, "", "", ""},
+		{"enabled=false", "enabled = false", Options{}, 501, "", "", OffByFile},
+		{"flag beats enabled=false", "enabled = false", Options{OtelSpoolDir: "/f"}, 501, "/f", SourceFlag, ""},
+		{"enabled=true", "enabled = true", Options{}, 501, "/home/u/.local/state/otel-spool", SourceDefault, ""},
+		{"endpoint key alone does not enable", "endpoint = \"http://file:4318\"", Options{}, 501, "", "", OffNotEnabled},
+		{"env endpoint alone does not enable", "", Options{}, 501, "", "", OffNotEnabled},
+		{"endpoint key does not matter when enabled", "enabled = true\nendpoint = \"http://file:4318\"", Options{}, 501, "/home/u/.local/state/otel-spool", SourceDefault, ""},
+		{"wrongly typed enabled is garbage: off", "enabled = \"no\"", Options{}, 501, "", "", OffNotEnabled},
+		{"root ignores the file", "enabled = true", Options{}, 0, "", "", OffRootNotWanted},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := Resolve(Inputs{Opts: c.opts, Getenv: c.getenv, Euid: c.euid, Home: "/home/u", ReadFile: files(map[string]string{path: c.toml})})
-			if r.Endpoint != c.wantEP || r.EndpointSource != c.wantSource || r.Off != c.wantOff {
-				t.Errorf("got %+v; want endpoint=%q source=%q off=%q", r, c.wantEP, c.wantSource, c.wantOff)
+			r := Resolve(Inputs{Opts: c.opts, Getenv: env, Euid: c.euid, Home: "/home/u", ReadFile: files(map[string]string{tomlPath: c.toml})})
+			if r.SpoolDir != c.wantDir || r.SpoolSource != c.wantSource || r.Off != c.wantOff {
+				t.Errorf("got %+v; want dir=%q source=%q off=%q", r, c.wantDir, c.wantSource, c.wantOff)
 			}
 		})
+	}
+}
+
+func TestUsageNamesTheSpoolFlag(t *testing.T) {
+	if !strings.Contains(Usage, "--otel-spool-dir") || !strings.Contains(Usage, "--otlp-endpoint is deprecated") {
+		t.Errorf("usage: %s", Usage)
 	}
 }

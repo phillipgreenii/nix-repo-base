@@ -135,7 +135,7 @@ func TestRealNixWritesProgressIntoThePreCreatedScratchFileAndFinalizeFiltersIt(t
 func TestWrapperRetainsAFilteredLogOfARealNixRun(t *testing.T) {
 	nix := realNix(t)
 	col := newCollector(t)
-	e, home := env(t, "OTEL_EXPORTER_OTLP_ENDPOINT="+col.srv.URL, "PATH="+filepath.Dir(nix)+":/usr/bin:/bin")
+	e, home := env(t, col.spoolEnv(), "PATH="+filepath.Dir(nix)+":/usr/bin:/bin")
 	res := runWrapper(t, e, progressBuildArgs()...)
 	if res.code != 0 {
 		t.Skipf("nix build is not usable in this environment (exit %d): %s", res.code, res.stderr)
@@ -161,6 +161,7 @@ func TestWrapperRetainsAFilteredLogOfARealNixRun(t *testing.T) {
 		t.Error("retained log lost start/stop lines")
 	}
 	// nix.log.file names the retained .jsonl, never the scratch .raw.
+	col.load()
 	col.mu.Lock()
 	defer col.mu.Unlock()
 	var seen bool

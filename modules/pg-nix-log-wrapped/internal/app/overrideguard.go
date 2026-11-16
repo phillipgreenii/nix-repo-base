@@ -145,5 +145,5 @@ func noopTelemetry(context.Context, otelsetup.Config, ...otelsetup.Option) (Tele
 func (r *runner) setupGuardOnly(opts config.Options, cmdPath string) (*session, error) {
 	rr := *r
 	rr.NewTelemetry = noopTelemetry
-	return rr.setup(opts, config.Resolved{Endpoint: "guard-only"}, cmdPath)
+	return rr.setup(opts, config.Resolved{SpoolDir: "guard-only"}, cmdPath)
 }

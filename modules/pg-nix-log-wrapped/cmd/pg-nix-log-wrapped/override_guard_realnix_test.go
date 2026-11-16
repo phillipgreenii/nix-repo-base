@@ -56,10 +56,10 @@ func TestUnmatchedOverrideInputFailsARealNixRun(t *testing.T) {
 	}
 	consumer, dep := overrideFixture(t)
 
-	// telemetry on (a loopback collector) and off (no endpoint) must agree.
+	// telemetry on (a spool directory) and off (not enabled) must agree.
 	col := newCollector(t)
 	for name, extra := range map[string][]string{
-		"telemetry on":  {"OTEL_EXPORTER_OTLP_ENDPOINT=" + col.srv.URL},
+		"telemetry on":  {col.spoolEnv()},
 		"telemetry off": nil,
 	} {
 		t.Run(name, func(t *testing.T) {

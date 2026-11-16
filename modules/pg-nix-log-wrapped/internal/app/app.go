@@ -19,8 +19,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"net"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -37,6 +35,7 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/retain"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/tailer"
 	"github.com/phillipgreenii/x/otelsetup"
+	"github.com/phillipgreenii/x/otelsetup/spool"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -52,10 +51,6 @@ const (
 	SpanQueueSize = 16384
 	// DefaultFlushTimeout bounds the end-of-run export (W-9 e).
 	DefaultFlushTimeout = 2 * time.Second
-	// RetryInitialInterval is the first export-retry wait (otelsetup.WithRetry).
-	// The SDK default is 5 s, which a 2 s flush can never reach, so one
-	// transient collector 503 would drop the whole batch.
-	RetryInitialInterval = 100 * time.Millisecond
 	// ErrTypeNonzeroExit is the invocation's error.type when nothing more
 	// specific than the exit code is known.
 	ErrTypeNonzeroExit = "nonzero_exit"
@@ -96,7 +91,11 @@ type Deps struct {
 	Exec         func(path string, argv, env []string) error
 	NewTelemetry func(ctx context.Context, cfg otelsetup.Config, opts ...otelsetup.Option) (Telemetry, error)
 	ReadFile     func(string) ([]byte, error)
-	Dial         func(addr string, timeout time.Duration) error
+	// SpoolOwner reports the uid owning a file, for the root spool ownership
+	// check; nil selects the real one (tests inject a fake instead of chown).
+	SpoolOwner func(os.FileInfo) (uid int, ok bool)
+	// RootSpoolDir overrides config.DefaultRootSpoolDir (tests only).
+	RootSpoolDir string
 
 	// RootConfigPath and StorePrefix locate and vouch for the root shim
 	// configuration (shimconfig.go). Empty selects the production defaults;
@@ -148,14 +147,8 @@ func DefaultDeps(version string) Deps {
 			}
 			return Telemetry{Tracer: t.Tracer, Meter: t.Meter, Shutdown: t.Shutdown}, nil
 		},
-		ReadFile: os.ReadFile,
-		Dial: func(addr string, timeout time.Duration) error {
-			c, err := (&net.Dialer{Timeout: timeout}).DialContext(context.Background(), "tcp", addr)
-			if err != nil {
-				return err
-			}
-			return c.Close()
-		},
+		ReadFile:   os.ReadFile,
+		SpoolOwner: fileOwner,
 	}
 }
 
@@ -209,6 +202,9 @@ func Run(d Deps) int {
 		fmt.Fprint(d.Stdout, config.Usage)
 		return 0
 	}
+	if opts.DeprecatedOTLPFlag {
+		fmt.Fprint(d.Stderr, config.DeprecatedOTLPNotice)
+	}
 	if opts.Check {
 		return r.check(opts)
 	}
@@ -250,7 +246,7 @@ func (r *runner) observe(opts config.Options, cmdPath string) int {
 	if off, why := config.Disabled(r.getenv); off {
 		return passthrough(why)
 	}
-	res := config.Resolve(config.Inputs{Opts: opts, Getenv: r.getenv, Euid: d.Euid, Home: d.Home, ReadFile: d.ReadFile})
+	res := config.Resolve(config.Inputs{Opts: opts, Getenv: r.getenv, Euid: d.Euid, Home: d.Home, ReadFile: d.ReadFile, RootSpoolDir: d.RootSpoolDir})
 	// A run carrying --override-input is still observed (without export) when
 	// telemetry is off, so the unmatched-override guard can see nix's warning.
 	// Every other run keeps the exact passthrough it always had.
@@ -263,11 +259,11 @@ func (r *runner) observe(opts config.Options, cmdPath string) int {
 		}
 		return passthrough(why)
 	}
-	if res.Endpoint == "" {
+	if res.SpoolDir == "" {
 		if res.Off != "" {
 			return guarded(res.Off)
 		}
-		return guarded("no OTLP endpoint resolved")
+		return guarded("no spool directory resolved")
 	}
 
 	s, err := r.setup(opts, res, cmdPath)
@@ -333,6 +329,17 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 		}
 	}()
 
+	if res.Root {
+		// Before anything is created: a symlink or a directory another uid
+		// owns at the root spool path makes root fail open.
+		owner := r.SpoolOwner
+		if owner == nil {
+			owner = fileOwner
+		}
+		if err := logdir.PrepareRootSpool(res.SpoolDir, owner); err != nil {
+			return nil, err
+		}
+	}
 	dir, err := logdir.Select(logdir.Params{
 		Euid: r.Euid, Flag: opts.LogDir, XDGState: r.getenv("XDG_STATE_HOME"),
 		Home: r.Home, RootDir: r.RootLogDir,
@@ -369,11 +376,16 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 		// A malformed traceparent yields no span context: a fresh root trace.
 		ctx = propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{"traceparent": tp})
 	}
+	role := spool.RoleUser
+	if res.Root {
+		role = spool.RoleRoot
+	}
+	// The wrapper is silent on spool failure: write errors reach the debug
+	// output only (PG_NIX_LOG_DEBUG=1).
 	tel, err := r.NewTelemetry(ctx, otelsetup.Config{
-		Endpoint: res.Endpoint, ServiceName: ServiceName, Version: r.Version,
+		SpoolDir: res.SpoolDir, SpoolRole: role, ServiceName: ServiceName, Version: r.Version,
 	}, otelsetup.WithSpanQueueSize(SpanQueueSize), otelsetup.WithTimeout(r.flushTimeout()),
-		// Retries stop at the flush budget (otelsetup clamps maxElapsed to it).
-		otelsetup.WithRetry(RetryInitialInterval, r.flushTimeout()))
+		otelsetup.WithOnError(func(err error) { r.debugf("otel-spool: %v", err) }))
 	if err != nil {
 		return fail(err)
 	}
@@ -642,31 +654,26 @@ func exitCode(ps *os.ProcessState, waitErr error) int {
 	return ps.ExitCode()
 }
 
-// check implements --check (W-11): print the resolved endpoint, whether it is
-// reachable, and whether the log directory is writable, then the shim lines
-// (shimcheck.go) and a final status line. Exit 0 only when telemetry would
-// actually run AND both nix and darwin-rebuild resolve to a shim.
+// check implements --check (W-11): print the resolved spool directory, whether
+// it is writable and how many files wait in it, and whether the log directory
+// is writable, then the shim lines (shimcheck.go) and a final status line. Exit
+// 0 only when telemetry would actually run AND both nix and darwin-rebuild
+// resolve to a shim.
 func (r *runner) check(opts config.Options) int {
 	healthy := true
 	if off, why := config.Disabled(r.getenv); off {
 		fmt.Fprintf(r.Stdout, "telemetry: disabled (%s)\n", why)
 		healthy = false
 	}
-	res := config.Resolve(config.Inputs{Opts: opts, Getenv: r.getenv, Euid: r.Euid, Home: r.Home, ReadFile: r.ReadFile})
+	res := config.Resolve(config.Inputs{Opts: opts, Getenv: r.getenv, Euid: r.Euid, Home: r.Home, ReadFile: r.ReadFile, RootSpoolDir: r.RootSpoolDir})
 	if res.Off != "" {
 		fmt.Fprintf(r.Stdout, "telemetry: disabled (%s)\n", res.Off)
 		healthy = false
-	} else if res.Endpoint == "" {
-		fmt.Fprintln(r.Stdout, "endpoint: none resolved (telemetry is off)")
+	} else if res.SpoolDir == "" {
+		fmt.Fprintln(r.Stdout, "spool-dir: none resolved (telemetry is off)")
 		healthy = false
-	} else {
-		fmt.Fprintf(r.Stdout, "endpoint: %s (from %s)\n", res.Endpoint, res.EndpointSource)
-		if err := r.Dial(hostPort(res.Endpoint), 2*time.Second); err != nil {
-			fmt.Fprintf(r.Stdout, "reachable: no (%v)\n", err)
-			healthy = false
-		} else {
-			fmt.Fprintln(r.Stdout, "reachable: yes")
-		}
+	} else if !r.checkSpool(res) {
+		healthy = false
 	}
 	dir, err := logdir.Select(logdir.Params{
 		Euid: r.Euid, Flag: opts.LogDir, XDGState: r.getenv("XDG_STATE_HOME"),
@@ -700,22 +707,4 @@ func writable(dir string, euid int) error {
 	name := f.Name()
 	_ = f.Close()
 	return os.Remove(name)
-}
-
-// hostPort extracts "host:port" from an OTLP endpoint (URL or host:port).
-func hostPort(ep string) string {
-	if !strings.Contains(ep, "://") {
-		return ep
-	}
-	u, err := url.Parse(ep)
-	if err != nil || u.Host == "" {
-		return ep
-	}
-	if u.Port() != "" {
-		return u.Host
-	}
-	if u.Scheme == "https" {
-		return net.JoinHostPort(u.Hostname(), "443")
-	}
-	return net.JoinHostPort(u.Hostname(), "80")
 }

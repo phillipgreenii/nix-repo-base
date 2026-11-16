@@ -6,9 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +16,7 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/fakecmd"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/nixlog"
 	"github.com/phillipgreenii/x/otelsetup"
+	"github.com/phillipgreenii/x/otelsetup/spool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -153,7 +151,7 @@ type rig struct {
 	childOut, childErr  *bytes.Buffer
 	execs               []exe
 	home, state, dumpTo string
-	logDir              string
+	logDir, spool       string
 }
 
 func newRig(t *testing.T, spec fakecmd.Spec, extraEnv ...string) *rig {
@@ -165,13 +163,13 @@ func newRig(t *testing.T, spec fakecmd.Spec, extraEnv ...string) *rig {
 		home: home, state: filepath.Join(home, "state"), dumpTo: filepath.Join(home, "dump.json"),
 	}
 	r.logDir = filepath.Join(r.state, "pn", "nix-logs")
+	r.spool = filepath.Join(r.state, "otel-spool")
 	spec.Dump = r.dumpTo
 	self, _ := os.Executable()
 	r.d = Deps{
 		Environ: append([]string{
 			"PATH=" + fakes.Path() + string(os.PathListSeparator) + "/usr/bin:/bin",
 			"HOME=" + home, "XDG_STATE_HOME=" + r.state,
-			"OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318",
 			spec.Env(),
 		}, extraEnv...),
 		Euid: 501, Pid: 4242, Home: home, Executable: self, Version: "test",
@@ -184,12 +182,22 @@ func newRig(t *testing.T, spec fakecmd.Spec, extraEnv ...string) *rig {
 		},
 		NewTelemetry: r.mem.factory,
 		ReadFile:     os.ReadFile,
-		Dial:         func(string, time.Duration) error { return nil },
 		PollInterval: 2 * time.Millisecond,
 		FlushTimeout: 300 * time.Millisecond,
 	}
 	fakes.Command(t, "fake-nix")
+	// Telemetry is on by default for a rig: the user's telemetry.toml says so
+	// and the spool directory is the XDG default under the rig's state dir.
+	r.writeUserToml(t, "enabled = true\n")
 	return r
+}
+
+// telemetryOff removes the rig's telemetry.toml, so nothing enables telemetry.
+func (r *rig) telemetryOff(t *testing.T) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(r.home, ".config", "pn", "telemetry.toml")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (r *rig) setEnv(key, val string) {
@@ -255,7 +263,7 @@ func TestObservedRunProducesSpansMetricsAndKeepsStreamsClean(t *testing.T) {
 	if len(r.execs) != 0 || r.mem.calls != 1 {
 		t.Fatalf("execs=%d telemetry calls=%d", len(r.execs), r.mem.calls)
 	}
-	if r.mem.cfg.ServiceName != "pg-nix-log-wrapped" || r.mem.cfg.Endpoint != "http://127.0.0.1:4318" {
+	if r.mem.cfg.ServiceName != "pg-nix-log-wrapped" || r.mem.cfg.SpoolDir != r.spool || r.mem.cfg.SpoolRole != spool.RoleUser || r.mem.cfg.Endpoint != "" {
 		t.Errorf("cfg = %+v", r.mem.cfg)
 	}
 	// CMD's bytes pass through untouched; the wrapper adds nothing.
@@ -552,21 +560,21 @@ func TestChildEnv(t *testing.T) {
 	}
 }
 
-func TestFailOpenWhenDisabledOrNoEndpoint(t *testing.T) {
+func TestFailOpenWhenDisabledOrNotEnabled(t *testing.T) {
 	cases := []struct {
 		name string
 		env  []string
-		drop bool // remove the endpoint from env
+		drop bool // remove the telemetry enable switch
 	}{
 		{"PG_NIX_LOG_DISABLE", []string{"PG_NIX_LOG_DISABLE=1"}, false},
 		{"OTEL_SDK_DISABLED", []string{"OTEL_SDK_DISABLED=true"}, false},
-		{"no endpoint", nil, true},
+		{"telemetry not enabled", nil, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t, fakecmd.Spec{}, c.env...)
 			if c.drop {
-				r.d.Environ = filterEnv(r.d.Environ, "OTEL_EXPORTER_OTLP_ENDPOINT")
+				r.telemetryOff(t)
 			}
 			before := append([]string(nil), r.d.Environ...)
 			if code := r.run("fake-nix", "build", "--", "x"); code != 0 {
@@ -664,14 +672,20 @@ func TestSetupFailuresFailOpenSilently(t *testing.T) {
 	}
 }
 
-func TestInvalidEndpointFailsOpenWithRealOtelsetup(t *testing.T) {
-	r := newRig(t, fakecmd.Spec{})
+// An unusable spool directory (here: beneath a regular file) never changes
+// what CMD does and never prints anything.
+func TestUnusableSpoolDirIsSilentWithRealOtelsetup(t *testing.T) {
+	r := newRig(t, fakecmd.Spec{Fixture: golden("local-build.jsonl"), Exit: 5})
 	r.d.NewTelemetry = DefaultDeps("x").NewTelemetry
-	if code := r.run("--otlp-endpoint", "gopher://nope", "fake-nix"); code != 0 {
-		t.Fatalf("code = %d", code)
+	blocker := filepath.Join(r.home, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if len(r.execs) != 1 || r.stderr.Len() != 0 {
-		t.Errorf("execs=%d stderr=%q", len(r.execs), r.stderr)
+	if code := r.run("--otel-spool-dir", filepath.Join(blocker, "spool"), "fake-nix"); code != 5 {
+		t.Fatalf("code = %d, want CMD's own", code)
+	}
+	if r.stderr.Len() != 0 {
+		t.Errorf("wrapper stderr = %q", r.stderr)
 	}
 }
 
@@ -685,7 +699,7 @@ func TestDebugModeExplainsFailOpen(t *testing.T) {
 
 func TestGarbageTomlFailsOpen(t *testing.T) {
 	r := newRig(t, fakecmd.Spec{})
-	r.d.Environ = filterEnv(r.d.Environ, "OTEL_EXPORTER_OTLP_ENDPOINT")
+	r.telemetryOff(t)
 	if err := os.MkdirAll(filepath.Join(r.home, ".config", "pn"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -698,18 +712,18 @@ func TestGarbageTomlFailsOpen(t *testing.T) {
 	}
 }
 
-func TestTomlEndpointIsUsedWithInjectedHome(t *testing.T) {
+func TestTomlSpoolDirIsUsedWithInjectedHome(t *testing.T) {
 	r := newRig(t, fakecmd.Spec{})
-	r.d.Environ = filterEnv(r.d.Environ, "OTEL_EXPORTER_OTLP_ENDPOINT")
+	r.telemetryOff(t)
 	if err := os.MkdirAll(filepath.Join(r.home, ".config", "pn"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(r.home, ".config", "pn", "telemetry.toml"), []byte(`endpoint = "http://127.0.0.1:4999"`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(r.home, ".config", "pn", "telemetry.toml"), []byte("enabled = true\nspool_dir = \""+filepath.Join(r.home, "toml-spool")+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r.run("fake-nix")
-	if r.mem.cfg.Endpoint != "http://127.0.0.1:4999" {
-		t.Errorf("endpoint = %q", r.mem.cfg.Endpoint)
+	if want := filepath.Join(r.home, "toml-spool"); r.mem.cfg.SpoolDir != want {
+		t.Errorf("spool dir = %q, want %q", r.mem.cfg.SpoolDir, want)
 	}
 }
 
@@ -719,7 +733,7 @@ func TestRootModeNeverUsesAUserDirectory(t *testing.T) {
 	r.d.RootLogDir = filepath.Join(t.TempDir(), "var-log-stand-in")
 	userDir := filepath.Join(r.home, "chosen-by-user")
 	// Env is ignored for root; flags are not, but --log-dir must be.
-	code := r.run("--otlp-endpoint", "http://127.0.0.1:4318", "--log-dir", userDir, "fake-nix")
+	code := r.run("--otel-spool-dir", "/ignored", "--log-dir", userDir, "fake-nix")
 	if code != 0 {
 		t.Fatalf("code = %d", code)
 	}
@@ -742,7 +756,7 @@ func TestRootModeNeverUsesAUserDirectory(t *testing.T) {
 	}
 }
 
-func TestRootModeIgnoresEnvEndpointAndTraceparent(t *testing.T) {
+func TestRootModeIgnoresEnvAndTraceparentWithoutTheSpoolFlag(t *testing.T) {
 	r := newRig(t, fakecmd.Spec{}, "TRACEPARENT=00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
 	r.d.Euid = 0
 	r.d.RootLogDir = filepath.Join(t.TempDir(), "x")
@@ -750,7 +764,7 @@ func TestRootModeIgnoresEnvEndpointAndTraceparent(t *testing.T) {
 		t.Fatalf("code = %d", code)
 	}
 	if r.mem.calls != 0 {
-		t.Error("root must not resolve an endpoint from env")
+		t.Error("root must not enable telemetry from env or the user file")
 	}
 	if len(r.execs) != 1 {
 		t.Errorf("execs = %d", len(r.execs))
@@ -870,40 +884,102 @@ func TestUsageErrors(t *testing.T) {
 }
 
 func TestCheck(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-	dial := DefaultDeps("x").Dial
-
-	t.Run("healthy", func(t *testing.T) {
+	t.Run("healthy, empty spool", func(t *testing.T) {
 		c := newCheckRig(t, "nix", "darwin-rebuild")
 		r := c.rig
-		r.setEnv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
-		r.d.Dial = dial
 		if code := r.run("--check"); code != 0 {
 			t.Fatalf("code = %d\n%s", code, r.stdout)
 		}
 		out := r.stdout.String()
-		for _, want := range []string{"endpoint: " + srv.URL + " (from env)", "reachable: yes", "log-dir: " + r.logDir, "writable: yes"} {
+		for _, want := range []string{"spool-dir: " + r.spool + " (from default) (writable: yes)\nspool-pending: 0 files\n", "log-dir: " + r.logDir, "writable: yes"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("missing %q in\n%s", want, out)
 			}
 		}
+		if strings.Contains(out, "reachable") || strings.Contains(out, "endpoint") {
+			t.Errorf("endpoint lines must be gone:\n%s", out)
+		}
 	})
-	t.Run("unreachable", func(t *testing.T) {
-		l, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-		addr := l.Addr().String()
-		_ = l.Close()
-		r := newRig(t, fakecmd.Spec{})
-		r.setEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://"+addr)
-		r.d.Dial = dial
-		if code := r.run("--check"); code != 1 || !strings.Contains(r.stdout.String(), "reachable: no") {
+	t.Run("with backlog", func(t *testing.T) {
+		c := newCheckRig(t, "nix", "darwin-rebuild")
+		r := c.rig
+		now := time.Now()
+		r.d.Now = func() time.Time { return now }
+		for sig, ages := range map[string][]time.Duration{"traces": {5 * time.Minute, 2 * time.Hour}, "metrics": {time.Minute}} {
+			dir := filepath.Join(r.spool, sig)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for i, age := range ages {
+				p := filepath.Join(dir, fmt.Sprintf("run-%d.jsonl", i))
+				if err := os.WriteFile(p, []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(p, now.Add(-age), now.Add(-age)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Not run files: a scratch file and a non-jsonl name.
+			for _, n := range []string{".x.jsonl.tmp", "notes.txt"} {
+				if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if code := r.run("--check"); code != 0 {
+			t.Fatalf("a backlog is information, not a failure: code = %d\n%s", code, r.stdout)
+		}
+		if want := "spool-pending: 3 files, oldest 2h0m0s\n"; !strings.Contains(r.stdout.String(), want) {
+			t.Errorf("missing %q in\n%s", want, r.stdout)
+		}
+	})
+	t.Run("unwritable spool dir", func(t *testing.T) {
+		c := newCheckRig(t, "nix", "darwin-rebuild")
+		r := c.rig
+		if err := os.MkdirAll(r.state, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(r.spool, []byte("x"), 0o600); err != nil { // a file where the directory belongs
+			t.Fatal(err)
+		}
+		code := r.run("--check")
+		if code != 1 || !strings.Contains(r.stdout.String(), "spool-dir: "+r.spool+" (from default) (writable: no: ") || strings.Contains(r.stdout.String(), "spool-pending") {
+			t.Errorf("code=%d out=%s", code, r.stdout)
+		}
+		if !strings.Contains(r.stdout.String(), "status: telemetry=fail") {
+			t.Errorf("status line:\n%s", r.stdout)
+		}
+	})
+	t.Run("read-only spool dir", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory modes")
+		}
+		r := newCheckRig(t, "nix", "darwin-rebuild").rig
+		if err := os.MkdirAll(r.state, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(r.spool, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(r.spool, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(r.spool, 0o700) })
+		if code := r.run("--check"); code != 1 || !strings.Contains(r.stdout.String(), "(writable: no: ") {
 			t.Errorf("code=%d out=%s", code, r.stdout)
 		}
 	})
-	t.Run("no endpoint", func(t *testing.T) {
+	t.Run("flag names the directory", func(t *testing.T) {
+		r := newCheckRig(t, "nix", "darwin-rebuild").rig
+		dir := filepath.Join(r.home, "flagged")
+		if code := r.run("--check", "--otel-spool-dir", dir); code != 0 || !strings.Contains(r.stdout.String(), "spool-dir: "+dir+" (from flag) (writable: yes)") {
+			t.Errorf("code=%d out=%s", code, r.stdout)
+		}
+	})
+	t.Run("not enabled", func(t *testing.T) {
 		r := newRig(t, fakecmd.Spec{})
-		r.d.Environ = filterEnv(r.d.Environ, "OTEL_EXPORTER_OTLP_ENDPOINT")
-		if code := r.run("--check"); code != 1 || !strings.Contains(r.stdout.String(), "none resolved") {
+		r.telemetryOff(t)
+		if code := r.run("--check"); code != 1 || !strings.Contains(r.stdout.String(), "telemetry: disabled (telemetry is not enabled") {
 			t.Errorf("code=%d out=%s", code, r.stdout)
 		}
 	})
@@ -913,7 +989,7 @@ func TestCheck(t *testing.T) {
 			t.Errorf("code=%d out=%s", code, r.stdout)
 		}
 	})
-	t.Run("unwritable dir", func(t *testing.T) {
+	t.Run("unwritable log dir", func(t *testing.T) {
 		r := newRig(t, fakecmd.Spec{})
 		if err := os.WriteFile(r.state, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -924,15 +1000,17 @@ func TestCheck(t *testing.T) {
 	})
 }
 
-func TestDeadCollectorNeverChangesExitCodeOrStderrAndIsBounded(t *testing.T) {
-	l, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	addr := l.Addr().String()
-	_ = l.Close() // nothing listens: connection refused
+func TestFullSpoolDiskNeverChangesExitCodeOrStderrAndIsBounded(t *testing.T) {
 	r := newRig(t, fakecmd.Spec{Fixture: golden("local-build.jsonl"), Exit: 7, Stderr: "child-says-hi\n"})
 	r.d.NewTelemetry = DefaultDeps("x").NewTelemetry
 	r.d.FlushTimeout = 400 * time.Millisecond
+	// The spool directory path is a regular file: every write fails.
+	bad := filepath.Join(r.home, "not-a-dir")
+	if err := os.WriteFile(bad, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	started := time.Now()
-	code := r.run("--otlp-endpoint", "http://"+addr, "fake-nix")
+	code := r.run("--otel-spool-dir", bad, "fake-nix")
 	if code != 7 {
 		t.Errorf("exit = %d, want 7", code)
 	}
@@ -940,7 +1018,7 @@ func TestDeadCollectorNeverChangesExitCodeOrStderrAndIsBounded(t *testing.T) {
 		t.Errorf("wrapper stderr=%q child stderr=%q", r.stderr, r.childErr)
 	}
 	if d := time.Since(started); d > 10*time.Second {
-		t.Errorf("a dead collector blocked the command for %v", d)
+		t.Errorf("a broken spool blocked the command for %v", d)
 	}
 }
 
@@ -967,11 +1045,11 @@ func (r *rig) writeUserToml(t *testing.T, body string) {
 	}
 }
 
-// telemetry.toml `enabled = false` is the per-system off switch: even with an
-// endpoint in the environment the wrapper execs CMD untouched and silently.
+// telemetry.toml `enabled = false` is the per-system off switch: even with a
+// spool_dir configured the wrapper execs CMD untouched and silently.
 func TestTomlEnabledFalseFailsOpenSilently(t *testing.T) {
-	r := newRig(t, fakecmd.Spec{}) // rig sets OTEL_EXPORTER_OTLP_ENDPOINT
-	r.writeUserToml(t, "enabled = false\nendpoint = \"http://127.0.0.1:4999\"\n")
+	r := newRig(t, fakecmd.Spec{})
+	r.writeUserToml(t, "enabled = false\nspool_dir = \""+r.spool+"\"\n")
 	before := append([]string(nil), r.d.Environ...)
 	if code := r.run("fake-nix", "build"); code != 0 {
 		t.Fatalf("code = %d", code)
@@ -987,14 +1065,15 @@ func TestTomlEnabledFalseFailsOpenSilently(t *testing.T) {
 	}
 }
 
-// pn passes the endpoint it resolved as --otlp-endpoint; that explicit flag
-// wins over the file's enabled = false (pn only passes it when it decided on).
+// pn passes the spool directory it resolved as --otel-spool-dir; that explicit
+// flag wins over the file's enabled = false (pn only passes it when it decided
+// on).
 func TestTomlEnabledFalseDoesNotBlockExplicitFlag(t *testing.T) {
 	r := newRig(t, fakecmd.Spec{})
 	r.writeUserToml(t, "enabled = false\n")
-	r.run("--otlp-endpoint", "http://127.0.0.1:4777", "fake-nix")
-	if r.mem.cfg.Endpoint != "http://127.0.0.1:4777" {
-		t.Errorf("endpoint = %q", r.mem.cfg.Endpoint)
+	r.run("--otel-spool-dir", "/flagged/spool", "fake-nix")
+	if r.mem.cfg.SpoolDir != "/flagged/spool" {
+		t.Errorf("spool dir = %q", r.mem.cfg.SpoolDir)
 	}
 }
 

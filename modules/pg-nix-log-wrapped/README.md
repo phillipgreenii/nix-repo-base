@@ -1,14 +1,14 @@
 # pg-nix-log-wrapped
 
 Runs a nix command (`nix`, `darwin-rebuild`, ...) **unchanged** and turns nix's `--json-log-path`
-activity stream into OpenTelemetry spans and metrics. With no OTLP endpoint resolved it does
-nothing at all: it `exec`s the command. Design and decisions:
+activity stream into OpenTelemetry spans and metrics, written as files into a spool directory the
+collector reads. With telemetry not enabled it does nothing at all: it `exec`s the command. Design and decisions:
 [ADR 0030](../../docs/adr/0030-pg-nix-log-wrapped.md); the facts it rests on:
 [ADR 0028](../../docs/adr/0028-pn-nix-telemetry.md).
 
 ```text
-pg-nix-log-wrapped [--traceparent TP] [--otlp-endpoint URL] [--log-dir DIR] [--] CMD ARGS...
-pg-nix-log-wrapped --check [--otlp-endpoint URL] [--log-dir DIR]
+pg-nix-log-wrapped [--traceparent TP] [--otel-spool-dir DIR] [--log-dir DIR] [--] CMD ARGS...
+pg-nix-log-wrapped --check [--otel-spool-dir DIR] [--log-dir DIR]
 ```
 
 Wrapper flags stop at the first `--` or the first non-flag argument; everything after is CMD's.
@@ -94,37 +94,52 @@ from the line's byte suffix, so progress of every other activity (downloads emit
 still never decoded. Aggregate activities are summed when they are siblings; one nested under another
 aggregate activity is ignored, so only the outer one counts.
 
-## Endpoint and configuration
+## Spool directory and configuration
 
-For a **non-root** wrapper, in order: `--otlp-endpoint`; then `enabled = false` in
-`~/.config/pn/telemetry.toml` (off, even if an endpoint is set elsewhere); then
-`OTEL_EXPORTER_OTLP_ENDPOINT`; then `endpoint` in the file:
+The wrapper writes one file per flush (atomic rename, never a partial line) under
+`<spool>/traces/` and `<spool>/metrics/`; the collector reads and deletes them whenever it is up,
+so a slow or restarting collector never delays a run.
+
+For a **non-root** wrapper the spool directory is, in order: `--otel-spool-dir`; then `spool_dir`
+in `~/.config/pn/telemetry.toml`; then `$XDG_STATE_HOME/otel-spool` (else
+`~/.local/state/otel-spool`, absolute paths only). Telemetry is on when the flag is given (an
+explicit flag beats `enabled = false`) or the file says `enabled = true`; otherwise it is off:
 
 ```toml
 enabled = true
-endpoint = "http://127.0.0.1:4318"
+spool_dir = "/Users/me/.local/state/otel-spool" # optional
 ```
 
-`enabled` is the per-system runtime switch (absent means "on iff an endpoint resolves"; ADR 0028,
-"Amendment 2026-10-08"). The wrapper is installed on every system; this file decides whether it
-emits. `PG_NIX_LOG_DISABLE=1` and `OTEL_SDK_DISABLED=true` still force it off first.
+`enabled` is the per-system runtime switch (absent means off). The wrapper is installed on every
+system; this file decides whether it emits. `OTEL_EXPORTER_OTLP_ENDPOINT` and an `endpoint` key no
+longer enable anything. `PG_NIX_LOG_DISABLE=1` and `OTEL_SDK_DISABLED=true` still force it off
+first. Files are mode 0600 in 0700 directories.
 
-OTLP over HTTP only. `--traceparent` falls back to `TRACEPARENT` the same way. A **root** wrapper
-(under `sudo`, which drops the environment) reads **flags only**, never a user file, and always
-logs to `/var/log/pg-nix-log-wrapped`.
+`--otlp-endpoint` is deprecated: a wrapper that receives it prints one notice to stderr and
+otherwise ignores it.
+
+`--traceparent` falls back to `TRACEPARENT`. A **root** wrapper (under `sudo`, which drops the
+environment) reads **no env and no user file**. Its telemetry is on when `--otel-spool-dir` is
+present (the VALUE is ignored) or the shim's root configuration still carries the old
+`rootEndpoint`. It always writes to its own spool `/var/log/pg-nix-log-wrapped-spool`, a sibling
+of its private log directory (which stays 0750 so raw nix logs stay private): root-owned, mode
+0755, files 0644, so the user-run collector can read it. The wrapper creates it without following
+symlinks and verifies ownership before every write; an existing symlink or a directory not owned
+by root makes the root wrapper fail open, silently. The root wrapper sweeps that spool at each
+root run (24 hours, 200 MiB). It always logs to `/var/log/pg-nix-log-wrapped`.
 
 ## Escape hatches
 
-| Control                                 | Effect                                                                                         |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `PG_NIX_LOG_DISABLE=1`                  | exec CMD unmodified                                                                            |
-| `OTEL_SDK_DISABLED=true`                | exec CMD unmodified                                                                            |
-| no endpoint resolved                    | exec CMD unmodified                                                                            |
-| `PG_NIX_LOG_DEBUG=1`                    | print why the wrapper failed open (and OTel export errors) to stderr                           |
-| `PG_NIX_LOG_FLUSH_TIMEOUT=2s`           | bound on the end-of-run export; a dead collector never costs more                              |
-| `--check`                               | print endpoint, reachability, log-dir writability and the shim state; exit 0 only when healthy |
-| `--min-substitute-span=250ms`           | shortest substitution that still gets a span (they are always counted)                         |
-| `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` | turn the unmatched `--override-input` guard off (below)                                        |
+| Control                                 | Effect                                                                                                  |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `PG_NIX_LOG_DISABLE=1`                  | exec CMD unmodified                                                                                     |
+| `OTEL_SDK_DISABLED=true`                | exec CMD unmodified                                                                                     |
+| telemetry not enabled                   | exec CMD unmodified                                                                                     |
+| `PG_NIX_LOG_DEBUG=1`                    | print why the wrapper failed open (and spool write errors) to stderr                                    |
+| `PG_NIX_LOG_FLUSH_TIMEOUT=2s`           | bound on the end-of-run export; a stuck spool never costs more                                          |
+| `--check`                               | print spool dir, writability, backlog, log-dir writability and the shim state; exit 0 only when healthy |
+| `--min-substitute-span=250ms`           | shortest substitution that still gets a span (they are always counted)                                  |
+| `PG_NIX_LOG_ALLOW_UNMATCHED_OVERRIDE=1` | turn the unmatched `--override-input` guard off (below)                                                 |
 
 ## Shim mode (pg-nix-shim)
 
@@ -214,7 +229,9 @@ for it.
 
 ### Measured cost
 
-One-off measurement, not a regression guard. Date 2026-11-05; Apple M3 Pro (11 cores, arm64
+One-off measurement, not a regression guard. Date 2026-11-05, taken when the export was OTLP over
+HTTP (the "collector" columns below are that transport; the harness now measures a writable spool
+versus an unwritable one); Apple M3 Pro (11 cores, arm64
 darwin), host load average about 16 during the run (a busy workstation, so the p95 values are
 noisy). The built `pg-nix-shim` package on a temporary `PATH`, nothing applied. Each case runs 100
 interleaved pairs: the real `nix` by absolute path, then the same command through the shim's
@@ -246,7 +263,7 @@ own evaluation, which is the same on both sides). Harness:
 
 ## Guarantees
 
-- **Fail open.** Any setup failure (unwritable log directory, bad endpoint, exporter error, garbage
+- **Fail open.** Any setup failure (unwritable log directory, unwritable spool, exporter error, garbage
   config) runs CMD exactly as if the wrapper were absent, with **empty wrapper stderr**; CMD's
   stdout and stderr are inherited and never copied.
 - **Exit status.** CMD's exit code, or `128+n` when it dies of signal `n` (137 for SIGKILL). A missing
@@ -260,7 +277,9 @@ own evaluation, which is the same on both sides). Harness:
   (143 for SIGTERM, 130 for SIGINT) and `error.type=signal`, all inside the flush budget. This is the
   only record of which derivations were running in a killed run (pinned by
   `TestSignalledRunExportsAbortedBuildSpans`).
-- **No blocking.** Export is asynchronous with a 16384-span queue; a dead collector drops data.
+- **No blocking.** Export is asynchronous with a 16384-span queue and writes files, so a stopped
+  collector never waits on the wrapper; a spool that cannot be written drops data silently (only
+  `PG_NIX_LOG_DEBUG=1` prints the error).
 
 ## Unmatched `--override-input` guard
 
@@ -280,7 +299,7 @@ tty behaviour is unchanged) and, when CMD carries `--override-input` before any 
   text (naming the override) and a hint to stderr and exits **3** (`app.ExitUnmatchedOverride`);
 - a run that fails on its own keeps CMD's exit code; a run with a valid override, or with no
   `--override-input` at all, is untouched, so existing callers see no exit-code change;
-- the guard works with telemetry off too: a run carrying `--override-input` with no endpoint (or a
+- the guard works with telemetry off too: a run carrying `--override-input` with telemetry not enabled (or a
   failed telemetry setup) is observed without export instead of `exec`'d. Runs without the flag keep
   the plain `exec` fail-open, and `PG_NIX_LOG_DISABLE=1` / `OTEL_SDK_DISABLED=true` stay pure
   passthrough, guard included;
@@ -327,16 +346,13 @@ names the retained `.jsonl`, never the scratch file.
   removed.
 - **Spans can be fewer than log files.** A log file exists once CMD has started (setup failures
   remove it), but the run's spans and metrics leave in one bounded end-of-run flush
-  (`PG_NIX_LOG_FLUSH_TIMEOUT`, 2 s). The wrapper asks the exporters for a short retry (first wait
-  100 ms, total bounded by the flush budget), so one transient refusal (for example the collector's
-  memory limiter answering 503) is retried inside the budget. A refusal that outlasts the budget
-  still drops the whole batch, including `nix.invocation` and, after a signal, every aborted
-  `nix.build` span, and the exit code is unaffected and the wrapper still exits inside the budget; the
-  retained log is then the only record of the run. `PG_NIX_LOG_DEBUG=1` prints the export error.
-  What is retried: a refused (503) `/v1/traces` POST, repeatedly, from a 100 ms first wait until the
-  flush budget ends. What is dropped: the trace batch of the run, whole, once the budget ends (the
-  exporter keeps no spool and nothing is re-sent by a later run). Pinned by
-  `TestTransient503OnTracesIsRetriedInsideTheFlushBudget` and `TestCollector503OnASignalledRun`.
+  (`PG_NIX_LOG_FLUSH_TIMEOUT`, 2 s) that writes spool files. A write that fails (full disk, a
+  spool path that is not a directory, a foreign-owned root spool) drops that batch, including
+  `nix.invocation` and, after a signal, every aborted `nix.build` span; the exit code is
+  unaffected and the wrapper still exits inside the budget; the retained log is then the only
+  record of the run. `PG_NIX_LOG_DEBUG=1` prints the write error, and `--check` reports an
+  unwritable spool and any backlog the collector has not picked up. Pinned by
+  `TestUnwritableSpoolOnASignalledRun`.
 
 Root-run logs in `/var/log/pg-nix-log-wrapped` (directory 0750, files 0600, owned by root) are read
 with `sudo`. Membership of the `admin` group is not enough on its own: the directory's group is
@@ -375,7 +391,7 @@ rejects `| select(span:startTime, span:duration)`: the span already carries `sta
 | ------------------------ | -------------------------------------------------------------- |
 | `cmd/pg-nix-log-wrapped` | `main`, plus the process-level tests                           |
 | `internal/app`           | control flow: fail-open decision, spawn, signals, W-9 ordering |
-| `internal/config`        | flags and endpoint / traceparent precedence                    |
+| `internal/config`        | flags and spool directory / traceparent precedence             |
 | `internal/logdir`        | directory choice, safe file creation, retention sweep          |
 | `internal/retain`        | filtered retained log: live handler and offline finalize       |
 | `internal/resolve`       | PATH lookup that skips the wrapper itself                      |

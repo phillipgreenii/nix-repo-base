@@ -107,6 +107,40 @@ func Prepare(dir string, euid int) error {
 	return nil
 }
 
+// RootSpoolMode is the mode of the root spool directory: the user-run
+// collector must traverse and read it, unlike the private root log directory.
+const RootSpoolMode os.FileMode = 0o755
+
+// PrepareRootSpool creates the root spool directory if needed and verifies it
+// is a real (non-symlink) directory owned by uid 0 and not group- or
+// world-writable, then makes it RootSpoolMode (the umask may have narrowed it).
+// owner reports the uid owning a file; it is a seam so tests need no real
+// chown. Any failure means the caller must fail open.
+func PrepareRootSpool(dir string, owner func(os.FileInfo) (int, bool)) error {
+	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+		if err := os.Mkdir(dir, RootSpoolMode); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("%s is not a plain directory", dir)
+	}
+	if uid, ok := owner(fi); !ok || uid != 0 {
+		return fmt.Errorf("%s is not owned by uid 0", dir)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is group- or world-writable", dir)
+	}
+	if fi.Mode().Perm() != RootSpoolMode {
+		return os.Chmod(dir, RootSpoolMode)
+	}
+	return nil
+}
+
 // Files is the pair of files one run owns.
 type Files struct {
 	// Raw is the scratch file nix writes through json-log-path (read and

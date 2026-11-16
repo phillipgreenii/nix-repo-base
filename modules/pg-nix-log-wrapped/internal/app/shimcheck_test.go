@@ -10,7 +10,7 @@ import (
 )
 
 // checkRig is a rig whose PATH holds, in order, a shim directory and a real
-// directory, built from fixture symlinks. Dial succeeds, the root
+// directory, built from fixture symlinks. Telemetry is enabled, the root
 // configuration path is an absent temp path unless a test sets one.
 type checkRig struct {
 	*rig
@@ -38,7 +38,6 @@ func newCheckRig(t *testing.T, shims ...string) *checkRig {
 		}
 	}
 	r.setEnv("PATH", c.shimDir+":"+c.realDir)
-	r.setEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
 	r.d.RootConfigPath = filepath.Join(dir, "absent.json")
 	return c
 }
@@ -79,7 +78,7 @@ func TestCheckShimBothShims(t *testing.T) {
 		"shim: root-run: would pass through (no root configuration)",
 		"status: telemetry=ok shim=ok\n")
 	// The telemetry lines are unchanged and come first.
-	if !strings.HasPrefix(out, "endpoint: http://127.0.0.1:4318 (from env)\nreachable: yes\nlog-dir: "+c.logDir+" (writable: yes)\nshim: nix:") {
+	if !strings.HasPrefix(out, "spool-dir: "+c.spool+" (from default) (writable: yes)\nspool-pending: 0 files\nlog-dir: "+c.logDir+" (writable: yes)\nshim: nix:") {
 		t.Errorf("existing lines changed or reordered:\n%s", out)
 	}
 }
@@ -185,7 +184,7 @@ func TestCheckShimRootConfigWithoutEndpoint(t *testing.T) {
 func TestCheckShimAllowlistAdditions(t *testing.T) {
 	t.Run("shim.toml and env add, never-wrapped ignored", func(t *testing.T) {
 		c := newCheckRig(t, "nix", "darwin-rebuild")
-		c.writeUserToml(t, "")
+		c.writeUserToml(t, "enabled = true\n")
 		mustWrite(t, filepath.Join(c.home, ".config", "pn", "shim.toml"), `verbs = ["run", "develop"]`)
 		c.setEnv("PG_NIX_SHIM_VERBS", "eval, bogus")
 		_, out := c.check(t)

@@ -17,8 +17,9 @@ description: >-
 
 `pg-nix-log-wrapped` is a **Proxy** at process level in front of `nix` / `darwin-rebuild`. It runs
 the command **unchanged** (inherited stdio, same exit code), tails nix's `--json-log-path` activity
-stream, and exports it as OpenTelemetry spans and metrics to the local collector. It is built to
-**fail open**: any setup problem, or no endpoint resolved, and it just `exec`s the command, with
+stream, and writes it as OpenTelemetry spans and metrics into a spool directory the local collector
+reads. It is built to
+**fail open**: any setup problem, or telemetry not enabled, and it just `exec`s the command, with
 nothing extra on stderr.
 
 ## The PATH shim: no prefix needed
@@ -64,8 +65,8 @@ pg-nix-log-wrapped -- darwin-rebuild build --flake .
 Synopsis (from `--help`):
 
 ```text
-pg-nix-log-wrapped [--traceparent TP] [--otlp-endpoint URL] [--log-dir DIR] [--] CMD ARGS...
-pg-nix-log-wrapped --check [--otlp-endpoint URL] [--log-dir DIR]
+pg-nix-log-wrapped [--traceparent TP] [--otel-spool-dir DIR] [--log-dir DIR] [--] CMD ARGS...
+pg-nix-log-wrapped --check [--otel-spool-dir DIR] [--log-dir DIR]
 ```
 
 - Agents SHOULD put `--` before CMD. Wrapper flags stop at the first `--` or the first non-flag
@@ -78,10 +79,12 @@ pg-nix-log-wrapped --check [--otlp-endpoint URL] [--log-dir DIR]
   of signal `n`).
 - Timeouts still apply. The wrapper does not make a nix run shorter. A long run MUST still use the
   caller's explicit timeout or `run_in_background`; the wrapper only records it.
-- Where the endpoint comes from (non-root): `--otlp-endpoint`; then `enabled = false` in
-  `~/.config/pn/telemetry.toml` (off, even if an endpoint is set below); then
-  `OTEL_EXPORTER_OTLP_ENDPOINT`; then `endpoint` in that file. Agents SHOULD NOT pass
-  `--otlp-endpoint` by hand in the normal case; the home-manager `phillipgreenii.pn.telemetry`
+- Where the spool directory comes from (non-root): `--otel-spool-dir`; then `spool_dir` in
+  `~/.config/pn/telemetry.toml`; then `$XDG_STATE_HOME/otel-spool` (else
+  `~/.local/state/otel-spool`). Telemetry is on when the flag is given or that file says
+  `enabled = true`; `OTEL_EXPORTER_OTLP_ENDPOINT` and an `endpoint` key no longer enable anything,
+  and `--otlp-endpoint` is a deprecated no-op that prints one notice. Agents SHOULD NOT pass
+  `--otel-spool-dir` by hand in the normal case; the home-manager `phillipgreenii.pn.telemetry`
   option renders that file on every system.
 - Joining an existing trace: the wrapper reads `--traceparent`, else `TRACEPARENT`. A malformed
   value starts a fresh root trace.
@@ -94,7 +97,7 @@ telemetry on or off. It can still be absent on a machine that has not yet applie
 
 - The agent MUST run nix directly, MUST say once in its report or message that the wrapper was
   absent (not once per command), and MUST NOT block, retry, or try to install it.
-- A present wrapper with **no endpoint**, or on a system whose `telemetry.toml` says
+- A present wrapper with telemetry **not enabled**, or on a system whose `telemetry.toml` says
   `enabled = false`, also does nothing (it execs CMD). That case is not an error either; use
   `--check` to see why.
 
@@ -105,50 +108,55 @@ telemetry on or off. It can still be absent on a machine that has not yet applie
   run you start by hand.
 - Agents MUST NOT use `sudo` (global rule), and `darwin-rebuild switch` is operator-only. This
   section is for the operator or for `pn`, which handles it.
-- `sudo` drops the environment. A root wrapper therefore reads **flags only**: no
-  `OTEL_EXPORTER_OTLP_ENDPOINT`, no `TRACEPARENT`, never `~/.config/pn/telemetry.toml`. Without an
-  explicit `--otlp-endpoint URL` a root run is a plain passthrough.
+- `sudo` drops the environment. A root wrapper therefore reads **flags only**: no `TRACEPARENT`,
+  never `~/.config/pn/telemetry.toml`. Without `--otel-spool-dir` (or the shim's legacy
+  `rootEndpoint` key) a root run is a plain passthrough. With it, the flag's VALUE is ignored: root
+  always writes to its own spool `/var/log/pg-nix-log-wrapped-spool` (a sibling of the private log
+  directory, root-owned 0755, files 0644, so the user-run collector can read it; a symlink or a
+  directory not owned by root there makes root fail open silently).
 - A root wrapper ignores `--log-dir` and always logs to `/var/log/pg-nix-log-wrapped` (a
   root-owned, non-symlink directory, mode 0750; otherwise it fails open).
 - Use the wrapper's absolute path under `sudo` rather than relying on `PATH` (this machine keeps
   the user `PATH` under `sudo`; others may not), or let `pn` do it. `pn` rewrites
-  `sudo darwin-rebuild ...` into `sudo <resolved wrapper> --otlp-endpoint URL -- darwin-rebuild ...`.
+  `sudo darwin-rebuild ...` into `sudo <resolved wrapper> --otel-spool-dir DIR -- darwin-rebuild ...`.
 
 ## Escape hatches
 
-| Control                       | Effect                                                                      |
-| ----------------------------- | --------------------------------------------------------------------------- |
-| `PG_NIX_LOG_DISABLE=1`        | exec CMD unmodified (`true` also works)                                     |
-| `OTEL_SDK_DISABLED=true`      | exec CMD unmodified                                                         |
-| no endpoint resolved          | exec CMD unmodified                                                         |
-| `PG_NIX_LOG_DEBUG=1`          | print why the wrapper failed open (and OTel export errors) to stderr        |
-| `PG_NIX_LOG_FLUSH_TIMEOUT=2s` | bound on the end-of-run export; a dead collector never costs more           |
-| `--check`                     | print endpoint, reachability, log-dir writability; exit 0 only when healthy |
-| `--min-substitute-span=250ms` | shortest substitution that still gets a span (they are always counted)      |
-| `--help`, `-h`                | print usage, exit 0                                                         |
+| Control                       | Effect                                                                               |
+| ----------------------------- | ------------------------------------------------------------------------------------ |
+| `PG_NIX_LOG_DISABLE=1`        | exec CMD unmodified (`true` also works)                                              |
+| `OTEL_SDK_DISABLED=true`      | exec CMD unmodified                                                                  |
+| telemetry not enabled         | exec CMD unmodified                                                                  |
+| `PG_NIX_LOG_DEBUG=1`          | print why the wrapper failed open (and spool write errors) to stderr                 |
+| `PG_NIX_LOG_FLUSH_TIMEOUT=2s` | bound on the end-of-run export; a stuck spool never costs more                       |
+| `--check`                     | print spool dir, writability, backlog, log-dir writability; exit 0 only when healthy |
+| `--min-substitute-span=250ms` | shortest substitution that still gets a span (they are always counted)               |
+| `--help`, `-h`                | print usage, exit 0                                                                  |
 
 - Agents MAY set `PG_NIX_LOG_DISABLE=1` when the wrapper itself is the suspect (a run that behaves
   differently with it than without it). That is a bug in the wrapper: report it, do not leave it
   disabled silently.
-- A **dead collector never breaks a run**: export is asynchronous (16384-span queue), the final
-  flush is bounded, and data is dropped rather than blocking.
+- A **stopped collector never breaks a run**: the wrapper only writes files, the final flush is
+  bounded, and data is dropped rather than blocking.
 
 ## `--check`
 
 ```text
 $ pg-nix-log-wrapped --check
-endpoint: http://127.0.0.1:4318 (from file)
-reachable: yes
+spool-dir: /Users/phillipg/.local/state/otel-spool (from default) (writable: yes)
+spool-pending: 0 files
 log-dir: /Users/phillipg/.local/state/pn/nix-logs (writable: yes)
 ```
 
 - Exit 0 only when telemetry would actually run. Exit 1 for any of: telemetry disabled by env,
-  no endpoint resolved, endpoint not reachable (a 2-second TCP dial), or log directory not writable.
-- The `(from flag|env|file)` suffix names the source of the endpoint.
+  telemetry not enabled, spool directory not writable, or log directory not writable.
+- The `(from flag|file|default|root)` suffix names the source of the spool directory.
+- `spool-pending: N files, oldest AGE` counts finished files the collector has not yet picked up;
+  a growing backlog is information here (exit stays 0), not a failure.
 - `--check` is the detector for a silent fail-open misconfiguration, because a failed-open run prints
   nothing. Run it when asked "is telemetry working", or after a run that produced no data.
-- Reachability is a TCP probe of the OTLP/HTTP port. It does not prove the collector forwards to
-  Tempo and Prometheus.
+- A writable spool does not prove the collector reads it or forwards to Tempo and Prometheus: a
+  backlog whose oldest file keeps growing older means the collector is not consuming.
 
 ## Where the data goes
 
@@ -165,7 +173,7 @@ oversized logs can push out history younger than 7 days (the retained cap of 64 
 (`nix.log.truncated`). A `.raw` left by a SIGKILLed wrapper is finalized into its `.jsonl` by the next
 sweep. A new file appearing in that directory right after a
 run is the quickest evidence the wrapper observed it. The reverse does not hold: a log file can have
-no span in Tempo, because a collector refusal at the end-of-run flush drops that run's whole batch.
+no span in Tempo, because a spool write failure at the end-of-run flush drops that run's whole batch.
 
 | Signal | Name                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

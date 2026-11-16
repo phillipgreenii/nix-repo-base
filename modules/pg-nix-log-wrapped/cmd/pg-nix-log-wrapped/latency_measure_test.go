@@ -10,8 +10,8 @@ package main
 //	PG_MEASURE_SHIM_DIR=<built pg-nix-shim>/bin \
 //	  go test -tags latency -run TestMeasureShim -v -timeout 30m ./cmd/pg-nix-log-wrapped
 //
-// The collector is a local stub OTLP/HTTP receiver (live) or a closed
-// loopback port (dead). Added latency is the shimmed call minus the real nix
+// The spool is a writable directory (live) or a regular file where the
+// directory belongs (dead). Added latency is the shimmed call minus the real nix
 // called by absolute path, taken as interleaved pairs so machine drift cancels.
 // PG_MEASURE_N paired runs per case (default 100); PG_MEASURE_LOOP runs for
 // the sweep loop (default 300).
@@ -19,9 +19,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,20 +61,18 @@ func TestMeasureShim(t *testing.T) {
 	realDir := filepath.Dir(realNixPath)
 	n, loop := envInt("PG_MEASURE_N", 100), envInt("PG_MEASURE_LOOP", 300)
 
-	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(nil)
-	}))
-	defer live.Close()
-	l, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	deadURL := "http://" + l.Addr().String()
-	_ = l.Close()
-
 	home, state := t.TempDir(), t.TempDir()
+	liveSpool := filepath.Join(t.TempDir(), "spool")
+	deadSpool := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(deadSpool, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	expr := `derivation { name = "pgnlw-measure-noop"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo noop > $out" ]; }`
 	buildArgs := []string{"build", "--impure", "--no-link", "--offline", "--extra-experimental-features", "nix-command flakes", "--expr", expr}
 
-	envFor := func(endpoint string) []string {
-		return append(os.Environ(), "HOME="+home, "XDG_STATE_HOME="+state, "OTEL_EXPORTER_OTLP_ENDPOINT="+endpoint,
+	envFor := func(spoolDir string) []string {
+		writeTelemetryToml(t, home, spoolDir)
+		return append(os.Environ(), "HOME="+home, "XDG_STATE_HOME="+state,
 			"PATH="+shimDir+string(os.PathListSeparator)+realDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 			"PG_NIX_LOG_DISABLE=", "PG_NIX_LOG_ACTIVE=")
 	}
@@ -94,8 +89,8 @@ func TestMeasureShim(t *testing.T) {
 	// bare name against the test process's PATH, not the child's); its own
 	// lookup of the real nix then walks the child's PATH, as in real use.
 	shimNix := filepath.Join(shimDir, "nix")
-	pair := func(label, endpoint string, args ...string) {
-		env := envFor(endpoint)
+	pair := func(label, spoolDir string, args ...string) {
+		env := envFor(spoolDir)
 		run(env, realNixPath, args...) // realise the derivation and warm caches
 		run(env, shimNix, args...)
 		var base, shim, added []time.Duration
@@ -110,20 +105,20 @@ func TestMeasureShim(t *testing.T) {
 		summarize("ADDED (shim - real, paired)", added)
 	}
 	fmt.Printf("pg-nix-shim latency: n=%d pairs per case, %s/%s, shim dir %s\n", n, "darwin", "arm64", shimDir)
-	pair("no-op nix build, live collector (local stub OTLP receiver)", live.URL, buildArgs...)
-	pair("no-op nix build, dead collector (closed loopback port)", deadURL, buildArgs...)
-	pair("nix --version (off the allowlist, one hop)", live.URL, "--version")
+	pair("no-op nix build, live spool (writable directory)", liveSpool, buildArgs...)
+	pair("no-op nix build, dead spool (a file where the directory belongs)", deadSpool, buildArgs...)
+	pair("nix --version (off the allowlist, one hop)", liveSpool, "--version")
 
 	// Sweep cost: a loop of short allowlisted runs against a live stub. The
 	// per-run sweep walks the whole log directory, so compare the first and
 	// last tenth of the loop and report the directory it ends with.
-	env := envFor(live.URL)
+	env := envFor(liveSpool)
 	var all []time.Duration
 	for i := 0; i < loop; i++ {
 		all = append(all, run(env, shimNix, buildArgs...))
 	}
 	tenth := loop / 10
-	fmt.Printf("sweep loop: %d short allowlisted runs, live stub\n", loop)
+	fmt.Printf("sweep loop: %d short allowlisted runs, live spool\n", loop)
 	summarize("first tenth", all[:tenth])
 	summarize("last tenth", all[loop-tenth:])
 	var files int

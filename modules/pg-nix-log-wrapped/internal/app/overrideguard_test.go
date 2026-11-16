@@ -114,7 +114,7 @@ func TestUnmatchedOverrideGuardWorksWithTelemetryOff(t *testing.T) {
 		t.Run(off, func(t *testing.T) {
 			r := newRig(t, fakecmd.Spec{Lines: unmatchedWarnings})
 			if off == "no endpoint" {
-				r.d.Environ = filterEnv(r.d.Environ, "OTEL_EXPORTER_OTLP_ENDPOINT")
+				r.telemetryOff(t)
 			} else {
 				r.mem.fail = errors.New("boom")
 			}
@@ -134,7 +134,7 @@ func TestUnmatchedOverrideGuardWorksWithTelemetryOff(t *testing.T) {
 
 func TestTelemetryOffPassthroughIsUnchangedWithoutOverrideInput(t *testing.T) {
 	r := newRig(t, fakecmd.Spec{Lines: unmatchedWarnings})
-	r.d.Environ = filterEnv(r.d.Environ, "OTEL_EXPORTER_OTLP_ENDPOINT")
+	r.telemetryOff(t)
 	if code := r.run("fake-nix", "eval", "."); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
