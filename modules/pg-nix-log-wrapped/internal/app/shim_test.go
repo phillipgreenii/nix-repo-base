@@ -320,10 +320,10 @@ func TestNeverWrappedVerbsAreIgnoredInEverySource(t *testing.T) {
 	}
 }
 
-func decide(r *rig, tool string, args ...string) (endpoint, why string) {
+func decide(r *rig, tool string, args ...string) (rootSpool bool, why string) {
 	rr := &runner{Deps: r.d, getenv: envLookup(r.d.Environ)}
 	opts, why := rr.shimDecide(tool, append([]string{tool}, args...))
-	return opts.OTLPEndpoint, why
+	return opts.RootSpool, why
 }
 
 func writeUserToml(t *testing.T, r *rig, content string) {
@@ -414,11 +414,11 @@ func (r *rootRig) assertNoHomeRead(t *testing.T) {
 	}
 }
 
-func TestRootShimReadsEndpointFromTheRootFile(t *testing.T) {
+func TestRootShimReadsTheEnableKeyFromTheRootFile(t *testing.T) {
 	r := newRootRig(t, `{"rootEndpoint":"http://127.0.0.1:4318","verbs":["fmt"]}`)
-	ep, why := decide(r.rig, "nix", "build")
-	if why != "" || ep != "http://127.0.0.1:4318" {
-		t.Fatalf("endpoint %q why %q", ep, why)
+	on, why := decide(r.rig, "nix", "build")
+	if why != "" || !on {
+		t.Fatalf("rootSpool %v why %q", on, why)
 	}
 	if _, why := decide(r.rig, "nix", "fmt"); why != "" {
 		t.Errorf("verb from the root file not wrapped: %s", why)
@@ -470,6 +470,62 @@ func TestRootShimRefusals(t *testing.T) {
 	})
 }
 
+func TestRootShimEnableMatrix(t *testing.T) {
+	cases := []struct {
+		name, content string
+		wantOn        bool
+		wantNotice    bool
+	}{
+		{"new key true", `{"rootSpool":true}`, true, false},
+		{"new key false", `{"rootSpool":false}`, false, false},
+		{"old key only", `{"rootEndpoint":"http://x"}`, true, true},
+		{"both keys", `{"rootSpool":true,"rootEndpoint":"http://x"}`, true, false},
+		{"new key false with old key", `{"rootSpool":false,"rootEndpoint":"http://x"}`, true, true},
+		{"empty old key", `{"rootEndpoint":""}`, false, false},
+		{"neither key", `{"verbs":["run"]}`, false, false},
+		{"malformed JSON", `not json`, false, false},
+		{"wrong key type", `{"rootSpool":"yes"}`, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRootRig(t, tc.content)
+			on, why := decide(r.rig, "nix", "build")
+			if on != tc.wantOn || (why == "") != tc.wantOn {
+				t.Fatalf("rootSpool %v why %q, want on=%v", on, why, tc.wantOn)
+			}
+			got := r.stderr.String()
+			if tc.wantNotice && got != DeprecatedRootEndpointNotice {
+				t.Errorf("stderr = %q, want the deprecation notice", got)
+			}
+			if !tc.wantNotice && got != "" {
+				t.Errorf("stderr = %q, want none", got)
+			}
+		})
+	}
+	t.Run("unreadable file", func(t *testing.T) {
+		r := newRootRig(t, `{"rootSpool":true}`)
+		r.d.ReadFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
+		on, why := decide(r.rig, "nix", "build")
+		if on || why == "" || r.stderr.Len() != 0 {
+			t.Errorf("rootSpool %v why %q stderr %q", on, why, r.stderr)
+		}
+	})
+	t.Run("notice only for a wrapped verb", func(t *testing.T) {
+		r := newRootRig(t, `{"rootEndpoint":"http://x"}`)
+		if _, why := decide(r.rig, "nix", "develop"); why == "" || r.stderr.Len() != 0 {
+			t.Errorf("why %q stderr %q", why, r.stderr)
+		}
+	})
+	t.Run("non-root never reads or prints it", func(t *testing.T) {
+		r := newRootRig(t, `{"rootEndpoint":"http://x"}`)
+		r.d.Euid = 501
+		on, _ := decide(r.rig, "nix", "build")
+		if on || r.stderr.Len() != 0 {
+			t.Errorf("rootSpool %v stderr %q", on, r.stderr)
+		}
+	})
+}
+
 func TestRootShimReadsFromTheResolvedPath(t *testing.T) {
 	r := newRootRig(t, `{"rootEndpoint":"http://good"}`)
 	evil := filepath.Join(t.TempDir(), "evil.json")
@@ -483,16 +539,16 @@ func TestRootShimReadsFromTheResolvedPath(t *testing.T) {
 		_ = os.Symlink(evil, r.link)
 		return os.ReadFile(p)
 	}
-	ep, why := decide(r.rig, "nix", "build")
-	if why != "" || ep != "http://good" || !slices.Equal(r.reads, []string{r.cfg}) {
-		t.Errorf("endpoint %q why %q reads %v", ep, why, r.reads)
+	on, why := decide(r.rig, "nix", "build")
+	if why != "" || !on || !slices.Equal(r.reads, []string{r.cfg}) {
+		t.Errorf("rootSpool %v why %q reads %v", on, why, r.reads)
 	}
 }
 
 func TestNonRootShimPassesNoEndpointSoEnabledFalseWins(t *testing.T) {
 	r := newShimRig(t, "nix", fakecmd.Spec{})
-	if ep, why := decide(r.rig, "nix", "build"); ep != "" || why != "" {
-		t.Errorf("endpoint %q why %q", ep, why)
+	if on, why := decide(r.rig, "nix", "build"); on || why != "" {
+		t.Errorf("rootSpool %v why %q", on, why)
 	}
 	if err := os.MkdirAll(filepath.Join(r.home, ".config", "pn"), 0o755); err != nil {
 		t.Fatal(err)

@@ -93,10 +93,10 @@ func (r *runner) checkShim() (ok bool) {
 	switch {
 	case why != "":
 		fmt.Fprintf(r.Stdout, "shim: root-run: would pass through (%s)\n", why)
-	case rc.RootEndpoint == "":
-		fmt.Fprintln(r.Stdout, "shim: root-run: would pass through (root configuration has no rootEndpoint)")
+	case rc.enableKey() == "":
+		fmt.Fprintln(r.Stdout, "shim: root-run: would pass through (root configuration has neither rootSpool nor rootEndpoint)")
 	default:
-		fmt.Fprintf(r.Stdout, "shim: root-run: would wrap (rootEndpoint %s)\n", rc.RootEndpoint)
+		fmt.Fprintf(r.Stdout, "shim: root-run: would wrap (enabled by %s)\n", rc.enableKey())
 	}
 	return ok
 }

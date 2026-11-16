@@ -32,9 +32,40 @@ const (
 	ShimVerbsEnv = "PG_NIX_SHIM_VERBS"
 )
 
+// DeprecatedRootEndpointNotice is printed once to stderr by a root run that
+// is wrapped only because the old rootEndpoint key asked for telemetry.
+const DeprecatedRootEndpointNotice = "pg-nix-log-wrapped: rootEndpoint in " + DefaultRootConfigPath + " is deprecated and only tolerated; set \"rootSpool\": true\n"
+
+// rootConfig is the root configuration file. RootSpool is the explicit enable
+// key. RootEndpoint is the old enable key: any non-empty value still means
+// "telemetry wanted" (the value itself is never used). Unknown keys are
+// ignored, so an old binary reading a file with only rootSpool passes through.
 type rootConfig struct {
+	RootSpool    bool     `json:"rootSpool"`
 	RootEndpoint string   `json:"rootEndpoint"`
 	Verbs        []string `json:"verbs"`
+}
+
+// wanted reports whether the file asks for root telemetry, and whether it
+// does so only through the old key.
+func (c rootConfig) wanted() (wanted, legacyOnly bool) {
+	if c.RootSpool {
+		return true, false
+	}
+	return c.RootEndpoint != "", c.RootEndpoint != ""
+}
+
+// enableKey names the key that decides the root enable state, for --check.
+func (c rootConfig) enableKey() string {
+	switch {
+	case c.RootSpool && c.RootEndpoint != "":
+		return "rootSpool (rootEndpoint also present, deprecated)"
+	case c.RootSpool:
+		return "rootSpool"
+	case c.RootEndpoint != "":
+		return "rootEndpoint (deprecated)"
+	}
+	return ""
 }
 
 // userVerbs returns the non-root opt-in entries (file, then variable).

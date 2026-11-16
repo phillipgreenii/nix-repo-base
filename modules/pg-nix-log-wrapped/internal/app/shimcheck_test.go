@@ -158,7 +158,22 @@ func TestCheckShimRootConfigStoreSymlink(t *testing.T) {
 	}
 	wantLines(t, out,
 		"shim: root-config: "+c.d.RootConfigPath+" -> "+cfg+" (store regular file)",
-		"shim: root-run: would wrap (rootEndpoint http://127.0.0.1:4318)")
+		"shim: root-run: would wrap (enabled by rootEndpoint (deprecated))")
+}
+
+func TestCheckShimRootEnableKeyFound(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"rootSpool":true}`, "shim: root-run: would wrap (enabled by rootSpool)"},
+		{`{"rootSpool":true,"rootEndpoint":"http://x"}`, "shim: root-run: would wrap (enabled by rootSpool (rootEndpoint also present, deprecated))"},
+		{`{"rootEndpoint":"http://x"}`, "shim: root-run: would wrap (enabled by rootEndpoint (deprecated))"},
+		{`{"rootSpool":false}`, "shim: root-run: would pass through (root configuration has neither rootSpool nor rootEndpoint)"},
+		{`not json`, "shim: root-run: would pass through (root configuration malformed)"},
+	} {
+		c := newCheckRig(t, "nix", "darwin-rebuild")
+		c.rootConfig(t, tc.body)
+		_, out := c.check(t)
+		wantLines(t, out, tc.want)
+	}
 }
 
 func TestCheckShimRootConfigCopy(t *testing.T) {
@@ -178,7 +193,7 @@ func TestCheckShimRootConfigWithoutEndpoint(t *testing.T) {
 	c := newCheckRig(t, "nix", "darwin-rebuild")
 	c.rootConfig(t, `{"verbs":["run"]}`)
 	_, out := c.check(t)
-	wantLines(t, out, "shim: root-run: would pass through (root configuration has no rootEndpoint)")
+	wantLines(t, out, "shim: root-run: would pass through (root configuration has neither rootSpool nor rootEndpoint)")
 }
 
 func TestCheckShimAllowlistAdditions(t *testing.T) {

@@ -24,12 +24,13 @@ type Options struct {
 	Traceparent string
 	// OtelSpoolDir is --otel-spool-dir (a user wrapper's spool directory).
 	OtelSpoolDir string
-	// RootSpool says root telemetry was asked for by the presence of
-	// --otel-spool-dir; its value is ignored for a root wrapper.
+	// RootSpool says root telemetry was asked for: by --otel-spool-dir, or by
+	// the shim from the root configuration's rootSpool (or the tolerated old
+	// rootEndpoint) key. The directory value is ignored for a root wrapper.
 	RootSpool bool
-	// OTLPEndpoint is the legacy root enable input, still assigned by the shim
-	// from the old rootEndpoint key. Non-empty means root telemetry is wanted;
-	// the value itself is never used. The --otlp-endpoint flag does NOT set it.
+	// OTLPEndpoint is a legacy root enable input no longer assigned by the
+	// shim; a non-empty value is still honoured as "root telemetry wanted" and
+	// is never used otherwise. The --otlp-endpoint flag does NOT set it.
 	OTLPEndpoint string
 	// DeprecatedOTLPFlag is set when the wrapper itself received the
 	// deprecated --otlp-endpoint flag (a no-op).

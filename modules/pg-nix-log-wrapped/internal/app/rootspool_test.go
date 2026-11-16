@@ -159,7 +159,7 @@ func TestNoNoticeWithoutTheDeprecatedFlag(t *testing.T) {
 func TestLegacyRootEnableInputStillEnablesRootTelemetry(t *testing.T) {
 	r := newSpoolRootRig(t, 0)
 	r.d.Args = []string{"fake-nix"}
-	// shim.go assigns OTLPEndpoint from the old rootEndpoint key.
+	// A caller that still sets OTLPEndpoint keeps enabling root telemetry.
 	rr := &runner{Deps: r.d, getenv: envLookup(r.d.Environ)}
 	res := config.Resolve(config.Inputs{Opts: config.Options{OTLPEndpoint: "http://legacy"}, Euid: 0, RootSpoolDir: rr.RootSpoolDir})
 	if res.SpoolDir != rr.RootSpoolDir || !res.Root {

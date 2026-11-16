@@ -81,7 +81,7 @@ var _ = time.Second
 
 // shimDecide is the dispatch table. A non-empty why means "exec the real
 // binary" and names the reason; otherwise opts describe the wrapped run
-// (OTLPEndpoint is set only for root, from the root configuration).
+// (RootSpool is set only for root, from the root configuration).
 func (r *runner) shimDecide(tool string, cmd []string) (opts config.Options, why string) {
 	if off, w := config.Disabled(r.getenv); off {
 		return opts, w
@@ -96,21 +96,27 @@ func (r *runner) shimDecide(tool string, cmd []string) (opts config.Options, why
 	}
 	opts = config.Options{MinSubstituteSpan: config.DefaultMinSubstituteSpan, Cmd: cmd}
 	allow := DefaultAllowlist()
+	legacy := false
 	if r.Euid == 0 {
 		rc, w := r.loadRootConfig()
 		if w != "" {
 			return opts, w
 		}
 		allow.Add(rc.Verbs)
-		if rc.RootEndpoint == "" {
-			return opts, "root configuration has no rootEndpoint"
+		wanted, legacyOnly := rc.wanted()
+		if !wanted {
+			return opts, "root configuration has neither rootSpool nor rootEndpoint"
 		}
-		opts.OTLPEndpoint = rc.RootEndpoint
+		opts.RootSpool = true
+		legacy = legacyOnly
 	} else {
 		allow.Add(r.userVerbs())
 	}
 	if !allow.Wraps(tool, Subcommand(cmd)) {
 		return opts, "verb not on the allowlist"
+	}
+	if legacy {
+		fmt.Fprint(r.Stderr, DeprecatedRootEndpointNotice)
 	}
 	return opts, ""
 }
