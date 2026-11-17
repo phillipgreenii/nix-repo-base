@@ -89,7 +89,10 @@ func buildPNBinary(t *testing.T, moduleRoot string) string {
 	// This is called from TestMain via a global cleanup hook.
 	pnBinTmpDirs = append(pnBinTmpDirs, tmpDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120000000000) // 2 minutes
+	// The go test run executes every pn package concurrently, so under load
+	// (the nix sandbox check) this compile can take well over two minutes; a
+	// kill here fails every scenario with exit 127, so allow ten.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	// -tags smokeseams adds asuser_smokeseams.go, which lets scenario S42 point
