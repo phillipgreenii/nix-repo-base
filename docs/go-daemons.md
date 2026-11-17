@@ -63,9 +63,12 @@ its lock, and the replacement instance crash-loops. A Go daemon:
 - **S6** MUST make the hard exit of S5 crash-safe: the next start MUST recover without losing user
   data, and the exit MUST NOT fall inside an operation that cannot be recovered (finish or skip a
   candidate between steps, never abort inside one).
-- **S7** MUST log `shutdown_started`, one `shutdown_phase` per step with its duration,
-  `shutdown_done` on a clean stop, and `shutdown_overrun` (naming the phase and the in-flight work)
-  on a deadline exit.
+- **S7** MUST log `shutdown_signal` when shutdown begins, one `shutdown_phase` per step with its
+  duration, `shutdown_complete` on a clean stop, and `shutdown_overrun` (naming the phase and the
+  in-flight work) on a deadline exit. A long-lived loop SHOULD also log `loop_started` and
+  `loop_stopped`. A daemon that uses `x/lifecycle` (`github.com/phillipgreenii/x`, package
+  `lifecycle`) gets all six events without hand-rolling them; a daemon that does not MUST emit the
+  same names.
 - **S8** SHOULD test shutdown with `testing/synctest` or short real timeouts, and SHOULD check for
   leaked goroutines with `goleak`. A test of a cancellable wait MUST fail when its fix is reverted.
 
@@ -92,8 +95,8 @@ needs no root context or phase logging.
 flowchart TD
   SIG["SIGTERM"] --> CANCEL["root context cancelled; stop() restores default signals"]
   CANCEL --> WD["watchdog starts: deadline"]
-  CANCEL --> CLOSE["close phases, each logs shutdown_phase"]
-  CLOSE --> A["stop servers, exporters, watchers"] --> B["loops see the context and return"] --> C["errgroup Wait"] --> D["flush state, bounded checkpoint"] --> E["release lock"] --> DONE["shutdown_done, exit 0"]
+  CANCEL --> CLOSE["close phases, each logs shutdown_phase; shutdown_signal logged at cancel"]
+  CLOSE --> A["stop servers, exporters, watchers"] --> B["loops see the context and return"] --> C["errgroup Wait"] --> D["flush state, bounded checkpoint"] --> E["release lock"] --> DONE["shutdown_complete, exit 0"]
   WD -->|"deadline first"| OVR["shutdown_overrun, exit non-zero"]
 ```
 
