@@ -1,7 +1,7 @@
 # ADR-0024: A build-tagged test suite MUST have its own check; declare missing capabilities per-scenario
 
 **Date:** 2026-08-12
-**Status:** Accepted
+**Status:** Accepted (amends 0021; first Decision bullet amended 2026-11-18: the gate lives outside `checks`)
 **Deciders:** phillipgreenii
 
 ## Context
@@ -55,15 +55,39 @@ scenario skip.
 ## Decision
 
 - A test suite excluded from the default build by a **Go build tag MUST be reachable from a
-  named `nix flake check` attribute** that sets that tag. Adding the tag is not a decision to
-  stop testing something; it is a decision to test it under a different gate, and that gate MUST
-  exist. A tag that no check sets is dead code and MUST NOT be introduced or left in place.
-- That check **SHOULD** be a separate `goBuilders.mkGoTest` with `testFlags = [ "-tags" "<tag>" ]`
+  named, buildable opt-in attribute OUTSIDE `checks`** that sets that tag. Adding the tag is not
+  a decision to stop testing something; it is a decision to test it under a different gate, and
+  that gate MUST exist. A tag that no gate sets is dead code and MUST NOT be introduced or left in
+  place.
+- An integration, end-to-end, load or soak suite MUST NOT be an attribute of `checks.<system>`
+  (operator ruling, Phillip, 2026-11-18, verbatim: "there isn't supposed to be integration or load
+  tests as part of nix flake check"). `nix flake check` builds every `checks.<system>` attribute,
+  so a suite placed there "to be built by name" also runs on every plain `nix flake check`.
+  Measured 2026-11-18 from `pg-nix-log-wrapped` spans over the prior 7 days: full `nix flake check`
+  runs started directly by agents lasted from 1.5 h to 28,981 s (8 h), mostly building integration
+  and load suites; they overlapped every slow `pn workspace apply` (average concurrent other nix
+  runs, the sum of overlap seconds divided by the apply's own seconds, was 1.5 to 3.0 for applies
+  of 2,165 to 5,660 s, against 1.29 for a 634 s apply); and `pn-smoke-tests` was built 4 times in
+  this repo, the longest taking 936 s under load.
+- **Workspace-wide convention (one name, every repo).** The opt-in attribute is
+  `legacyPackages.<system>.integration-checks.<name>`, built with
+  `nix build .#integration-checks.<name>` (for example
+  `nix build .#integration-checks.pn-smoke-tests`). `nix flake check` does not descend into
+  `legacyPackages`, so such an output is neither built nor recursively evaluated by it, and
+  `pn workspace flake-check --no-build` (the land-time eval check, which evaluates `checks`,
+  `packages` and `devShells`) is unaffected. Every workspace repo that holds such a suite MUST use
+  this exact path. A deliberate run of the suite is a separate, operator- or agent-initiated build
+  of that attribute; it MUST NOT be wired into the unit gate, a commit hook or a land hook (global
+  rule V-4).
+- The opt-in output MUST still be a real, named, buildable gate: it keeps the same
+  `goBuilders.mkGoTest` shape and the SHOULD below (separate derivation, `testFlags` setting the
+  tag). Only its location changed.
+- That gate **SHOULD** be a separate `goBuilders.mkGoTest` with `testFlags = [ "-tags" "<tag>" ]`
   rather than the tag folded into the module's primary `mkGoTest`. A tagged-out suite is tagged
   out precisely because its environmental surface is larger, so it MUST NOT be able to take the
-  primary unit-test gate down with it, and a distinct attribute name makes the gate discoverable
-  in `nix flake show`. The overlap cost — the module's untagged suite running twice — is accepted
-  as cheap relative to the suite running never. In this repo that check is `pn-smoke-tests`.
+  primary unit-test gate down with it, and a distinct attribute name makes the gate discoverable.
+  The overlap cost (the module's untagged suite running twice) is accepted as cheap relative to
+  the suite running never. In this repo that gate is `integration-checks.pn-smoke-tests`.
 - A capability a scenario needs but the sandbox cannot supply **MUST** be declared **per
   scenario** — a marker file next to the scenario, gated by a stubbable package-level probe that
   calls `t.Skip` — and **MUST NOT** be handled by withholding the dependency from the whole
@@ -95,11 +119,14 @@ scenario skip.
 
 ### Positive
 
-- The smoke suite is now in a gate: `nix flake check` builds `pn-smoke-tests`, which compiles the
+- The smoke suite is now in a gate: `nix build .#integration-checks.pn-smoke-tests` (opt-in, outside
+  `checks`) compiles the
   suite with `-tags smoke` and runs all 44 scenarios (43 in-sandbox; S23 skips). A wrong assertion
   now fails the gate — verified by injecting one deliberately and observing the derivation fail.
 - Compile-level rot (a renamed helper, a changed signature) can no longer hide in the tagged
-  suite, because the check compiles it on every `nix flake check`.
+  suite, because the opt-in gate compiles it whenever it is built. Since the 2026-11-18 amendment
+  it is no longer built on every `nix flake check`, so it MUST be built deliberately (for example
+  after a change under `modules/pn/internal/workspace/smoke`).
 - The escape hatch 0021 sanctioned keeps working, but now terminates in a gate rather than in
   silence, so "tag it out" is no longer a way to delete coverage without deleting files.
 - Capability markers make the residual exclusion **explicit and per-scenario**: exactly one
@@ -108,11 +135,11 @@ scenario skip.
 
 ### Negative / Neutral
 
-- `pn-smoke-tests` re-runs the module's untagged suite (~11s) because `mkGoTest` deliberately
+- `integration-checks.pn-smoke-tests` re-runs the module's untagged suite (~11s) because `mkGoTest` deliberately
   runs `go test ./...` unscoped (ADR 0021) and cannot be narrowed to one package without
   reintroducing the scoping footgun that ADR forbids. Accepted: ~11s of duplicate compute against
   a suite that previously never ran.
-- S23 does not run under `nix flake check`; it runs only outside the sandbox. This is a real
+- S23 does not run under the sandboxed build; it runs only outside the sandbox. This is a real
   residual coverage gap, bounded to one scenario, declared in-tree, and removable by making the
   fixture resolve `nixpkgs` offline.
 - The `NIX_BUILD_TOP` probe treats every nix builder as networkless. A fixed-output derivation

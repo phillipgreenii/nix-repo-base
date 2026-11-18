@@ -505,6 +505,65 @@
             }/bin/pg-git-lander-conflict-rules-tests";
           };
 
+          # Opt-in integration / end-to-end / load suites (ADR 0024): buildable by
+          # name, e.g. `nix build .#integration-checks.pn-smoke-tests`, but NOT
+          # under `checks`, so a plain `nix flake check` neither builds nor
+          # recursively evaluates them (`nix flake check` does not descend into
+          # legacyPackages). Operator ruling (Phillip, 2026-11-18): "there isn't
+          # supposed to be integration or load tests as part of nix flake check".
+          legacyPackages.integration-checks = {
+            # Smoke (end-to-end scenario) gate for pn: the SAME `go test ./...` as
+            # pn-go-tests but with `-tags smoke`, which is the only way the
+            # internal/workspace/smoke suite compiles or runs at all.
+            #
+            # The suite is behind `//go:build smoke`, so plain `go test ./...`
+            # excludes it, and a build tag that nothing ever sets is
+            # indistinguishable from deleted code (ADR 0024). It had rotted for a
+            # month unrun: the TOFU hook trust gate (ADR 0019) broke four
+            # scenarios (S18/S19/S29/S36), and S33/S33b asserted the inverse of
+            # the contract ADR 0023 shipped. This output is the gate: a wrong
+            # assertion makes `nix build .#integration-checks.pn-smoke-tests` fail.
+            # It is opt-in because it is a 44-scenario end-to-end suite (it builds
+            # the pn binary, forks bash, drives real git over file:// bare remotes
+            # and real nix), so it MUST NOT run on every `nix flake check`.
+            #
+            # It is a SEPARATE derivation rather than `-tags smoke` folded into
+            # pn-go-tests so its much larger environmental surface cannot take the
+            # primary unit-test gate down with it. The overlap is the module's
+            # non-smoke suite running twice (~11s).
+            #
+            # Dependencies, established empirically: git (file:// remotes only,
+            # never the network), bash, and nix. nix is NOT optional:
+            # `workspace lock` evaluates each repo's flake inputs, so dropping
+            # pkgs.nix fails ~23 scenarios. Local nix evaluation works in the
+            # sandbox; fetching an EXTERNAL flake input does not. Exactly one
+            # scenario needs that, S23 (`nix fmt` on a generated flake with a
+            # `nixpkgs` input), and it self-skips here via its `requires-network`
+            # marker (smoke_test.go's networkAvailable probe), so it still runs
+            # for a developer outside the sandbox.
+            #
+            # No scenario invokes the real darwin-rebuild, sudo, or any real
+            # activation: `apply` builds as the user and runs its two root steps
+            # through stand-in darwin-rebuild and sudo scripts that the scenario's
+            # setup.sh puts first on PATH (S19, S36, S42, S44), against a fake
+            # store directory.
+            pn-smoke-tests = goBuilders.mkGoTest {
+              pname = "pn-smoke";
+              src = ./modules/pn;
+              gomod2nixToml = ./modules/pn/gomod2nix.toml;
+              testDeps = [
+                pkgs.git
+                pkgs.nix
+                pkgs.bash
+              ];
+              testFlags = [
+                "-tags"
+                "smoke"
+                "-count=1"
+              ];
+            };
+          };
+
           checks = {
             # formatting, linting, consumer-input-alignment auto-contributed by checks module
             shellcheck = checksHelpers.shellcheck {
@@ -1904,67 +1963,6 @@
               testDeps = [
                 pkgs.git
                 pkgs.nix
-              ];
-            };
-
-            # Smoke (end-to-end scenario) gate for pn: the SAME `go test ./...` as
-            # pn-go-tests but with `-tags smoke`, which is the only way the
-            # internal/workspace/smoke suite compiles or runs at all.
-            #
-            # Why this check exists (bead pg2-nuacd): the suite is behind
-            # `//go:build smoke`, so plain `go test ./...` and every other flake
-            # check silently EXCLUDED it. Nothing compiled it, let alone ran it —
-            # and a build tag that nothing ever sets is indistinguishable from
-            # deleted code. Measured consequence: the TOFU hook trust gate landed
-            # 2026-07-12 (cd30f10) and broke four scenarios (S18/S19/S29/S36),
-            # which then "passed by never running" for a month; separately S33/S33b
-            # kept asserting `update` pushes to the remote — the exact opposite of
-            # the contract ADR 0023 shipped. A test suite that cannot fail is not a
-            # gate. This check makes a wrong assertion in the suite fail
-            # `nix flake check` — verified by injecting one deliberately. Note the
-            # golangci-lint-prepush hook above builds only the two *-golangci
-            # checks, so it does NOT run this one; `nix flake check` / CI is the
-            # gate. golangci-lint also does not lint the smoke files at all, since
-            # .golangci.yml sets no build tags — the `go vet` that mkGoTest runs as
-            # `go test`'s default (ADR 0021) is what covers them.
-            #
-            # It is a SEPARATE check rather than `-tags smoke` folded into
-            # pn-go-tests so the smoke suite's much larger environmental surface
-            # (it builds the pn binary, forks bash, drives real git over file://
-            # bare remotes) cannot take the primary unit-test gate down with it, and
-            # so the gate is DISCOVERABLE by name in `nix flake show`. The overlap
-            # is the module's non-smoke suite running twice (~11s) — cheap next to
-            # the alternative of it running never.
-            #
-            # Dependencies, established empirically rather than assumed: git (real
-            # clones/commits/pushes, but only to file:// bare remotes — never the
-            # network), bash, and nix. nix is NOT optional here: `workspace lock`
-            # evaluates each repo's flake inputs, so dropping pkgs.nix fails ~23
-            # scenarios, not just the one nix-marked scenario. Local nix evaluation
-            # works fine inside this sandbox; what does NOT is fetching an EXTERNAL
-            # flake input. Exactly one scenario needs that — S23 (`nix fmt` on a
-            # generated flake with a `nixpkgs` input) — and it self-skips here via
-            # its `requires-network` marker (see smoke_test.go's networkAvailable
-            # probe), so it still runs for a developer outside the sandbox.
-            #
-            # No scenario invokes the real darwin-rebuild, sudo, or any real
-            # activation: `apply` builds as the user and runs its two root steps
-            # through stand-in darwin-rebuild and sudo scripts that the scenario's
-            # setup.sh puts first on PATH (S19, S36, S42, S44), against a fake
-            # store directory, so none of them reach the real machine.
-            pn-smoke-tests = goBuilders.mkGoTest {
-              pname = "pn-smoke";
-              src = ./modules/pn;
-              gomod2nixToml = ./modules/pn/gomod2nix.toml;
-              testDeps = [
-                pkgs.git
-                pkgs.nix
-                pkgs.bash
-              ];
-              testFlags = [
-                "-tags"
-                "smoke"
-                "-count=1"
               ];
             };
 
