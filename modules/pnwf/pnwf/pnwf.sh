@@ -1660,7 +1660,10 @@ up elsewhere -- is skipped):
 Then runs `env -u PN_WORKSPACE_ROOT pn workspace update --in-place` from the
 set (PN_WORKSPACE_ROOT is cleared so a stale inherited value cannot redirect
 the relock onto the canonical clones, where the primary branch HAS an
-upstream and would be pushed). On a non-zero exit it prints a tail of the
+upstream and would be pushed). pn's output (combined stdout and stderr,
+including its per-repo `--== update <name> ==--` banners) is streamed LIVE
+on pnwf's stdout while pn runs, and is also captured for the failure tail and
+the skip backstop. On a non-zero exit it prints a tail of the
 relock output and stops; re-run `pnwf update-relock` after resolving the
 reported problem.
 
@@ -1795,8 +1798,16 @@ HELP
   # variable AND echoed to the user (so the relock output is visible and
   # available for the tail + skip-backstop scan).
   local relock_out relock_rc=0
-  relock_out=$(env -u PN_WORKSPACE_ROOT pn workspace update --in-place 2>&1) || relock_rc=$?
-  printf '%s\n' "$relock_out"
+  # pn's output is STREAMED live to stdout through tee (so the per-repo
+  # `--== update <name> ==--` banners appear as pn goes, not only after it
+  # exits) while tee also writes it to a scratch file for the tail + skip scan.
+  # pipefail (injected by the builder) makes the pipeline fail on pn's rc, and
+  # PIPESTATUS[0] -- expanded before the assignment -- carries pn's own rc.
+  local relock_log
+  relock_log=$(mktemp "${TMPDIR:-/tmp}/pnwf-relock.XXXXXX")
+  env -u PN_WORKSPACE_ROOT pn workspace update --in-place 2>&1 | tee "$relock_log" || relock_rc=${PIPESTATUS[0]}
+  relock_out=$(<"$relock_log")
+  rm -f "$relock_log"
 
   if [[ $relock_rc -ne 0 ]]; then
     die "update-relock: 'pn workspace update --in-place' failed (rc=$relock_rc) in set $root; inspect the set and re-run 'pnwf update-relock'. Last output:

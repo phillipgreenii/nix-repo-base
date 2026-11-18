@@ -51,7 +51,7 @@
 
 `pnwf publish-canonical --set && pnwf sync-fetch --set --no-publish`
 
-- Relock every member of the current set in place via `pn workspace update --in-place` (refuses any member with an upstream, a dirty tree, or a git state it cannot read, and refuses a relock that skipped repos):
+- Relock every member of the current set in place via `pn workspace update --in-place` (refuses any member with an upstream, a dirty tree, or a git state it cannot read, and refuses a relock that skipped repos; pn's output streams live on stdout while it runs):
 
 `pnwf update-relock --set`
 

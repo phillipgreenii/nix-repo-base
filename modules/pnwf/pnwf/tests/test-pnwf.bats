@@ -97,6 +97,14 @@ if [[ "${1:-}" == "workspace" && "${2:-}" == "update" ]]; then
   if [[ -n "${MOCK_PN_UPDATE_OUTPUT:-}" ]]; then
     printf '%s\n' "$MOCK_PN_UPDATE_OUTPUT"
   fi
+  # Streaming mode: emit a first line, signal it was emitted, block until the
+  # test creates the release file, then emit the rest.
+  if [[ -n "${MOCK_PN_UPDATE_BLOCK_FILE:-}" ]]; then
+    printf '%s\n' "  --== update repoA ==--"
+    : >"$MOCK_PN_UPDATE_BLOCK_FILE.started"
+    while [[ ! -e "$MOCK_PN_UPDATE_BLOCK_FILE" ]]; do sleep 0.05; done
+    printf '%s\n' "  workspace update finished"
+  fi
   exit "${MOCK_PN_UPDATE_RC:-0}"
 fi
 
@@ -2585,6 +2593,35 @@ _ur_set_upstream() {
   [[ "$output" == *"re-run"* ]]
   # The tail carries the relock's own last output line.
   [[ "$output" == *"propagate-edges failed: boom"* ]]
+}
+
+@test "update-relock --set: streams pn's output live while pn is still running" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_BLOCK_FILE="$BATS_TEST_TMPDIR/release"
+  local out="$BATS_TEST_TMPDIR/pnwf.out"
+
+  cd "$SET_DIR"
+  "$SCRIPT_UNDER_TEST" update-relock --set >"$out" 2>&1 &
+  local pid=$!
+
+  # Wait (bounded) for the mock to have emitted its first line and be blocked.
+  local i
+  for ((i = 0; i < 200; i++)); do
+    [[ -e "$MOCK_PN_UPDATE_BLOCK_FILE.started" ]] && grep -q -- '--== update repoA ==--' "$out" && break
+    sleep 0.05
+  done
+  # The first line is visible while pn is still blocked (pnwf has not exited).
+  grep -q -- '--== update repoA ==--' "$out"
+  kill -0 "$pid"
+  run ! grep -q 'workspace update finished' "$out"
+
+  : >"$MOCK_PN_UPDATE_BLOCK_FILE"
+  local rc=0
+  wait "$pid" || rc=$?
+  [ "$rc" -eq 0 ]
+  [ "$(grep -c -- '--== update repoA ==--' "$out")" -eq 1 ]
+  grep -q 'workspace update finished' "$out"
 }
 
 @test "update-relock --set: clean set, no upstream, no skips relocks each member and exits 0" {
