@@ -157,6 +157,18 @@ For the shipped `go` language a changed file is a test input when ANY of these h
   directive it cannot read with certainty (unterminated quote, no pattern, a backslash escape, an
   absolute or `..` pattern, or a grep failure) makes EVERY changed file count for that project.
 
+### Package scope (`inputs.goPackages`)
+
+For a language with `inputs.goPackages` (the shipped `go`), the unit selection in `--files` mode does
+not run `./...`. A changed `.go` file, a `testdata/` file (scoped to the package that owns the
+`testdata/` directory) or a cgo/assembly source selects its own package plus every package of the
+same module that imports it, directly or transitively (imports, test imports and external test
+imports all count), computed with `go list`; the run prints one `[SCOPE]` line naming them. A
+changed `go.mod`, `go.sum`, `go.work`, `go.work.sum`, a `vendor/` file, a `//go:embed` target, a
+`projectExtraPaths` match, or a file in a directory holding no Go package (including a deleted
+package), or a `go list` failure, selects the whole module. Path and `--all` modes and non-unit
+labels are unchanged.
+
 When in doubt the suite runs. A changed file that does not match any rule, but that a test reads by
 path (a golden file outside `testdata/`, a YAML fixture), is NOT detected: declare it in
 `projectExtraPaths`, a map from a project path suffix (same matching as `projectTimeouts`, every

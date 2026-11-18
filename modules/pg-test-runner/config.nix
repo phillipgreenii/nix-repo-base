@@ -186,6 +186,11 @@
           "vendor"
         ];
         goEmbed = true;
+        # --files mode runs only the packages that hold a changed .go or
+        # testdata/ file plus every package of the module that imports them
+        # (transitively, test imports included); go.mod, go.sum, go.work,
+        # vendor/, embedded and projectExtraPaths files still run the module.
+        goPackages = true;
       };
       # Per-language run environment (optional `env` object, string values),
       # set on the test process for THIS language only. A Go test process

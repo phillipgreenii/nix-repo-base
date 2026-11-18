@@ -1140,3 +1140,117 @@ FAKE
   [ "$status" -eq 0 ]
   [ "$(sed -n 's/^ARGV=//p' "$TEST_DIR/record-go")" = "$(printf '%s\n' 'test -p 4 -parallel 4 ./...' 'test -race -p 4 -parallel 4 ./...' 'test -race -p 4 -parallel 4 ./...')" ]
 }
+
+# ---------------------------------------------------------------------------
+# Package scope (inputs.goPackages): --files runs the touched packages plus the
+# packages of the module that import them. Real `go` against a fixture module
+# with pkg a (importee), b (imports a) and c (imports nothing).
+# ---------------------------------------------------------------------------
+
+_scope_config() {
+  cat >"$TEST_DIR/scope-config.json" <<'JSON'
+{
+  "version": 1,
+  "jobs": 1,
+  "timeoutSeconds": 120,
+  "ignore": [".git/", "fixtures/"],
+  "nonUnitLabels": [],
+  "languages": [
+    {
+      "name": "gopkg",
+      "markers": ["go.mod"],
+      "tools": ["go"],
+      "inputs": {
+        "names": ["*.go", "go.mod", "go.sum", "go.work", "go.work.sum"],
+        "dirs": ["testdata", "vendor"],
+        "goEmbed": true,
+        "goPackages": true
+      },
+      "run": {
+        "unit": ["go", "test", "-count=1", "./..."],
+        "labels": ["go", "test", "-count=1", "./..."],
+        "all": ["go", "test", "-count=1", "./..."]
+      }
+    }
+  ]
+}
+JSON
+}
+
+_scope_repo() {
+  local r="$TEST_DIR/screpo/proj"
+  mkdir -p "$TEST_DIR/screpo/.git" "$r/a/testdata" "$r/b" "$r/c" "$r/assets"
+  printf 'module example.com/scope\n\ngo 1.21\n' >"$r/go.mod"
+  printf 'package a\n\nfunc A() int { return 1 }\n' >"$r/a/a.go"
+  printf 'package a\n\nimport "testing"\n\nfunc TestA(t *testing.T) { _ = A() }\n' >"$r/a/a_test.go"
+  printf 'package b\n\nimport "example.com/scope/a"\n\nfunc B() int { return a.A() }\n' >"$r/b/b.go"
+  printf 'package b\n\nimport "testing"\n\nfunc TestB(t *testing.T) { _ = B() }\n' >"$r/b/b_test.go"
+  printf 'package c\n\nimport "testing"\n\nfunc TestC(t *testing.T) {}\n' >"$r/c/c_test.go"
+  : >"$r/a/testdata/x.json"
+  : >"$r/assets/x.txt"
+}
+
+_scope_run() {
+  cd "$TEST_DIR/screpo" || return 1
+  run "$SCRIPT" --config "$TEST_DIR/scope-config.json" --labels unit --files "$@"
+  echo "$output"
+}
+
+@test "--files scope: touching the importee runs it and its importer, not an unrelated package" {
+  _scope_config
+  _scope_repo
+  _scope_run proj/a/a.go
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[SCOPE]"* ]]
+  [[ "$output" == *"example.com/scope/a"* ]]
+  [[ "$output" == *"example.com/scope/b"* ]]
+  [[ "$output" != *"example.com/scope/c"* ]]
+}
+
+@test "--files scope: touching the importer runs only the importer" {
+  _scope_config
+  _scope_repo
+  _scope_run proj/b/b.go
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"example.com/scope/b"* ]]
+  [[ "$output" != *"example.com/scope/a"* ]]
+  [[ "$output" != *"example.com/scope/c"* ]]
+}
+
+@test "--files scope: a testdata file selects the owning package plus importers" {
+  _scope_config
+  _scope_repo
+  _scope_run proj/a/testdata/x.json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"example.com/scope/a"* ]]
+  [[ "$output" == *"example.com/scope/b"* ]]
+  [[ "$output" != *"example.com/scope/c"* ]]
+}
+
+@test "--files scope: go.mod selects the whole module" {
+  _scope_config
+  _scope_repo
+  _scope_run proj/go.mod
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"[SCOPE]"* ]]
+  [[ "$output" == *"example.com/scope/a"* ]]
+  [[ "$output" == *"example.com/scope/b"* ]]
+  [[ "$output" == *"example.com/scope/c"* ]]
+}
+
+@test "--files scope: a changed file in a directory with no Go package selects the whole module" {
+  _scope_config
+  _scope_repo
+  _scope_run proj/gone/old.go
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"[SCOPE]"* ]]
+  [[ "$output" == *"example.com/scope/c"* ]]
+}
+
+@test "--files scope: a go.mod among package files selects the whole module" {
+  _scope_config
+  _scope_repo
+  _scope_run proj/b/b.go proj/go.mod
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"example.com/scope/c"* ]]
+}

@@ -93,9 +93,10 @@ ptr_validate_config() {
         ($i | type) == "object" and
         (($i.names // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
         (($i.dirs // []) | type == "array" and all(.[]; type == "string" and length > 0 and (contains("/") | not))) and
-        (($i.goEmbed // false) | type == "boolean"))
+        (($i.goEmbed // false) | type == "boolean") and
+        (($i.goPackages // false) | type == "boolean"))
     ' "$path" >/dev/null 2>&1 ||
-    ptr_die 13 "config languages[].inputs must be an object with names/dirs string arrays (dirs without '/') and a boolean goEmbed: $path"
+    ptr_die 13 "config languages[].inputs must be an object with names/dirs string arrays (dirs without '/') and boolean goEmbed/goPackages: $path"
 
   # Run limits (optional, bead pg2-r9ly8): maxConcurrentRuns and
   # slotWaitSeconds are non-negative integers, niceLevel an integer 0..19. A
@@ -399,9 +400,11 @@ ptr_downward_scan() {
 # status (section 2.6).
 # ---------------------------------------------------------------------------
 
-# --files mode prints "path<TAB>lang<TAB>flag" per (changed file, project) pair,
-# flag 1 when that file counts as a test input of the project and 0 when it does
-# not (bead pg2-41fzsf). ptr_run keeps the projects with at least one flag-1 file
+# --files mode prints "path<TAB>lang<TAB>flag<TAB>scope" per (changed file,
+# project) pair, flag 1 when that file counts as a test input of the project and
+# 0 when it does not. scope is "ALL" (whole project), a project-relative package
+# directory (languages with inputs.goPackages), or empty (flag 0, or a language
+# without goPackages, which also means whole project). ptr_run keeps the projects with at least one flag-1 file
 # and reports the others as skipped.
 ptr_resolve_files_mode() {
   local toplevel
@@ -412,7 +415,7 @@ ptr_resolve_files_mode() {
 
   # Caches shared with the ptr_* helpers below through dynamic scope.
   local -A PTR_INPUTS_CACHE=() PTR_EXTRA_CACHE=() PTR_EMBED_CACHE=()
-  local f abs dir matches line mpath mlang flag
+  local f abs dir matches line mpath mlang flag scope
   for f in "$@"; do
     abs="$(ptr_abspath "$f")"
     dir="$(dirname "$abs")"
@@ -422,8 +425,17 @@ ptr_resolve_files_mode() {
       [[ -z $line ]] && continue
       mpath="${line%%$'\t'*}"
       mlang="${line#*$'\t'}"
-      if ptr_file_counts "$abs" "$mpath" "$mlang"; then flag=1; else flag=0; fi
-      printf '%s\t%s\t%s\n' "$mpath" "$mlang" "$flag"
+      scope=""
+      if ptr_file_counts "$abs" "$mpath" "$mlang"; then
+        flag=1
+        # A language with inputs.goPackages scopes the run to the packages the
+        # file touches; "ALL" (or an empty field for any other language) keeps
+        # the whole project.
+        if ptr_inputs_rules "$mlang" | grep -qx 'G:1'; then scope="$(ptr_go_scope "$abs" "$mpath" "$mlang")"; fi
+      else
+        flag=0
+      fi
+      printf '%s\t%s\t%s\t%s\n' "$mpath" "$mlang" "$flag" "$scope"
     done <<<"$matches"
   done
 }
@@ -441,6 +453,7 @@ ptr_inputs_rules() {
         ((.inputs.names // [])[] | "N:" + .),
         ((.inputs.dirs // [])[] | "D:" + .),
         (if .inputs.goEmbed == true then "E:1" else empty end),
+        (if .inputs.goPackages == true then "G:1" else empty end),
         "X:1"
       end' <<<"$lang_json")"
   fi
@@ -611,6 +624,117 @@ ptr_file_counts() {
     done <<<"$scanned"
   fi
   return 1
+}
+
+# $1: absolute changed file, $2: project directory, $3: language. For a flag-1
+# file of a language with inputs.goPackages, prints the project-relative
+# directory of the package it touches, or "ALL" when it can only select the
+# whole project (module and workspace files, vendor/, an embedded or declared
+# extra file, anything the rules cannot place). A printed directory that holds
+# no Go package is widened to the whole project later (ptr_go_expand_scope), so
+# a deleted directory keeps the old behavior.
+ptr_go_scope() {
+  local file="$1" project="$2" lang="$3" rel base reldir="" rule c
+  rel="$(ptr_relpath "$project" "$file")"
+  if [[ $rel == "$file" ]]; then
+    printf 'ALL'
+    return 0
+  fi
+  base="${rel##*/}"
+  [[ $rel == */* ]] && reldir="${rel%/*}"
+  case "$base" in
+  go.mod | go.sum | go.work | go.work.sum)
+    printf 'ALL'
+    return 0
+    ;;
+  esac
+  local -a comps=()
+  IFS='/' read -ra comps <<<"$reldir"
+  local pkgdir="" seen_testdata=0
+  for c in "${comps[@]}"; do
+    if [[ $c == vendor ]]; then
+      printf 'ALL'
+      return 0
+    fi
+    if [[ $c == testdata && $seen_testdata == 0 ]]; then
+      seen_testdata=1
+      continue
+    fi
+    ((seen_testdata == 1)) || pkgdir="${pkgdir:+$pkgdir/}$c"
+  done
+  if ((seen_testdata == 1)); then
+    printf '%s' "${pkgdir:-.}"
+    return 0
+  fi
+  if [[ $base == *.go ]]; then
+    printf '%s' "${reldir:-.}"
+    return 0
+  fi
+  # Other names rules (cgo/assembly sources): the package they sit in.
+  while IFS= read -r rule; do
+    [[ ${rule%%:*} == N ]] || continue
+    # shellcheck disable=SC2053  # the unquoted right-hand side IS the glob
+    if [[ $base == ${rule#*:} ]]; then
+      printf '%s' "${reldir:-.}"
+      return 0
+    fi
+  done <<<"$(ptr_inputs_rules "$lang")"
+  printf 'ALL'
+}
+
+# $1: project directory, $2: newline-separated project-relative package
+# directories that hold changed files. Prints, one per line, the `go test`
+# package arguments for those packages plus every package of the same module
+# that imports one of them, directly or transitively (imports, test imports and
+# external-test imports all count, so the set errs large). Prints nothing, which
+# means "run the whole project", when go list fails, a directory holds no
+# package, or the selection is every package. Never smaller than the touched
+# packages plus their importers.
+ptr_go_expand_scope() {
+  local project="$1" dirs="$2" listing
+  listing="$(cd "$project" && "$PTR_TIMEOUT" 120 go list -e -f \
+    $'{{.ImportPath}}\t{{with .Module}}{{.Dir}}{{end}}\t{{.Dir}}\t{{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}' \
+    ./... 2>/dev/null)" || return 0
+  [[ -z $listing ]] && return 0
+
+  local -A dir_to_pkg=() imports=() selected=()
+  local -a pkgs=()
+  local ip moddir pdir imps rel
+  while IFS=$'\t' read -r ip moddir pdir imps; do
+    [[ -z $ip || -z $moddir ]] && return 0
+    if [[ $pdir == "$moddir" ]]; then rel="."; else rel="${pdir#"$moddir"/}"; fi
+    dir_to_pkg["$rel"]="$ip"
+    imports["$ip"]="$imps"
+    pkgs+=("$ip")
+  done <<<"$listing"
+
+  local d
+  while IFS= read -r d; do
+    [[ -z $d ]] && continue
+    [[ -n ${dir_to_pkg["$d"]:-} ]] || return 0
+    selected["${dir_to_pkg["$d"]}"]=1
+  done <<<"$dirs"
+
+  local changed=1 imp
+  while ((changed == 1)); do
+    changed=0
+    for ip in "${pkgs[@]}"; do
+      [[ -n ${selected["$ip"]:-} ]] && continue
+      for imp in ${imports["$ip"]}; do
+        if [[ -n ${selected["$imp"]:-} ]]; then
+          selected["$ip"]=1
+          changed=1
+          break
+        fi
+      done
+    done
+  done
+
+  ((${#selected[@]} >= ${#pkgs[@]})) && return 0
+  for rel in "${!dir_to_pkg[@]}"; do
+    [[ -n ${selected["${dir_to_pkg["$rel"]}"]:-} ]] || continue
+    if [[ $rel == "." ]]; then printf '.\n'; else printf './%s\n' "$rel"; fi
+  done | sort
 }
 
 ptr_resolve_paths_mode() {
@@ -923,6 +1047,13 @@ ptr_invoke() {
       if [[ ${PG_TEST_RUNNER_RACE:-1} != "0" ]]; then cmd+=("-race"); fi
       continue
     fi
+    # Package scope (--files mode, languages with inputs.goPackages): the
+    # whole-token `./...` becomes the selected packages. PTR_RUN_PKGS is set by
+    # ptr_execute_one (dynamic scope); empty or unset keeps `./...`.
+    if [[ $tok == "./..." && -n ${PTR_RUN_PKGS[*]:-} ]]; then
+      cmd+=("${PTR_RUN_PKGS[@]}")
+      continue
+    fi
     cmd+=("$(ptr_render_token "$tok" "$jobs_val" "$labels_joined" "$label_val" "$unit_excl" "$all_labels")")
   done
 
@@ -1047,6 +1178,17 @@ ptr_execute_one() {
   jobs_val="$(ptr_jobs_value "$JOBS_CONFIGURED")"
   unit_excl="$(ptr_unit_exclusion "$label_prefix")"
   all_labels="$(ptr_all_labels)"
+
+  # Package scope for --files mode (see ptr_go_expand_scope); only the unit
+  # selection is scoped, since build tags change the import graph.
+  local -a PTR_RUN_PKGS=()
+  local scope_dirs="${PTR_SCOPE_DIRS["$path"$'\t'"$lang"]:-}"
+  if [[ $mode_key == "unit" && -n $scope_dirs ]]; then
+    mapfile -t PTR_RUN_PKGS < <(ptr_go_expand_scope "$path" "$scope_dirs")
+    if [[ -n ${PTR_RUN_PKGS[*]:-} ]]; then
+      printf '[SCOPE] %s (%s) %s package(s) touched or importing a touched package: %s\n' "$path" "$lang" "${#PTR_RUN_PKGS[@]}" "${PTR_RUN_PKGS[*]}"
+    fi
+  fi
 
   local has_label_placeholder=0
   if "$PTR_JQ" -e 'any(.[]; test("\\{label\\}"))' <<<"$run_template" >/dev/null 2>&1; then
@@ -1235,6 +1377,11 @@ ptr_run() {
 
   local -A seen
   seen=()
+  # project "<path>\t<lang>" -> newline-separated package dirs (--files mode,
+  # inputs.goPackages); absent means the whole project. Read by ptr_execute_one
+  # through dynamic scope.
+  local -A PTR_SCOPE_DIRS
+  PTR_SCOPE_DIRS=()
   local -a projects
   projects=()
   local line
@@ -1242,16 +1389,17 @@ ptr_run() {
     # Lines are "path<TAB>lang<TAB>flag" (see ptr_resolve_files_mode). A project
     # runs when at least one changed file counts as a test input; otherwise it is
     # skipped, and one line says so (bead pg2-41fzsf).
-    local -A counted nfiles
+    local -A counted nfiles scope_whole
     local -a order
     counted=()
+    scope_whole=()
     nfiles=()
     order=()
-    local key flag
+    local key flag fpath flang scope
     while IFS= read -r line; do
       [[ -z $line ]] && continue
-      key="${line%$'\t'*}"
-      flag="${line##*$'\t'}"
+      IFS=$'\t' read -r fpath flang flag scope <<<"$line"
+      key="$fpath"$'\t'"$flang"
       if [[ -z ${seen["$key"]:-} ]]; then
         seen["$key"]=1
         order+=("$key")
@@ -1259,8 +1407,19 @@ ptr_run() {
         nfiles["$key"]=0
       fi
       nfiles["$key"]=$((nfiles["$key"] + 1))
-      [[ $flag == 1 ]] && counted["$key"]=1
+      if [[ $flag == 1 ]]; then
+        counted["$key"]=1
+        if [[ -z $scope || $scope == ALL ]]; then
+          scope_whole["$key"]=1
+        elif [[ -z ${scope_whole["$key"]:-} ]]; then
+          case $'\n'"${PTR_SCOPE_DIRS["$key"]:-}"$'\n' in
+          *$'\n'"$scope"$'\n'*) ;;
+          *) PTR_SCOPE_DIRS["$key"]="${PTR_SCOPE_DIRS["$key"]:+${PTR_SCOPE_DIRS["$key"]}$'\n'}$scope" ;;
+          esac
+        fi
+      fi
     done <<<"$raw"
+    for key in "${!scope_whole[@]}"; do unset 'PTR_SCOPE_DIRS[$key]'; done
     for key in "${order[@]}"; do
       if [[ ${counted["$key"]} == 1 ]]; then
         projects+=("$key")
