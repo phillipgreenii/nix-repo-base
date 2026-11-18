@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/eventlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
@@ -187,7 +188,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 	var aborted bool
 	var abortedName string
 	first := true
-	for _, name := range names {
+	for idx, name := range names {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
 		}
@@ -201,6 +202,14 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		}
 		first = false
 
+		// Progress: a start line with position N/M and (finishRepo) a finish line
+		// with outcome and elapsed seconds.
+		repoStart := time.Now()
+		fmt.Fprintf(out, "  [%d/%d] %s: starting\n", idx+1, len(names), name)
+		finishRepo := func(outcome string) {
+			fmt.Fprintf(out, "  [%d/%d] %s: %s (%s)\n", idx+1, len(names), name, outcome, elapsedSecs(repoStart))
+		}
+
 		// Skip (non-fatal) if the working tree is dirty (modified or staged), or
 		// if cleanliness could not be determined — either way updating is unsafe.
 		dirty, dirtyErr := ws.isDirty(ctx, repoDir)
@@ -208,6 +217,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			fmt.Fprintf(out, "  ⊘ skipping %s — could not check working tree: %v\n", name, dirtyErr)
 			_ = opts.Log.Emit("warn", "project_result", "project skipped (dirty-check failed)",
 				map[string]any{"name": name, "outcome": "skipped", "error": dirtyErr.Error()})
+			finishRepo("skipped")
 			endRepo(dirtyErr)
 			continue
 		}
@@ -215,6 +225,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			fmt.Fprintf(out, "  ⊘ skipping %s — working tree has uncommitted changes\n", name)
 			_ = opts.Log.Emit("warn", "project_result", "project skipped (dirty working tree)",
 				map[string]any{"name": name, "outcome": "skipped"})
+			finishRepo("skipped")
 			endRepo(nil)
 			continue
 		}
@@ -250,7 +261,10 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			}
 			switch {
 			case opts.SiblingsOnly:
+				phaseStart := time.Now()
+				fmt.Fprintf(out, "    [%s] nix flake update (siblings): started\n", name)
 				did, err := ws.propagateWorkspaceEdges(ctx, out, name, repoDir, ws.resolveFlakePath(name), workspaceAliasesFromLock(edgeLock, name))
+				fmt.Fprintf(out, "    [%s] nix flake update (siblings): finished (%s)\n", name, elapsedSecs(phaseStart))
 				if err != nil {
 					fmt.Fprintf(out, "  ✗ %s: relock-siblings failed: %v\n", name, err)
 					relockFailed = true
@@ -260,11 +274,18 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 				relocked = did
 				fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
 			case fileExists(filepath.Join(repoDir, "update-locks.sh")):
+				phaseStart := time.Now()
+				fmt.Fprintf(out, "    [%s] update-locks.sh (runs nix flake update): started\n", name)
 				res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out, PropagateTrace: true})
 				// res.Stdout is populated on both success and CommandError, so the
 				// transient count crosses the boundary even for a hard-failed repo
 				// (ul_finalize prints UL_RESULT before its non-zero exit).
 				transient = parseULTransient(res.Stdout)
+				phaseOutcome := "ok"
+				if err != nil {
+					phaseOutcome = "failed"
+				}
+				fmt.Fprintf(out, "    [%s] update-locks.sh (runs nix flake update): finished, %s (%s)\n", name, phaseOutcome, elapsedSecs(phaseStart))
 				if err != nil {
 					var cmdErr *exec.CommandError
 					if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {
@@ -285,6 +306,8 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			_ = opts.Log.Emit("error", "project_result", "project aborted", map[string]any{
 				"name": name, "outcome": "aborted", "failed_step": "update-locks", "transient": transient,
 			})
+			finishRepo("failed")
+			fmt.Fprintf(out, "  ✗ %s: update FAILED (aborted at update-locks: environmental/resource failure)\n", name)
 			endRepo(errors.New("update aborted: environmental/resource failure"))
 			break
 		}
@@ -302,6 +325,8 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			_ = opts.Log.Emit("error", "project_result", "project failed", map[string]any{
 				"name": name, "outcome": "failed", "failed_step": step, "transient": transient,
 			})
+			finishRepo("failed")
+			fmt.Fprintf(out, "  ✗ %s: update FAILED at step %s\n", name, step)
 			endRepo(fmt.Errorf("update failed at %s", step))
 		} else {
 			// A green repo with transient steps is escalated to warn: update-locks
@@ -315,6 +340,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			_ = opts.Log.Emit(level, "project_result", msg, map[string]any{
 				"name": name, "outcome": "ok", "transient": transient,
 			})
+			finishRepo("ok")
 			endRepo(nil)
 		}
 	}
@@ -331,6 +357,11 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 	}
 	_ = opts.Log.Emit("info", "run_end", "workspace update finished", map[string]any{"status": "ok", "failed": 0})
 	return nil
+}
+
+// elapsedSecs formats the time since start as seconds with one decimal ("1.2s").
+func elapsedSecs(start time.Time) string {
+	return fmt.Sprintf("%.1fs", time.Since(start).Seconds())
 }
 
 // isDirty reports whether repoDir has tracked uncommitted changes — modified or
