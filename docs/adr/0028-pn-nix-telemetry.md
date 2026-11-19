@@ -1,7 +1,7 @@
 # ADR-0028: pn / nix build telemetry — spike findings, configuration precedence and escape hatches
 
 **Date:** 2026-10-01
-**Status:** Accepted (transport sections superseded by [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md), 2026-11-16; amended 2026-10-08, `pg2-arayh`: runtime configuration contract, see "Amendment 2026-10-08")
+**Status:** Accepted (transport sections superseded by [ADR 0044](0044-file-spool-transport-for-pn-and-the-nix-wrapper.md), 2026-11-16; amended 2026-10-08, `pg2-arayh`: runtime configuration contract, see "Amendment 2026-10-08"; amended 2026-11-18: update scope, relock and update-locks step spans, see "Amendment 2026-11-18")
 **Deciders:** phillipgreenii
 
 ## Context
@@ -808,6 +808,34 @@ Two cases read as explicit (no `nix.started_by = pn`) and are documented rather 
 ### Amendment 2026-11-05: the PATH shim coexists with `exec.WithNixWrapper`
 
 The `pg-nix-shim` puts `nix` and `darwin-rebuild` shims on `PATH`, so callers no longer prefix the wrapper. `exec.WithNixWrapper` stays in place unchanged: it serves the root path (`sudo` drops `PATH` and `TRACEPARENT`), and its explicit wrapped call sets the guard that makes any shim inside it exec direct. The `update-locks` prefix (`_ul_nix_wrap_prefix`, `PN_NIX_LOG_WRAPPER`) keeps working and is redundant when a shim is on `PATH`.
+
+### Amendment 2026-11-18: update scope, relock and update-locks step spans
+
+`pn workspace update` records how much it relocked and where `update-locks.sh` spent its time. Three
+span shapes are added; all are span attributes only (no metric dimension, so no cardinality cost).
+
+```mermaid
+flowchart TD
+    V["pn.verb (pn.update.scope)"] --> R["pn.repo"]
+    R --> L["pn.relock (kind, changed)"]
+    R --> S["pn.ul.step (name, outcome)"]
+    R --> E["pn.exec"]
+```
+
+- `pn.update.scope` on the `pn.verb` span of an update: `siblings`, `flake` or `full`.
+- `pn.relock`, a child of `pn.repo`, one per relock of a repo's flake inputs. `pn.relock.kind` is
+  `siblings` or `flake`. `pn.relock.changed` is 0 or 1 for `siblings` (`propagateWorkspaceEdges`
+  returns a bool, not a count) and the number of inputs moved for `flake`. A failed relock marks the
+  span Error.
+- `pn.ul.step`, a child of `pn.repo`, one per `UL_STEP` line `update-locks.sh` prints on stdout
+  (`UL_STEP name=<step> outcome=<outcome> start_ms=<epoch ms> ms=<ms>`). pn parses the captured
+  stdout after the script exits, so the span is created late: it is started at `start_ms` and ended at
+  `start_ms + ms` as explicit wall-clock times (consistent with the rule that every pn span ends with
+  an explicit timestamp). `pn.ul.step.name` and `pn.ul.step.outcome` (`ok`, `skipped`, `deferred`,
+  `transient`, `failed`, `aborted`) are the only attributes; `failed` and `aborted` mark the span
+  Error. A line is accepted only with exactly those four fields, so a malformed line is ignored.
+- The `project_result` event gains `steps` (a list of `{name, outcome, ms}`) and `steps_ms` (their sum)
+  when the script printed any step, on the ok, failed and aborted outcomes alike.
 
 ## Consequences
 

@@ -504,3 +504,57 @@ func TestRecordUpdateScope(t *testing.T) {
 func TestRecordUpdateScope_NoSpanIsNoop(t *testing.T) {
 	telemetry.RecordUpdateScope(context.Background(), "full") // must not panic
 }
+
+func TestRecordULSteps(t *testing.T) {
+	tel, rec := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	ctx, verb := tel.StartVerb(ctx, "workspace update")
+	steps := []telemetry.ULStep{
+		{Name: "a", Outcome: "ok", StartMS: 1_700_000_000_000, MS: 1500},
+		{Name: "b", Outcome: "failed", StartMS: 1_700_000_002_000, MS: 40},
+		{Name: "c", Outcome: "aborted", StartMS: 1_700_000_003_000, MS: 0},
+		{Name: "d", Outcome: "transient", StartMS: 1_700_000_004_000, MS: 9},
+	}
+	telemetry.RecordULSteps(ctx, steps)
+	verb.End(0, nil)
+
+	ss := rec.ByName("pn.ul.step")
+	if len(ss) != len(steps) {
+		t.Fatalf("pn.ul.step spans = %d, want %d", len(ss), len(steps))
+	}
+	parent := rec.ByName("pn.verb")[0].SpanContext().SpanID()
+	for i, s := range ss {
+		st := steps[i]
+		if want := time.UnixMilli(st.StartMS); !s.StartTime().Equal(want) {
+			t.Errorf("%s start = %v, want %v", st.Name, s.StartTime(), want)
+		}
+		if want := time.UnixMilli(st.StartMS + st.MS); !s.EndTime().Equal(want) {
+			t.Errorf("%s end = %v, want %v", st.Name, s.EndTime(), want)
+		}
+		if s.Parent().SpanID() != parent {
+			t.Errorf("%s is not a child of the current span", st.Name)
+		}
+		if len(s.Attributes()) != 2 {
+			t.Errorf("%s attributes = %v, want exactly name and outcome", st.Name, s.Attributes())
+		}
+		if v, ok := attrOf(s, "pn.ul.step.name"); !ok || v.AsString() != st.Name {
+			t.Errorf("%s name attr = %v", st.Name, v)
+		}
+		if v, ok := attrOf(s, "pn.ul.step.outcome"); !ok || v.AsString() != st.Outcome {
+			t.Errorf("%s outcome attr = %v", st.Name, v)
+		}
+		wantErr := st.Outcome == "failed" || st.Outcome == "aborted"
+		if got := s.Status().Code == codes.Error; got != wantErr {
+			t.Errorf("%s error status = %v, want %v", st.Name, got, wantErr)
+		}
+	}
+}
+
+func TestRecordULSteps_NilRecordsNothing(t *testing.T) {
+	tel, rec := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	telemetry.RecordULSteps(ctx, nil)
+	if n := len(rec.ByName("pn.ul.step")); n != 0 {
+		t.Errorf("pn.ul.step spans = %d, want 0", n)
+	}
+}

@@ -100,10 +100,11 @@ type repoOutcome struct {
 	name       string
 	status     repoStatus
 	failedStep string
-	worktree   string // left-behind worktree path when status != ok
-	branch     string // left-behind branch when status != ok
-	note       string // recovery hint / human note
-	transient  int    // steps update-locks.sh classified transient (ADR 0020); >0 warns
+	worktree   string             // left-behind worktree path when status != ok
+	branch     string             // left-behind branch when status != ok
+	note       string             // recovery hint / human note
+	transient  int                // steps update-locks.sh classified transient (ADR 0020); >0 warns
+	steps      []telemetry.ULStep // UL_STEP lines update-locks.sh printed
 	// relockFailed: the full-scope all-inputs relock failed after update-locks.sh
 	// succeeded; the repo is still integrated (status ok) and warns.
 	relockFailed bool
@@ -203,6 +204,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		fields := map[string]any{
 			"name": oc.name, "outcome": outcome, "failed_step": oc.failedStep, "note": oc.note, "transient": oc.transient,
 		}
+		withFields(fields, ulStepFields(oc.steps))
 		if oc.relockFailed {
 			fields["relock_failed"] = true
 		}
@@ -338,6 +340,8 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 			// transient count crosses the boundary even when the repo later fails; a
 			// resource-abort exits before ul_finalize prints UL_RESULT, leaving it 0.
 			oc.transient = parseULTransient(res.Stdout)
+			oc.steps = parseULSteps(res.Stdout)
+			telemetry.RecordULSteps(ctx, oc.steps)
 			if err != nil {
 				var cmdErr *exec.CommandError
 				if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {

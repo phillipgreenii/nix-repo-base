@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -14,38 +13,6 @@ import (
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 )
-
-// ulResultPrefix is the machine-readable line update-locks.sh prints from
-// ul_finalize on every exit path: "UL_RESULT transient=<N>". It is pn's only
-// window into a green update-locks run — the exit code is 0 whether or not
-// steps were classified transient, so an automated update that checks only the
-// exit code never sees a permanently-skipped ("silently transient") update
-// (ADR 0020). The token is a stable key=value contract, extensible with more
-// fields later; only `transient` is consumed today.
-const ulResultPrefix = "UL_RESULT "
-
-// parseULTransient extracts the transient-step count from update-locks.sh's
-// captured stdout (see ulResultPrefix / ul_finalize). The LAST UL_RESULT line
-// wins, since a wrapped step could itself echo the token earlier in the log.
-// Returns 0 when no parseable line is present — an older update-locks.sh, a
-// skipped/absent script, or a resource-abort that exits before ul_finalize.
-func parseULTransient(stdout []byte) int {
-	transient := 0
-	for _, line := range strings.Split(string(stdout), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, ulResultPrefix) {
-			continue
-		}
-		for _, field := range strings.Fields(line[len(ulResultPrefix):]) {
-			if v, ok := strings.CutPrefix(field, "transient="); ok {
-				if n, err := strconv.Atoi(v); err == nil {
-					transient = n
-				}
-			}
-		}
-	}
-	return transient
-}
 
 // ulLibResolverRef is the flake app that prints the update-locks lib dir. It
 // mirrors the one-liner each update-locks.sh uses; pn resolves it once per run
@@ -318,6 +285,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		relocked := false
 		projectFailed := false
 		transient := 0
+		var ulSteps []telemetry.ULStep
 
 		if hasUp {
 			if err := ctx.Err(); err != nil {
@@ -368,6 +336,8 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 					// transient count crosses the boundary even for a hard-failed repo
 					// (ul_finalize prints UL_RESULT before its non-zero exit).
 					transient = parseULTransient(res.Stdout)
+					ulSteps = parseULSteps(res.Stdout)
+					telemetry.RecordULSteps(ctx, ulSteps)
 					phaseOutcome := "ok"
 					if err != nil {
 						phaseOutcome = "failed"
@@ -415,9 +385,9 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		// it and stop the rest of the loop.
 		if aborted {
 			failed = append(failed, name)
-			_ = opts.Log.Emit("error", "project_result", "project aborted", map[string]any{
+			_ = opts.Log.Emit("error", "project_result", "project aborted", withFields(map[string]any{
 				"name": name, "outcome": "aborted", "failed_step": abortStep, "transient": transient,
-			})
+			}, ulStepFields(ulSteps)))
 			finishRepo("failed")
 			fmt.Fprintf(out, "  ✗ %s: update FAILED (aborted at %s: environmental/resource failure)\n", name, abortStep)
 			endRepo(errors.New("update aborted: environmental/resource failure"))
@@ -432,9 +402,9 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			if pullFailed {
 				step = "pull"
 			}
-			_ = opts.Log.Emit("error", "project_result", "project failed", map[string]any{
+			_ = opts.Log.Emit("error", "project_result", "project failed", withFields(map[string]any{
 				"name": name, "outcome": "failed", "failed_step": step, "transient": transient,
-			})
+			}, ulStepFields(ulSteps)))
 			finishRepo("failed")
 			fmt.Fprintf(out, "  ✗ %s: update FAILED at step %s\n", name, step)
 			endRepo(fmt.Errorf("update failed at %s", step))
@@ -443,7 +413,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			// failed after update-locks.sh succeeded, is escalated to warn: the
 			// exit code alone would never surface a silently skipped update (ADR 0020).
 			level, msg := "info", "project updated"
-			fields := map[string]any{"name": name, "outcome": "ok", "transient": transient}
+			fields := withFields(map[string]any{"name": name, "outcome": "ok", "transient": transient}, ulStepFields(ulSteps))
 			if transient > 0 {
 				level = "warn"
 				msg = fmt.Sprintf("project updated, but %d transient step(s) were skipped this run — a permanently-transient step keeps the run green while an update is silently skipped (ADR 0020)", transient)

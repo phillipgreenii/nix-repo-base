@@ -8,6 +8,7 @@
 //	    pn.exec  (the hook's subprocesses)
 //	  pn.repo  (one per repo a workspace verb touches)
 //	    pn.relock  (one per relock of a repo's flake inputs; kind siblings or flake)
+//	    pn.ul.step  (one per UL_STEP line update-locks.sh printed; name and outcome)
 //	    pn.exec  (one per subprocess, emitted by the exec.Runner decorator)
 //
 // The pn.verb span of `workspace update` carries pn.update.scope (siblings,
@@ -63,6 +64,7 @@ const (
 	SpanExec              = "pn.exec"
 	SpanHook              = "pn.hook"
 	SpanRelock            = "pn.relock"
+	SpanULStep            = "pn.ul.step"
 	MetricCommandDuration = "pn.command.duration"
 	MetricPlanBuilds      = "pn.plan.builds"
 )
@@ -76,6 +78,11 @@ const (
 	// AttrUpdateScope is the --scope of a workspace update, set on pn.verb.
 	AttrUpdateScope   = "pn.update.scope"
 	AttrRelockChanged = "pn.relock.changed"
+	// AttrULStepName and AttrULStepOutcome describe a pn.ul.step span: the
+	// update-locks.sh step and how it ended (ok, skipped, deferred, transient,
+	// failed or aborted).
+	AttrULStepName    = "pn.ul.step.name"
+	AttrULStepOutcome = "pn.ul.step.outcome"
 	AttrRepo          = "pn.repo"
 	AttrStatus        = "status"
 	AttrExitCode      = "process.exit.code"
@@ -527,6 +534,32 @@ func StartRelock(ctx context.Context, kind string) (context.Context, func(change
 			setError(span, err)
 		}
 		span.End(endNow())
+	}
+}
+
+// ULStep is one step update-locks.sh reported with a UL_STEP line: its name,
+// outcome, epoch-millisecond start and duration in milliseconds.
+type ULStep struct {
+	Name, Outcome string
+	StartMS, MS   int64
+}
+
+// RecordULSteps emits one pn.ul.step span per step, a child of the current span.
+// The steps ran in another process, so each span is started at StartMS and ended
+// at StartMS+MS (explicit wall-clock times, like every pn span end); a failed or
+// aborted step marks its span Error.
+func RecordULSteps(ctx context.Context, steps []ULStep) {
+	for _, st := range steps {
+		_, span := From(ctx).tracer.Start(ctx, SpanULStep,
+			trace.WithTimestamp(time.UnixMilli(st.StartMS)),
+			trace.WithAttributes(
+				attribute.String(AttrULStepName, st.Name),
+				attribute.String(AttrULStepOutcome, st.Outcome),
+			))
+		if st.Outcome == "failed" || st.Outcome == "aborted" {
+			span.SetStatus(codes.Error, "update-locks step "+st.Outcome)
+		}
+		span.End(trace.WithTimestamp(time.UnixMilli(st.StartMS + st.MS)))
 	}
 }
 

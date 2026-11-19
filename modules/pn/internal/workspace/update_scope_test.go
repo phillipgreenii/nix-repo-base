@@ -803,3 +803,98 @@ url = "github:owner/sib"
 		t.Errorf("project_result lacks failed_step relock-siblings:\n%s", data)
 	}
 }
+
+// ulWith scripts one update-locks.sh run that prints stdout and exits with
+// code (a non-zero code returns a CommandError).
+func (e *scopeEnv) ulWith(stdout string, code int) {
+	res := exec.Result{Stdout: []byte(stdout), ExitCode: code}
+	var err error
+	if code != 0 {
+		err = &exec.CommandError{Name: "./update-locks.sh", Result: res}
+	}
+	e.f.AddResponse("./update-locks.sh", nil, res, err)
+}
+
+const ulStepsStdout = "UL_STEP name=alpha outcome=ok start_ms=1700000000000 ms=1500\n" +
+	"noise\nUL_STEP name=beta outcome=skipped start_ms=1700000002000 ms=250\n" +
+	"UL_RESULT transient=0\n"
+
+// TestUpdate_RecordsULStepsFromUpdateLocksStdout: the UL_STEP lines on
+// update-locks.sh's stdout become pn.ul.step spans under the repo's pn.repo and
+// steps / steps_ms on project_result, in both flows and on every outcome that
+// follows the script (ok, a CommandError, exit 77).
+func TestUpdate_RecordsULStepsFromUpdateLocksStdout(t *testing.T) {
+	cases := []struct {
+		name    string
+		code    int
+		outcome string
+		wantErr bool
+	}{
+		{"ok", 0, "ok", false},
+		{"command-error", 1, "failed", true},
+		{"exit-77", ulExitAbort, "aborted", true},
+	}
+	for _, fl := range scopeFlows {
+		for _, c := range cases {
+			t.Run(fl.name+"/"+c.name, func(t *testing.T) {
+				e := newScopeEnv(t, fl.inPlace, []string{"foo"}, scopeOpts{})
+				e.ulWith(ulStepsStdout, c.code)
+				tel, rec := telemetrytest.New()
+				ctx := telemetry.WithTelemetry(context.Background(), tel)
+				ctx, verb := tel.StartVerb(ctx, "workspace update")
+				_, err := e.update(ctx, ScopeFull)
+				verb.End(0, nil)
+				if (err != nil) != c.wantErr {
+					t.Fatalf("Update err = %v, wantErr %v", err, c.wantErr)
+				}
+				spans, repos := rec.ByName("pn.ul.step"), rec.ByName("pn.repo")
+				if len(spans) != 2 || len(repos) != 1 {
+					t.Fatalf("pn.ul.step=%d pn.repo=%d, want 2 and 1", len(spans), len(repos))
+				}
+				for _, s := range spans {
+					if s.Parent().SpanID() != repos[0].SpanContext().SpanID() {
+						t.Errorf("%v is not a child of pn.repo", attrs(s))
+					}
+				}
+				if got := attrs(spans[0])["pn.ul.step.name"].AsString(); got != "alpha" {
+					t.Errorf("first step name = %q, want alpha", got)
+				}
+				pr := e.event("project_result", "foo")
+				if pr["outcome"] != c.outcome {
+					t.Errorf("outcome = %v, want %s", pr["outcome"], c.outcome)
+				}
+				steps, _ := pr["steps"].([]any)
+				if len(steps) != 2 {
+					t.Fatalf("steps = %v, want 2", pr["steps"])
+				}
+				first, _ := steps[0].(map[string]any)
+				if first["name"] != "alpha" || first["outcome"] != "ok" || first["ms"] != float64(1500) {
+					t.Errorf("steps[0] = %v", first)
+				}
+				if pr["steps_ms"] != float64(1750) {
+					t.Errorf("steps_ms = %v, want 1750", pr["steps_ms"])
+				}
+			})
+		}
+	}
+}
+
+// TestUpdate_NoULStepsLeavesEventUnchanged: no UL_STEP lines, no steps fields.
+func TestUpdate_NoULStepsLeavesEventUnchanged(t *testing.T) {
+	for _, fl := range scopeFlows {
+		t.Run(fl.name, func(t *testing.T) {
+			e := newScopeEnv(t, fl.inPlace, []string{"foo"}, scopeOpts{})
+			e.ulOK("UL_RESULT transient=0\n")
+			if _, err := e.update(context.Background(), ScopeFull); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			pr := e.event("project_result", "foo")
+			if _, has := pr["steps"]; has {
+				t.Errorf("project_result carries steps without UL_STEP lines: %v", pr)
+			}
+			if _, has := pr["steps_ms"]; has {
+				t.Errorf("project_result carries steps_ms without UL_STEP lines: %v", pr)
+			}
+		})
+	}
+}
