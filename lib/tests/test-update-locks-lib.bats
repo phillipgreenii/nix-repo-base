@@ -2077,3 +2077,176 @@ _seed_stale_stamp() {
   [ "$status" -eq 0 ]
   [ -f "$TEST_DIR/.update-locks/steps/retired-step" ]
 }
+
+# --- UL_STEP result lines (ANCHOR ul_run_step-step-result-line) ---
+#
+# Each case runs in a sub-bash (ul_run_step backgrounds a tee for stderr capture;
+# see the transient test above). The clock is pinned: unset EPOCHREALTIME turns it
+# into a plain variable, which _ul_now_ms re-reads on every call, so start and end
+# are identical (ms=0) unless the test moves it.
+
+_ul_step_lines() { printf '%s\n' "$output" | grep '^UL_STEP ' || true; }
+
+# _ul_step_case <step body ...>: run $1 (a bash snippet using ul_run_step) after a
+# pinned-clock setup and print its output.
+_ul_step_case() {
+  run bash -c '
+    source "'"$UL_LOCKS_LIB"'"
+    ul_setup "test-project" "'"$TEST_DIR"'" >/dev/null 2>&1
+    unset EPOCHREALTIME; EPOCHREALTIME=1700000000.250000
+    '"$1"'
+  '
+}
+
+@test "ul_run_step prints UL_STEP outcome=ok for a succeeding step" {
+  _ul_step_case 'ok_step() { echo new > file.txt; }; ul_run_step "ok-step" "msg" ok_step'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=ok-step outcome=ok start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_run_step prints UL_STEP outcome=skipped when the stamp is fresh" {
+  _ul_step_case '
+    UL_FORCE=false
+    ul_write_stamp "fresh-step"
+    git add -A; git commit -qm stamp
+    noop() { :; }
+    ul_run_step "fresh-step" "msg" noop'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=fresh-step outcome=skipped start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_run_step prints UL_STEP outcome=deferred on exit 75" {
+  _ul_step_case 'defer() { ul_attempted; }; ul_run_step "defer-step" "msg" defer'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=defer-step outcome=deferred start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_run_step prints UL_STEP outcome=transient on a transient stderr signature" {
+  _ul_step_case 'net() { echo "The remote end hung up unexpectedly" >&2; return 1; }; ul_run_step "net-step" "msg" net'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=net-step outcome=transient start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_run_step prints UL_STEP outcome=failed on a hard failure" {
+  _ul_step_case 'bad() { return 1; }; ul_run_step "bad-step" "msg" bad'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=bad-step outcome=failed start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_run_step prints UL_STEP outcome=failed when the step commit is rejected by a hook" {
+  mkdir -p "$GFH_WORK/reject-hooks"
+  printf '#!%s\nexit 1\n' "$(command -v bash)" >"$GFH_WORK/reject-hooks/pre-commit"
+  chmod +x "$GFH_WORK/reject-hooks/pre-commit"
+  git config core.hooksPath "$GFH_WORK/reject-hooks"
+  _ul_step_case 'ok_step() { echo new > file.txt; }; ul_run_step "hook-step" "msg" ok_step'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=hook-step outcome=failed start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_run_step prints UL_STEP outcome=failed when the deferred stamp-only commit fails" {
+  mkdir -p "$GFH_WORK/reject-hooks"
+  printf '#!%s\nexit 1\n' "$(command -v bash)" >"$GFH_WORK/reject-hooks/pre-commit"
+  chmod +x "$GFH_WORK/reject-hooks/pre-commit"
+  git config core.hooksPath "$GFH_WORK/reject-hooks"
+  _ul_step_case 'defer() { ul_attempted; }; ul_run_step "defer-hook" "msg" defer'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=defer-hook outcome=failed start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_run_step prints UL_STEP outcome=failed before the dirty-tree FATAL exit" {
+  _ul_step_case 'echo dirty > file.txt; ul_run_step "dirty-step" "msg" true'
+  [ "$status" -eq 1 ]
+  [[ $output == *"FATAL: workspace dirty"* ]]
+  [ "$(_ul_step_lines)" = "UL_STEP name=dirty-step outcome=failed start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_run_step prints UL_STEP outcome=aborted before exiting on ENOSPC" {
+  _ul_step_case 'disk() { echo "error: write of 9 bytes: No space left on device" >&2; return 1; }; ul_run_step "disk-step" "msg" disk'
+  [ "$status" -eq 77 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=disk-step outcome=aborted start_ms=1700000000250 ms=0" ]
+}
+
+@test "UL_STEP reads a comma-decimal EPOCHREALTIME" {
+  _ul_step_case '
+    EPOCHREALTIME=1700000000,250000
+    ok_step() { echo new > file.txt; }; ul_run_step "comma-step" "msg" ok_step'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=comma-step outcome=ok start_ms=1700000000250 ms=0" ]
+}
+
+@test "UL_STEP ms covers the step commit" {
+  _ul_step_case '
+    _orig_body="$(declare -f _ul_commit_updated)"
+    eval "${_orig_body/_ul_commit_updated/_orig_commit_updated}"
+    _ul_commit_updated() { EPOCHREALTIME=1700000002.750000; _orig_commit_updated "$@"; }
+    ok_step() { echo new > file.txt; }; ul_run_step "slow-commit" "msg" ok_step'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=slow-commit outcome=ok start_ms=1700000000250 ms=2500" ]
+}
+
+@test "UL_STEP falls back to whole seconds without EPOCHREALTIME" {
+  local script
+  for script in \
+    'ok_step() { echo new > file.txt; }; ul_run_step "fb-ok" "msg" ok_step' \
+    'disk() { echo "No space left on device" >&2; return 1; }; ul_run_step "fb-abort" "msg" disk' \
+    'echo dirty > file.txt; ul_run_step "fb-dirty" "msg" true'; do
+    run bash -c '
+      source "'"$UL_LOCKS_LIB"'"
+      ul_setup "test-project" "'"$TEST_DIR"'" >/dev/null 2>&1
+      unset EPOCHREALTIME
+      '"$script"'
+    '
+    [[ "$(_ul_step_lines)" =~ ^UL_STEP\ name=fb-[a-z]+\ outcome=[a-z]+\ start_ms=[0-9]+000\ ms=[0-9]+$ ]]
+    git -C "$TEST_DIR" reset -q --hard HEAD
+    git -C "$TEST_DIR" clean -fdq
+  done
+}
+
+@test "_ul_epochrealtime_to_ms converts both decimal separators without octal errors" {
+  source "$UL_LOCKS_LIB"
+  [ "$(_ul_epochrealtime_to_ms 1700000000.089123)" = "1700000000089" ]
+  [ "$(_ul_epochrealtime_to_ms 1700000000,089123)" = "1700000000089" ]
+  [ "$(_ul_epochrealtime_to_ms 1700000000.000999)" = "1700000000000" ]
+}
+
+@test "ul_brew_lock_update_step prints UL_STEP outcome=skipped when it skips" {
+  _seed_brew_lock_env
+  export UL_BREW_BIN="definitely-not-a-real-brew"
+  _ul_step_case 'ul_brew_lock_update_step'
+  [ "$status" -eq 0 ]
+  [ "$(_ul_step_lines)" = "UL_STEP name=brew-lock-update outcome=skipped start_ms=1700000000250 ms=0" ]
+}
+
+@test "ul_brew_lock_update_step skip path survives a lib copy without the new helpers" {
+  _seed_brew_lock_env
+  export UL_BREW_BIN="definitely-not-a-real-brew"
+  # Only the three brew functions, as nix-ziprecruiter's stand-in copies them.
+  local fn body="" part
+  for fn in _ul_brew_lock_skip_reason ul_brew_lock_update ul_brew_lock_update_step; do
+    part="$(awk -v fn="$fn" '
+      $0 ~ "^" fn "\\(\\) \\{$" { on = 1 }
+      on { print }
+      on && /^}$/ { exit }
+    ' "$UL_LOCKS_LIB")"
+    [[ -n $part ]]
+    body+="$part"$'\n'
+  done
+  printf '%s\n_UL_STEPS_SKIPPED=0\n_UL_REGISTERED_STEPS=()\n' "$body" >"$GFH_WORK/brew-only-lib.bash"
+  run bash -c 'set -euo pipefail; source "'"$GFH_WORK"'/brew-only-lib.bash"; ul_brew_lock_update_step; echo reached-end'
+  [ "$status" -eq 0 ]
+  [[ $output == *"brew-lock-update: skipped: brew not found"* ]]
+  [[ $output == *"reached-end"* ]]
+  [[ $output != *"UL_STEP"* ]]
+}
+
+@test "ul_finalize still prints UL_RESULT as the last UL_RESULT line after UL_STEP lines" {
+  _ul_step_case '
+    ok_step() { echo new > file.txt; }
+    ul_run_step "fin-step" "msg" ok_step
+    ul_finalize'
+  [ "$status" -eq 0 ]
+  [ -n "$(_ul_step_lines)" ]
+  [ "$(printf '%s\n' "$output" | grep '^UL_RESULT ' | tail -1)" = "UL_RESULT transient=0" ]
+  # The last UL_RESULT line comes after the UL_STEP line.
+  [ "$(printf '%s\n' "$output" | grep -n '^UL_STEP ' | tail -1 | cut -d: -f1)" -lt "$(printf '%s\n' "$output" | grep -n '^UL_RESULT ' | tail -1 | cut -d: -f1)" ]
+}

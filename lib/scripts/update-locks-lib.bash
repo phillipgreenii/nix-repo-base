@@ -107,6 +107,22 @@
 #     - hard: record the step in _UL_FAILED_STEPS, commit nothing; ul_finalize
 #       exits 1 with the list of failed step names.
 #
+# ANCHOR: ul_run_step-step-result-line
+#   Every ul_run_step prints ONE stdout line once the step's outcome is known
+#   and after its commit:
+#     UL_STEP name=<step> outcome=<o> start_ms=<epoch ms> ms=<integer ms>
+#   <step> matches ^[A-Za-z0-9._-]+$. <o> is ok | skipped | deferred | transient
+#   | failed | aborted. `failed` covers a hard command failure, a rejected step
+#   commit, a rejected deferred stamp-only commit, and the dirty-tree FATAL path
+#   (printed before `exit 1`); `aborted` is printed before the resource-abort
+#   exit. start_ms is taken before the stamp check; ms covers the command plus
+#   its commit. Precision is milliseconds from EPOCHREALTIME (bash 5), or whole
+#   seconds (start_ms ends in 000) on bash 3.2, which has no EPOCHREALTIME. The
+#   brew skip path in ul_brew_lock_update_step prints a `skipped` line too. A lib
+#   that predates this contract prints none; the reader treats that as "no step
+#   data". UL_STEP lines are additive: the last UL_RESULT line stays last
+#   (ADR 0020).
+#
 # ANCHOR: ul-classify-step-failure
 #   ul_classify_step_failure <stderr_file> echoes resource | transient | hard.
 #   CONSERVATIVE: only unambiguous signatures leave "hard" (a false "transient"
@@ -739,6 +755,35 @@ ul_setup() {
   _UL_REGISTERED_STEPS=()
 }
 
+# Convert an EPOCHREALTIME value to whole epoch milliseconds. Strips every
+# non-digit and divides, never splitting on the separator: bash formats
+# EPOCHREALTIME with the locale's decimal separator (. or ,), and a zero-led
+# fraction such as 089123 would be read as octal (same trap as the
+# GIT_CONFIG_COUNT guard in _ul_disable_fsmonitor).
+_ul_epochrealtime_to_ms() {
+  local t=${1//[!0-9]/}
+  echo $((10#$t / 1000))
+}
+
+# Current epoch milliseconds. Tests EPOCHREALTIME on every call (never caches
+# the choice): bash 3.2, the dev-shell fallback path, has none, so it falls back
+# to whole seconds x 1000.
+_ul_now_ms() {
+  if [[ -n ${EPOCHREALTIME:-} ]]; then
+    _ul_epochrealtime_to_ms "$EPOCHREALTIME"
+  else
+    echo $(($(date +%s) * 1000))
+  fi
+}
+
+# _ul_emit_step_result <name> <outcome> <start_ms>: print the UL_STEP line on
+# stdout (ANCHOR ul_run_step-step-result-line). Ends the interval now.
+_ul_emit_step_result() {
+  local name="${1//[!A-Za-z0-9._-]/_}" outcome="$2" start_ms="$3" end_ms
+  end_ms="$(_ul_now_ms)"
+  echo "UL_STEP name=${name} outcome=${outcome} start_ms=${start_ms} ms=$((end_ms - start_ms))"
+}
+
 ul_run_step() {
   local step_name="$1"
   local commit_msg="$2"
@@ -753,8 +798,14 @@ ul_run_step() {
   # because its stamp is fresh is still a registered step (ul_finalize prune).
   _UL_REGISTERED_STEPS+=("$step_name")
 
+  # Taken before the stamp check so every outcome, skipped included, reports it
+  # (ANCHOR ul_run_step-step-result-line).
+  local _ul_start_ms _ul_outcome="ok"
+  _ul_start_ms="$(_ul_now_ms)"
+
   if ! ul_should_run "$step_name"; then
     _UL_STEPS_SKIPPED=$((_UL_STEPS_SKIPPED + 1))
+    _ul_emit_step_result "$step_name" skipped "$_ul_start_ms"
     return 0
   fi
 
@@ -763,6 +814,7 @@ ul_run_step() {
   if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "FATAL: workspace dirty before step '${step_name}'. Stopping."
     git status --short
+    _ul_emit_step_result "$step_name" failed "$_ul_start_ms"
     exit 1
   fi
 
@@ -835,6 +887,8 @@ ul_run_step() {
   if [[ $rc -eq 0 ]]; then
     if _ul_commit_updated "$step_name" "$commit_msg"; then
       _UL_STEPS_SUCCEEDED=$((_UL_STEPS_SUCCEEDED + 1))
+    else
+      _ul_outcome="failed"
     fi
   elif [[ $rc -eq $UL_RC_ATTEMPTED ]]; then
     git reset --hard HEAD 2>/dev/null || true
@@ -842,6 +896,9 @@ ul_run_step() {
     if _ul_commit_stamp_only "$step_name"; then
       echo "  ⊘ Step '${step_name}' attempted — no update applied (deferred)"
       _UL_STEPS_DEFERRED=$((_UL_STEPS_DEFERRED + 1))
+      _ul_outcome="deferred"
+    else
+      _ul_outcome="failed"
     fi
   else
     # Non-zero, non-deferral: classify the captured stderr. Rollback is common to
@@ -856,6 +913,7 @@ ul_run_step() {
       # retried next run, not skipped until the TTL), keep the run passing.
       echo "  ⟳ Step '${step_name}' hit a transient external-source error — rolled back, will retry next run"
       _UL_STEPS_TRANSIENT=$((_UL_STEPS_TRANSIENT + 1))
+      _ul_outcome="transient"
       ;;
     resource)
       # Resource exhaustion (disk full): every later step/repo would fail the
@@ -864,9 +922,11 @@ ul_run_step() {
       echo "     Free space, then re-run 'pn workspace update'. Aborting the run." >&2
       rm -f "$_ul_step_err_file"
       _ul_step_err_file=""
+      _ul_emit_step_result "$step_name" aborted "$_ul_start_ms"
       exit "$UL_RC_ABORT"
       ;;
     *)
+      _ul_outcome="failed"
       echo "  ✗ Step '${step_name}' failed (exit code ${rc})"
       _UL_STEPS_FAILED=$((_UL_STEPS_FAILED + 1))
       _UL_FAILED_STEPS+=("$step_name")
@@ -876,6 +936,7 @@ ul_run_step() {
 
   rm -f "$_ul_step_err_file"
   _ul_step_err_file=""
+  _ul_emit_step_result "$step_name" "$_ul_outcome" "$_ul_start_ms"
 }
 
 # Record what a content-changing step upgraded, for the end-of-run summary.
@@ -1034,6 +1095,10 @@ ul_brew_lock_update_step() {
     # Skipped before ul_run_step, but still a registered step: keep its stamp.
     _UL_REGISTERED_STEPS+=("brew-lock-update")
     _UL_STEPS_SKIPPED=$((_UL_STEPS_SKIPPED + 1))
+    # Guarded: a consumer's stand-in copies only the brew functions out of this
+    # lib, so the helper may be absent (ANCHOR ul_run_step-step-result-line).
+    declare -F _ul_emit_step_result >/dev/null &&
+      _ul_emit_step_result "brew-lock-update" skipped "$(_ul_now_ms)"
     return 0
   fi
   ul_run_step "brew-lock-update" "$msg" ul_brew_lock_update

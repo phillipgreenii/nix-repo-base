@@ -109,3 +109,34 @@ pipeline surfaces 77 as `update-locks.sh`'s own exit code.
   (exit 77), and `ul_setup` daemon abort — `lib/tests/test-update-locks-lib.bats`.
 - Go: worktree and in-place flows abort on update-locks exit 77, stop before later repos,
   and return an error naming the abort — `modules/pn/internal/workspace/*_test.go`.
+
+## Amendment 2026-11-18: per-step result lines
+
+**Why.** A trace of `pn workspace update` could name the time spent in a repo's
+`update-locks.sh` but not which step inside it took that time, because the script's steps
+(`ul_run_step`) are invisible across the bash to Go boundary. The `UL_RESULT` line carries only
+the transient count, so it cannot answer that.
+
+**Contract.** `ul_run_step` prints one additional stdout line per step, once the step's outcome
+is known and after its commit:
+
+```text
+UL_STEP name=<step> outcome=<ok|skipped|deferred|transient|failed|aborted> start_ms=<epoch milliseconds> ms=<integer milliseconds>
+```
+
+- `name` matches `^[A-Za-z0-9._-]+$`.
+- `start_ms` is taken before the stamp check. It comes from `EPOCHREALTIME` (bash 5) with the
+  locale's decimal separator removed, and from whole seconds times 1000 (so it ends in `000`) on
+  bash 3.2, which has no `EPOCHREALTIME`.
+- `ms` covers the command plus its commit.
+- `failed` covers a hard command failure, a successful command whose commit failed, a failed
+  deferred stamp-only commit, and the dirty-tree FATAL path (the line is printed before
+  `exit 1`). `aborted` is printed before the resource-abort exit 77.
+- `ul_brew_lock_update_step` prints a `skipped` line on its own skip path, guarded so a consumer's
+  partial copy of the lib (which lacks the helper) keeps working.
+- `UL_STEP` lines are additive: `UL_RESULT transient=<N>` keeps its meaning and stays the last
+  `UL_RESULT` line.
+
+**Compatibility.** A run whose resolved lib predates `UL_STEP` prints no such lines, and `pn`
+treats that as "no step data", not an error. In a canonical run `determine-ul-lib-dir` prefers
+the workspace's own `nix-repo-base/lib/scripts`, so every repo gets step lines once this lands.
