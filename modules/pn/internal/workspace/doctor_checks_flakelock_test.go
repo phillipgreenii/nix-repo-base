@@ -41,7 +41,7 @@ func TestCheckFlakeLockFresh_StaleIsError(t *testing.T) {
 		t.Fatalf("stale flake.lock should be error: %+v", fs)
 	}
 	// The remedy relocks ONLY sibling inputs (not a full nix flake update), so
-	// both the auto-fix and the copy-pasteable hint use --siblings-only.
+	// both the auto-fix and the copy-pasteable hint use --scope siblings.
 	var fixable *Finding
 	for i := range fs {
 		if fs[i].Repo == "consumer" && fs[i].Fixable {
@@ -52,8 +52,8 @@ func TestCheckFlakeLockFresh_StaleIsError(t *testing.T) {
 	if fixable == nil {
 		t.Fatalf("expected a fixable flake-lock-fresh finding for consumer: %+v", fs)
 	}
-	if fixable.Manual != "pn workspace update --siblings-only" {
-		t.Errorf("Manual hint = %q, want the siblings-only relock command", fixable.Manual)
+	if fixable.Manual != "pn workspace update --scope siblings" {
+		t.Errorf("Manual hint = %q, want the siblings-scope relock command", fixable.Manual)
 	}
 }
 
@@ -109,13 +109,13 @@ func TestCheckFlakeLockFresh_SkippedTargetIsSkippedFinding(t *testing.T) {
 	}
 }
 
-// TestAttachFlakeLockFix_FixRunsSiblingsOnly guards the fix WIRING, not just the
+// TestAttachFlakeLockFix_FixRunsScopeSiblings guards the fix WIRING, not just the
 // hint string: running the attached fix closure must drive an update that SKIPS
 // update-locks.sh. A regression that kept the Manual hint but dropped
-// SiblingsOnly from the Update call would pass the hint assertion above but fail
+// Scope: ScopeSiblings from the Update call would pass the hint assertion above but fail
 // here (update-locks.sh would run). The script exists on disk (mkUpdateLocks),
-// so its absence from the call log is attributable to SiblingsOnly.
-func TestAttachFlakeLockFix_FixRunsSiblingsOnly(t *testing.T) {
+// so its absence from the call log is attributable to the siblings scope.
+func TestAttachFlakeLockFix_FixRunsScopeSiblings(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
@@ -129,6 +129,10 @@ url = "github:owner/foo"
 
 	f := exec.NewFakeRunner()
 	mkUpdateLocks(t, foo)
+	// A flake.lock makes the all-inputs relock REAL: were the fix to run the flake
+	// scope instead of siblings, it would call the unscripted `nix flake update
+	// --refresh` and the repo would fail, so a green run proves the siblings scope.
+	writeFile(t, filepath.Join(foo, "flake.lock"), relockLock(1, map[string]string{"sib": revA}))
 	// In-place, no-upstream, no-edges flow: isDirty probes → no upstream →
 	// propagation no-op → (skip update-locks) → capture HEAD.
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
@@ -150,7 +154,10 @@ url = "github:owner/foo"
 	}
 	for _, c := range f.Calls() {
 		if c.Name == "./update-locks.sh" {
-			t.Fatalf("doctor fix must run --siblings-only (no update-locks.sh); calls=%v", f.Calls())
+			t.Fatalf("doctor fix must run --scope siblings (no update-locks.sh); calls=%v", f.Calls())
+		}
+		if c.Name == "nix" {
+			t.Fatalf("doctor fix must not relock all inputs; calls=%v", f.Calls())
 		}
 	}
 }

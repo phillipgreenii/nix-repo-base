@@ -235,14 +235,14 @@ url = "github:owner/zzz"
 	}
 }
 
-// TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir: with
-// SiblingsOnly the worktree flow MUST skip the step-3 update-locks.sh (even though
+// TestUpdateViaWorktree_ScopeSiblings_SkipsUpdateLocksAndULLibDir: with
+// ScopeSiblings the worktree flow MUST skip the step-3 update-locks.sh (even though
 // the script exists on disk) AND MUST NOT resolve/require UL_LIB_DIR (the
 // resolver is never called and an empty env is not fatal), since update-locks
 // never runs. Everything else — worktree isolate → relock siblings → rebase →
 // ff-integrate → cleanup — runs unchanged. (No push: ADR 0023.)
-func TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir(t *testing.T) {
-	t.Setenv("UL_LIB_DIR", "") // empty would be fatal in normal mode; SiblingsOnly must not care
+func TestUpdateViaWorktree_ScopeSiblings_SkipsUpdateLocksAndULLibDir(t *testing.T) {
+	t.Setenv("UL_LIB_DIR", "") // empty would be fatal in normal mode; ScopeSiblings must not care
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtUpdateFixture(t)
@@ -265,43 +265,51 @@ func TestUpdateViaWorktree_SiblingsOnly_SkipsUpdateLocksAndULLibDir(t *testing.T
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	// No ULLibDir supplied: SiblingsOnly must not require it.
-	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{SiblingsOnly: true}); err != nil {
+	// No ULLibDir supplied: ScopeSiblings must not require it.
+	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{Scope: ScopeSiblings}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	for _, c := range f.Calls() {
 		if c.Name == "./update-locks.sh" {
-			t.Fatalf("--siblings-only must NOT run update-locks.sh")
+			t.Fatalf("scope siblings must NOT run update-locks.sh")
 		}
 	}
 	if calledWith(f, "nix", []string{"run", ulLibResolverRef}) {
-		t.Fatalf("--siblings-only must NOT resolve UL_LIB_DIR (update-locks never runs)")
+		t.Fatalf("scope siblings must NOT resolve UL_LIB_DIR (update-locks never runs)")
 	}
 }
 
-// assertNoPushNoPropagate is the NEGATIVE assertion both pg2-x42j3 and pg2-j2f8f
-// turn on: update must issue no push and no sibling propagation. It asserts on
-// the CALL LOG rather than on the absence of a scripted response, because a
-// FakeRunner with no matching response would also "pass" a test that merely
-// stopped scripting the push — the run would just fail for the wrong reason.
-//
-//   - no `git push` in ANY form (`push origin HEAD:main`, plain `push`, `push -u`).
-//     `git stash push` is not a push and is excluded by matching argv position.
-//   - no `nix flake update` (propagateWorkspaceEdges' only subprocess).
-func assertNoPushNoPropagate(t *testing.T, calls []exec.Call) {
+// assertNoPush is the NEGATIVE assertion update turns on: it issues no push. It
+// asserts on the CALL LOG rather than on the absence of a scripted response,
+// because a FakeRunner with no matching response would also "pass" a test that
+// merely stopped scripting the push — the run would just fail for the wrong
+// reason. No `git push` in ANY form (`push origin HEAD:main`, plain `push`,
+// `push -u`); `git stash push` is not a push and is excluded by matching argv
+// position.
+func assertNoPush(t *testing.T, calls []exec.Call) {
 	t.Helper()
 	for _, c := range calls {
-		if c.Name == "git" {
-			for i, a := range c.Args {
-				// git -C <dir> push …  → "push" is the verb at index 2. `stash push`
-				// puts "push" at index 3, so position is what separates them.
-				if a == "push" && i == 2 {
-					t.Errorf("update must NOT push (ADR 0023); got git %v", c.Args)
-				}
+		if c.Name != "git" {
+			continue
+		}
+		for i, a := range c.Args {
+			// git -C <dir> push … → "push" is the verb at index 2. `stash push`
+			// puts "push" at index 3, so position is what separates them.
+			if a == "push" && i == 2 {
+				t.Errorf("update must NOT push (ADR 0023); got git %v", c.Args)
 			}
 		}
-		if c.Name == "nix" && len(c.Args) >= 2 && c.Args[0] == "flake" && c.Args[1] == "update" {
-			t.Errorf("update must NOT propagate workspace-sibling locks (ADR 0023); got nix %v", c.Args)
+	}
+}
+
+// assertNoSiblingRelock asserts no `nix flake update --refresh <input>...` call
+// (the siblings scope's propagateWorkspaceEdges relock) was made. The all-inputs
+// relock carries no input names and is allowed.
+func assertNoSiblingRelock(t *testing.T, calls []exec.Call) {
+	t.Helper()
+	for _, c := range calls {
+		if c.Name == "nix" && len(c.Args) > 3 && c.Args[0] == "flake" && c.Args[1] == "update" && c.Args[2] == "--refresh" {
+			t.Errorf("a non-siblings scope must NOT relock sibling inputs by name; got nix %v", c.Args)
 		}
 	}
 }
@@ -340,13 +348,13 @@ url = "github:owner/sib"
 	return root, foo, wt, f
 }
 
-// TestUpdateViaWorktree_NeverPushesNorPropagates is the pg2-x42j3 + pg2-j2f8f
+// TestUpdateViaWorktree_NeverPushesNorRelocksSiblingsOnly is the pg2-x42j3 + pg2-j2f8f
 // regression, and it supersedes the old pg2-m75sq PREK_ALLOW_NO_CONFIG-on-push
 // guard: update no longer pushes from the ephemeral worktree, so the missing
 // .pre-commit-config.yaml (ADR 0016) can no longer abort a pre-push hook there at
 // all. The repo has a workspace edge AND a flake.lock, so propagation would fire
 // if it were still wired in.
-func TestUpdateViaWorktree_NeverPushesNorPropagates(t *testing.T) {
+func TestUpdateViaWorktree_NeverPushesNorRelocksSiblingsOnly(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtEdgeFixture(t)
@@ -354,6 +362,7 @@ func TestUpdateViaWorktree_NeverPushesNorPropagates(t *testing.T) {
 	// worktree fixture, so it fails at worktree-add — which is fine: the assertion
 	// is about what is ABSENT from the whole run.
 	scriptThroughRebase(f, foo, wt, branch)
+	scriptAllInputsRelock(t, f, wt, nil)
 	f.AddResponse("git", []string{"-C", foo, "rev-parse", "--abbrev-ref", "HEAD"}, exec.Result{Stdout: []byte("main\n")}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--quiet"}, exec.Result{}, nil)
 	f.AddResponse("git", []string{"-C", foo, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
@@ -366,15 +375,16 @@ func TestUpdateViaWorktree_NeverPushesNorPropagates(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	_ = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{ULLibDir: "/nix/store/x/lib/scripts"})
-	assertNoPushNoPropagate(t, f.Calls())
+	assertNoPush(t, f.Calls())
+	assertNoSiblingRelock(t, f.Calls())
 }
 
-// TestUpdateViaWorktree_SiblingsOnlyRelocksFromRemoteButNeverPushes: with
-// --siblings-only the worktree flow DOES relock the sibling input — from the
+// TestUpdateViaWorktree_ScopeSiblingsRelocksFromRemoteButNeverPushes: with
+// scope siblings the worktree flow DOES relock the sibling input — from the
 // sibling's declared REMOTE url, which is why `--refresh` is mandatory (C1) — and
 // still never pushes. This is the pg2-j2f8f contract: relock locally, publish
 // separately.
-func TestUpdateViaWorktree_SiblingsOnlyRelocksFromRemoteButNeverPushes(t *testing.T) {
+func TestUpdateViaWorktree_ScopeSiblingsRelocksFromRemoteButNeverPushes(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtEdgeFixture(t)
@@ -399,14 +409,14 @@ func TestUpdateViaWorktree_SiblingsOnlyRelocksFromRemoteButNeverPushes(t *testin
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	_ = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{SiblingsOnly: true})
+	_ = w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{Scope: ScopeSiblings})
 
 	relocked := false
 	for _, c := range f.Calls() {
 		if c.Name == "git" {
 			for i, a := range c.Args {
 				if a == "push" && i == 2 {
-					t.Errorf("--siblings-only must NOT push (ADR 0023); got git %v", c.Args)
+					t.Errorf("scope siblings must NOT push (ADR 0023); got git %v", c.Args)
 				}
 			}
 		}
@@ -415,7 +425,7 @@ func TestUpdateViaWorktree_SiblingsOnlyRelocksFromRemoteButNeverPushes(t *testin
 		}
 	}
 	if !relocked {
-		t.Fatalf("--siblings-only must relock the sibling input with `nix flake update --refresh sib`; calls=%v", f.Calls())
+		t.Fatalf("scope siblings must relock the sibling input with `nix flake update --refresh sib`; calls=%v", f.Calls())
 	}
 }
 
@@ -454,7 +464,8 @@ func TestUpdateViaWorktree_FfDefersAndPointsAtTheBranch(t *testing.T) {
 	if strings.Contains(s, "reset --hard origin/main") {
 		t.Errorf("defer must NOT tell the user to reset to origin/main — nothing was pushed, so that would discard this run's relock; got:\n%s", s)
 	}
-	assertNoPushNoPropagate(t, f.Calls())
+	assertNoPush(t, f.Calls())
+	assertNoSiblingRelock(t, f.Calls())
 }
 
 func TestUpdateViaWorktree_OtherBranchRefFf(t *testing.T) {
@@ -765,13 +776,13 @@ func TestUpdateViaWorktree_WorktreeAddFails(t *testing.T) {
 	}
 }
 
-// TestUpdateViaWorktree_SiblingsOnlyRelockFailStopsBeforeIntegration: a failed
-// --siblings-only relock errors the repo at "relock-siblings" and never reaches
+// TestUpdateViaWorktree_ScopeSiblingsRelockFailStopsBeforeIntegration: a failed
+// scope siblings relock errors the repo at "relock-siblings" and never reaches
 // the integration steps (merge --ff-only / worktree remove), leaving the worktree
 // for inspection. This replaces the old push-failure test — there is no push step
 // left to fail (ADR 0023) — and keeps coverage of "a failed relock does not
 // integrate".
-func TestUpdateViaWorktree_SiblingsOnlyRelockFailStopsBeforeIntegration(t *testing.T) {
+func TestUpdateViaWorktree_ScopeSiblingsRelockFailStopsBeforeIntegration(t *testing.T) {
 	updateRunStampFn = func() string { return "TEST" }
 	branch := "pn-update/TEST"
 	root, foo, wt, f := wtEdgeFixture(t)
@@ -783,7 +794,7 @@ func TestUpdateViaWorktree_SiblingsOnlyRelockFailStopsBeforeIntegration(t *testi
 
 	w, _ := Open(root, f)
 	var out bytes.Buffer
-	if err := w.Update(context.Background(), &out, UpdateOptions{SiblingsOnly: true}); err == nil {
+	if err := w.Update(context.Background(), &out, UpdateOptions{Scope: ScopeSiblings}); err == nil {
 		t.Fatalf("expected error when the sibling relock fails")
 	}
 	for _, c := range f.Calls() {

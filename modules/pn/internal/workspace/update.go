@@ -52,21 +52,99 @@ func parseULTransient(stdout []byte) int {
 // and injects the result so the per-repo scripts skip the (remote) evaluation.
 const ulLibResolverRef = "github:phillipgreenii/nix-repo-base#determine-ul-lib-dir"
 
-// siblingsOnlySkipBanner returns the --siblings-only "skipping update-locks.sh"
-// line for repo name, worded accurately for whether propagateWorkspaceEdges
-// actually relocked anything (pg2-vgw3). Both call sites (updateInPlace and
-// updateRepoViaWorktree) use this so the wording stays consistent. In either
-// case nixpkgs/third-party inputs are left untouched (update-locks.sh is
-// skipped); only the workspace-input clause differs:
-//   - relocked: propagation moved a sibling rev and committed the bump.
-//   - !relocked: no workspace edges, or no rev change — a no-op, so nothing was
-//     relocked (the old banner claimed a relock here unconditionally).
-func siblingsOnlySkipBanner(name string, relocked bool) string {
+// UpdateScope chooses how much `pn workspace update` relocks (ADR 0045).
+type UpdateScope string
+
+const (
+	// ScopeSiblings relocks only the workspace-sibling flake inputs and skips
+	// each repo's update-locks.sh.
+	ScopeSiblings UpdateScope = "siblings"
+	// ScopeFlake relocks every flake input (siblings, nixpkgs, third-party) with
+	// one `nix flake update --refresh` and skips update-locks.sh.
+	ScopeFlake UpdateScope = "flake"
+	// ScopeFull runs update-locks.sh, then relocks every flake input. It is the
+	// default.
+	ScopeFull UpdateScope = "full"
+)
+
+// ParseUpdateScope parses a --scope value. The empty string is the unset flag
+// and means ScopeFull; callers that need to reject an explicit empty value
+// check that themselves.
+func ParseUpdateScope(s string) (UpdateScope, error) {
+	switch UpdateScope(s) {
+	case "":
+		return ScopeFull, nil
+	case ScopeSiblings, ScopeFlake, ScopeFull:
+		return UpdateScope(s), nil
+	}
+	return "", fmt.Errorf("unknown scope %q (want siblings, flake or full)", s)
+}
+
+// scopeSkipBanner returns the "skipping update-locks.sh" line for repo name in
+// the siblings and flake scopes, worded for whether the relock actually moved
+// anything. Both flows print it so the wording stays consistent.
+func scopeSkipBanner(name string, scope UpdateScope, relocked bool) string {
+	if scope == ScopeFlake {
+		inputs := "no flake input moved"
+		if relocked {
+			inputs = "flake inputs relocked"
+		}
+		return fmt.Sprintf("  ⊘ %s: scope flake — skipping update-locks.sh (%s, per-package locks untouched)\n", name, inputs)
+	}
 	inputs := "no workspace inputs to relock"
 	if relocked {
 		inputs = "workspace inputs relocked"
 	}
-	return fmt.Sprintf("  ⊘ %s: --siblings-only — skipping update-locks.sh (%s, nixpkgs/third-party untouched)\n", name, inputs)
+	return fmt.Sprintf("  ⊘ %s: scope siblings — skipping update-locks.sh (%s, nixpkgs/third-party untouched)\n", name, inputs)
+}
+
+// relockOutcome classifies a failed all-inputs relock for a scope.
+type relockOutcome int
+
+const (
+	relockWarn      relockOutcome = iota // full scope: keep update-locks.sh commits, warn
+	relockFailRepo                       // the repo fails at relock-flake
+	relockAbortRun                       // out of disk: the whole run stops
+	relockInterrupt                      // context cancelled: the repo and the run end
+)
+
+// classifyRelockErr decides what a relockAllInputs error means. A context
+// interrupt and a full disk win over everything; a failed lock restore is a
+// repo failure in every scope; otherwise full scope warns and flake fails.
+func classifyRelockErr(ctx context.Context, scope UpdateScope, err error) relockOutcome {
+	switch {
+	case ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		return relockInterrupt
+	case errors.Is(err, errRelockNoSpace):
+		return relockAbortRun
+	case errors.Is(err, errRelockRestore):
+		return relockFailRepo
+	case scope == ScopeFull:
+		return relockWarn
+	}
+	return relockFailRepo
+}
+
+// relockFlakeInputs runs the all-inputs relock for one repo with its pn.relock
+// span and the started/finished progress lines.
+func (ws *Workspace) relockFlakeInputs(ctx context.Context, out io.Writer, name, dir string) (int, error) {
+	ctx, end := telemetry.StartRelock(ctx, "flake")
+	start := time.Now()
+	fmt.Fprintf(out, "    [%s] relock all flake inputs (nix flake update --refresh): started\n", name)
+	changed, err := ws.relockAllInputs(ctx, out, name, dir, ws.resolveFlakePath(name))
+	phaseOutcome := "ok"
+	if err != nil {
+		phaseOutcome = "failed"
+	}
+	fmt.Fprintf(out, "    [%s] relock all flake inputs (nix flake update --refresh): finished, %s (%s)\n", name, phaseOutcome, elapsedSecs(start))
+	end(changed, err)
+	return changed, err
+}
+
+// relockWarning is the line printed when a full-scope relock fails after
+// update-locks.sh succeeded.
+func relockWarning(name string, err error) string {
+	return fmt.Sprintf("  ⚠ %s: nix flake update (all inputs) failed after one retry — update-locks.sh commits kept, flake inputs not moved: %v\n", name, err)
 }
 
 // UpdateOptions configures Update.
@@ -80,23 +158,14 @@ type UpdateOptions struct {
 	// push in each primary checkout). When false (the default), Update isolates
 	// each repo in an ephemeral worktree and fast-forwards back to main.
 	InPlace bool
-	// SiblingsOnly relocks ONLY the phillipgreenii-* workspace-sibling flake
-	// inputs (the propagateWorkspaceEdges pass) and SKIPS each repo's
-	// update-locks.sh, so nixpkgs and other third-party inputs are left
-	// untouched. Like plain Update it is LOCAL-ONLY: it resolves each sibling
-	// against that sibling's DECLARED REMOTE URL and commits the bump, and it
-	// never pushes (ADR 0023). It is therefore the narrow, explicitly-requested
-	// subset of what update-locks.sh's `nix flake update` would relock — not a
-	// special case update applies on its own. Everything else — topological
-	// order, worktree isolation vs InPlace, pull/rebase, local integration — is
-	// unchanged. It is orthogonal to InPlace (composes with either flow). Upgrade
-	// never sets it; Recreate (an Upgrade-only marker) and SiblingsOnly are not
-	// combined.
-	//
-	// Convergence to a rev that is only LOCAL is impossible by construction (C1),
-	// so cross-repo convergence after a local land is `pn workspace push`'s job,
-	// not this flag's.
-	SiblingsOnly bool
+	// Scope chooses how much is relocked (ADR 0045); the zero value means
+	// ScopeFull. Like plain Update every scope is LOCAL-ONLY: it resolves
+	// inputs against their DECLARED REMOTE URLs and commits the bump, and it
+	// never pushes (ADR 0023). Topological order, worktree isolation vs InPlace,
+	// pull/rebase and local integration are the same in every scope. Convergence
+	// onto a rev that is only LOCAL is impossible by construction (C1), so
+	// cross-repo convergence after a local land is `pn workspace push`'s job.
+	Scope UpdateScope
 	// ULLibDir, when set, is exported as UL_LIB_DIR to each update-locks.sh so
 	// it skips its own determine-ul-lib-dir resolution. Resolve it once per run
 	// via ResolveULLibDir. Empty leaves each script to resolve for itself.
@@ -104,6 +173,14 @@ type UpdateOptions struct {
 	// Log, when non-nil, receives a structured JSONL event stream for the run
 	// (run_start / project_result / run_end). Nil disables event logging.
 	Log *eventlog.Writer
+}
+
+// scope returns the effective scope: the zero value means ScopeFull.
+func (o UpdateOptions) scope() UpdateScope {
+	if o.Scope == "" {
+		return ScopeFull
+	}
+	return o.Scope
 }
 
 // ResolveULLibDir runs the update-locks lib resolver once and returns the path
@@ -137,14 +214,16 @@ func (ws *Workspace) ulSubprocessEnv(ulLibDir string) map[string]string {
 // (updateViaWorktree); opts.InPlace selects the legacy direct-on-main flow
 // (updateInPlace). See ADR 0009.
 func (ws *Workspace) Update(ctx context.Context, out io.Writer, opts UpdateOptions) error {
+	telemetry.RecordUpdateScope(ctx, string(opts.scope()))
 	if opts.InPlace {
 		return ws.updateInPlace(ctx, out, opts)
 	}
 	return ws.updateViaWorktree(ctx, out, opts)
 }
 
-// updateInPlace pulls each workspace repo and runs its ./update-locks.sh (or, with
-// SiblingsOnly, relocks just the workspace-sibling inputs). It is LOCAL-ONLY: it
+// updateInPlace pulls each workspace repo and relocks it per opts.Scope: siblings
+// relocks just the workspace-sibling inputs, flake relocks every flake input, and
+// full runs ./update-locks.sh and then relocks every flake input. It is LOCAL-ONLY: it
 // pulls, but it does NOT push — publishing is `pn workspace push` (ADR 0023).
 // Repos without an upstream skip the pull but still attempt the relock. Repos
 // with a dirty working tree are skipped (non-fatal).
@@ -170,23 +249,26 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		return err
 	}
 	names := ws.topoAlpha(ctx)
-	// Only --siblings-only reads the sibling aliases; plain update relocks every
-	// input through update-locks.sh with no sibling special-casing (ADR 0023 item
-	// 1), so deriving the lock for it would cost a nix eval per repo and be unused.
+	scope := opts.scope()
+	// Only the siblings scope reads the sibling aliases; the other scopes relock
+	// every input through nix with no sibling special-casing (ADR 0023 item 1), so
+	// deriving the lock for them would cost a nix eval per repo and be unused.
 	// When derived, effectiveLock (not the possibly-empty ws.lock) is the source
 	// topoAlpha trusts (C3).
 	var edgeLock *Lock
-	if opts.SiblingsOnly {
+	if scope == ScopeSiblings {
 		edgeLock, _, _ = ws.effectiveLock(ctx)
 	}
 	_ = opts.Log.Emit("info", "run_start", "workspace update started", map[string]any{
 		"terminal": opts.Terminal,
 		"projects": len(names),
+		"scope":    string(scope),
+		"root":     ws.root,
 	})
 
 	var failed []string
 	var aborted bool
-	var abortedName string
+	var abortedName, abortStep string
 	first := true
 	for idx, name := range names {
 		if err := ctx.Err(); err != nil {
@@ -247,56 +329,86 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 				projectFailed = true
 			}
 		}
-		// Relock. Exactly ONE mechanism runs, and neither pushes (ADR 0023):
-		// --siblings-only relocks just the workspace-sibling inputs from their
-		// declared remote URLs; otherwise update-locks.sh's `nix flake update`
-		// relocks every input, siblings included, with no special handling. A repo
-		// without the script is skipped (not failed). Skipped entirely if the pull
-		// failed: the working tree is suspect.
-		relockFailed := false
+		// Relock per scope (ADR 0045); nothing here pushes (ADR 0023):
+		//   siblings: just the workspace-sibling inputs, from their declared remotes.
+		//   flake:    every flake input via one `nix flake update --refresh`.
+		//   full:     update-locks.sh, then (unless it failed or aborted) every flake
+		//             input. A repo without the script skips straight to the relock.
+		// Skipped entirely if the pull failed: the working tree is suspect.
+		failStep := ""
+		relockWarned := false
+		interrupted := false
 		if !pullFailed {
 			if err := ctx.Err(); err != nil {
 				endRepo(err)
 				return fmt.Errorf("update interrupted: %w", err)
 			}
-			switch {
-			case opts.SiblingsOnly:
+			if scope == ScopeSiblings {
 				phaseStart := time.Now()
 				fmt.Fprintf(out, "    [%s] nix flake update (siblings): started\n", name)
-				did, err := ws.propagateWorkspaceEdges(ctx, out, name, repoDir, ws.resolveFlakePath(name), workspaceAliasesFromLock(edgeLock, name))
+				sctx, endRelock := telemetry.StartRelock(ctx, "siblings")
+				did, err := ws.propagateWorkspaceEdges(sctx, out, name, repoDir, ws.resolveFlakePath(name), workspaceAliasesFromLock(edgeLock, name))
+				endRelock(boolToInt(did), err)
 				fmt.Fprintf(out, "    [%s] nix flake update (siblings): finished (%s)\n", name, elapsedSecs(phaseStart))
 				if err != nil {
 					fmt.Fprintf(out, "  ✗ %s: relock-siblings failed: %v\n", name, err)
-					relockFailed = true
 					projectFailed = true
-					break
+					failStep = "relock-siblings"
+				} else {
+					relocked = did
+					fmt.Fprint(out, scopeSkipBanner(name, scope, relocked))
 				}
-				relocked = did
-				fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
-			case fileExists(filepath.Join(repoDir, "update-locks.sh")):
-				phaseStart := time.Now()
-				fmt.Fprintf(out, "    [%s] update-locks.sh (runs nix flake update): started\n", name)
-				res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out, PropagateTrace: true})
-				// res.Stdout is populated on both success and CommandError, so the
-				// transient count crosses the boundary even for a hard-failed repo
-				// (ul_finalize prints UL_RESULT before its non-zero exit).
-				transient = parseULTransient(res.Stdout)
-				phaseOutcome := "ok"
-				if err != nil {
-					phaseOutcome = "failed"
-				}
-				fmt.Fprintf(out, "    [%s] update-locks.sh (runs nix flake update): finished, %s (%s)\n", name, phaseOutcome, elapsedSecs(phaseStart))
-				if err != nil {
-					var cmdErr *exec.CommandError
-					if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {
-						aborted, abortedName = true, name
-						fmt.Fprintf(out, "  ⛔ %s: environmental/resource failure — aborting run\n", name)
-					} else {
-						projectFailed = true
+			}
+			if scope == ScopeFull {
+				if fileExists(filepath.Join(repoDir, "update-locks.sh")) {
+					phaseStart := time.Now()
+					fmt.Fprintf(out, "    [%s] update-locks.sh (runs nix flake update): started\n", name)
+					res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{Dir: repoDir, Env: ws.ulSubprocessEnv(opts.ULLibDir), Stdout: out, Stderr: out, PropagateTrace: true})
+					// res.Stdout is populated on both success and CommandError, so the
+					// transient count crosses the boundary even for a hard-failed repo
+					// (ul_finalize prints UL_RESULT before its non-zero exit).
+					transient = parseULTransient(res.Stdout)
+					phaseOutcome := "ok"
+					if err != nil {
+						phaseOutcome = "failed"
 					}
+					fmt.Fprintf(out, "    [%s] update-locks.sh (runs nix flake update): finished, %s (%s)\n", name, phaseOutcome, elapsedSecs(phaseStart))
+					if err != nil {
+						var cmdErr *exec.CommandError
+						if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {
+							aborted, abortedName, abortStep = true, name, "update-locks"
+							fmt.Fprintf(out, "  ⛔ %s: environmental/resource failure — aborting run\n", name)
+						} else {
+							projectFailed = true
+							failStep = "update-locks"
+						}
+					}
+				} else {
+					fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping its per-package steps (flake inputs relocked next)\n", name)
 				}
-			default:
-				fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (nothing to relock; `pn workspace push` maintains its workspace-sibling locks)\n", name)
+			}
+			if (scope == ScopeFlake || scope == ScopeFull) && !projectFailed && !aborted {
+				changed, err := ws.relockFlakeInputs(ctx, out, name, repoDir)
+				if err != nil {
+					switch classifyRelockErr(ctx, scope, err) {
+					case relockWarn:
+						relockWarned = true
+						fmt.Fprint(out, relockWarning(name, err))
+					case relockAbortRun:
+						aborted, abortedName, abortStep = true, name, "relock-flake"
+						fmt.Fprintf(out, "  ✗ %s: relock-flake failed: %v\n", name, err)
+						fmt.Fprintf(out, "  ⛔ %s: environmental/resource failure — aborting run\n", name)
+					case relockInterrupt:
+						interrupted = true
+						projectFailed, failStep = true, "relock-flake"
+						fmt.Fprintf(out, "  ✗ %s: relock-flake interrupted: %v\n", name, err)
+					default:
+						projectFailed, failStep = true, "relock-flake"
+						fmt.Fprintf(out, "  ✗ %s: relock-flake failed: %v\n", name, err)
+					}
+				} else if scope == ScopeFlake {
+					fmt.Fprint(out, scopeSkipBanner(name, scope, changed > 0))
+				}
 			}
 		}
 		// An environmental/resource abort applies to every remaining repo: record
@@ -304,10 +416,10 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		if aborted {
 			failed = append(failed, name)
 			_ = opts.Log.Emit("error", "project_result", "project aborted", map[string]any{
-				"name": name, "outcome": "aborted", "failed_step": "update-locks", "transient": transient,
+				"name": name, "outcome": "aborted", "failed_step": abortStep, "transient": transient,
 			})
 			finishRepo("failed")
-			fmt.Fprintf(out, "  ✗ %s: update FAILED (aborted at update-locks: environmental/resource failure)\n", name)
+			fmt.Fprintf(out, "  ✗ %s: update FAILED (aborted at %s: environmental/resource failure)\n", name, abortStep)
 			endRepo(errors.New("update aborted: environmental/resource failure"))
 			break
 		}
@@ -316,11 +428,9 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 
 		if projectFailed {
 			failed = append(failed, name)
-			step := "update-locks"
+			step := failStep
 			if pullFailed {
 				step = "pull"
-			} else if relockFailed {
-				step = "relock-siblings"
 			}
 			_ = opts.Log.Emit("error", "project_result", "project failed", map[string]any{
 				"name": name, "outcome": "failed", "failed_step": step, "transient": transient,
@@ -329,26 +439,41 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			fmt.Fprintf(out, "  ✗ %s: update FAILED at step %s\n", name, step)
 			endRepo(fmt.Errorf("update failed at %s", step))
 		} else {
-			// A green repo with transient steps is escalated to warn: update-locks
-			// exited 0, but a permanently-transient step keeps silently skipping an
-			// update the exit code alone would never surface (ADR 0020).
+			// A green repo with transient steps, or one whose full-scope relock
+			// failed after update-locks.sh succeeded, is escalated to warn: the
+			// exit code alone would never surface a silently skipped update (ADR 0020).
 			level, msg := "info", "project updated"
+			fields := map[string]any{"name": name, "outcome": "ok", "transient": transient}
 			if transient > 0 {
 				level = "warn"
 				msg = fmt.Sprintf("project updated, but %d transient step(s) were skipped this run — a permanently-transient step keeps the run green while an update is silently skipped (ADR 0020)", transient)
 			}
-			_ = opts.Log.Emit(level, "project_result", msg, map[string]any{
-				"name": name, "outcome": "ok", "transient": transient,
-			})
-			finishRepo("ok")
+			if relockWarned {
+				level = "warn"
+				msg += "; the all-inputs relock failed after one retry, so flake inputs were not moved"
+				fields["relock_failed"] = true
+			}
+			_ = opts.Log.Emit(level, "project_result", msg, fields)
+			if relockWarned {
+				finishRepo("ok, relock failed")
+			} else {
+				finishRepo("ok")
+			}
 			endRepo(nil)
+		}
+		// A cancel during the repo's last step must end the run here, not carry on.
+		if err := ctx.Err(); err != nil || interrupted {
+			if err == nil {
+				err = context.Canceled
+			}
+			return fmt.Errorf("update interrupted: %w", err)
 		}
 	}
 
 	if aborted {
 		_ = opts.Log.Emit("error", "run_end", "workspace update aborted (environmental/resource failure)",
-			map[string]any{"status": "aborted", "failed": len(failed), "aborted_project": abortedName, "failed_step": "update-locks"})
-		return fmt.Errorf("update aborted at %s (update-locks): environmental/resource failure — free resources and re-run; remaining repos were not attempted", abortedName)
+			map[string]any{"status": "aborted", "failed": len(failed), "aborted_project": abortedName, "failed_step": abortStep})
+		return fmt.Errorf("update aborted at %s (%s): environmental/resource failure — free resources and re-run; remaining repos were not attempted", abortedName, abortStep)
 	}
 	if len(failed) > 0 {
 		_ = opts.Log.Emit("error", "run_end", "workspace update finished with failures",
@@ -357,6 +482,13 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 	}
 	_ = opts.Log.Emit("info", "run_end", "workspace update finished", map[string]any{"status": "ok", "failed": 0})
 	return nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // elapsedSecs formats the time since start as seconds with one decimal ("1.2s").

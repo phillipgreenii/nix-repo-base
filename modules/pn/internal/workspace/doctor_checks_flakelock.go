@@ -78,10 +78,10 @@ func (ws *Workspace) edgeTarget(lock *Lock, consumer, alias string) string {
 }
 
 // attachFlakeLockFix marks the first flake-lock-fresh finding fixable; the fix
-// runs `pn workspace update --siblings-only` (the topo-ordered relock→commit
+// runs `pn workspace update --scope siblings` (the topo-ordered relock→commit
 // flow, SKIPPING update-locks.sh). The finding is specifically about stale
 // workspace-sibling pins, so the remedy relocks ONLY those inputs — nixpkgs and
-// other third-party inputs are left untouched. SiblingsOnly also drops the
+// other third-party inputs are left untouched. The siblings scope also drops the
 // UL_LIB_DIR requirement, so this fix works headless (no nix resolver).
 //
 // The fix is LOCAL-ONLY and needs to be: this check compares the consumer's
@@ -100,12 +100,12 @@ func attachFlakeLockFix(ws *Workspace, env *doctorEnv, fs []Finding, stale map[s
 			continue
 		}
 		c := fs[i].Repo
-		fs[i].Manual = "pn workspace update --siblings-only"
+		fs[i].Manual = "pn workspace update --scope siblings"
 		if stale[c] && !done[c] {
 			done[c] = true
 			fs[i].Fixable = true
 			fs[i].fix = func(ctx context.Context) error {
-				return ws.Update(ctx, osStderr(), UpdateOptions{InPlace: true, SiblingsOnly: true, Terminal: term})
+				return ws.Update(ctx, osStderr(), UpdateOptions{InPlace: true, Scope: ScopeSiblings, Terminal: term})
 			}
 		}
 	}

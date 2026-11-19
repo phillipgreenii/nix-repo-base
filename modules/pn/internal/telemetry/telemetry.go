@@ -7,7 +7,11 @@
 //	  pn.hook  (one per fired pre/post hook event)
 //	    pn.exec  (the hook's subprocesses)
 //	  pn.repo  (one per repo a workspace verb touches)
+//	    pn.relock  (one per relock of a repo's flake inputs; kind siblings or flake)
 //	    pn.exec  (one per subprocess, emitted by the exec.Runner decorator)
+//
+// The pn.verb span of `workspace update` carries pn.update.scope (siblings,
+// flake or full).
 //
 // and the pn.command.duration histogram (seconds), recorded once per
 // invocation when the root span ends.
@@ -68,7 +72,9 @@ const (
 	AttrVerb = "pn.verb"
 	// AttrRelockKind is the kind of a pn.relock span ("siblings" or "flake");
 	// AttrRelockChanged is how many flake inputs the relock moved.
-	AttrRelockKind    = "pn.relock.kind"
+	AttrRelockKind = "pn.relock.kind"
+	// AttrUpdateScope is the --scope of a workspace update, set on pn.verb.
+	AttrUpdateScope   = "pn.update.scope"
 	AttrRelockChanged = "pn.relock.changed"
 	AttrRepo          = "pn.repo"
 	AttrStatus        = "status"
@@ -499,6 +505,12 @@ func StartHook(ctx context.Context, when, name string) (context.Context, func(ex
 		}
 		span.End(endNow())
 	}
+}
+
+// RecordUpdateScope sets pn.update.scope on the current span (the pn.verb span
+// of a workspace update). A context without a span makes it a no-op.
+func RecordUpdateScope(ctx context.Context, scope string) {
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String(AttrUpdateScope, scope))
 }
 
 // StartRelock starts a pn.relock span for one relock of a repo's flake inputs

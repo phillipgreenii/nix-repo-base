@@ -237,7 +237,7 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 // ResetHard (`git reset --hard`) is safe here specifically because every
 // caller of propagateWorkspaceEdges already refused to run against a dirty
 // tree before propagation started (relockSiblingsBeforePush's isDirty check;
-// the update siblings-only path's equivalent guard) — so the only
+// the siblings scope's equivalent guard) — so the only
 // working-tree/index change in play at this point is the lockRel bump this
 // function itself just staged. Discarding "everything since HEAD" discards
 // exactly that and nothing else.

@@ -104,6 +104,9 @@ type repoOutcome struct {
 	branch     string // left-behind branch when status != ok
 	note       string // recovery hint / human note
 	transient  int    // steps update-locks.sh classified transient (ADR 0020); >0 warns
+	// relockFailed: the full-scope all-inputs relock failed after update-locks.sh
+	// succeeded; the repo is still integrated (status ok) and warns.
+	relockFailed bool
 }
 
 // updateViaWorktree runs the worktree-isolated update over all repos in
@@ -122,11 +125,12 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	// WORKSPACE_ROOT to SCRIPT_DIR/.., so a non-empty UL_LIB_DIR is the only safe
 	// relock path in a worktree (ADR 0009 B1); empty is fatal.
 	//
-	// SiblingsOnly skips update-locks.sh entirely, so UL_LIB_DIR is never
-	// consumed — resolving (and hard-failing on) it would needlessly require the
-	// nix resolver, breaking the headless doctor-fix path. Skip the block.
+	// Only the full scope runs update-locks.sh, so only it consumes UL_LIB_DIR;
+	// resolving (and hard-failing on) it for siblings or flake would needlessly
+	// require the nix resolver, breaking the headless doctor-fix path.
+	scope := opts.scope()
 	ulLibDir := opts.ULLibDir
-	if !opts.SiblingsOnly {
+	if scope == ScopeFull {
 		if ulLibDir == "" {
 			ulLibDir = os.Getenv("UL_LIB_DIR")
 		}
@@ -141,20 +145,20 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 	runTS := updateRunStampFn()
 	branch := "pn-update/" + runTS
 	names := ws.topoAlpha(ctx)
-	// The sibling-alias set is needed ONLY by --siblings-only, which relocks just
-	// those inputs. Plain update no longer touches them as a special case at all
-	// (ADR 0023 item 1) — update-locks.sh's `nix flake update` relocks every
-	// input, sibling or not, from its declared remote — so deriving the lock for
-	// it would buy a nix eval per repo and use nothing. When it IS derived, use
+	// The sibling-alias set is needed ONLY by the siblings scope, which relocks
+	// just those inputs. The other scopes relock every input through nix, sibling
+	// or not, from its declared remote (ADR 0023 item 1), so deriving the lock for
+	// them would buy a nix eval per repo and use nothing. When it IS derived, use
 	// effectiveLock (the same source topoAlpha trusts) rather than ws.lock, which
 	// is empty on a fresh/stale checkout and would silently skip every repo (C3).
 	var edgeLock *Lock
-	if opts.SiblingsOnly {
+	if scope == ScopeSiblings {
 		edgeLock, _, _ = ws.effectiveLock(ctx)
 	}
 
 	_ = opts.Log.Emit("info", "run_start", "workspace update (worktree) started", map[string]any{
 		"terminal": opts.Terminal, "projects": len(names), "branch": branch,
+		"scope": string(scope), "root": ws.root,
 	})
 
 	outcomes := make([]repoOutcome, 0, len(names))
@@ -169,7 +173,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		}
 		first = false
 		repoCtx, endRepo := telemetry.StartRepo(ctx, name)
-		oc := ws.updateRepoViaWorktree(repoCtx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name), opts.SiblingsOnly)
+		oc := ws.updateRepoViaWorktree(repoCtx, out, name, branch, runTS, ulLibDir, workspaceAliasesFromLock(edgeLock, name), scope)
 		if oc.status != statusOK {
 			endRepo(fmt.Errorf("update %s: %s", name, oc.status))
 		} else {
@@ -180,17 +184,31 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		switch {
 		case oc.status != statusOK:
 			level, outcome = "error", oc.status
-		case oc.transient > 0:
-			// A green repo (integrated ok) with transient steps escalates to warn:
-			// update-locks exited 0, but a permanently-transient step keeps silently
-			// skipping an update the exit code alone would never surface (ADR 0020).
+		case oc.transient > 0 || oc.relockFailed:
+			// A green repo (integrated ok) with transient steps, or whose full-scope
+			// relock failed after update-locks.sh succeeded, escalates to warn: the
+			// exit code alone would never surface a silently skipped update (ADR 0020).
 			level = "warn"
-			msg = fmt.Sprintf("project ok, but %d transient step(s) were skipped this run — a permanently-transient step keeps the run green while an update is silently skipped (ADR 0020)", oc.transient)
+			msg = "project ok"
+			if oc.transient > 0 {
+				msg = fmt.Sprintf("project ok, but %d transient step(s) were skipped this run — a permanently-transient step keeps the run green while an update is silently skipped (ADR 0020)", oc.transient)
+			}
+			if oc.relockFailed {
+				msg += "; the all-inputs relock failed after one retry, so flake inputs were not moved"
+			}
 		}
-		_ = opts.Log.Emit(level, "project_result", msg, map[string]any{
+		fields := map[string]any{
 			"name": oc.name, "outcome": outcome, "failed_step": oc.failedStep, "note": oc.note, "transient": oc.transient,
-		})
+		}
+		if oc.relockFailed {
+			fields["relock_failed"] = true
+		}
+		_ = opts.Log.Emit(level, "project_result", msg, fields)
 		outcomes = append(outcomes, oc)
+		// A cancel during the repo ends the run here, whatever step it hit.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("update interrupted: %w", err)
+		}
 		// An environmental/resource abort applies to every remaining repo, so stop
 		// the run here rather than attempting them and failing identically.
 		if oc.status == statusAborted {
@@ -231,7 +249,7 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 // failure is captured in the returned repoOutcome and the worktree + branch are
 // left in place (leave-on-failure). Only a fully successful integration removes
 // them.
-func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, name, branch, runTS, ulLibDir string, aliases []string, siblingsOnly bool) repoOutcome {
+func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, name, branch, runTS, ulLibDir string, aliases []string, scope UpdateScope) repoOutcome {
 	primary := filepath.Join(ws.root, name)
 	wt := filepath.Join(ws.WorkforestsDir(), updateWorktreesSubdir, name+"-"+runTS)
 	oc := repoOutcome{name: name, worktree: wt, branch: branch}
@@ -288,40 +306,58 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 		return fail("rebase-origin-main", err, "rebase conflict aborted")
 	}
 
-	// Step 3: relock. Exactly ONE of the two relock mechanisms runs, and neither
-	// pushes (ADR 0023 item 1):
+	// Step 3: relock per scope (ADR 0045); nothing here pushes (ADR 0023):
 	//
-	//   - --siblings-only: relock ONLY the workspace-sibling inputs, from their
-	//     declared remote URLs, and skip update-locks.sh so nixpkgs/third-party
-	//     inputs are left untouched. This is the explicitly-requested narrow
-	//     subset, not a special case applied behind the caller's back.
-	//   - otherwise: ./update-locks.sh, whose `nix flake update` relocks EVERY
-	//     input from its declared remote — siblings included, with no special
-	//     handling. A repo without the script is skipped (not failed).
-	switch {
-	case siblingsOnly:
-		relocked, err := ws.propagateWorkspaceEdges(ctx, out, name, wt, ws.resolveFlakePath(name), aliases)
+	//   - siblings: relock ONLY the workspace-sibling inputs, from their declared
+	//     remote URLs, and skip update-locks.sh.
+	//   - flake: one `nix flake update --refresh` over every input; skips
+	//     update-locks.sh.
+	//   - full: ./update-locks.sh, then (unless it failed or aborted) the
+	//     all-inputs relock. A repo without the script skips straight to the relock.
+	if scope == ScopeSiblings {
+		phaseCtx, endRelock := telemetry.StartRelock(ctx, "siblings")
+		relocked, err := ws.propagateWorkspaceEdges(phaseCtx, out, name, wt, ws.resolveFlakePath(name), aliases)
+		endRelock(boolToInt(relocked), err)
 		if err != nil {
 			return fail("relock-siblings", err, "")
 		}
-		fmt.Fprint(out, siblingsOnlySkipBanner(name, relocked))
-	case fileExists(filepath.Join(wt, "update-locks.sh")):
-		res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
-			Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out, PropagateTrace: true,
-		})
-		// res.Stdout is captured on success and on a hard CommandError alike, so the
-		// transient count crosses the boundary even when the repo later fails; a
-		// resource-abort exits before ul_finalize prints UL_RESULT, leaving it 0.
-		oc.transient = parseULTransient(res.Stdout)
-		if err != nil {
-			var cmdErr *exec.CommandError
-			if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {
-				return abort("update-locks", err)
+		fmt.Fprint(out, scopeSkipBanner(name, scope, relocked))
+	}
+	if scope == ScopeFull {
+		if fileExists(filepath.Join(wt, "update-locks.sh")) {
+			res, err := ws.runner.Run(ctx, "./update-locks.sh", nil, exec.RunOptions{
+				Dir: wt, Env: ws.ulSubprocessEnv(ulLibDir), Stdout: out, Stderr: out, PropagateTrace: true,
+			})
+			// res.Stdout is captured on success and on a hard CommandError alike, so the
+			// transient count crosses the boundary even when the repo later fails; a
+			// resource-abort exits before ul_finalize prints UL_RESULT, leaving it 0.
+			oc.transient = parseULTransient(res.Stdout)
+			if err != nil {
+				var cmdErr *exec.CommandError
+				if errors.As(err, &cmdErr) && cmdErr.Result.ExitCode == ulExitAbort {
+					return abort("update-locks", err)
+				}
+				return fail("update-locks", err, "")
 			}
-			return fail("update-locks", err, "")
+		} else {
+			fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping its per-package steps (flake inputs relocked next)\n", name)
 		}
-	default:
-		fmt.Fprintf(out, "  ⊘ %s: no update-locks.sh — skipping (nothing to relock; `pn workspace push` maintains its workspace-sibling locks)\n", name)
+	}
+	if scope == ScopeFlake || scope == ScopeFull {
+		changed, err := ws.relockFlakeInputs(ctx, out, name, wt)
+		if err != nil {
+			switch classifyRelockErr(ctx, scope, err) {
+			case relockWarn:
+				oc.relockFailed = true
+				fmt.Fprint(out, relockWarning(name, err))
+			case relockAbortRun:
+				return abort("relock-flake", err)
+			default: // relockFailRepo and relockInterrupt both end this repo
+				return fail("relock-flake", err, "")
+			}
+		} else if scope == ScopeFlake {
+			fmt.Fprint(out, scopeSkipBanner(name, scope, changed > 0))
+		}
 	}
 
 	// Step 4: rebase onto local main FIRST (catch unpushed local commits).
@@ -445,7 +481,11 @@ func printUpdateSummary(out io.Writer, outcomes []repoOutcome) {
 	for _, oc := range outcomes {
 		switch oc.status {
 		case statusOK:
-			fmt.Fprintf(out, "  ✓ %s — ok\n", oc.name)
+			if oc.relockFailed {
+				fmt.Fprintf(out, "  ⚠ %s — ok, relock failed; re-run 'pn workspace update --scope flake' to move flake inputs\n", oc.name)
+			} else {
+				fmt.Fprintf(out, "  ✓ %s — ok\n", oc.name)
+			}
 			if oc.note != "" {
 				fmt.Fprintf(out, "      ↳ %s\n", oc.note)
 			}

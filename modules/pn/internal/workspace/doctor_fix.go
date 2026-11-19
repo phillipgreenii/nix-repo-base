@@ -117,7 +117,7 @@ func planAction(checkID string) string {
 	case "lock-present", "lock-legacy", "lock-current", "flake-path-resolves":
 		return "pn workspace lock (WriteDerivedLock)"
 	case "flake-lock-fresh":
-		return "pn workspace update (relock→commit→push)"
+		return "pn workspace update --scope siblings (relock → commit, local only)"
 	default:
 		return "(delegated fix)"
 	}

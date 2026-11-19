@@ -17,7 +17,7 @@ import (
 // git, `nix` intercepted to mutate the filesystem) to exercise the two fixes
 // that reach nix:
 //
-//   - flake-lock-fresh → Update(--siblings-only) → propagateWorkspaceEdges,
+//   - flake-lock-fresh → Update(Scope: ScopeSiblings) → propagateWorkspaceEdges,
 //     which runs `nix flake update --refresh <alias>` and commits the bump.
 //   - flake-path-resolves → WriteDerivedLock, which derives the lock via
 //     `nix eval` per repo and writes pn-workspace.lock.json.
@@ -30,7 +30,7 @@ func consumerFlakeLock(rev string) string {
 }
 
 // TestDoctorFix_FlakeLockFreshRelocksViaNix drives the flake-lock-fresh fix
-// (Update --siblings-only) with a real consumer repo whose flake.lock pins the
+// (Update with ScopeSiblings) with a real consumer repo whose flake.lock pins the
 // sibling "dep" at an OLD rev. nix is intercepted to rewrite the flake.lock to
 // the fresh rev; the fix must run nix flake update --refresh and COMMIT the bump
 // so the consumer's flake.lock now pins the new rev on a clean tree.

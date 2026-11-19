@@ -155,12 +155,12 @@ url = "github:owner/foo"
 	}
 }
 
-// TestUpdate_SiblingsOnly_InPlace_SkipsUpdateLocks: with SiblingsOnly the
+// TestUpdate_ScopeSiblings_InPlace_SkipsUpdateLocks: with ScopeSiblings the
 // in-place flow relocks workspace-sibling inputs (propagateWorkspaceEdges) but
 // MUST NOT invoke ./update-locks.sh, so nixpkgs/third-party inputs are left
 // untouched. update-locks.sh exists on disk (mkUpdateLocks), so its absence from
-// the call log proves the skip is due to SiblingsOnly, not a missing script.
-func TestUpdate_SiblingsOnly_InPlace_SkipsUpdateLocks(t *testing.T) {
+// the call log proves the skip is due to ScopeSiblings, not a missing script.
+func TestUpdate_ScopeSiblings_InPlace_SkipsUpdateLocks(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
@@ -183,16 +183,16 @@ url = "github:owner/foo"
 		t.Fatalf("Open: %v", err)
 	}
 	var out bytes.Buffer
-	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true, SiblingsOnly: true}); err != nil {
+	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true, Scope: ScopeSiblings}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	for _, c := range f.Calls() {
 		if c.Name == "./update-locks.sh" {
-			t.Fatalf("--siblings-only must NOT run update-locks.sh; calls=%v", f.Calls())
+			t.Fatalf("scope siblings must NOT run update-locks.sh; calls=%v", f.Calls())
 		}
 	}
-	if !strings.Contains(out.String(), "--siblings-only") {
-		t.Errorf("expected a --siblings-only skip line; got:\n%s", out.String())
+	if !strings.Contains(out.String(), "scope siblings") {
+		t.Errorf("expected a scope siblings skip line; got:\n%s", out.String())
 	}
 	// foo has no workspace edges, so propagateWorkspaceEdges is a no-op — the
 	// banner must NOT claim inputs were relocked (pg2-vgw3). It must state the
@@ -205,38 +205,44 @@ url = "github:owner/foo"
 	}
 }
 
-// TestSiblingsOnlySkipBanner asserts the --siblings-only skip banner text is
-// accurate for BOTH propagation outcomes (pg2-vgw3): when propagation actually
-// relocked workspace inputs it says so; when propagation was a no-op (no edges
-// or no rev change) it must NOT claim a relock happened, and instead states
-// nothing was relocked. Both messages share the invariant nixpkgs/third-party
-// suffix. This is the single source of truth used by both call sites
-// (updateInPlace and updateRepoViaWorktree).
-func TestSiblingsOnlySkipBanner(t *testing.T) {
-	relocked := siblingsOnlySkipBanner("foo", true)
-	noop := siblingsOnlySkipBanner("foo", false)
+// TestScopeSkipBanner pins the skip banner text for each scope and relock
+// outcome. It is the single source of truth both flows print (updateInPlace and
+// updateRepoViaWorktree), and the wording must not claim a relock that did not
+// happen.
+func TestScopeSkipBanner(t *testing.T) {
+	cases := []struct {
+		scope    UpdateScope
+		relocked bool
+		want     string
+	}{
+		{ScopeSiblings, true, "  ⊘ foo: scope siblings — skipping update-locks.sh (workspace inputs relocked, nixpkgs/third-party untouched)\n"},
+		{ScopeSiblings, false, "  ⊘ foo: scope siblings — skipping update-locks.sh (no workspace inputs to relock, nixpkgs/third-party untouched)\n"},
+		{ScopeFlake, true, "  ⊘ foo: scope flake — skipping update-locks.sh (flake inputs relocked, per-package locks untouched)\n"},
+		{ScopeFlake, false, "  ⊘ foo: scope flake — skipping update-locks.sh (no flake input moved, per-package locks untouched)\n"},
+	}
+	for _, c := range cases {
+		got := scopeSkipBanner("foo", c.scope, c.relocked)
+		if got != c.want {
+			t.Errorf("scopeSkipBanner(%s, %v) = %q, want %q", c.scope, c.relocked, got, c.want)
+		}
+		if strings.Contains(got, "⊘ skipping") {
+			t.Errorf("banner must name the repo, not read %q", "⊘ skipping")
+		}
+	}
+}
 
-	if relocked == noop {
-		t.Fatalf("banner must differ between relocked and no-op cases; both = %q", relocked)
+func TestParseUpdateScope(t *testing.T) {
+	for in, want := range map[string]UpdateScope{
+		"siblings": ScopeSiblings, "flake": ScopeFlake, "full": ScopeFull, "": ScopeFull,
+	} {
+		got, err := ParseUpdateScope(in)
+		if err != nil || got != want {
+			t.Errorf("ParseUpdateScope(%q) = %q, %v; want %q", in, got, err, want)
+		}
 	}
-	// Relocked case: states inputs were relocked.
-	if !strings.Contains(relocked, "workspace inputs relocked") {
-		t.Errorf("relocked banner should say 'workspace inputs relocked'; got %q", relocked)
-	}
-	// No-op case: must NOT falsely claim a relock; must state nothing relocked.
-	if strings.Contains(noop, "workspace inputs relocked") {
-		t.Errorf("no-op banner must not claim 'workspace inputs relocked'; got %q", noop)
-	}
-	if !strings.Contains(noop, "no workspace inputs to relock") {
-		t.Errorf("no-op banner should state nothing was relocked; got %q", noop)
-	}
-	// Both cases share the invariant suffix and the repo name.
-	for _, b := range []string{relocked, noop} {
-		if !strings.Contains(b, "--siblings-only") ||
-			!strings.Contains(b, "skipping update-locks.sh") ||
-			!strings.Contains(b, "nixpkgs/third-party untouched") ||
-			!strings.Contains(b, "foo") {
-			t.Errorf("banner missing shared components; got %q", b)
+	for _, in := range []string{"Flake", "bogus"} {
+		if _, err := ParseUpdateScope(in); err == nil || !strings.Contains(err.Error(), "want siblings, flake or full") {
+			t.Errorf("ParseUpdateScope(%q) error = %v, want one naming the valid scopes", in, err)
 		}
 	}
 }
@@ -407,12 +413,12 @@ url = "github:owner/foo"
 	}
 }
 
-// TestUpdate_InPlace_NeverPushesNorPropagates is the pg2-j2f8f regression for the
+// TestUpdate_InPlace_NeverPushesNorRelocksSiblingsOnly is the pg2-j2f8f regression for the
 // --in-place flow, asserted on the CALL LOG (a test that merely stopped scripting
 // the push would pass even with the push restored). The fixture gives the repo a
 // workspace EDGE and an on-disk flake.lock, so propagateWorkspaceEdges would run
 // `nix flake update` if it were still wired into update.
-func TestUpdate_InPlace_NeverPushesNorPropagates(t *testing.T) {
+func TestUpdate_InPlace_NeverPushesNorRelocksSiblingsOnly(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
@@ -446,6 +452,7 @@ url = "github:owner/sib"
 		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
 		f.AddResponse("git", []string{"-C", d, "pull", "--rebase", "--autostash"}, exec.Result{}, nil)
 		f.AddResponse("./update-locks.sh", nil, exec.Result{}, nil)
+		scriptAllInputsRelock(t, f, d, nil)
 	}
 
 	w, err := Open(root, f)
@@ -455,14 +462,15 @@ url = "github:owner/sib"
 	if err := w.Update(context.Background(), &bytes.Buffer{}, UpdateOptions{InPlace: true}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	assertNoPushNoPropagate(t, f.Calls())
+	assertNoPush(t, f.Calls())
+	assertNoSiblingRelock(t, f.Calls())
 }
 
-// TestUpdate_InPlace_SiblingsOnlyRelocksFromRemoteButNeverPushes: --siblings-only
+// TestUpdate_InPlace_ScopeSiblingsRelocksFromRemoteButNeverPushes: scope siblings
 // DOES relock the sibling input in place — from the sibling's declared REMOTE url
 // (`--refresh`, C1) — and still never pushes. Together with the test above this
 // pins both halves of pg2-j2f8f: relocking is local, publishing is a separate step.
-func TestUpdate_InPlace_SiblingsOnlyRelocksFromRemoteButNeverPushes(t *testing.T) {
+func TestUpdate_InPlace_ScopeSiblingsRelocksFromRemoteButNeverPushes(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [workspace]
@@ -506,7 +514,7 @@ url = "github:owner/sib"
 		t.Fatalf("Open: %v", err)
 	}
 	var out bytes.Buffer
-	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true, SiblingsOnly: true}); err != nil {
+	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true, Scope: ScopeSiblings}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	relocked := false
@@ -514,7 +522,7 @@ url = "github:owner/sib"
 		if c.Name == "git" {
 			for i, a := range c.Args {
 				if a == "push" && i == 2 {
-					t.Errorf("--siblings-only must NOT push (ADR 0023); got git %v", c.Args)
+					t.Errorf("scope siblings must NOT push (ADR 0023); got git %v", c.Args)
 				}
 			}
 		}
@@ -523,7 +531,7 @@ url = "github:owner/sib"
 		}
 	}
 	if !relocked {
-		t.Fatalf("--siblings-only must relock the sibling input with `nix flake update --refresh sib`; calls=%v", f.Calls())
+		t.Fatalf("scope siblings must relock the sibling input with `nix flake update --refresh sib`; calls=%v", f.Calls())
 	}
 }
 
@@ -572,7 +580,8 @@ url = "github:owner/foo"
 	if len(calls) != 4 {
 		t.Errorf("expected 4 calls, got %d (%+v)", len(calls), calls)
 	}
-	assertNoPushNoPropagate(t, calls)
+	assertNoPush(t, calls)
+	assertNoSiblingRelock(t, calls)
 
 	// Long-running steps stream; the silent --quiet probes stay captured.
 	for _, c := range calls {

@@ -587,10 +587,42 @@ func workspaceTreeCmd(terminal *string) *cobra.Command {
 func workspaceUpdateCmd(terminal *string) *cobra.Command {
 	var inPlace bool
 	var siblingsOnly bool
+	var scopeFlag string
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Relock each workspace repo, local-only — never pushes (worktree-isolated; --in-place for direct-on-main, --siblings-only to relock just sibling inputs)",
+		Short: "Relock each workspace repo, local-only — never pushes (worktree-isolated; --in-place for direct-on-main; --scope picks how much is relocked)",
+		Long: `Relock each workspace repo, local-only: nothing is ever pushed. Each repo is
+updated in an ephemeral worktree and fast-forwarded onto its main (--in-place
+updates the primary checkout directly).
+
+--scope chooses how much is relocked:
+  siblings  workspace-sibling flake inputs only; skips update-locks.sh
+  flake     every flake input (siblings, nixpkgs, third-party); skips update-locks.sh,
+            so Go/uv/npm/nvfetcher/Homebrew/action-pin locks are untouched
+  full      ./update-locks.sh, then every flake input (default)
+The CLI defaults to full; /pn-workspace-update and 'pnwf update-relock' default to flake.
+Afterwards, 'pn workspace explain' reports where the time went.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate the flags before anything else runs: no workspace is opened,
+			// no event log is created and no pre-update hook fires on a usage error.
+			scope := workspace.ScopeFull
+			if cmd.Flags().Changed("scope") {
+				if scopeFlag == "" {
+					return ExitCodeError{Code: 2, Msg: `unknown scope "" (want siblings, flake or full)`}
+				}
+				s, err := workspace.ParseUpdateScope(scopeFlag)
+				if err != nil {
+					return ExitCodeError{Code: 2, Msg: err.Error()}
+				}
+				scope = s
+			}
+			if siblingsOnly {
+				if cmd.Flags().Changed("scope") && scope != workspace.ScopeSiblings {
+					return ExitCodeError{Code: 2, Msg: fmt.Sprintf("--siblings-only is an alias for --scope siblings and conflicts with --scope %s; pass one", scopeFlag)}
+				}
+				scope = workspace.ScopeSiblings
+			}
+
 			w, err := openWorkspace()
 			if err != nil {
 				return err
@@ -607,12 +639,18 @@ func workspaceUpdateCmd(terminal *string) *cobra.Command {
 			}
 
 			return runWithHooks(ctx, w, "update", func() error {
-				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal, Log: lw, InPlace: inPlace, SiblingsOnly: siblingsOnly})
+				return w.Update(ctx, out, workspace.UpdateOptions{Terminal: *terminal, Log: lw, InPlace: inPlace, Scope: scope})
 			})
 		},
 	}
+	// A flag error (a trailing --scope with no value, an unknown flag) is a usage
+	// error: exit 2, like the other validation failures above.
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return ExitCodeError{Code: 2, Msg: err.Error()}
+	})
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "update each repo directly on its primary main instead of in an isolated worktree")
-	cmd.Flags().BoolVar(&siblingsOnly, "siblings-only", false, "relock only the workspace-sibling flake inputs, from their remotes (skip update-locks.sh; leaves nixpkgs and other third-party inputs untouched); local-only, like plain update")
+	cmd.Flags().StringVar(&scopeFlag, "scope", "full", "siblings, flake or full (see above)")
+	cmd.Flags().BoolVar(&siblingsOnly, "siblings-only", false, "alias for --scope siblings")
 	return cmd
 }
 
@@ -620,7 +658,7 @@ func workspaceUpgradeCmd(terminal *string) *cobra.Command {
 	var inPlace bool
 	cmd := &cobra.Command{
 		Use:   "upgrade",
-		Short: "Update + apply each workspace repo",
+		Short: "Update (--scope full) + apply each workspace repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := openWorkspace()
 			if err != nil {

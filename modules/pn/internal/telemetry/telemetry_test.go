@@ -484,3 +484,23 @@ func TestStartRelock(t *testing.T) {
 		t.Errorf("failed span status = %v, want Error", ss[1].Status().Code)
 	}
 }
+
+func TestRecordUpdateScope(t *testing.T) {
+	tel, rec := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	ctx, verb := tel.StartVerb(ctx, "workspace update")
+	telemetry.RecordUpdateScope(ctx, "flake")
+	verb.End(0, nil)
+
+	vs := rec.ByName("pn.verb")
+	if len(vs) != 1 {
+		t.Fatalf("pn.verb spans = %d, want 1", len(vs))
+	}
+	if v, found := attrOf(vs[0], "pn.update.scope"); !found || v.AsString() != "flake" {
+		t.Errorf("pn.update.scope = %v (found=%v), want flake", v, found)
+	}
+}
+
+func TestRecordUpdateScope_NoSpanIsNoop(t *testing.T) {
+	telemetry.RecordUpdateScope(context.Background(), "full") // must not panic
+}

@@ -9,7 +9,7 @@
 # Override phillipgreenii.pn.package to substitute a different build.
 #
 # Observability: `pn workspace update` writes a structured JSONL event stream
-# (run_start / project_result / run_end; skipped repos -> warn, failed -> error)
+# (run_start / project_result / run_end; skipped repos -> warn, a failed relock after update-locks.sh -> warn, failed -> error)
 # to the standard path `${XDG_STATE_HOME}/pn/events.jsonl`, distinct from pn's
 # human stdout transcript. Lines conform to the phillipgreenii JSONL standard
 # (`time`/`level`/`msg`). The sibling `darwinModules.default` aggregate
