@@ -77,28 +77,109 @@ func TestBumpCommitMessage(t *testing.T) {
 
 // --- integration: real git, nix intercepted to mutate flake.lock -----------
 
+// runnerCall is one recorded runner call.
+type runnerCall struct {
+	Name string
+	Args []string
+	Dir  string
+	Env  map[string]string
+}
+
+// nixStep scripts one nix call: mutate runs first (so a failing nix can still
+// have rewritten the lock), then cancel, then the (res, err) pair is returned.
+type nixStep struct {
+	mutate func()
+	res    exec.Result
+	err    error
+	cancel func()
+}
+
+// gitAnswer scripts the answer to one of the intercepted fsmonitor git calls.
+type gitAnswer struct {
+	out string // printed on stdout (end it in "\n", as git does)
+	err error  // non-nil: the call fails with this error
+}
+
 // fsNixRunner runs git for real (so staging/commit/clean-tree behave
 // authentically) and intercepts `nix flake update` to apply a filesystem
-// mutation (FakeRunner cannot do side effects). It records nix args.
+// mutation (FakeRunner cannot do side effects). It records nix args, and every
+// call (name, args, Dir, Env) in calls.
+//
+// Scripting: steps, when non-empty, answers nix calls in order (an exhausted
+// script falls back to mutate/nixErr). mutate and nixErr are the original
+// single-answer fields; mutate runs BEFORE nixErr is returned.
+//
+// The three fsmonitor git calls (config read, rev-parse --absolute-git-dir,
+// fsmonitor--daemon stop) are answered here and never reach real git; with
+// nothing scripted the config read and rev-parse exit 1 with no output.
 type fsNixRunner struct {
 	real    exec.Runner
 	mutate  func() // applied on `nix flake update`
 	nixErr  error
 	nixArgs [][]string
+
+	steps       []nixStep
+	calls       []runnerCall
+	fsmonConfig *gitAnswer
+	gitDir      *gitAnswer
 }
 
 func (r *fsNixRunner) Run(ctx context.Context, name string, args []string, opts exec.RunOptions) (exec.Result, error) {
+	r.calls = append(r.calls, runnerCall{Name: name, Args: append([]string(nil), args...), Dir: opts.Dir, Env: opts.Env})
+	if name == "git" && len(args) >= 3 && args[0] == "-C" {
+		switch strings.Join(args[2:], " ") {
+		case "config --type=bool --get core.fsmonitor":
+			return fsmonAnswer(r.fsmonConfig, name, args)
+		case "rev-parse --absolute-git-dir":
+			return fsmonAnswer(r.gitDir, name, args)
+		case "fsmonitor--daemon stop":
+			return exec.Result{}, nil
+		}
+	}
 	if name == "nix" {
 		r.nixArgs = append(r.nixArgs, append([]string(nil), args...))
-		if r.nixErr != nil {
-			return exec.Result{ExitCode: 1}, r.nixErr
+		if len(r.steps) > 0 {
+			st := r.steps[0]
+			r.steps = r.steps[1:]
+			if st.mutate != nil {
+				st.mutate()
+			}
+			if st.cancel != nil {
+				st.cancel()
+			}
+			return st.res, st.err
 		}
 		if r.mutate != nil {
 			r.mutate()
 		}
+		if r.nixErr != nil {
+			return exec.Result{ExitCode: 1}, r.nixErr
+		}
 		return exec.Result{}, nil
 	}
 	return r.real.Run(ctx, name, args, opts)
+}
+
+func fsmonAnswer(a *gitAnswer, name string, args []string) (exec.Result, error) {
+	if a == nil {
+		res := exec.Result{ExitCode: 1}
+		return res, &exec.CommandError{Name: name, Args: args, Result: res}
+	}
+	if a.err != nil {
+		return exec.Result{ExitCode: 1}, a.err
+	}
+	return exec.Result{Stdout: []byte(a.out)}, nil
+}
+
+// nixCalls returns the recorded nix calls, in order.
+func (r *fsNixRunner) nixCalls() []runnerCall {
+	var out []runnerCall
+	for _, c := range r.calls {
+		if c.Name == "nix" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // propEnv sets up a real git repo laid out the way PRODUCTION is: flakeFileRel

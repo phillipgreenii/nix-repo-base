@@ -446,3 +446,41 @@ func TestSpansEndOnTheWallClockAcrossASleep(t *testing.T) {
 		t.Errorf("child span ends %v, after its pn.exec parent at %v", wake, es[0].EndTime())
 	}
 }
+
+func TestStartRelock(t *testing.T) {
+	pinned := time.Now().Add(3 * time.Hour)
+	defer telemetry.SetWallNow(func() time.Time { return pinned })()
+
+	tel, rec := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	ctx, verb := tel.StartVerb(ctx, "workspace update")
+	_, end := telemetry.StartRelock(ctx, "flake")
+	end(2, nil)
+	_, endErr := telemetry.StartRelock(ctx, "siblings")
+	endErr(0, errors.New("boom"))
+	verb.End(0, nil)
+
+	ss := rec.ByName("pn.relock")
+	if len(ss) != 2 {
+		t.Fatalf("pn.relock spans = %d, want 2", len(ss))
+	}
+	ok := ss[0]
+	if ok.Parent().SpanID() != rec.ByName("pn.verb")[0].SpanContext().SpanID() {
+		t.Errorf("pn.relock is not a child of the current span")
+	}
+	if v, found := attrOf(ok, "pn.relock.kind"); !found || v.AsString() != "flake" {
+		t.Errorf("kind = %v", v)
+	}
+	if v, found := attrOf(ok, "pn.relock.changed"); !found || v.AsInt64() != 2 {
+		t.Errorf("changed = %v", v)
+	}
+	if ok.Status().Code == codes.Error {
+		t.Errorf("success span has Error status")
+	}
+	if !ok.EndTime().Equal(pinned) {
+		t.Errorf("end = %v, want pinned %v", ok.EndTime(), pinned)
+	}
+	if ss[1].Status().Code != codes.Error {
+		t.Errorf("failed span status = %v, want Error", ss[1].Status().Code)
+	}
+}

@@ -58,18 +58,23 @@ const (
 	SpanRepo              = "pn.repo"
 	SpanExec              = "pn.exec"
 	SpanHook              = "pn.hook"
+	SpanRelock            = "pn.relock"
 	MetricCommandDuration = "pn.command.duration"
 	MetricPlanBuilds      = "pn.plan.builds"
 )
 
 // Attribute keys.
 const (
-	AttrVerb       = "pn.verb"
-	AttrRepo       = "pn.repo"
-	AttrStatus     = "status"
-	AttrExitCode   = "process.exit.code"
-	AttrErrorType  = "error.type"
-	AttrExecutable = "process.executable.name"
+	AttrVerb = "pn.verb"
+	// AttrRelockKind is the kind of a pn.relock span ("siblings" or "flake");
+	// AttrRelockChanged is how many flake inputs the relock moved.
+	AttrRelockKind    = "pn.relock.kind"
+	AttrRelockChanged = "pn.relock.changed"
+	AttrRepo          = "pn.repo"
+	AttrStatus        = "status"
+	AttrExitCode      = "process.exit.code"
+	AttrErrorType     = "error.type"
+	AttrExecutable    = "process.executable.name"
 	// AttrToolNotFound marks a pn.exec span that records a refused launch: the
 	// command was on neither PATH nor the system profile, so no process ran.
 	AttrToolNotFound = "pn.exec.tool_not_found"
@@ -491,6 +496,23 @@ func StartHook(ctx context.Context, when, name string) (context.Context, func(ex
 		span.SetAttributes(attribute.Int(AttrExitCode, exitCode))
 		if err != nil || exitCode != 0 {
 			setExitError(span, exitCode, err)
+		}
+		span.End(endNow())
+	}
+}
+
+// StartRelock starts a pn.relock span for one relock of a repo's flake inputs
+// (kind is "siblings" or "flake"), a child of the current span. The returned
+// func ends it with the number of inputs moved and the error, and MUST be
+// called exactly once.
+func StartRelock(ctx context.Context, kind string) (context.Context, func(changed int, err error)) {
+	ctx, span := From(ctx).tracer.Start(ctx, SpanRelock, trace.WithAttributes(
+		attribute.String(AttrRelockKind, kind),
+	))
+	return ctx, func(changed int, err error) {
+		span.SetAttributes(attribute.Int(AttrRelockChanged, changed))
+		if err != nil {
+			setError(span, err)
 		}
 		span.End(endNow())
 	}
