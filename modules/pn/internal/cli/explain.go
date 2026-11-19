@@ -116,8 +116,8 @@ Exit codes (a non-zero exit prints nothing on stdout; the message is on stderr):
   2   usage error (bad trace id, bad --top, unknown flag, too many arguments)
   3   nothing to explain: no matching run, no trace id recorded, an unknown or
       expired trace, or a run with no run_end and no spans in Tempo
-  4   the run has no run_end but Tempo has some spans (still running or killed);
-      pass --partial to analyze them
+  4   the run has no run_end, or no run recorded it, but Tempo has some of its
+      spans (still running or killed); pass --partial to analyze them
   5   Tempo unreachable, answered with an error, or returned an unreadable trace
   75  the run ended under 7 days ago but Tempo has not ingested it yet; retry in
       a minute (75 is EX_TEMPFAIL, pn's "retry later" code)`,
@@ -301,7 +301,7 @@ func noTrace(recs []eventRec, id, path string, hasSpans bool) error {
 	case started:
 		return exitErr(3, "run %s has no run_end and none of its spans are in Tempo: it is still running, or was killed before exporting; nothing to explain yet", id)
 	case hasSpans:
-		return exitErr(3, "trace %s has no pn.verb span in Tempo and no pn run in %s recorded it; pass --partial to analyze what was recorded", id, path)
+		return exitErr(4, "trace %s has no pn.verb span in Tempo and no pn run in %s recorded it; pass --partial to analyze what was recorded", id, path)
 	default:
 		return exitErr(3, "trace %s is not in Tempo and no pn run in %s recorded it; check the id, or pass --tempo-url for another Tempo", id, path)
 	}

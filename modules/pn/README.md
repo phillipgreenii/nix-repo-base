@@ -110,7 +110,7 @@ stderr. Each code has one next action:
 | 0    | report printed (anomalies and `--partial` do not change it)                                                    | read it                                                      |
 | 2    | usage: bad trace id, bad `--top`, unknown flag, more than one id                                               | fix the command                                              |
 | 3    | nothing to explain: no matching run, no trace id recorded, expired or unknown trace, no `run_end` and no spans | pass another id, or give up                                  |
-| 4    | no `run_end`, but Tempo has some spans (still running or killed)                                               | re-run with `--partial`                                      |
+| 4    | no `run_end`, or no run recorded it, but Tempo has some of its spans (still running or killed)                 | re-run with `--partial`                                      |
 | 5    | Tempo unreachable, any other non-200 answer, or a body that is not a parseable trace                           | start Tempo, or set `PG_TEMPO_URL` or `--tempo-url`          |
 | 75   | the run ended less than 7 days ago but Tempo has not ingested it yet                                           | retry in a minute; if it persists, run `pn workspace doctor` |
 

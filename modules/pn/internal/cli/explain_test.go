@@ -353,6 +353,23 @@ func TestExplainCmd_ExitCodes(t *testing.T) {
 			stdout: []string{"INCOMPLETE TRACE: no pn.verb span; figures cover only what was recorded\nExplaining the newest"},
 		},
 		{
+			name: "explicit id, no events, incomplete trace", args: []string{X}, status: 200, body: inc, code: 4,
+			msgs: func(_, events, _ string) []string {
+				return []string{"trace " + X + " has no pn.verb span in Tempo and no pn run in " + events + " recorded it; pass --partial to analyze what was recorded"}
+			},
+		},
+		{
+			name: "explicit id, no events, incomplete trace, partial", args: []string{X, "--partial"}, status: 200, body: inc, code: 0,
+			stdout: []string{"INCOMPLETE TRACE: no pn.verb span; figures cover only what was recorded\nExplaining trace " + X},
+		},
+		{
+			name: "ended 1m ago, 200 with zero spans", events: ended(end1m), status: 200, body: []byte(`{"trace":{"resourceSpans":[]}}`), code: 75,
+			msgs: func(string, string, string) []string {
+				return []string{"trace " + X + " is not in Tempo yet (the run ended " + rfc(end1m) + "); retry in a minute; if it persists, run 'pn workspace doctor'"}
+			},
+			notMsgs: []string{"--partial"},
+		},
+		{
 			name: "server closed", args: []string{X}, closed: true, code: 5,
 			msgs: func(_, _, url string) []string { return []string{"cannot read trace " + X + " from " + url + ": "} },
 		},
