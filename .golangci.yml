@@ -20,7 +20,7 @@ run:
   # has no "activate every custom tag" mode — Go's build-constraint system
   # is an explicit allow-list by design, so each custom tag must be named
   # here. This mirrors the equally-hardcoded `-tags smoke` `testFlags` on
-  # the `pn-smoke-tests` check in flake.nix (bead pg2-nuacd) — the next new
+  # the `pn-smoke-tests` integration-checks output in flake.nix — the next new
   # custom tag needs a matching entry in BOTH places.
   #
   # `darwin` is a standard GOOS constraint, not a custom tag: Go (and thus

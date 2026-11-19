@@ -562,6 +562,34 @@
                 "-count=1"
               ];
             };
+
+            # Real-nix gate for pn: the six cmd/pn tests that run the host's real nix
+            # (`flake_check_no_build_realnix_test.go`, `//go:build realnix`) are class B
+            # (real external binary, seconds each), so they sit outside the unit gate
+            # `pn-go-tests` and run here instead (ADR 0024: a build-tagged suite MUST
+            # have its own gate, and an integration suite MUST NOT be under `checks`;
+            # this one is opt-in: `nix build .#integration-checks.pn-realnix-tests`).
+            # They need a working nix daemon, which a build sandbox lacks, so under `nix build` they self-skip via requireRealNix
+            # (NIX_BUILD_TOP); the build proves the tagged files compile and vet, and a
+            # developer or agent run outside the sandbox (`go test -tags realnix
+            # ./cmd/pn`) executes them. .golangci.yml `run.build-tags` MUST list the tag.
+            pn-realnix-tests = goBuilders.mkGoTest {
+              pname = "pn-realnix";
+              src = ./modules/pn;
+              gomod2nixToml = ./modules/pn/gomod2nix.toml;
+              testDeps = [
+                pkgs.git
+                pkgs.nix
+                pkgs.bash
+              ];
+              testFlags = [
+                "-tags"
+                "realnix"
+                "-count=1"
+                "-run"
+                "RealNix"
+              ];
+            };
           };
 
           checks = {
@@ -2001,33 +2029,6 @@
               testDeps = [
                 pkgs.git
                 pkgs.nix
-              ];
-            };
-
-            # Real-nix gate for pn: the six cmd/pn tests that run the host's real nix
-            # (`flake_check_no_build_realnix_test.go`, `//go:build realnix`) are class B
-            # (real external binary, seconds each), so they sit outside the unit gate
-            # `pn-go-tests` and run here instead (ADR 0024: a build-tagged suite MUST
-            # have its own check). They need a working nix daemon, which a build
-            # sandbox lacks, so under `nix build` they self-skip via requireRealNix
-            # (NIX_BUILD_TOP); the check proves the tagged files compile and vet, and a
-            # developer or agent run outside the sandbox (`go test -tags realnix
-            # ./cmd/pn`) executes them. .golangci.yml `run.build-tags` MUST list the tag.
-            pn-realnix-tests = goBuilders.mkGoTest {
-              pname = "pn-realnix";
-              src = ./modules/pn;
-              gomod2nixToml = ./modules/pn/gomod2nix.toml;
-              testDeps = [
-                pkgs.git
-                pkgs.nix
-                pkgs.bash
-              ];
-              testFlags = [
-                "-tags"
-                "realnix"
-                "-count=1"
-                "-run"
-                "RealNix"
               ];
             };
 
