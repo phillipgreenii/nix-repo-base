@@ -110,6 +110,21 @@ func executeWith(version string, args []string, stdout, stderr io.Writer, res te
 		tel = telemetry.Disabled()
 	}
 
+	// Read PN_TRACE_HINT once and clear it, so a nested pn (for example one an
+	// update-locks.sh runs) does not inherit it and print its own `trace:` line
+	// into this run's output. The hint below still honours the saved value.
+	traceHint, traceHintSet := os.LookupEnv("PN_TRACE_HINT")
+	_ = os.Unsetenv("PN_TRACE_HINT")
+	getenv := func(k string) string {
+		if k == "PN_TRACE_HINT" {
+			if traceHintSet {
+				return traceHint
+			}
+			return ""
+		}
+		return os.Getenv(k)
+	}
+
 	// Cancel the command's context on SIGINT/SIGTERM so a Ctrl-C during a
 	// fan-out (e.g. `pn workspace update`) propagates cancellation to the
 	// in-flight subprocesses via cmd.Context(), instead of being ignored until
@@ -143,7 +158,7 @@ func executeWith(version string, args []string, stdout, stderr io.Writer, res te
 	// `trace: <id>` goes to stderr only (never stdout), and only under -v or
 	// PN_TRACE_HINT=1; it needs a trace id, which exists only when the root
 	// span recorded one via RunState.SetTraceID.
-	telemetrycfg.WriteHint(stderr, state, res.Verbose, os.Getenv)
+	telemetrycfg.WriteHint(stderr, state, res.Verbose, getenv)
 	return err
 }
 

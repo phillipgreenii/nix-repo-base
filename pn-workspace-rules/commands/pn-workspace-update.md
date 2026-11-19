@@ -1,28 +1,52 @@
 ---
 disable-model-invocation: true
+argument-hint: "[siblings|flake|full]"
 description: >-
-  Update every repo in this pn-workspace by relocking its flake inputs (nixpkgs +
-  third-party + workspace siblings) in an isolated coordinated workforest,
-  validating the whole set builds, landing it, then pushing. ON SUCCESS THIS
-  PUSHES EVERY REPO TO origin/main.
+  Update every repo in this pn-workspace by relocking every repo's flake inputs
+  (scope flake, the default) in an isolated coordinated workforest, validating
+  the whole set builds, landing it, then pushing. Per-package locks (Go modules,
+  uv, npm, nvfetcher, Homebrew, action pins) are not refreshed; /pn-workspace-update
+  full does that, and /pn-workspace-update siblings relocks only workspace-sibling
+  inputs. ON SUCCESS THIS PUSHES EVERY REPO TO origin/main.
 ---
 
 # /pn-workspace-update
 
 You are running the **update** consumer of the workforest work-cycle. It relocks
-every repo's flake inputs (nixpkgs + third-party + workspace siblings) in an
-isolated coordinated set, validates and lands that set onto the local primary
-branches, tears the set down, then publishes.
+every repo's flake inputs (scope `flake` by default) in an isolated coordinated
+set, validates and lands that set onto the local primary branches, tears the set
+down, then publishes.
+
+## Scope (MUST resolve before anything else)
+
+`$ARGUMENTS` selects the relock scope:
+
+- empty means `flake` (the default);
+- exactly `siblings`, `flake` or `full` selects that scope;
+- anything else: stop BEFORE forking and reply
+  `Unknown scope '<arg>'. Use /pn-workspace-update [siblings|flake|full] (default flake). Nothing was forked.`
+
+What each scope relocks:
+
+- `siblings`: workspace-sibling inputs only (nixpkgs and third-party untouched);
+- `flake`: every flake input of every repo; per-package locks (Go modules, uv,
+  npm, nvfetcher, Homebrew, action pins) are NOT refreshed;
+- `full`: `flake`, plus each repo's `update-locks.sh` per-package steps.
 
 ## Announce first (MUST)
 
 Open by telling the user plainly, in one line, what this will do:
 
-> This will relock every repo's flake inputs (nixpkgs + third-party + workspace
-> siblings) in an isolated workforest, land it onto local `main`, and — on
-> success — **push every repo to `origin/main`**. You invoked
+> This will relock every repo's flake inputs (scope flake) in an isolated
+> workforest, land it onto local `main`, and — on success — **push every repo to
+> `origin/main`**. Per-package locks (Go modules, uv, npm, nvfetcher, Homebrew,
+> action pins) are not refreshed; /pn-workspace-update full does that. You invoked
 > `/pn-workspace-update`; that invocation is the authorization to push. I will not
 > ask again.
+
+For `siblings` or `full`, say that scope in place of `flake` and drop or adjust
+the per-package sentence to match (`full` refreshes them; `siblings` relocks only
+workspace-sibling inputs).
 
 Do **not** add a second approval gate. A human ran this command; that IS the
 authorization. (If a repo's `integrate-branch` strategy turns out to be
@@ -47,6 +71,7 @@ flowchart TD
     V -->|"build failed, no exit status, or a BLOCKING doctor line"| H2["HALT and report"]
     L --> C["Step 4 cleanup-workforest"]
     C --> P["Step 5 POST - pn workspace push"]
+    P --> RP["Step 6 REPORT"]
 ```
 
 1. **Fork — dispatch the runner with `STAGE = fork`.** Dispatch the subagent
@@ -94,10 +119,13 @@ flowchart TD
    cd <SETDIR> && pnwf update-relock --set
    ```
 
+   For a non-default scope, add `--scope <scope>` AFTER `--set`
+   (`pnwf update-relock --set --scope <scope>`); the default `flake` adds nothing.
+
    You MUST NOT run it in the foreground and MUST NOT delegate it to the runner.
-   `update-relock` relocks EVERY member of the set (a `nix flake update` plus each
-   repo's `update-locks.sh`), and this fleet's own scheduled updater budgets 60
-   minutes for a SINGLE repo; the Bash tool's 600000 ms foreground maximum cannot
+   `update-relock` relocks EVERY member of the set (a `nix flake update`, plus each
+   repo's `update-locks.sh` at `full` scope), and this fleet's own scheduled updater
+   budgets 60 minutes for a SINGLE repo; the Bash tool's 600000 ms foreground maximum cannot
    hold that, which is the failure a runner-owned relock produced (bd
    `pg2-fy8wq`: a healthy relock halted `incomplete-update` at the ten-minute
    mark). Your running time is not the runner's: this session survives to receive
@@ -107,6 +135,10 @@ flowchart TD
    status; never infer success from a quiet log or a launcher exit code. If you
    need an active wait, use Monitor with an until-loop, never a `sleep`-then-check
    pair.
+
+   **Trace id.** The trace id is the line in step 2a's background output file
+   that matches `^update-relock: trace [0-9a-f]{32}$`. With no such line the run
+   has no trace id (telemetry off). Keep the id for the halt report and step 6.
 
    Handle the outcome. Everything that follows is YOURS now: the runner no longer
    emits `update-failed` / `incomplete-update`, and no longer produces the `dirty`
@@ -123,7 +155,11 @@ flowchart TD
      It prints a JSON array of `{repo, paths, mid_rebase}`, one entry per dirty
      member (`mid_rebase` is always `false` here; a clean set prints `[]`). That
      array IS the `dirty` array of this halt. Surface those paths verbatim in your
-     stop-and-report, with the verbatim tail of the relock's output, and name the
+     stop-and-report, with the verbatim tail of the relock's output, and, when
+     there is a trace id, quote the `update-relock: trace <id>` line and the
+     command `pn workspace explain <id>`. A `relock-flake` failure with no other
+     residue adds: one retry was already made, and re-running
+     `pnwf update-relock --set` is safe. Name the
      recovery the user can then authorize: disposition the named residue (a relock
      leaves regenerated lock churn, but that is only knowable after inspection),
      then re-run `pnwf update-relock --set` in the set. You MUST NOT go on to
@@ -258,6 +294,11 @@ flowchart TD
      before validate, or routinely run as `--no-siblings`, that carve-out becomes a
      silent hole and MUST be revisited with it.
 
+6. **REPORT (main session).** Close with a final report. It lists every
+   `update-relock: warning:` line from step 2a (each names a repo whose flake
+   relock failed after one retry, update-locks.sh commits kept), the scope that
+   ran, and the trace id when step 2a had one.
+
 ## Notes
 
 - **Runner vs. main session (bd `pg2-fy8wq`, bd `pg2-td9zo`).** The
@@ -314,6 +355,7 @@ flowchart TD
   into a working tree: each repo gets a private hook bundle under the worktree's
   git dir (`--private`), so they are a safe no-op for landing. See
   `docs/hooks.md`.
-- **Known limitation.** An ADR-0020 "silently transient" relock step can leave a
-  repo green while an update was skipped; this run validates clean and lands
-  regardless (inherited from `pn workspace update`).
+- **Known limitation (scope `full` only).** An ADR-0020 "silently transient"
+  `update-locks.sh` step can leave a repo green while an update was skipped; a
+  `full` run validates clean and lands regardless (inherited from
+  `pn workspace update`). Scopes `siblings` and `flake` run no `update-locks.sh`.

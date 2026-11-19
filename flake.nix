@@ -1481,6 +1481,12 @@
                 echo "pn-workspace-update.md: the relock step no longer runs as a background job" >&2
                 exit 1
               }
+              # The scope default (flake) is delivered by this argument hint, so
+              # it needs an automated guard.
+              grep -qF -- 'argument-hint: "[siblings|flake|full]"' "$update_cmd" || {
+                echo "pn-workspace-update.md: missing the scope argument-hint" >&2
+                exit 1
+              }
               grep -qF -- 'incomplete-sync' "$sync_runner" || {
                 echo "pnwf-runner.md: missing the incomplete-sync halt reason" >&2
                 exit 1

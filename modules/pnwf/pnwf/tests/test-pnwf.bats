@@ -94,6 +94,11 @@ fi
 # touching the real pn. (Its PN_WORKSPACE_ROOT env is already recorded above,
 # proving update-relock cleared it via `env -u`.)
 if [[ "${1:-}" == "workspace" && "${2:-}" == "update" ]]; then
+  # Log argv and PN_TRACE_HINT so tests can assert what pnwf passed.
+  if [[ -n "${MOCK_PN_ARGV_LOG:-}" ]]; then
+    echo "ARGV=$*" >>"$MOCK_PN_ARGV_LOG"
+    echo "PN_TRACE_HINT=${PN_TRACE_HINT-<unset>}" >>"$MOCK_PN_ARGV_LOG"
+  fi
   if [[ -n "${MOCK_PN_UPDATE_OUTPUT:-}" ]]; then
     printf '%s\n' "$MOCK_PN_UPDATE_OUTPUT"
   fi
@@ -104,6 +109,11 @@ if [[ "${1:-}" == "workspace" && "${2:-}" == "update" ]]; then
     : >"$MOCK_PN_UPDATE_BLOCK_FILE.started"
     while [[ ! -e "$MOCK_PN_UPDATE_BLOCK_FILE" ]]; do sleep 0.05; done
     printf '%s\n' "  workspace update finished"
+  fi
+  # Like root.go, print the trace hint (stderr, a whole line) ONLY when
+  # PN_TRACE_HINT=1, so a pnwf that forgets to set it fails the trace tests.
+  if [[ -n "${MOCK_PN_TRACE_ID:-}" && "${PN_TRACE_HINT:-}" == "1" ]]; then
+    echo "trace: ${MOCK_PN_TRACE_ID}" >&2
   fi
   exit "${MOCK_PN_UPDATE_RC:-0}"
 fi
@@ -226,6 +236,9 @@ setup() {
   MOCK_PN_ENV_LOG="$TEST_DIR/pn-env.log"
   : >"$MOCK_PN_ENV_LOG"
   export MOCK_PN_ENV_LOG
+  MOCK_PN_ARGV_LOG="$TEST_DIR/pn-argv.log"
+  : >"$MOCK_PN_ARGV_LOG"
+  export MOCK_PN_ARGV_LOG
 
   # Canned pn workspace info. Deliberately NOT hoisted to setup_file: it embeds
   # the per-test TEST_DIR paths (root/canonical_root, which tests assert equal
@@ -2637,6 +2650,129 @@ _ur_set_upstream() {
   run "$SCRIPT_UNDER_TEST" update-relock --set
   [ "$status" -eq 0 ]
   [[ "$output" == *"workspace update finished"* ]]
+}
+
+# --- update-relock --scope, trace relay, relock warnings ---------------
+
+@test "update-relock passes --scope flake to pn by default" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+  grep -q -- '^ARGV=workspace update --in-place --scope flake$' "$MOCK_PN_ARGV_LOG"
+}
+
+@test "update-relock --scope full passes --scope full" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set --scope full
+  [ "$status" -eq 0 ]
+  grep -q -- '^ARGV=workspace update --in-place --scope full$' "$MOCK_PN_ARGV_LOG"
+}
+
+@test "update-relock --scope bogus exits 2 and never calls pn" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set --scope bogus
+  [ "$status" -eq 2 ]
+  [ ! -s "$MOCK_PN_ARGV_LOG" ]
+  [ ! -s "$MOCK_PN_ENV_LOG" ]
+}
+
+@test "update-relock --scope with no value exits 2" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set --scope
+  [ "$status" -eq 2 ]
+  [ ! -s "$MOCK_PN_ARGV_LOG" ]
+}
+
+@test "update-relock prints the trace id pn reported" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_TRACE_ID=0123456789abcdef0123456789abcdef
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"update-relock: trace 0123456789abcdef0123456789abcdef"* ]]
+  grep -q '^PN_TRACE_HINT=1$' "$MOCK_PN_ARGV_LOG"
+}
+
+@test "update-relock prints the trace id even when pn fails" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_TRACE_ID=0123456789abcdef0123456789abcdef
+  export MOCK_PN_UPDATE_RC=1
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"update-relock: trace 0123456789abcdef0123456789abcdef"* ]]
+}
+
+@test "update-relock prints no trace line when pn printed none" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"update-relock: trace"* ]]
+}
+
+@test "update-relock takes only a whole trace line, the last one" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_OUTPUT="  building... trace: ffffffffffffffffffffffffffffffff"
+  export MOCK_PN_TRACE_ID=0123456789abcdef0123456789abcdef
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"update-relock: trace 0123456789abcdef0123456789abcdef"* ]]
+  [[ "$output" != *"update-relock: trace ffff"* ]]
+}
+
+@test "update-relock relays a full-scope relock warning" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_OUTPUT="  ⚠ foo: nix flake update (all inputs) failed after one retry — update-locks.sh commits kept, flake inputs not moved: boom
+  [1/1] foo: ok, relock failed (12.0s)"
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set --scope full
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c -F 'update-relock: warning: foo: flake relock failed (update-locks.sh commits kept)')" -eq 1 ]
+}
+
+@test "update-relock backstop ignores the scope banners" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_OUTPUT="  ⊘ foo: scope siblings — skipping update-locks.sh (workspace inputs relocked, nixpkgs/third-party untouched)
+  ⊘ foo: scope siblings — skipping update-locks.sh (no workspace inputs to relock, nixpkgs/third-party untouched)
+  ⊘ foo: scope flake — skipping update-locks.sh (flake inputs relocked, per-package locks untouched)
+  ⊘ foo: scope flake — skipping update-locks.sh (no flake input moved, per-package locks untouched)
+  ⊘ foo: no update-locks.sh — skipping its per-package steps (flake inputs relocked next)"
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set
+  [ "$status" -eq 0 ]
+}
+
+@test "update-relock --scope full --set run from the canonical dir exits 13 and never calls pn update" {
+  _stage_write_lock repoA
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --scope full --set
+  [ "$status" -eq 13 ]
+  [ ! -s "$MOCK_PN_ARGV_LOG" ]
+}
+
+@test "update-relock --set --scope siblings inside a set passes --scope siblings" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set --scope siblings
+  [ "$status" -eq 0 ]
+  grep -q -- 'ARGV=.*--scope siblings' "$MOCK_PN_ARGV_LOG"
 }
 
 # CRUX: update-relock MUST clear PN_WORKSPACE_ROOT (env -u) for BOTH the info

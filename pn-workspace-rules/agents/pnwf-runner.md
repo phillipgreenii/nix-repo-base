@@ -65,8 +65,8 @@ the sibling `pnwf-update-runner`, which has this same shape and exposure).
   **Why Stage 2 stays in this runner while the update runner's relock does not
   (judged, bd `pg2-fy8wq`).** `/pn-workspace-update`'s `pnwf update-relock` was
   moved out of its runner into the main session's background because it runs
-  `nix flake update` plus each repo's `update-locks.sh` across every member —
-  unbounded, evaluation-heavy work. `pnwf sync-fetch` does none of that: per
+  `nix flake update` across every member (plus each repo's `update-locks.sh` at
+  `full` scope) — unbounded, evaluation-heavy work. `pnwf sync-fetch` does none of that: per
   member it is a `git fetch origin`, a `git rebase`, and (only when the main session did not already publish) at most a canonical
   `git push` (`pnwf_fetch_and_rebase` / `pnwf_push_canonical_primary_if_ahead` in
   `modules/pnwf/lib/pnwf-lib.bash` invoke no `nix` and no `pn`; the git hooks they

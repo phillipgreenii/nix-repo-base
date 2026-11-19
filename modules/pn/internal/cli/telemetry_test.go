@@ -283,3 +283,23 @@ func TestExecuteAndShutdown_ShutdownFailureDoesNotChangeOutcome(t *testing.T) {
 		}
 	}
 }
+
+// A nested pn (for example one a repo's update-locks.sh runs) must not inherit
+// PN_TRACE_HINT and print its own `trace:` line into the outer run's output:
+// executeWith reads the variable once, still honours it for this run, and
+// clears it before any subcommand runs.
+func TestExecuteWith_ClearsTraceHintForChildren(t *testing.T) {
+	t.Setenv("PN_TRACE_HINT", "1")
+	tel, _ := telemetrytest.New()
+	var out, errBuf bytes.Buffer
+	res := telemetrycfg.Resolution{}
+	if err := executeWith("test", []string{"workspace", "install-hooks"}, &out, &errBuf, res, tel); err == nil {
+		t.Fatal("expected error")
+	}
+	if got := os.Getenv("PN_TRACE_HINT"); got != "" {
+		t.Errorf("PN_TRACE_HINT after executeWith = %q, want empty", got)
+	}
+	if !strings.HasPrefix(errBuf.String(), "trace: ") {
+		t.Errorf("stderr = %q, want a trace: hint", errBuf.String())
+	}
+}

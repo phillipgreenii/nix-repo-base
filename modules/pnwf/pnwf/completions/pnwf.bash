@@ -21,7 +21,14 @@ _pnwf() {
   sync-fetch)
     mapfile -t COMPREPLY < <(compgen -W "--set --no-publish --help -h" -- "$cur")
     ;;
-  resolve | repos | stage | publish-canonical | update-relock)
+  update-relock)
+    if [[ ${words[cword - 1]} == "--scope" ]]; then
+      mapfile -t COMPREPLY < <(compgen -W "siblings flake full" -- "$cur")
+    else
+      mapfile -t COMPREPLY < <(compgen -W "--set --scope --help -h" -- "$cur")
+    fi
+    ;;
+  resolve | repos | stage | publish-canonical)
     mapfile -t COMPREPLY < <(compgen -W "--set --help -h" -- "$cur")
     ;;
   fork-preflight)

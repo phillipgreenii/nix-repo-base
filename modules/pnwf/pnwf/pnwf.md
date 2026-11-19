@@ -51,9 +51,13 @@
 
 `pnwf publish-canonical --set && pnwf sync-fetch --set --no-publish`
 
-- Relock every member of the current set in place via `pn workspace update --in-place` (refuses any member with an upstream, a dirty tree, or a git state it cannot read, and refuses a relock that skipped repos; pn's output streams live on stdout while it runs):
+- Relock every member of the current set in place via `pn workspace update --in-place --scope flake` (the default scope: every flake input of every repo, per-package locks untouched; refuses any member with an upstream, a dirty tree, or a git state it cannot read, and refuses a relock that skipped repos; pn's output streams live on stdout while it runs, and a `update-relock: trace <id>` line names the run for `pn workspace explain`):
 
 `pnwf update-relock --set`
+
+- Relock with another scope (`siblings`: workspace-sibling inputs only; `full`: also each repo's `update-locks.sh`, with a `update-relock: warning:` line per repo whose flake relock failed):
+
+`pnwf update-relock --set --scope {{siblings|flake|full}}`
 
 - Show usage:
 

@@ -75,10 +75,13 @@ Subcommands (mutating WORK-recipe helpers, not read-only probes):
                      canonical path; recovery is agent-owned. --no-publish skips the
                      canonical push and refuses (exit 14) a member whose
                      canonical is still ahead (run publish-canonical first).
-  update-relock [--set]
-                     Relock every present member's flake inputs (nixpkgs +
-                     third-party + workspace siblings) IN PLACE, by shelling
-                     `pn workspace update --in-place` for the whole set.
+  update-relock [--set] [--scope siblings|flake|full]
+                     Relock every present member IN PLACE, by shelling
+                     `pn workspace update --in-place --scope <scope>` for the
+                     whole set (default scope flake: every flake input of
+                     every repo; per-package locks untouched; full also runs
+                     each update-locks.sh). Prints `update-relock: trace <id>`
+                     when pn reported a trace id.
                      Pre-flight refuses any member with an upstream (an
                      in-place relock would push it), a dirty tree, or a git
                      state it cannot read -- the no-remote-write guard fails
@@ -131,6 +134,7 @@ Examples:
   pnwf sync-fetch --set
   pnwf sync-fetch --set --no-publish
   pnwf update-relock --set
+  pnwf update-relock --set --scope full
   pnwf residue --set
 HELP
 }
@@ -1619,21 +1623,42 @@ HELP
 # stop-and-report resumes the relock where it left off (a partially-relocked
 # set is the expected re-entry case).
 cmd_update_relock() {
-  local require_set=0
+  local require_set=0 scope=flake
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --set)
       require_set=1
       ;;
+    --scope)
+      [[ $# -ge 2 ]] || die_usage "update-relock: --scope needs a value (siblings|flake|full)"
+      scope="$2"
+      case "$scope" in
+      siblings | flake | full) : ;;
+      *) die_usage "update-relock: unknown --scope '$scope' (use siblings, flake or full)" ;;
+      esac
+      shift
+      ;;
     -h | --help)
       cat <<'HELP'
-Usage: pnwf update-relock [--set]
+Usage: pnwf update-relock [--set] [--scope siblings|flake|full]
 
 Relock every member of the resolved workspace's own lock IN PLACE, by
-shelling `pn workspace update --in-place` once for the whole set (relocks
-each member's nixpkgs + third-party + workspace-sibling flake inputs). This
-is the MUTATING WORK-recipe for /pn-workspace-update, parallel to `sync-fetch`
-for /pn-workspace-sync.
+shelling `pn workspace update --in-place --scope <scope>` once for the whole
+set. This is the MUTATING WORK-recipe for /pn-workspace-update, parallel to
+`sync-fetch` for /pn-workspace-sync.
+
+--scope (default flake):
+  siblings  relock only workspace-sibling inputs
+  flake     relock every flake input of every repo; per-package locks (Go
+            modules, uv, npm, nvfetcher, Homebrew, action pins) are untouched
+  full      flake, plus each repo's update-locks.sh per-package steps
+
+pn runs with PN_TRACE_HINT=1; when pn prints a `trace: <id>` line, update-relock
+prints `update-relock: trace <id>` (success or failure) so the run can be
+explained with `pn workspace explain <id>`. A full-scope relock whose flake
+update failed after one retry prints `update-relock: warning: <repo>: flake
+relock failed (update-locks.sh commits kept)` and does not change the exit
+status.
 
 Pre-flight, per present member (an absent worktree -- already landed/cleaned
 up elsewhere -- is skipped):
@@ -1805,12 +1830,28 @@ HELP
   # PIPESTATUS[0] -- expanded before the assignment -- carries pn's own rc.
   local relock_log
   relock_log=$(mktemp "${TMPDIR:-/tmp}/pnwf-relock.XXXXXX")
-  env -u PN_WORKSPACE_ROOT pn workspace update --in-place 2>&1 | tee "$relock_log" || relock_rc=${PIPESTATUS[0]}
+  env -u PN_WORKSPACE_ROOT PN_TRACE_HINT=1 pn workspace update --in-place --scope "$scope" 2>&1 | tee "$relock_log" || relock_rc=${PIPESTATUS[0]}
   relock_out=$(<"$relock_log")
   rm -f "$relock_log"
 
+  # Relay pn's trace id BEFORE the rc check (its die would skip it): the last
+  # line that is exactly `trace: <32 hex>`, never a mid-line mention.
+  local trace_line
+  trace_line=$(printf '%s\n' "$relock_out" | grep -E '^trace: [0-9a-f]{32}$' | tail -n 1 || true)
+  if [[ -n $trace_line ]]; then
+    printf 'update-relock: trace %s\n' "${trace_line#trace: }"
+  fi
+
+  # Relay each full-scope relock warning (pn prints it per repo, in place).
+  local warn_repo
+  while IFS= read -r warn_repo; do
+    [[ -n $warn_repo ]] || continue
+    printf 'update-relock: warning: %s: flake relock failed (update-locks.sh commits kept)\n' "$warn_repo"
+  done < <(printf '%s\n' "$relock_out" |
+    sed -nE 's/.*⚠ ([^:]+): nix flake update \(all inputs\) failed after one retry.*/\1/p')
+
   if [[ $relock_rc -ne 0 ]]; then
-    die "update-relock: 'pn workspace update --in-place' failed (rc=$relock_rc) in set $root; inspect the set and re-run 'pnwf update-relock'. Last output:
+    die "update-relock: 'pn workspace update --in-place --scope $scope' failed (rc=$relock_rc) in set $root; inspect the set and re-run 'pnwf update-relock'. Last output:
 $(printf '%s\n' "$relock_out" | tail -n 15)" "$relock_rc"
   fi
 

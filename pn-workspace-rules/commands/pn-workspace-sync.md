@@ -280,7 +280,7 @@ each consumer's pin against the target member's committed HEAD, and while local
 primary is ahead of `origin/<primary>` every such pin is stale BY CONSTRUCTION.
 Nothing was un-landed, so no target appeared in `pnwf land-plan` and
 `validate-workforest` step 5's exemption did not apply — the findings stayed
-`BLOCKING`. Doctor's hint named `pn workspace update --siblings-only`, but the only
+`BLOCKING`. Doctor's hint named `pn workspace update --scope siblings` (originally `--siblings-only`, now a permanent alias), but the only
 step that can converge those pins is the POST publish below, which runs AFTER
 validate. Validate could never pass until the commits were published, and
 publishing was gated behind validate; so the batch-publish path was blocked exactly

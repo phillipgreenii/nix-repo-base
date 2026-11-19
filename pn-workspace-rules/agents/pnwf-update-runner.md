@@ -65,8 +65,8 @@ read.
   documented maximum). Treat it as a CEILING, not an estimate. The two steps of
   this cycle that CAN outlast any foreground ceiling are not yours, which is what
   lets R2 stay this plain: the whole-set relock (`update-relock` runs a
-  `nix flake update` plus each repo's `update-locks.sh` for EVERY member, work
-  this fleet's own scheduled updater budgets 60 minutes for a SINGLE repo —
+  `nix flake update` for EVERY member, plus each repo's `update-locks.sh` at `full`
+  scope, work this fleet's own scheduled updater budgets 60 minutes for a SINGLE repo —
   `.github/workflows/update-flakes-reusable.yml`, `timeout_minutes` default `60`),
   and the validate build that follows it (a COLD build of the whole relocked set;
   the flake-check matrix budgets 60 minutes for a SINGLE repo,
