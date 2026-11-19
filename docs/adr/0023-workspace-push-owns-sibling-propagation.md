@@ -44,6 +44,11 @@ push-then-propagate loop moves to the existing `pn workspace push` subcommand.**
    push-before-downstream ordering inside `update`. Plain `pn workspace update` and
    `pn workspace update --siblings-only` become **local-only**.
 
+   > **Amended by [ADR 0045](0045-pn-workspace-update-scopes.md):** plain update's relock is no
+   > longer only `update-locks.sh`'s `nix flake update`. In `full` scope a trailing all-inputs
+   > `nix flake update --refresh` runs after the script. Workspace siblings are still not
+   > special-cased and nothing is pushed.
+
 2. **`pn workspace push` hosts the whole loop.** For each repo in topological order it pushes, then
    relocks that repo's consumers against its new remote tip, commits, and continues. This is the
    right home because **`push` is already doing a push** — the propagation exists only to serve it,
@@ -132,6 +137,9 @@ happens to be checked out in the workspace is treated identically to one that is
 `update-locks.sh`), and it stays local-only: `nix flake update --refresh <alias>` resolves against
 the sibling's declared REMOTE url and the bump is committed, never pushed — exactly the
 "local-only" this ADR's Decision item 1 and Consequences ascribe to it.
+
+_Amended by [ADR 0045](0045-pn-workspace-update-scopes.md):_ `--siblings-only` is now a permanent
+alias for `--scope siblings`, one of three scopes.
 
 Retaining it is load-bearing, not conservatism: `pn workspace doctor`'s `flake-lock-fresh` check
 compares each consumer's locked sibling rev against `refRev[target]`, which in primary mode is the

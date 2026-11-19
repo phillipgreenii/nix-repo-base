@@ -236,13 +236,16 @@ written (it is the 2026-06-24 record); where it no longer matches the code, THIS
 - **New guard.** The worktree flow refuses to run inside a coordinated workforest set
   (`update_worktree.go:118`) and points at `--in-place`.
 - **`--siblings-only` and `SiblingsOnly`** (ADR 0023) are an addition to both flows: they skip
-  `update-locks.sh` and relock only the sibling inputs, still local-only.
+  `update-locks.sh` and relock only the sibling inputs, still local-only. _Amended by ADR 0045:_ the
+  option is now `Scope` (`siblings`, `flake`, `full`) and `--siblings-only` is an alias for
+  `--scope siblings`.
 - **fsmonitor.** The consequence about `update-locks.sh` disabling fsmonitor through git's
   environment config is verified: `lib/scripts/update-locks-lib.bash` (`ul_setup-fsmonitor-disable`,
   `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`). Step 7 additionally stops the worktree's fsmonitor daemon
   before `worktree remove` (`stopFsmonitorDaemon`).
 - **Verified unchanged:** `UL_LIB_DIR` hard error on an empty resolve (`update_worktree.go:137`,
-  skipped only for `--siblings-only`); the three-way integration (`merge --ff-only` on clean
+  skipped only for `--siblings-only`; _amended by ADR 0045:_ skipped for the `siblings` and `flake`
+  scopes); the three-way integration (`merge --ff-only` on clean
   `main`, `fetch . <branch>:main` otherwise, ff-first then autostash on dirty `main`, hard defer on
   autostash-pop conflict: `update_worktree.go:353-413`); `--in-place` keeps the dirty-repo skip and
   `pull --rebase --autostash` (`update.go:167-250`); failures leave worktree plus branch and the

@@ -188,7 +188,8 @@ Commands that need a topological order (rebase, push, status, flake-check, pre-c
 | Build a single package                     | `nix build .#<pkg>` inside the project | (no workspace-level wrapper)                                                              |
 | Pre-commit checks across all repos         | `pn workspace pre-commit-check`        | per-repo `pre-commit run --all-files`                                                     |
 | Update flake locks across all repos        | `pn workspace update`                  | per-repo `nix flake update`                                                               |
-| Relock only workspace-sibling inputs       | `pn workspace update --siblings-only`  | full `pn workspace update` (bumps nixpkgs/third-party too)                                |
+| Relock only workspace-sibling inputs       | `pn workspace update --scope siblings` | full `pn workspace update` (bumps nixpkgs/third-party too)                                |
+| Relock every flake input, skip the scripts | `pn workspace update --scope flake`    | `pn workspace update` (`full` also runs every repo's `update-locks.sh`)                   |
 | Publish, converging sibling locks          | `pn workspace push`                    | `pn workspace update` (local-only — it never pushes; ADR 0023)                            |
 
 ## When to Push
@@ -208,7 +209,7 @@ A failing remote build is **not** a reason to push agent-only branches.
 - This restates, and does not relax, the restraint above: an agent still MUST NOT run `pn workspace push`, `update` or `apply` on its own initiative.
 
 **`pn workspace push` is the ONLY thing in this workspace that pushes.** `pn workspace update`
-(including `--siblings-only`) is local-only — it fetches and relocks, and never writes to a remote
+(any `--scope`, and the `--siblings-only` alias) is local-only — it fetches and relocks, and never writes to a remote
 (ADR 0023). `push` is also the only thing that CONVERGES workspace-sibling flake locks across
 repos: per repo in topological order it relocks that repo's sibling inputs onto their upstreams'
 current remote tips, commits the bump, then pushes — so a consumer picks up the tip its dependency
@@ -240,7 +241,9 @@ pn workspace flake-check --no-build [<repo-or-path>]  The land check: evaluate d
 pn workspace doctor                      Audit workspace against build-equality invariant; optionally repair safe drifts
 pn workspace update                      Relock flake locks across all repos, worktree-isolated by default; LOCAL-ONLY, never pushes (terminal required)
 pn workspace update --in-place           Same, but directly on primary main (old behavior; required inside a workforest set)
-pn workspace update --siblings-only      Relock ONLY the workspace-sibling flake inputs, from their remotes (skip update-locks.sh); local-only
+pn workspace update --scope siblings    Relock ONLY the workspace-sibling flake inputs, from their remotes (skip update-locks.sh); local-only; `--siblings-only` is an alias
+pn workspace update --scope flake       Relock every flake input (siblings + nixpkgs + third-party), skip update-locks.sh; local-only
+pn workspace update --scope full        update-locks.sh, then every flake input (the CLI default)
 pn workspace upgrade                     Update + apply (USER ONLY for the apply step)
 pn workspace upgrade --in-place          Update phase runs directly on primary main instead of in an isolated worktree
 pn workspace rebase                      Rebase each repo onto its remote tracking branch
@@ -313,7 +316,8 @@ Full description: `modules/pn/README.md`, section "pn workspace apply: the apply
 
 `pn workspace update` (and the update phase of `upgrade`) **runs in worktree isolation by
 default**. For each repo in topological order it creates an ephemeral worktree + branch off local
-`main`, runs `./update-locks.sh` there, rebases (onto local `main`, then onto `origin/main`),
+`main`, relocks there (per `--scope`; `full`, the default, runs `./update-locks.sh` and then one
+`nix flake update --refresh` over every input), rebases (onto local `main`, then onto `origin/main`),
 fast-forwards the primary `main`, and removes the worktree on success. The canonical clones and
 their `main` branches stay free during the long relock; `main` is only touched by a fast
 fast-forward at the end.
@@ -339,20 +343,26 @@ Key points for agents:
   worktree machinery itself is broken, when relocking inside a coordinated workforest set, or when
   you explicitly want the in-place behavior.
 
-- **`--siblings-only` surgical relock.** `pn workspace update --siblings-only` relocks ONLY the
-  `phillipgreenii-*` workspace-sibling flake inputs (the `nix flake update --refresh <sibling-alias>`
-  propagation pass) and **skips each repo's `update-locks.sh`**, so `nixpkgs` and other third-party
-  inputs are left untouched — a diff of each repo's `flake.lock` shows only sibling inputs moved.
-  Like plain `update` it is **local-only**: each sibling resolves against that sibling's declared
-  REMOTE url and the bump is committed locally, with no push. That is enough to clear
-  `pn workspace doctor`'s `flake-lock-fresh` findings without a full `nix flake update` — that check
-  compares against the target's remote head — and it is exactly what `doctor --fix` runs for those
-  findings (no doctor fix writes to a remote any more). Composes with `--in-place`. Because it never
-  runs `update-locks.sh`, it does **not** require `UL_LIB_DIR` (no nix resolver), so it works
-  headless. Caveats: it can only converge inputs that **track a branch** — a sibling pinned to an
-  explicit `?rev=` (or a non-default branch) will not move — and it cannot converge onto a sibling
-  rev that exists only locally, because a lock can only pin a published rev. For that, run
-  `pn workspace push`.
+- **`--scope` chooses how much is relocked** (ADR 0045). The CLI defaults to `full`; the
+  `/pn-workspace-update` skill and `pnwf update-relock` default to `flake`. All three are
+  **local-only** and compose with `--in-place`.
+  - `siblings` relocks ONLY the `phillipgreenii-*` workspace-sibling flake inputs (the
+    `nix flake update --refresh <sibling-alias>` propagation pass) and **skips each repo's
+    `update-locks.sh`**, so `nixpkgs` and other third-party inputs are untouched. That is enough to
+    clear `pn workspace doctor`'s `flake-lock-fresh` findings (that check compares against the
+    target's remote head), and it is exactly what `doctor --fix` runs for them. `--siblings-only` is
+    a permanent alias for `--scope siblings`; combining it with another explicit `--scope` exits 2.
+  - `flake` runs one `nix flake update --refresh` over EVERY input (siblings, nixpkgs, third-party)
+    and **skips `update-locks.sh`**, so the Go/uv/npm/nvfetcher/Homebrew/action-pin locks are
+    untouched.
+  - `full` runs `./update-locks.sh` and then the same all-inputs relock. If that trailing relock
+    fails after one retry, the repo still integrates its `update-locks.sh` commits and the run
+    prints a `⚠` warning (`relock_failed` in `events.jsonl`); `flake` fails the repo instead.
+  - `siblings` and `flake` need no `UL_LIB_DIR` (no nix resolver), so they work headless; only
+    `full` resolves it. Caveats: only inputs that **track a branch** move (a sibling pinned to an
+    explicit `?rev=` will not), and a lock can only pin a published rev, so converging onto a sibling
+    rev that exists only locally is `pn workspace push`'s job.
+  - Afterwards, `pn workspace explain` reports where the time went.
 
 - **Inside a coordinated workforest set, `update` requires `--in-place`.** Running bare
   `pn workspace update` from inside a set is an error. Use `pn workspace update --in-place`,

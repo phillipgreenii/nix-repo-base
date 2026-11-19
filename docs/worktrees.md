@@ -16,9 +16,10 @@ For each repo in topological order:
 
 1. Create a worktree at `<root>/.workforests/.pn-update/<repo>-<run-ts>` on branch
    `pn-update/<run-ts>`, branched off local `main`.
-2. Run `./update-locks.sh` in that worktree (the same script as before — nothing changes about
-   what gets locked or how). With `--siblings-only`, relock just the workspace-sibling inputs
-   instead and skip the script.
+2. Relock in that worktree per `--scope` ([ADR 0045](adr/0045-pn-workspace-update-scopes.md)). With
+   the default `full`, run `./update-locks.sh` (the same script as before) and then one
+   `nix flake update --refresh` over every input. `flake` runs only that all-inputs relock, and
+   `siblings` relocks just the workspace-sibling inputs; both skip the script.
 3. Rebase the result onto local `main` (catching any unpushed local commits), then onto
    `origin/main` (catching any remote advances). Local-before-remote order is deliberate.
 4. Fast-forward the primary `main` — smart integration based on the primary's state:
@@ -35,7 +36,7 @@ For each repo in topological order:
 stays on the local `main`. Publishing — and the workspace-sibling lock propagation that has to be
 interleaved with publishing — belongs to `pn workspace push`. See
 [ADR 0023](adr/0023-workspace-push-owns-sibling-propagation.md), which amends ADR 0009 on exactly
-this point. Anything that relied on `update` (including `update --siblings-only`) to publish must
+this point. Anything that relied on `update` (in any `--scope`) to publish must
 call `pn workspace push`.
 
 ### Leave-on-failure and resuming a left-behind worktree
@@ -115,33 +116,38 @@ The default worktree flow does **not** skip a dirty repo upfront — the worktre
 primary, so the long run proceeds regardless. Only a dirty `main` _checkout_ defers at
 integration.
 
-### `--siblings-only` surgical relock
+### `--scope`: siblings, flake or full
 
-`pn workspace update --siblings-only` relocks ONLY the `phillipgreenii-*` workspace-sibling flake
-inputs — the `propagateWorkspaceEdges` pass (`nix flake update --refresh <sibling-alias>`) — and
-**skips each repo's `update-locks.sh`**. The result: `nixpkgs` and other third-party inputs are
-left untouched (each repo's `flake.lock` diff shows only sibling inputs moved). It is the surgical
-way to clear `pn workspace doctor`'s `flake-lock-fresh` findings without a full
-`nix flake update`, and is exactly what `doctor --fix` runs for those findings. It composes with
-`--in-place`, and — because `update-locks.sh` never runs — it does **not** resolve or require
-`UL_LIB_DIR`, so it succeeds headless (no nix resolver).
+`pn workspace update --scope siblings|flake|full` chooses how much is relocked
+([ADR 0045](adr/0045-pn-workspace-update-scopes.md)). The CLI defaults to `full`; the
+`/pn-workspace-update` skill and `pnwf update-relock` default to `flake`.
 
-Like plain `update`, it is **local-only**: each sibling is resolved against that sibling's
-**declared remote URL** and the bump is committed locally, with no push. It therefore converges to
-whatever is already published — which is exactly what `flake-lock-fresh` compares against (that
-check reads the target's remote head via `git ls-remote`), so the fix is complete without touching
-a remote.
+- **`siblings`** relocks ONLY the `phillipgreenii-*` workspace-sibling flake inputs — the
+  `propagateWorkspaceEdges` pass (`nix flake update --refresh <sibling-alias>`) — and **skips each
+  repo's `update-locks.sh`**. `nixpkgs` and other third-party inputs are left untouched (each repo's
+  `flake.lock` diff shows only sibling inputs moved). It is the surgical way to clear
+  `pn workspace doctor`'s `flake-lock-fresh` findings without a full `nix flake update`, and is
+  exactly what `doctor --fix` runs for those findings. `--siblings-only` is a permanent alias.
+- **`flake`** runs one `nix flake update --refresh` over every input (siblings, nixpkgs,
+  third-party) and also skips `update-locks.sh`, so the Go/uv/npm/nvfetcher/Homebrew/action-pin
+  locks are untouched.
+- **`full`** runs `./update-locks.sh` and then the `flake` relock. If that trailing relock fails
+  after one retry the repo still integrates its `update-locks.sh` commits and the run warns.
 
-What it CANNOT do is converge onto a sibling rev that exists only locally — a lock can only pin a
+All three compose with `--in-place` and are **local-only**: each input is resolved against its
+**declared remote URL** and the bump is committed locally, with no push. Because `update-locks.sh`
+never runs in `siblings` and `flake`, they do **not** resolve or require `UL_LIB_DIR`, so they
+succeed headless (no nix resolver). They converge to whatever is already published, which is exactly
+what `flake-lock-fresh` compares against (it reads the target's remote head via `git ls-remote`).
+
+What they CANNOT do is converge onto a sibling rev that exists only locally — a lock can only pin a
 published rev. Cross-repo convergence after a local land is therefore `pn workspace push`'s job
-(ADR 0023). It also converges only branch-tracking inputs: a sibling pinned to an explicit
+(ADR 0023). They also converge only branch-tracking inputs: a sibling pinned to an explicit
 `?rev=`/non-default branch will not move.
 
-Note the difference from plain `update`: plain `update` has **no** sibling pass at all. A repo that
-happens to be checked out in the workspace is treated exactly like one that is not —
-`update-locks.sh`'s `nix flake update` relocks every input, sibling or otherwise, from its declared
-remote. `--siblings-only` is the caller explicitly asking for that narrow subset, not a special
-case `update` applies on its own.
+Note the difference from the old plain `update`: it has **no** sibling special case at all. A repo
+that happens to be checked out in the workspace is treated exactly like one that is not, and the
+all-inputs relock takes every input from its declared remote.
 
 ### `update` inside a coordinated workforest set requires `--in-place`
 

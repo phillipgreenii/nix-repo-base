@@ -91,6 +91,31 @@ there is nix's.
 and reports a missing wrapper, a failing check or an unusable spool directory as a warning (never an
 error). It is silent when telemetry is off.
 
+## pn workspace update --scope
+
+`pn workspace update` relocks each workspace repo, local-only (it never pushes), in an ephemeral
+worktree per repo (`--in-place` works directly on the primary checkout). `--scope` chooses how much
+is relocked (ADR 0045):
+
+| Scope      | Runs per repo                                                  | Skips             |
+| ---------- | -------------------------------------------------------------- | ----------------- |
+| `siblings` | `nix flake update --refresh <workspace-sibling inputs>`        | `update-locks.sh` |
+| `flake`    | one `nix flake update --refresh` over every input              | `update-locks.sh` |
+| `full`     | `./update-locks.sh`, then the `flake` relock (the CLI default) | nothing           |
+
+```bash
+pn workspace update --scope flake              # siblings, nixpkgs and third-party; per-package locks untouched
+pn workspace update --scope siblings --in-place
+pn workspace update                            # --scope full
+```
+
+`--siblings-only` is a permanent alias for `--scope siblings`; combining it with a different
+`--scope`, or passing an unknown or empty `--scope`, exits 2 before any hook runs. `siblings` and
+`flake` need no `UL_LIB_DIR`. A `flake` relock failure fails the repo at `relock-flake`; in `full`
+scope the repo keeps its `update-locks.sh` commits and the run warns (`relock_failed: true` on its
+`project_result` event). A full disk aborts the run. `run_start` records `scope` and `root`, and the
+`pn.verb` span carries `pn.update.scope`.
+
 ## pn workspace build and apply: one pipeline
 
 Agents may not run `pn workspace apply`, so `pn workspace build` exists to reproduce what apply
@@ -449,7 +474,7 @@ describes `pre-land-eval`, the land step's caller of this command.
 
 ### Important Note: flake-lock-fresh Fix
 
-The `flake-lock-fresh` fix delegates to `pn workspace update`, which is the only fix that pushes. It relocks affected repos, commits the new lock, and pushes to remote — the one auto-fix that modifies remote state. It is always gated behind `--fix` and shown in `--dry-run`.
+The `flake-lock-fresh` fix delegates to `pn workspace update --scope siblings`. It relocks the stale workspace-sibling inputs of the affected repos and commits the new lock locally; it never pushes (ADR 0023), so no doctor fix writes to a remote. It is always gated behind `--fix` and shown in `--dry-run`.
 
 ### Important Note: ruff-pin (single-ruff-version invariant)
 
