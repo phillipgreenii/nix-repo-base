@@ -121,7 +121,7 @@ let
             mkdir -p "$out"
             cp -r ${src}/. "$out/"
             chmod -R u+w "$out"
-            jq --arg v ${lib.escapeShellArg version} '.version = $v' \
+            jq --arg v ${lib.escapeShellArg version} '.version = $v | del(.requires, .uses)' \
               "$out/.claude-plugin/plugin.json" > "$out/.claude-plugin/plugin.json.tmp"
             mv "$out/.claude-plugin/plugin.json.tmp" "$out/.claude-plugin/plugin.json"
             patchShebangs "$out"
@@ -221,7 +221,7 @@ let
         mkdir -p "$out/$(dirname ${lib.escapeShellArg info.path})"
         cp -r ${src}/${info.path} "$out/${info.path}"
         chmod -R u+w "$out/${info.path}"
-        jq --arg v ${lib.escapeShellArg info.version} '.version = $v' \
+        jq --arg v ${lib.escapeShellArg info.version} '.version = $v | del(.requires, .uses)' \
           "$out/${info.path}/.claude-plugin/plugin.json" > "$out/${info.path}/.claude-plugin/plugin.json.tmp"
         mv "$out/${info.path}/.claude-plugin/plugin.json.tmp" "$out/${info.path}/.claude-plugin/plugin.json"
       '') pluginInfos;

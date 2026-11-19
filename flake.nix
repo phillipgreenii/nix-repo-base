@@ -950,7 +950,7 @@
 
                 # plugin.json is byte-identical to the version-stamped source manifest.
                 check_manifest() {
-                  jq --arg v ${pkgs.lib.escapeShellArg marketplacePlugin.version} '.version = $v' \
+                  jq --arg v ${pkgs.lib.escapeShellArg marketplacePlugin.version} '.version = $v | del(.requires, .uses)' \
                     ${pluginSrc}/.claude-plugin/plugin.json > expected.json
                   cmp expected.json "$1" || fail "$2: plugin.json differs from stamped source"
                 }
@@ -964,6 +964,44 @@
                   1.0.0+*) ;;
                   *) fail "unexpected stamp form" ;;
                 esac
+
+                touch $out
+              '';
+
+            # Built manifests must not carry the feature-id `requires`/`uses` keys
+            # (Claude Code's `plugin validate` warns on them as unknown fields), while
+            # the source manifests keep them and the passthru still exports them.
+            claude-marketplace-manifest-keys =
+              let
+                builders = mkClaudeMarketplaceBuilders { inherit pkgs lib; };
+                fixtureRoot = ./lib/tests/claude-marketplace-fixture;
+                plugin = builders.mkClaudePlugin { src = fixtureRoot + "/plug-b"; };
+                marketplace = builders.mkClaudeMarketplace { src = fixtureRoot; };
+                passthruB = builtins.head (builtins.filter (p: p.name == "plug-b") marketplace.plugins);
+              in
+              pkgs.runCommand "check-claude-marketplace-manifest-keys" { nativeBuildInputs = [ pkgs.jq ]; } ''
+                fail() { echo "FAIL: $*" >&2; exit 1; }
+                has() { jq -e "has(\"$2\")" "$1" >/dev/null; }
+
+                # Negative control: the source manifest has both keys.
+                for k in requires uses; do
+                  has ${fixtureRoot}/plug-b/.claude-plugin/plugin.json $k \
+                    || fail "source manifest lost $k (control invalid)"
+                done
+
+                for m in ${plugin}/.claude-plugin/plugin.json ${marketplace}/plug-b/.claude-plugin/plugin.json; do
+                  for k in requires uses; do
+                    if has "$m" $k; then fail "$m still has $k"; fi
+                  done
+                  jq -e '.name == "plug-b" and (.version | contains("+"))' "$m" >/dev/null \
+                    || fail "$m: other fields/version stamp damaged"
+                done
+
+                # passthru still carries the feature ids.
+                [ ${pkgs.lib.escapeShellArg (builtins.toJSON plugin.requires)} = '["feat-x","feat-y"]' ] || fail "plugin passthru requires"
+                [ ${pkgs.lib.escapeShellArg (builtins.toJSON plugin.uses)} = '["feat-z"]' ] || fail "plugin passthru uses"
+                [ ${pkgs.lib.escapeShellArg (builtins.toJSON passthruB.requires)} = '["feat-x","feat-y"]' ] || fail "marketplace passthru requires"
+                [ ${pkgs.lib.escapeShellArg (builtins.toJSON passthruB.uses)} = '["feat-z"]' ] || fail "marketplace passthru uses"
 
                 touch $out
               '';
