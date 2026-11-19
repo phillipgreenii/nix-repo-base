@@ -1,0 +1,272 @@
+{
+  "trace": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "pn"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pn"
+            },
+            "spans": [
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azp2",
+                "name": "pn.verb",
+                "startTimeUnixNano": "1763467200000000000",
+                "endTimeUnixNano": "1763467400000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.verb",
+                    "value": {
+                      "stringValue": "workspace update"
+                    }
+                  },
+                  {
+                    "key": "pn.update.scope",
+                    "value": {
+                      "stringValue": "full"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpyZA==",
+                "name": "pn.repo",
+                "startTimeUnixNano": "1763467200000000000",
+                "endTimeUnixNano": "1763467300000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.repo",
+                    "value": {
+                      "stringValue": "d"
+                    }
+                  }
+                ],
+                "parentSpanId": "azp2"
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpkcw==",
+                "name": "pn.exec",
+                "startTimeUnixNano": "1763467200000000000",
+                "endTimeUnixNano": "1763467300000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "process.executable.name",
+                    "value": {
+                      "stringValue": "./update-locks.sh"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyZA=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpyZQ==",
+                "name": "pn.repo",
+                "startTimeUnixNano": "1763467300000000000",
+                "endTimeUnixNano": "1763467400000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.repo",
+                    "value": {
+                      "stringValue": "e"
+                    }
+                  }
+                ],
+                "parentSpanId": "azp2"
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azplcw==",
+                "name": "pn.exec",
+                "startTimeUnixNano": "1763467300000000000",
+                "endTimeUnixNano": "1763467390000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "process.executable.name",
+                    "value": {
+                      "stringValue": "./update-locks.sh"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyZQ=="
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "pg-nix-log-wrapped"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pg-nix-log-wrapped"
+            },
+            "spans": [
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpkbg==",
+                "name": "nix.invocation",
+                "startTimeUnixNano": "1763467201000000000",
+                "endTimeUnixNano": "1763467299000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "nix.subcommand",
+                    "value": {
+                      "stringValue": "develop"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpkcw=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpwMQ==",
+                "name": "nix.substitute",
+                "startTimeUnixNano": "1763467210000000000",
+                "endTimeUnixNano": "1763467220000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [],
+                "parentSpanId": "azpkbg=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpwMg==",
+                "name": "nix.substitute",
+                "startTimeUnixNano": "1763467230000000000",
+                "endTimeUnixNano": "1763467245000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [],
+                "parentSpanId": "azpkbg=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azp3MQ==",
+                "name": "nix.build.wait",
+                "startTimeUnixNano": "1763467250000000000",
+                "endTimeUnixNano": "1763467260000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [],
+                "parentSpanId": "azpkbg=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azp3Mg==",
+                "name": "nix.build.wait",
+                "startTimeUnixNano": "1763467270000000000",
+                "endTimeUnixNano": "1763467275000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [],
+                "parentSpanId": "azpkbg=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpsYXRl",
+                "name": "nix.build",
+                "startTimeUnixNano": "1763467280000000000",
+                "endTimeUnixNano": "1763467330000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "nix.drv.name",
+                    "value": {
+                      "stringValue": "late-drv"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpkbg=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azplbg==",
+                "name": "nix.invocation",
+                "startTimeUnixNano": "1763467301000000000",
+                "endTimeUnixNano": "1763467399000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "nix.subcommand",
+                    "value": {
+                      "stringValue": "develop"
+                    }
+                  }
+                ],
+                "parentSpanId": "azplcw=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azplZA==",
+                "name": "nix.build",
+                "startTimeUnixNano": "1763467310000000000",
+                "endTimeUnixNano": "1763467395000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "nix.drv.name",
+                    "value": {
+                      "stringValue": "e-drv"
+                    }
+                  }
+                ],
+                "parentSpanId": "azplbg=="
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

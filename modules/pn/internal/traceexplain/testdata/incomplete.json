@@ -1,0 +1,242 @@
+{
+  "trace": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "pn"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pn"
+            },
+            "spans": [
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpyYQ==",
+                "name": "pn.repo",
+                "startTimeUnixNano": "1763467200000000000",
+                "endTimeUnixNano": "1763467800000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.repo",
+                    "value": {
+                      "stringValue": "a"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azphZw==",
+                "name": "pn.exec",
+                "startTimeUnixNano": "1763467200000000000",
+                "endTimeUnixNano": "1763467210000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "process.executable.name",
+                    "value": {
+                      "stringValue": "git"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyYQ=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azphcw==",
+                "name": "pn.exec",
+                "startTimeUnixNano": "1763467210000000000",
+                "endTimeUnixNano": "1763467790000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "process.executable.name",
+                    "value": {
+                      "stringValue": "./update-locks.sh"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyYQ=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpzMQ==",
+                "name": "pn.ul.step",
+                "startTimeUnixNano": "1763467220000000000",
+                "endTimeUnixNano": "1763467320000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.ul.step.name",
+                    "value": {
+                      "stringValue": "nix-flake-update"
+                    }
+                  },
+                  {
+                    "key": "pn.ul.step.outcome",
+                    "value": {
+                      "stringValue": "ok"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyYQ=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpzMg==",
+                "name": "pn.ul.step",
+                "startTimeUnixNano": "1763467330000000000",
+                "endTimeUnixNano": "1763467730000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.ul.step.name",
+                    "value": {
+                      "stringValue": "update-deps-x"
+                    }
+                  },
+                  {
+                    "key": "pn.ul.step.outcome",
+                    "value": {
+                      "stringValue": "ok"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyYQ=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpybA==",
+                "name": "pn.relock",
+                "startTimeUnixNano": "1763467790000000000",
+                "endTimeUnixNano": "1763467800000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.relock.kind",
+                    "value": {
+                      "stringValue": "flake"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyYQ=="
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "pg-nix-log-wrapped"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pg-nix-log-wrapped"
+            },
+            "spans": [
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azphbg==",
+                "name": "nix.invocation",
+                "startTimeUnixNano": "1763467212000000000",
+                "endTimeUnixNano": "1763467788000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "nix.subcommand",
+                    "value": {
+                      "stringValue": "develop"
+                    }
+                  },
+                  {
+                    "key": "nix.plan.build",
+                    "value": {
+                      "intValue": "2"
+                    }
+                  },
+                  {
+                    "key": "nix.plan.fetch",
+                    "value": {
+                      "intValue": "1"
+                    }
+                  }
+                ],
+                "parentSpanId": "azphcw=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpmYXN0",
+                "name": "nix.build",
+                "startTimeUnixNano": "1763467240000000000",
+                "endTimeUnixNano": "1763467270000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "nix.drv.name",
+                    "value": {
+                      "stringValue": "fast-drv"
+                    }
+                  }
+                ],
+                "parentSpanId": "azphbg=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpzbG93",
+                "name": "nix.build",
+                "startTimeUnixNano": "1763467400000000000",
+                "endTimeUnixNano": "1763467700000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "nix.drv.name",
+                    "value": {
+                      "stringValue": "slow-drv"
+                    }
+                  }
+                ],
+                "parentSpanId": "azphbg=="
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

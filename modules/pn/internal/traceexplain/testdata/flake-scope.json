@@ -1,0 +1,186 @@
+{
+  "trace": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "pn"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pn"
+            },
+            "spans": [
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azp2",
+                "name": "pn.verb",
+                "startTimeUnixNano": "1763467200000000000",
+                "endTimeUnixNano": "1763467300000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.verb",
+                    "value": {
+                      "stringValue": "workspace update"
+                    }
+                  },
+                  {
+                    "key": "pn.update.scope",
+                    "value": {
+                      "stringValue": "flake"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpyYw==",
+                "name": "pn.repo",
+                "startTimeUnixNano": "1763467200000000000",
+                "endTimeUnixNano": "1763467300000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.repo",
+                    "value": {
+                      "stringValue": "c"
+                    }
+                  }
+                ],
+                "parentSpanId": "azp2"
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpn",
+                "name": "pn.exec",
+                "startTimeUnixNano": "1763467200000000000",
+                "endTimeUnixNano": "1763467210000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "process.executable.name",
+                    "value": {
+                      "stringValue": "git"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyYw=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpybA==",
+                "name": "pn.relock",
+                "startTimeUnixNano": "1763467205000000000",
+                "endTimeUnixNano": "1763467295000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "pn.relock.kind",
+                    "value": {
+                      "stringValue": "flake"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpyYw=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpueA==",
+                "name": "pn.exec",
+                "startTimeUnixNano": "1763467206000000000",
+                "endTimeUnixNano": "1763467290000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "process.executable.name",
+                    "value": {
+                      "stringValue": "nix"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpybA=="
+              },
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpnMg==",
+                "name": "pn.exec",
+                "startTimeUnixNano": "1763467290000000000",
+                "endTimeUnixNano": "1763467294000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "process.executable.name",
+                    "value": {
+                      "stringValue": "git"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpybA=="
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "pg-nix-log-wrapped"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pg-nix-log-wrapped"
+            },
+            "spans": [
+              {
+                "traceId": "AAECAwQFBgcICQoLDA0ODw==",
+                "spanId": "azpmaQ==",
+                "name": "nix.invocation",
+                "startTimeUnixNano": "1763467207000000000",
+                "endTimeUnixNano": "1763467289000000000",
+                "status": {
+                  "code": "STATUS_CODE_UNSET"
+                },
+                "attributes": [
+                  {
+                    "key": "nix.subcommand",
+                    "value": {
+                      "stringValue": "flake update"
+                    }
+                  }
+                ],
+                "parentSpanId": "azpueA=="
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
