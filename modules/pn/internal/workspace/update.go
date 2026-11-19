@@ -337,7 +337,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 		// Skipped entirely if the pull failed: the working tree is suspect.
 		failStep := ""
 		relockWarned := false
-		interrupted := false
+		var interruptErr error
 		if !pullFailed {
 			if err := ctx.Err(); err != nil {
 				endRepo(err)
@@ -399,7 +399,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 						fmt.Fprintf(out, "  ✗ %s: relock-flake failed: %v\n", name, err)
 						fmt.Fprintf(out, "  ⛔ %s: environmental/resource failure — aborting run\n", name)
 					case relockInterrupt:
-						interrupted = true
+						interruptErr = err
 						projectFailed, failStep = true, "relock-flake"
 						fmt.Fprintf(out, "  ✗ %s: relock-flake interrupted: %v\n", name, err)
 					default:
@@ -462,11 +462,11 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 			endRepo(nil)
 		}
 		// A cancel during the repo's last step must end the run here, not carry on.
-		if err := ctx.Err(); err != nil || interrupted {
-			if err == nil {
-				err = context.Canceled
-			}
+		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
+		}
+		if interruptErr != nil {
+			return fmt.Errorf("update interrupted: %w", interruptErr)
 		}
 	}
 

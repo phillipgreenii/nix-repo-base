@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -678,5 +679,127 @@ func TestUpgrade_RunsTrailingRelock(t *testing.T) {
 	}
 	if n := e.countCalls("nix", "flake", "update", "--refresh"); n != 1 {
 		t.Errorf("relock calls = %d, want 1", n)
+	}
+}
+
+func TestClassifyRelockErr(t *testing.T) {
+	wrap := func(errs ...error) error {
+		return errors.Join(errs...)
+	}
+	live := context.Background()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	plain := errors.New("boom")
+	cases := []struct {
+		name  string
+		ctx   context.Context
+		scope UpdateScope
+		err   error
+		want  relockOutcome
+	}{
+		{"canceled error, live ctx, full", live, ScopeFull, context.Canceled, relockInterrupt},
+		{"canceled error, live ctx, flake", live, ScopeFlake, fmt.Errorf("nix flake update --refresh: %w", context.Canceled), relockInterrupt},
+		{"deadline error, live ctx, full", live, ScopeFull, context.DeadlineExceeded, relockInterrupt},
+		{"cancelled ctx with a plain error", cancelled, ScopeFull, plain, relockInterrupt},
+		{"wrapped no-space, full", live, ScopeFull, fmt.Errorf("%w: x", errRelockNoSpace), relockAbortRun},
+		{"wrapped no-space, flake", live, ScopeFlake, fmt.Errorf("%w: x", errRelockNoSpace), relockAbortRun},
+		{"wrapped restore failure, full", live, ScopeFull, fmt.Errorf("%w: disk", errRelockRestore), relockFailRepo},
+		{"wrapped restore failure, flake", live, ScopeFlake, fmt.Errorf("%w: disk", errRelockRestore), relockFailRepo},
+		{"plain error, full warns", live, ScopeFull, plain, relockWarn},
+		{"plain error, flake fails the repo", live, ScopeFlake, plain, relockFailRepo},
+		// Precedence when one error wraps several: interrupt, then no-space, then restore.
+		{"canceled and no-space", live, ScopeFull, wrap(context.Canceled, errRelockNoSpace), relockInterrupt},
+		{"no-space and restore", live, ScopeFull, wrap(errRelockNoSpace, errRelockRestore), relockAbortRun},
+		{"restore and plain in full", live, ScopeFull, wrap(errRelockRestore, plain), relockFailRepo},
+	}
+	for _, c := range cases {
+		if got := classifyRelockErr(c.ctx, c.scope, c.err); got != c.want {
+			t.Errorf("%s: classifyRelockErr = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// An interrupt that surfaces only as the relock's error (the outer context is
+// still live) must end the repo AND the run the same way in both flows.
+func TestUpdate_RelockErrorOnlyInterruptStopsRun(t *testing.T) {
+	for _, scope := range []UpdateScope{ScopeFull, ScopeFlake} {
+		for _, fl := range scopeFlows {
+			t.Run(string(scope)+"/"+fl.name, func(t *testing.T) {
+				e := newScopeEnv(t, fl.inPlace, []string{"aaa", "zzz"}, scopeOpts{})
+				if scope == ScopeFull {
+					e.ulOK("")
+				}
+				step := nixStep{res: exec.Result{ExitCode: 1}, err: context.Canceled}
+				e.r.steps = []nixStep{step, step}
+				_, err := e.update(context.Background(), scope)
+				if err == nil || !strings.Contains(err.Error(), "update interrupted") || !errors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v, want update interrupted wrapping context.Canceled", err)
+				}
+				for _, c := range e.callNames() {
+					if strings.Contains(c, e.root+"/zzz") || strings.Contains(c, "zzz-TEST") {
+						t.Fatalf("the run must stop after the interrupt; saw %q", c)
+					}
+				}
+				pr := e.event("project_result", "aaa")
+				if pr["level"] != "error" || pr["failed_step"] != "relock-flake" {
+					t.Errorf("project_result = %v, want an error at relock-flake", pr)
+				}
+			})
+		}
+	}
+}
+
+func TestUpdate_InPlace_ScopeSiblingsRelockFailureFailsRepo(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
+[workspace]
+terminal = "foo"
+
+[repos.foo]
+url = "github:owner/foo"
+
+[repos.sib]
+url = "github:owner/sib"
+`)
+	writeFile(t, filepath.Join(root, LockFileName), `{
+  "order": ["sib", "foo"],
+  "repos": {
+    "sib": {"flake_path": "flake.nix", "remote_url": "github:owner/sib"},
+    "foo": {"flake_path": "flake.nix", "remote_url": "github:owner/foo"}
+  },
+  "edges": [{"consumer": "foo", "alias": "sib", "target": "sib"}]
+}`)
+	foo, sib := filepath.Join(root, "foo"), filepath.Join(root, "sib")
+	stubGitOpener(t, map[string]*fakeGitReader{foo: {}, sib: {}})
+	f := exec.NewFakeRunner()
+	for _, d := range []string{sib, foo} {
+		mkRepoDir(t, root, filepath.Base(d))
+		f.AddResponse("git", []string{"-C", d, "diff", "--quiet"}, exec.Result{}, nil)
+		f.AddResponse("git", []string{"-C", d, "diff", "--cached", "--quiet"}, exec.Result{}, nil)
+	}
+	writeFile(t, filepath.Join(foo, "flake.lock"), relockLock(1, map[string]string{"sib": revA}))
+	f.AddResponse("nix", []string{"flake", "update", "--refresh", "sib"},
+		exec.Result{ExitCode: 1}, &exec.CommandError{Name: "nix", Result: exec.Result{ExitCode: 1}})
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	lw, err := eventlog.New(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lw.Close() }()
+	w, err := Open(root, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var out bytes.Buffer
+	if err := w.Update(context.Background(), &out, UpdateOptions{InPlace: true, Scope: ScopeSiblings, Log: lw}); err == nil {
+		t.Fatal("expected the run to fail")
+	}
+	if !strings.Contains(out.String(), "update FAILED at step relock-siblings") {
+		t.Errorf("missing the failure line; got:\n%s", out.String())
+	}
+	data, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(data), `"failed_step":"relock-siblings"`) {
+		t.Errorf("project_result lacks failed_step relock-siblings:\n%s", data)
 	}
 }

@@ -107,6 +107,9 @@ type repoOutcome struct {
 	// relockFailed: the full-scope all-inputs relock failed after update-locks.sh
 	// succeeded; the repo is still integrated (status ok) and warns.
 	relockFailed bool
+	// interruptErr is set when the relock returned a context error: the repo
+	// ends and so does the run, even if the outer context is still live.
+	interruptErr error
 }
 
 // updateViaWorktree runs the worktree-isolated update over all repos in
@@ -208,6 +211,9 @@ func (ws *Workspace) updateViaWorktree(ctx context.Context, out io.Writer, opts 
 		// A cancel during the repo ends the run here, whatever step it hit.
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("update interrupted: %w", err)
+		}
+		if oc.interruptErr != nil {
+			return fmt.Errorf("update interrupted: %w", oc.interruptErr)
 		}
 		// An environmental/resource abort applies to every remaining repo, so stop
 		// the run here rather than attempting them and failing identically.
@@ -352,7 +358,10 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 				fmt.Fprint(out, relockWarning(name, err))
 			case relockAbortRun:
 				return abort("relock-flake", err)
-			default: // relockFailRepo and relockInterrupt both end this repo
+			case relockInterrupt:
+				oc.interruptErr = err
+				return fail("relock-flake", err, "")
+			default:
 				return fail("relock-flake", err, "")
 			}
 		} else if scope == ScopeFlake {
