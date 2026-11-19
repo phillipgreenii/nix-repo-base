@@ -820,6 +820,35 @@ Smoke coverage is tracked in **tc-perh.14**. Until that lands, this
 journey is covered only by unit/integration tests at the package
 boundary.
 
+### J31. Find out why an update was slow
+
+**Trigger:** a `pn workspace update` took longer than expected and you
+want to know which repo, step or build accounted for the time.
+
+**Commands:**
+
+```
+pn workspace explain                 # newest update run for this workspace root
+pn workspace explain <trace-id>      # a specific run (also for upgrade / doctor --fix)
+pn workspace explain --json --top 5  # machine-readable, five slowest builds
+pn workspace explain --partial       # a run that is still going or was killed
+```
+
+**Outcomes:**
+
+- With no id, the newest `run_start` in `events.jsonl` (then `events.jsonl.1`)
+  whose `root` is this workspace root is explained; the header names the run's
+  start time and notes a newer run for another root.
+- The text report gives a `Slowest:` line, one block per repo and the anomalies;
+  `--json` prints the same as one JSON document.
+- Exit 3 means nothing to explain (no run, no trace id, expired or unknown
+  trace), 4 means the run has no `run_end` (re-run with `--partial`), 5 means
+  Tempo is unreachable (set `PG_TEMPO_URL` or `--tempo-url`), and 75 means Tempo
+  has not ingested the trace yet (retry in a minute).
+- A non-zero exit prints nothing on stdout.
+
+**Smoke:** none; covered by unit tests against a stub Tempo.
+
 ---
 
 ## Coupling summary
@@ -829,7 +858,8 @@ end-to-end); partial coverage of J8, J9 (via error/warning paths only);
 J10 and J11 are full-coverage for the no-flag forms only — the
 `push --set-upstream`/`-u` and `rebase <branch>` positional forms are
 GAP at the smoke layer (unit/integration coverage only). J30
-(events.jsonl) is fully GAP, tracked in tc-perh.14.
+(events.jsonl) is fully GAP, tracked in tc-perh.14. J31 (explain) has no smoke scenario: it
+needs a Tempo, so it is covered by unit tests against a stub server.
 
 **Gaps (journeys without full smoke coverage):**
 
@@ -845,6 +875,7 @@ GAP at the smoke layer (unit/integration coverage only). J30
 | J12 nix passthrough                        | not covered                                 | future S       | medium   |
 | J17 binary-level corrupt-lock              | smoke asserts via unit only                 | future S       | medium   |
 | J30 events.jsonl observability             | no end-to-end event-stream smoke            | tc-perh.14     | medium   |
+| J31 explain a slow update                  | needs a Tempo; unit tests with a stub only  | future S       | low      |
 
 **Closed by tc-perh.9.26 (S18–S22b):**
 
@@ -877,4 +908,5 @@ GAP at the smoke layer (unit/integration coverage only). J30
 _Last updated: 2026-06-24 (worktree-isolated `update` default: J7 and J29 updated to reflect
 `--in-place` requirement in sets, new S33 smoke, asymmetric-defer recovery, and concurrent-run
 caveat. See ADR 0009).
-24 of 30 documented journeys now have full smoke coverage; J30 is GAP, tracked in tc-perh.14._
+24 of 31 documented journeys have full smoke coverage; J30 is GAP, tracked in tc-perh.14, and J31
+(added 2026-11-19) has unit coverage only._

@@ -209,6 +209,10 @@ Limits that are real and MUST NOT be papered over:
 > MUST go through `pg-tempo-search` (below) or carry explicit `start`/`end` epoch seconds. Tempo
 > also rejects a range over 168 h, and a search stops at its `limit`.
 
+For a pn run, start with `pn workspace explain <trace-id>` (no id: the newest `pn workspace update`
+run for this workspace): it reads the trace and reports per-repo time, the slowest builds and
+anomalies. Use the queries below when you need more than that report gives.
+
 Tempo is local (`http://127.0.0.1:3200` on this machine; it retains 7 days). In Grafana,
 use Explore with the Tempo data source and the TraceQL editor (the time picker supplies the
 window there). From a shell or an agent, use the helper, which always sets `start` and `end`,

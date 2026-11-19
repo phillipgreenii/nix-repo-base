@@ -50,6 +50,7 @@ Environment variables:
   PG_NIX_LOG_DEBUG           1 makes pg-nix-log-wrapped print diagnostics to stderr
   PN_TRACE_HINT              1 prints "trace: <trace_id>" to stderr at the end of a run
                              (also printed under -v/--verbose; stdout is never changed)
+  PG_TEMPO_URL               Tempo base URL for 'pn workspace explain' (default http://127.0.0.1:3200)
 
 Telemetry is optional: when off pn behaves exactly as without it. See
 'pn --help' for the escape-hatch table and ADR-0028.`,
@@ -74,6 +75,7 @@ Telemetry is optional: when off pn behaves exactly as without it. See
 	ws.AddCommand(workspaceDiscoverCmd(&terminalFlag))
 	ws.AddCommand(workspaceInfoCmd(&terminalFlag))
 	ws.AddCommand(workspaceDoctorCmd(&terminalFlag))
+	ws.AddCommand(workspaceExplainCmd())
 	ws.AddCommand(workspaceNixCmd())
 	ws.AddCommand(workspaceWorkforestCmd())
 	ws.AddCommand(workspaceAllowCmd())

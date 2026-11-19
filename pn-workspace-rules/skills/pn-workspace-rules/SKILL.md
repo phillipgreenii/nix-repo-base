@@ -244,6 +244,7 @@ pn workspace update --in-place           Same, but directly on primary main (old
 pn workspace update --scope siblings    Relock ONLY the workspace-sibling flake inputs, from their remotes (skip update-locks.sh); local-only; `--siblings-only` is an alias
 pn workspace update --scope flake       Relock every flake input (siblings + nixpkgs + third-party), skip update-locks.sh; local-only
 pn workspace update --scope full        update-locks.sh, then every flake input (the CLI default)
+pn workspace explain [<trace-id>]       Report where a run spent its time, from its Tempo trace (default: newest update run for this root); exit 3 nothing to explain, 4 run has no run_end (use `--partial`), 5 Tempo unreachable, 75 not ingested yet (retry)
 pn workspace upgrade                     Update + apply (USER ONLY for the apply step)
 pn workspace upgrade --in-place          Update phase runs directly on primary main instead of in an isolated worktree
 pn workspace rebase                      Rebase each repo onto its remote tracking branch

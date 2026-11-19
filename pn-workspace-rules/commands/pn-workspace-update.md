@@ -297,7 +297,22 @@ flowchart TD
 6. **REPORT (main session).** Close with a final report. It lists every
    `update-relock: warning:` line from step 2a (each names a repo whose flake
    relock failed after one retry, update-locks.sh commits kept), the scope that
-   ran, and the trace id when step 2a had one.
+   ran, and the trace id when step 2a had one (the line matching
+   `^update-relock: trace [0-9a-f]{32}$` in step 2a's background output file).
+
+   Then explain where the time went, from that trace id:
+   - With no such line, report `no trace id (telemetry off)` and do NOT run
+     `pn workspace explain`: with no id it would explain the newest canonical run,
+     possibly last week's.
+   - Otherwise run `pn workspace explain <id>` and include its `Slowest:` line,
+     its repo lines and its anomalies.
+   - Exit 75 (Tempo has not ingested the trace yet): wait with Monitor, using an
+     until-loop on the command that stops on any exit other than 75, for at most
+     120 s. If it still exits 75, report "trace not yet ingested".
+   - Exit 4 (no `run_end`, but Tempo has some spans): re-run with `--partial` and
+     say the figures are partial. If that re-run exits non-zero, report its
+     message as is.
+   - Exit 3 or 5: report the message as is.
 
 ## Notes
 

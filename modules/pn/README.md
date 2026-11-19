@@ -79,6 +79,8 @@ stdout never changes. Two stderr/file affordances exist:
   `PN_TRACE_HINT=1`.
 - `pn workspace update` writes the same id as `trace_id` on its `run_start` and `run_end` records in
   `${XDG_STATE_HOME}/pn/events.jsonl`, so it can be found from Loki or the file.
+- `pn workspace explain` reads that trace from Tempo and reports where the run spent its time (see
+  "pn workspace explain" below).
 
 A spool directory pn cannot use (relative path, unwritable) leaves telemetry off for the run; under
 `-v` pn prints `telemetry disabled: <reason>` to stderr, otherwise it is silent.
@@ -90,6 +92,32 @@ there is nix's.
 `pn workspace doctor` has a `telemetry` check: when telemetry is on it runs `pg-nix-log-wrapped --check`
 and reports a missing wrapper, a failing check or an unusable spool directory as a warning (never an
 error). It is silent when telemetry is off.
+
+## pn workspace explain
+
+`pn workspace explain [<trace-id>] [--json] [--top N] [--partial] [--tempo-url URL]` reports where a
+run spent its time, from its trace in Tempo (`$PG_TEMPO_URL`, else `http://127.0.0.1:3200`; the
+request times out after 30 s). With no id it explains the newest `pn workspace update` run whose
+`run_start` carries the current workspace root, found in `events.jsonl` and then `events.jsonl.1`;
+with no resolvable root it uses the newest run overall. `pn workspace upgrade` and `doctor --fix`
+record no run, so pass the trace id for those. It does not open the workspace and fires no hooks.
+
+A non-zero exit prints nothing on stdout, in text and `--json` mode alike, and the message is on
+stderr. Each code has one next action:
+
+| Code | Meaning                                                                                                        | Next action                                                  |
+| ---- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 0    | report printed (anomalies and `--partial` do not change it)                                                    | read it                                                      |
+| 2    | usage: bad trace id, bad `--top`, unknown flag, more than one id                                               | fix the command                                              |
+| 3    | nothing to explain: no matching run, no trace id recorded, expired or unknown trace, no `run_end` and no spans | pass another id, or give up                                  |
+| 4    | no `run_end`, but Tempo has some spans (still running or killed)                                               | re-run with `--partial`                                      |
+| 5    | Tempo unreachable, any other non-200 answer, or a body that is not a parseable trace                           | start Tempo, or set `PG_TEMPO_URL` or `--tempo-url`          |
+| 75   | the run ended less than 7 days ago but Tempo has not ingested it yet                                           | retry in a minute; if it persists, run `pn workspace doctor` |
+
+75 is sysexits `EX_TEMPFAIL`, which pn already uses for "retry later" (the build and apply
+single-flight lock), so a caller that handles that code handles this one the same way.
+
+In `--json`, `steps` keep start order; the text report sorts them by duration.
 
 ## pn workspace update --scope
 
