@@ -144,6 +144,13 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 		return false, err
 	}
 
+	// Keep the pre-relock bytes so a failure to open the git mutator (no
+	// client to restore through) can still put the lock back.
+	origLock, err := os.ReadFile(lockPath)
+	if err != nil {
+		return false, err
+	}
+
 	// Relock just the workspace-sibling inputs. --refresh is mandatory (C1).
 	args := append([]string{"flake", "update", "--refresh"}, aliases...)
 	if _, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: flakeDir, Stdout: out, Stderr: out, WrapNix: true}); err != nil {
@@ -178,12 +185,21 @@ func (ws *Workspace) propagateWorkspaceEdges(ctx context.Context, out io.Writer,
 		return false, nil
 	}
 
+	// Neither failure return below may leave the rewritten lock behind: a
+	// dirty canonical clone is skipped by the next update, so the failure
+	// would outlive this run.
 	client, err := openGitMutator(ctx, dir)
 	if err != nil {
-		return false, fmt.Errorf("git add %s: %w", lockRel, err)
+		addErr := fmt.Errorf("git add %s: %w", lockRel, err)
+		// No client to restore through; put the original bytes back.
+		if werr := os.WriteFile(lockPath, origLock, 0o644); werr != nil {
+			return false, fmt.Errorf("%w (additionally failed to restore %s — the repo may be left dirty: %v)", addErr, lockRel, werr)
+		}
+		return false, addErr
 	}
 	if err := client.Add(ctx, lockRel); err != nil {
-		return false, fmt.Errorf("git add %s: %w", lockRel, err)
+		// Add may have partially staged the lock; reset like a failed commit.
+		return false, restoreAfterFailedCommit(ctx, client, lockRel, fmt.Errorf("git add %s: %w", lockRel, err))
 	}
 	msg := bumpCommitMessage(changed, before, after)
 	// No PREK_ALLOW_NO_CONFIG here (root-cause fix, design pg2-migib §7a): the

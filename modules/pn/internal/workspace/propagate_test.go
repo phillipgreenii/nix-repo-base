@@ -516,3 +516,71 @@ func containsStr(ss []string, want string) bool {
 	}
 	return false
 }
+
+// addFailMutator is a real gitMutator whose Add always fails, so the code
+// under test sees a genuine repo but an index write that errors.
+type addFailMutator struct{ gitMutator }
+
+func (addFailMutator) Add(context.Context, ...string) error { return fmt.Errorf("index.lock: boom") }
+
+// When nix has rewritten flake.lock with a moved rev but `git add` then
+// fails, the rewritten lock must not be left behind: a dirty canonical clone
+// is skipped by the next update, so the failure would outlive the run.
+func TestPropagate_AddFailureRestoresLock(t *testing.T) {
+	orig := lockWith("1111111111111111111111111111111111111111", 1)
+	dir, writeLock := propEnv(t, "flake.nix", orig)
+	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
+		writeLock(lockWith("2222222222222222222222222222222222222222", 2))
+	}}
+	ws := &Workspace{runner: r}
+
+	prev := openGitMutator
+	openGitMutator = func(ctx context.Context, d string) (gitMutator, error) {
+		m, err := prev(ctx, d)
+		if err != nil {
+			return nil, err
+		}
+		return addFailMutator{m}, nil
+	}
+	t.Cleanup(func() { openGitMutator = prev })
+
+	relocked, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"})
+	if err == nil || !strings.Contains(err.Error(), "git add") {
+		t.Fatalf("want a git add error, got %v (relocked=%v)", err, relocked)
+	}
+	if relocked {
+		t.Errorf("relocked = true, want false")
+	}
+	got, rerr := os.ReadFile(filepath.Join(dir, "flake.lock"))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(got) != orig {
+		t.Errorf("flake.lock not restored:\n%s", got)
+	}
+	assertCleanTree(t, dir)
+}
+
+// openGitMutator itself failing must also restore the lock (no client to
+// restore through, so the original bytes are written back).
+func TestPropagate_OpenMutatorFailureRestoresLock(t *testing.T) {
+	orig := lockWith("1111111111111111111111111111111111111111", 1)
+	dir, writeLock := propEnv(t, "flake.nix", orig)
+	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
+		writeLock(lockWith("2222222222222222222222222222222222222222", 2))
+	}}
+	ws := &Workspace{runner: r}
+
+	prev := openGitMutator
+	openGitMutator = func(context.Context, string) (gitMutator, error) { return nil, fmt.Errorf("open boom") }
+	t.Cleanup(func() { openGitMutator = prev })
+
+	if _, err := ws.propagateWorkspaceEdges(context.Background(), io.Discard, "foo", dir, "flake.nix", []string{"sib"}); err == nil {
+		t.Fatal("want error")
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "flake.lock"))
+	if string(got) != orig {
+		t.Errorf("flake.lock not restored:\n%s", got)
+	}
+	assertCleanTree(t, dir)
+}
