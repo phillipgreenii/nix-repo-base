@@ -479,8 +479,13 @@ func TestRelockAll_RemovesStaleFsmonitorSocket(t *testing.T) {
 }
 
 func TestRelockAll_FailsAfterRetry(t *testing.T) {
-	dir, _ := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
-	r := &fsNixRunner{real: exec.NewRealRunner(), steps: []nixStep{failStep("unable to download"), failStep("unable to download")}}
+	orig := relockLock(1, map[string]string{"sib": revA})
+	dir, writeLock := propEnv(t, "flake.nix", orig)
+	rewrite := func(s nixStep) nixStep {
+		s.mutate = func() { writeLock(relockLock(2, map[string]string{"sib": revB})) }
+		return s
+	}
+	r := &fsNixRunner{real: exec.NewRealRunner(), steps: []nixStep{rewrite(failStep("unable to download")), rewrite(failStep("unable to download"))}}
 	_, _, err := relockRun(t, r, dir, "flake.nix")
 	if err == nil {
 		t.Fatal("want error")
@@ -491,18 +496,27 @@ func TestRelockAll_FailsAfterRetry(t *testing.T) {
 	if c := commitCount(t, dir); c != 1 {
 		t.Errorf("commit count = %d", c)
 	}
+	if got := readFileT(t, filepath.Join(dir, "flake.lock")); got != orig {
+		t.Errorf("flake.lock not restored: %q", got)
+	}
 	assertCleanTree(t, dir)
 }
 
 func TestRelockAll_NoSpaceAbortsWithoutRetry(t *testing.T) {
-	dir, _ := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
-	r := &fsNixRunner{real: exec.NewRealRunner(), steps: []nixStep{noSpaceStep()}}
+	orig := relockLock(1, map[string]string{"sib": revA})
+	dir, writeLock := propEnv(t, "flake.nix", orig)
+	st := noSpaceStep()
+	st.mutate = func() { writeLock(relockLock(2, map[string]string{"sib": revB})) }
+	r := &fsNixRunner{real: exec.NewRealRunner(), steps: []nixStep{st}}
 	_, _, err := relockRun(t, r, dir, "flake.nix")
 	if !errors.Is(err, errRelockNoSpace) {
 		t.Fatalf("err = %v, want errRelockNoSpace", err)
 	}
 	if len(r.nixCalls()) != 1 {
 		t.Errorf("nix calls = %d, want 1", len(r.nixCalls()))
+	}
+	if got := readFileT(t, filepath.Join(dir, "flake.lock")); got != orig {
+		t.Errorf("flake.lock not restored: %q", got)
 	}
 	assertCleanTree(t, dir)
 }
@@ -589,5 +603,42 @@ func TestRelockAll_PrintsSuccessLine(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(out), []byte("nixpkgs, sib")) {
 		t.Errorf("names not in order")
+	}
+}
+
+// When rev-parse fails or prints nothing, the socket removal is skipped: the
+// real git dir's socket stays and no path is built relative to the current
+// directory (a file of the same name there must survive).
+func TestRelockAll_SkipsSocketRemovalWithoutGitDir(t *testing.T) {
+	tests := []struct {
+		name string
+		ans  *gitAnswer
+	}{
+		{"rev-parse fails", &gitAnswer{err: errors.New("fatal: not a git repository")}},
+		{"rev-parse prints nothing", &gitAnswer{out: "\n"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _ := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
+			sock := filepath.Join(runGitT(t, dir, "rev-parse", "--absolute-git-dir"), "fsmonitor--daemon.ipc")
+			if err := os.WriteFile(sock, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cwd := t.TempDir()
+			stray := filepath.Join(cwd, "fsmonitor--daemon.ipc")
+			if err := os.WriteFile(stray, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(cwd)
+			r := &fsNixRunner{real: exec.NewRealRunner(), gitDir: tc.ans}
+			if _, _, err := relockRun(t, r, dir, "flake.nix"); err != nil {
+				t.Fatalf("relock: %v", err)
+			}
+			for _, p := range []string{sock, stray} {
+				if _, err := os.Stat(p); err != nil {
+					t.Errorf("%s was removed: %v", p, err)
+				}
+			}
+		})
 	}
 }
