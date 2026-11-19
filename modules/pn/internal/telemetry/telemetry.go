@@ -358,6 +358,18 @@ func From(ctx context.Context) *Telemetry {
 
 var noop = Disabled()
 
+// wallNow is the clock span ends are stamped from (a test seam).
+var wallNow = time.Now
+
+// endNow is the End option every pn span is ended with. Without it the SDK
+// stamps a span's end as start + time.Since(start), and time.Since reads the
+// MONOTONIC clock, which does not advance while the machine sleeps on darwin.
+// A pn span that straddles a sleep would then end earlier, in wall-clock
+// terms, than the children other processes (pg-nix-log-wrapped) stamp from the
+// wall clock, so a child span outlived its parent. Stamping the end from the
+// wall clock keeps every process on one timeline.
+func endNow() trace.SpanEndOption { return trace.WithTimestamp(wallNow()) }
+
 // VerbSpan is the root pn.verb span plus the data needed to record
 // pn.command.duration when it ends.
 type VerbSpan struct {
@@ -418,7 +430,7 @@ func (v *VerbSpan) End(exitCode int, err error) {
 			status = StatusError
 			setExitError(v.span, exitCode, err)
 		}
-		v.span.End()
+		v.span.End(endNow())
 		v.t.commandDuration.Record(context.Background(), time.Since(v.start).Seconds(),
 			metric.WithAttributes(
 				attribute.String(AttrVerb, v.verb),
@@ -440,7 +452,7 @@ func StartRepo(ctx context.Context, repo string) (context.Context, func(error)) 
 		if err != nil {
 			setError(span, err)
 		}
-		span.End()
+		span.End(endNow())
 	}
 }
 
@@ -457,7 +469,7 @@ func StartExec(ctx context.Context, name string) (context.Context, func(exitCode
 		} else {
 			span.SetAttributes(attribute.Int(AttrExitCode, 0))
 		}
-		span.End()
+		span.End(endNow())
 	}
 }
 
@@ -480,7 +492,7 @@ func StartHook(ctx context.Context, when, name string) (context.Context, func(ex
 		if err != nil || exitCode != 0 {
 			setExitError(span, exitCode, err)
 		}
-		span.End()
+		span.End(endNow())
 	}
 }
 
@@ -496,7 +508,7 @@ func RecordToolNotFound(ctx context.Context, name string, exitCode int, err erro
 		attribute.Int(AttrExitCode, exitCode),
 	))
 	setError(span, err)
-	span.End()
+	span.End(endNow())
 }
 
 // signaler is implemented by errors that know the signal that killed the child

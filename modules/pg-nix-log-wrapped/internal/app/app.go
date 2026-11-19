@@ -402,7 +402,7 @@ func (r *runner) setup(opts config.Options, res config.Resolved, cmdPath string)
 		))
 	rec, err := recorder.New(ctx, tel.Tracer, tel.Meter)
 	if err != nil {
-		inv.End()
+		inv.End(trace.WithTimestamp(r.Now()))
 		return fail(err)
 	}
 	proc := nixlog.NewProcessor(rec, nixlog.Options{MinSubstituteSpan: opts.MinSubstituteSpan})
@@ -521,7 +521,7 @@ func (s *session) run() int {
 
 // abandon releases everything when CMD never started.
 func (s *session) abandon() {
-	s.inv.End()
+	s.inv.End(trace.WithTimestamp(s.r.Now()))
 	s.files.Remove()
 	s.shutdown()
 }

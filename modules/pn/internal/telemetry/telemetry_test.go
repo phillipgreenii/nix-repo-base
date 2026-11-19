@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry/telemetrytest"
@@ -404,5 +405,44 @@ func TestRecordPlan_VerbLabelIsFullWorkspaceVerb(t *testing.T) {
 	want := map[string]bool{"workspace build": true, "workspace apply": true}
 	if !maps.Equal(got, want) {
 		t.Errorf("pn.verb values = %v, want exactly %v", got, want)
+	}
+}
+
+// A pn span that straddles a machine sleep must still end after a child that
+// another process (pg-nix-log-wrapped) stamps from the wall clock. The SDK
+// default derives a span's end from the monotonic clock, which stops during
+// sleep, so the pn parent used to end early and the wrapper's child outlived it.
+func TestSpansEndOnTheWallClockAcrossASleep(t *testing.T) {
+	const slept = 2 * time.Hour
+	tel, rec := telemetrytest.New()
+	ctx := telemetry.WithTelemetry(context.Background(), tel)
+	ctx, verb := tel.StartVerb(ctx, "workspace update")
+	rctx, endRepo := telemetry.StartRepo(ctx, "repo-a")
+	ectx, endExec := telemetry.StartExec(rctx, "./update-locks.sh")
+
+	// The machine "sleeps": the wall clock jumps, the monotonic clock does not.
+	wake := time.Now().Add(slept)
+	defer telemetry.SetWallNow(func() time.Time { return wake })()
+
+	// The wrapper's span, a child of the pn.exec span, ends at the wall time.
+	cp := sdktrace.NewTracerProvider()
+	_, child := cp.Tracer("wrapper").Start(ectx, "nix.invocation")
+	child.End(oteltrace.WithTimestamp(wake))
+
+	endExec(0, nil)
+	endRepo(nil)
+	verb.End(0, nil)
+
+	es := rec.ByName("pn.exec")
+	if len(es) != 1 {
+		t.Fatalf("pn.exec spans = %d, want 1", len(es))
+	}
+	for _, s := range []sdktrace.ReadOnlySpan{es[0], rec.ByName("pn.repo")[0], rec.ByName("pn.verb")[0]} {
+		if got := s.EndTime().Sub(s.StartTime()); got < slept {
+			t.Errorf("%s lasted %v, want at least the %v slept (end stamped from the monotonic clock)", s.Name(), got, slept)
+		}
+	}
+	if wake.After(es[0].EndTime()) {
+		t.Errorf("child span ends %v, after its pn.exec parent at %v", wake, es[0].EndTime())
 	}
 }
