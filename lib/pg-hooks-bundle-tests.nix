@@ -159,11 +159,10 @@ in
     };
   };
 
-  "test only the gitignore check remains of the old pre-commit checks" = {
+  "test only the pre-commit check remains of the old pre-commit checks" = {
     expr = lib.filter (lib.hasPrefix "pre-commit") (builtins.attrNames defaulted.checks.${system});
     expected = [
       "pre-commit"
-      "pre-commit-config-gitignored"
     ];
   };
 

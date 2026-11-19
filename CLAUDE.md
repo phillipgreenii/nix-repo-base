@@ -235,11 +235,10 @@ operator runbook) is [`docs/hooks.md`](docs/hooks.md); the design is
 
 The old `.pre-commit-config.yaml` (a git-hooks.nix-generated **symlink into `/nix/store`**, ADR
 [0016](docs/adr/0016-gitignore-generated-pre-commit-config.md)) is no longer produced, but many
-clones still hold one. It MUST NOT be committed, so every repo consuming
-`flake-modules/pre-commit.nix` MUST keep gitignoring it (exact line `.pre-commit-config.yaml`); the
-`checks.pre-commit-config-gitignored` flake check enforces this. Do **not** re-add it to git. The
-rule and the check are retired only after the repos are pushed and relocked and no clone holds the
-symlink. `install-pre-commit-hooks` writes no symlink: it roots a bundle under
+clones may still hold one. It MUST NOT be committed. The gitignore rule and the former
+`checks.pre-commit-config-gitignored` flake check have been retired (every clone dropped the
+symlink), so consumer repos no longer list it in `.gitignore`. Do **not** re-add it to git.
+`install-pre-commit-hooks` writes no symlink: it roots a bundle under
 `<git-common-dir>/pg-hooks/`.
 
 `flake-modules/checks.nix` no longer auto-contributes a separate `checks.formatting` (removed:

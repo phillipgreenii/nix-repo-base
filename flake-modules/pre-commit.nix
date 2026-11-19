@@ -425,32 +425,6 @@ in
         // resolvedExtraHooks;
       };
 
-      # ADR 0016 (generation mechanism superseded by ADR 0032; the gitignore rule
-      # is KEPT for now because old clones and worktrees still hold the symlink and
-      # the follow-up bead that retires this check runs only after every clone has
-      # dropped it): a `.pre-commit-config.yaml` symlink into `/nix/store` MUST NOT
-      # be committed — a committed store path is GC-eligible and rots into a
-      # dangling symlink. Enforce that every consumer gitignores it. Pure eval-time
-      # read of the flake source's `.gitignore` (no IFD: `src` is an
-      # already-realised store path); an exact full-line match avoids matching
-      # the explanatory comment line.
-      gitignorePath = topLevelCfg.src + "/.gitignore";
-      gitignoreLines =
-        if builtins.pathExists gitignorePath then
-          lib.splitString "\n" (builtins.readFile gitignorePath)
-        else
-          null;
-      ignoresPreCommitConfig =
-        gitignoreLines != null
-        && lib.any (l: lib.removeSuffix "\r" l == ".pre-commit-config.yaml") gitignoreLines;
-      preCommitConfigGitignoredCheck =
-        if gitignoreLines == null then
-          throw "phillipgreenii.pre-commit: ${toString topLevelCfg.src}/.gitignore is missing; it MUST exist and ignore the generated .pre-commit-config.yaml store-symlink (ADR 0016 in phillipg-nix-repo-base)."
-        else if !ignoresPreCommitConfig then
-          throw "phillipgreenii.pre-commit: .gitignore MUST contain a line '.pre-commit-config.yaml'. The git-hooks.nix config is a generated /nix/store symlink and must not be committed (ADR 0016 in phillipg-nix-repo-base)."
-        else
-          pkgs.runCommand "pre-commit-config-gitignored" { } "touch $out";
-
       # ----- Hook drift guard (plan Task 22, bead pg2-pla9d.25) -----
       # Opt-in: see `driftGuard.enable`. The allowlist is rendered to the guard's
       # tab-separated format and kept OUT of the scanned tree (it is passed by path),
@@ -697,7 +671,6 @@ in
       legacyPackages.pgHooksBundle = guard pgHooksBundle;
       checks = {
         pre-commit = guard preCommit;
-        pre-commit-config-gitignored = preCommitConfigGitignoredCheck;
       }
       // lib.optionalAttrs driftCfg.enable {
         hook-drift-guard = hookDriftGuardCheck;

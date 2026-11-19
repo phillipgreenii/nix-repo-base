@@ -599,7 +599,7 @@ never read. Install the bundle to fix it.
   `test -f .pre-commit-config.yaml`: a bundle repo has no such file in its working tree yet its hooks
   are live.
 - The `.gitignore` line for `.pre-commit-config.yaml` and the `pre-commit-config-gitignored` check
-  stay until no clone holds the old symlink (see [Open follow-ups](#open-follow-ups)).
+  were retired once no clone held the old symlink; do not re-add either.
 
 Workforest sets use the shared bundle by default. pn's set setup builds a private bundle with the
 set's pins (`--private` plus the `--override` pins) after the worktree exists, so a set that changes
@@ -777,9 +777,6 @@ These steps are for the operator. Agents MUST NOT run them.
 Dated 2026-10-03. This section is the only part of the page that goes stale; the rest describes the
 code.
 
-- Retiring the ADR 0016 `.gitignore` line and `checks.pre-commit-config-gitignored` MUST wait until
-  the repos are pushed and relocked and no clone holds the old symlink. Consumer flakes MUST NOT drop
-  `bundle.enable = true` or their `.gitignore` lines before that relock.
 - The pn Go cleanup (the githooks-shim doctor check and the remaining link code) is tracked as
   `pg2-o1fle`.
 - Not available yet: the `post-land` entry point (deferred, `pg2-na2nr`). Consumer repos other than repo-base have not yet enabled `driftGuard`.

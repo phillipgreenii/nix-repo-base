@@ -1,6 +1,6 @@
 # Gitignore the git-hooks.nix-generated `.pre-commit-config.yaml`
 
-**Status**: Accepted (generation mechanism superseded by [ADR-0032](0032-per-clone-hook-bundle-replaces-generated-config-and-shim.md); the gitignore rule remains in force until the follow-up it names)
+**Status**: Accepted (generation mechanism superseded by [ADR-0032](0032-per-clone-hook-bundle-replaces-generated-config-and-shim.md); the gitignore rule and its check were retired once no clone held the symlink)
 **Date**: 2026-07-01
 **Deciders**: Phillip Green II
 

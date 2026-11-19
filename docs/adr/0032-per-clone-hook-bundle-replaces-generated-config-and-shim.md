@@ -57,11 +57,9 @@ flowchart LR
 ### What this ADR does not retire
 
 The `.gitignore` rule of ADR-0016 (exact line `.pre-commit-config.yaml`) and its
-`checks.pre-commit-config-gitignored` check MUST be kept for now. About 25 worktrees and every
-canonical clone still hold the old symlink, and a tracked copy is still a hazard. Removing the rule
-and the check is a separate, cross-repo follow-up that MUST run only after the repos have been pushed
-and relocked and no clone has the symlink. Likewise, consumer flakes MUST NOT drop their now-redundant
-`bundle.enable = true;` or their `.gitignore` lines until that relock has happened.
+`checks.pre-commit-config-gitignored` check were kept at first because old clones and worktrees still
+held the symlink. They have since been retired in a cross-repo follow-up, together with the
+consumers' now-redundant `bundle.enable = true;` lines, once no clone held the symlink.
 
 ## Consequences
 
