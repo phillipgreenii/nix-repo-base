@@ -2013,3 +2013,67 @@ MOCK
   [[ $doc == *"RESIDUAL RISK FOR THE IT AUDIT"* ]]
   [[ $doc == *"HOMEBREW'S OWN CODE"* ]]
 }
+
+# --- ul_finalize: prune stamps of unregistered steps ---
+
+_seed_stale_stamp() {
+  mkdir -p "$TEST_DIR/.update-locks/steps"
+  echo 2020-01-01T00:00:00Z >"$TEST_DIR/.update-locks/steps/retired-step"
+  git add -A
+  git commit -q -m "seed stale stamp"
+}
+
+@test "ul_finalize prunes an unregistered stamp, keeps a registered one, and commits" {
+  source "$UL_LOCKS_LIB"
+  _seed_stale_stamp
+  ul_setup "test-project" "$TEST_DIR"
+  noop() { true; }
+  ul_run_step "live-step" "msg" noop
+
+  run ul_finalize
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Pruned stamps of unregistered steps"* ]]
+  [[ "$output" == *"retired-step"* ]]
+  [ ! -e "$TEST_DIR/.update-locks/steps/retired-step" ]
+  [ -f "$TEST_DIR/.update-locks/steps/live-step" ]
+  [ -z "$(git status --porcelain)" ]
+}
+
+@test "ul_finalize keeps the stamp of a registered step skipped by a fresh stamp" {
+  source "$UL_LOCKS_LIB"
+  _seed_stale_stamp
+  ul_setup "test-project" "$TEST_DIR"
+  noop() { true; }
+  ul_run_step "live-step" "msg" noop
+  # shellcheck disable=SC2034  # read by ul_should_run in the sourced library
+  UL_FORCE=false # setup forces; let the fresh stamp skip the second call
+  ul_run_step "live-step" "msg" noop
+  [ "$_UL_STEPS_SKIPPED" -eq 1 ]
+
+  run ul_finalize
+  [ "$status" -eq 0 ]
+  [ -f "$TEST_DIR/.update-locks/steps/live-step" ]
+}
+
+@test "ul_finalize prunes nothing on a partial run (a step failed)" {
+  source "$UL_LOCKS_LIB"
+  _seed_stale_stamp
+  ul_setup "test-project" "$TEST_DIR"
+  fail_step() { return 1; }
+  ul_run_step "bad-step" "msg" fail_step
+
+  run ul_finalize
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"Pruned stamps"* ]]
+  [ -f "$TEST_DIR/.update-locks/steps/retired-step" ]
+}
+
+@test "ul_finalize prunes nothing when no step was registered" {
+  source "$UL_LOCKS_LIB"
+  _seed_stale_stamp
+  ul_setup "test-project" "$TEST_DIR"
+
+  run ul_finalize
+  [ "$status" -eq 0 ]
+  [ -f "$TEST_DIR/.update-locks/steps/retired-step" ]
+}

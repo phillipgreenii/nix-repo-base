@@ -158,6 +158,13 @@
 #   followed by per-upgrade detail lines for each step that produced content
 #   changes (extracted by _ul_record_upgrade).
 #
+# ANCHOR: ul_finalize-prune
+#   Before the summary, removes (and commits the removal of) any stamp under
+#   .update-locks/steps/ whose step name was not passed to ul_run_step in this
+#   run; the summary lists them under "Pruned stamps of unregistered steps".
+#   Prunes nothing when any step failed or no step was registered (see
+#   _ul_prune_stale_stamps for the full partial-run rule).
+#
 # ANCHOR: ul_finalize-exit-code
 #   Exits 0 if _UL_STEPS_FAILED is 0; exits 1 with the failed step list
 #   otherwise. Deferrals AND transient rollbacks do NOT contribute to a non-zero
@@ -347,6 +354,7 @@ _UL_STEPS_TRANSIENT=0
 _UL_FAILED_STEPS=()
 _UL_UPGRADED_STEPS=()
 _UL_UPGRADE_NOTES=()
+_UL_REGISTERED_STEPS=()
 _UL_SCRIPT_DIR=""
 _UL_CHILD_PID=""
 _UL_CAUGHT_SIGNAL=""
@@ -728,6 +736,7 @@ ul_setup() {
   _UL_FAILED_STEPS=()
   _UL_UPGRADED_STEPS=()
   _UL_UPGRADE_NOTES=()
+  _UL_REGISTERED_STEPS=()
 }
 
 ul_run_step() {
@@ -739,6 +748,10 @@ ul_run_step() {
     echo "FATAL: ul_run_step '${step_name}' requires a command"
     exit 1
   fi
+
+  # Register the name BEFORE any skip/cache decision: a step that is skipped
+  # because its stamp is fresh is still a registered step (ul_finalize prune).
+  _UL_REGISTERED_STEPS+=("$step_name")
 
   if ! ul_should_run "$step_name"; then
     _UL_STEPS_SKIPPED=$((_UL_STEPS_SKIPPED + 1))
@@ -1018,13 +1031,62 @@ ul_brew_lock_update_step() {
   reason="$(_ul_brew_lock_skip_reason)"
   if [[ -n $reason ]]; then
     echo "==> brew-lock-update: skipped: ${reason}"
+    # Skipped before ul_run_step, but still a registered step: keep its stamp.
+    _UL_REGISTERED_STEPS+=("brew-lock-update")
     _UL_STEPS_SKIPPED=$((_UL_STEPS_SKIPPED + 1))
     return 0
   fi
   ul_run_step "brew-lock-update" "$msg" ul_brew_lock_update
 }
 
+# Prune stamps under .update-locks/steps/ whose step was not registered in this
+# run (registered = every name passed to ul_run_step, including steps skipped by
+# a fresh stamp, plus brew-lock-update skipped in its wrapper).
+#
+# Decision record: pruning is wanted (orphans accumulate and were removed by
+# hand); nothing in the library matches caches by anything but the exact step
+# name, so a removed step's stamp can never be consulted again. The run is
+# PARTIAL, and prunes NOTHING, when ul_finalize is reached with any failed step
+# (_UL_STEPS_FAILED > 0), or when no step was registered (nothing to compare
+# against). A resource abort, a signal or a FATAL exit never reach ul_finalize,
+# and the library has no step-subset selector. The deletion follows the
+# library's own stamp handling (stamps are git-tracked and committed per step,
+# and ul_setup demands a clean tree next run), so it is committed as one
+# commit; the summary names each removed stamp.
+_ul_prune_stale_stamps() {
+  _UL_PRUNED_STAMPS=()
+  [[ ${_UL_STEPS_FAILED} -eq 0 && ${#_UL_REGISTERED_STEPS[@]} -gt 0 ]] || return 0
+  [[ -d $_UL_STAMP_DIR ]] || return 0
+  local f name known r
+  for f in "$_UL_STAMP_DIR"/*; do
+    [[ -f $f ]] || continue
+    name="${f##*/}"
+    known=0
+    for r in "${_UL_REGISTERED_STEPS[@]}"; do
+      if [[ $r == "$name" ]]; then
+        known=1
+        break
+      fi
+    done
+    [[ $known -eq 1 ]] || _UL_PRUNED_STAMPS+=("$name")
+  done
+  [[ ${#_UL_PRUNED_STAMPS[@]} -gt 0 ]] || return 0
+  for name in "${_UL_PRUNED_STAMPS[@]}"; do
+    git rm -q -f --ignore-unmatch -- "$_UL_STAMP_DIR/$name" >/dev/null 2>&1 || true
+    rm -f -- "$_UL_STAMP_DIR/$name"
+  done
+  if ! git diff --cached --quiet; then
+    if ! git commit -q -m "update-locks: prune stamps of unregistered steps" >/dev/null 2>&1; then
+      echo "  ✗ stamp prune commit failed; restoring"
+      git reset -q --hard HEAD 2>/dev/null || true
+      _UL_PRUNED_STAMPS=()
+    fi
+  fi
+  return 0
+}
+
 ul_finalize() {
+  _ul_prune_stale_stamps
   echo ""
   echo "=== Update Summary ==="
   echo "  Ran:     ${_UL_STEPS_RAN}"
@@ -1045,6 +1107,15 @@ ul_finalize() {
   # abort exits from ul_run_step earlier and never reaches this line (pn stops
   # the whole run on that exit anyway). Stable key=value form, extensible later.
   echo "UL_RESULT transient=${_UL_STEPS_TRANSIENT}"
+
+  if [[ ${#_UL_PRUNED_STAMPS[@]} -gt 0 ]]; then
+    echo ""
+    echo "Pruned stamps of unregistered steps:"
+    local pruned
+    for pruned in "${_UL_PRUNED_STAMPS[@]}"; do
+      echo "  - ${pruned}"
+    done
+  fi
 
   if [[ ${#_UL_UPGRADED_STEPS[@]} -gt 0 ]]; then
     echo ""
