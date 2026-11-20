@@ -85,7 +85,10 @@ var prunedCategories = []string{
 // clears the caches / runs the commands configured as post_gc_clear_dirs /
 // post_gc_commands in store.toml (see postgc.go). It also reports (but never
 // prunes) Flox's on-disk footprint -- Flox has no local generation history
-// analogous to the others; see flox.go.
+// analogous to the others; see flox.go. The Devbox sections run only when
+// `devbox = true` and the Flox sections only when `flox = true` in store.toml
+// (both default false); a disabled section prints its header and a note and
+// does no discovery.
 //
 // Output is sectioned (one `=== <Title> ===` header per category, each followed
 // by a blank line). Warnings from devboxProjects (missing search dirs) go to
@@ -130,7 +133,9 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 
 	// ─── 4. Devbox Global ──────────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== Devbox Global ===")
-	if dbg := s.devboxGlobalProfile(); dbg != "" {
+	if !cfg.Devbox {
+		fmt.Fprintln(out, disabledNote("devbox"))
+	} else if dbg := s.devboxGlobalProfile(); dbg != "" {
 		s.processProfile(ctx, out, prunedCounts, "devbox-global", dbg, "devbox-global", false, keepDays, keepCount, now, opts.DryRun)
 	} else {
 		fmt.Fprintln(out, "  (not installed)")
@@ -139,7 +144,9 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 
 	// ─── 5. Devbox Util ────────────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== Devbox Util ===")
-	if dbu := s.devboxUtilProfile(); dbu != "" {
+	if !cfg.Devbox {
+		fmt.Fprintln(out, disabledNote("devbox"))
+	} else if dbu := s.devboxUtilProfile(); dbu != "" {
 		s.processProfile(ctx, out, prunedCounts, "devbox-util", dbu, "devbox-util", false, keepDays, keepCount, now, opts.DryRun)
 	} else {
 		fmt.Fprintln(out, "  (not installed)")
@@ -148,7 +155,9 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 
 	// ─── 6. Devbox Projects ────────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== Devbox Projects ===")
-	if len(cfg.SearchDirs) == 0 {
+	if !cfg.Devbox {
+		fmt.Fprintln(out, disabledNote("devbox"))
+	} else if len(cfg.SearchDirs) == 0 {
 		fmt.Fprintln(out, "  (no search dirs configured)")
 	} else {
 		for _, p := range s.devboxProjects(ctx, errOut, cfg.SearchDirs) {
@@ -161,7 +170,11 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	// Report-only: Flox keeps no local generation history to prune. See the
 	// file-level comment in flox.go for why.
 	fmt.Fprintln(out, "=== Flox ===")
-	s.reportFlox(ctx, out, cfg.SearchDirs)
+	if cfg.Flox {
+		s.reportFlox(ctx, out, cfg.SearchDirs)
+	} else {
+		fmt.Fprintln(out, disabledNote("flox"))
+	}
 	fmt.Fprintln(out)
 
 	// ─── 7b. Flox Temp Dirs ────────────────────────────────────────────────────
@@ -169,7 +182,11 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	// staging dirs under ~/.cache/flox/process/, safe to prune once confirmed
 	// empty and stale. See the file-level comment in flox.go.
 	fmt.Fprintln(out, "=== Flox Temp Dirs ===")
-	s.processFloxTempDirs(out, prunedCounts, keepDays, now, opts.DryRun)
+	if cfg.Flox {
+		s.processFloxTempDirs(out, prunedCounts, keepDays, now, opts.DryRun)
+	} else {
+		fmt.Fprintln(out, disabledNote("flox"))
+	}
 	fmt.Fprintln(out)
 
 	// ─── 8. Result Symlinks ────────────────────────────────────────────────────
@@ -193,7 +210,7 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 		fmt.Fprintln(out, "DRY RUN — no changes made")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Would prune:")
-		s.printPrunedCounts(out, prunedCounts)
+		s.printPrunedCounts(out, prunedCounts, cfg)
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Reclaimable estimate (dead paths):")
 		// nonInteractive=false: deepclean is interactive/mutating, so sudo may
@@ -235,7 +252,7 @@ func (s *Store) DeepClean(ctx context.Context, out, errOut io.Writer, opts DeepC
 	fmt.Fprintf(out, "Store after:  %s\n", storeSize(ctx, s.runner))
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Pruned generations:")
-	s.printPrunedCounts(out, prunedCounts)
+	s.printPrunedCounts(out, prunedCounts, cfg)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "=== Runtime Roots ===")
 	if summary := runtimeRootsSummary(ctx, s.runner); summary != "" {
@@ -259,8 +276,11 @@ func wrapPostGC(err error) error {
 }
 
 // printPrunedCounts emits the prunedCategories prune counts in fixed order.
-func (s *Store) printPrunedCounts(out io.Writer, counts map[string]int) {
+func (s *Store) printPrunedCounts(out io.Writer, counts map[string]int, cfg Config) {
 	for _, cat := range prunedCategories {
+		if !categoryEnabled(cat, cfg) {
+			continue
+		}
 		fmt.Fprintf(out, "  %s: %d generation(s)\n", cat, counts[cat])
 	}
 }

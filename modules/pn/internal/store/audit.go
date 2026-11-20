@@ -17,7 +17,9 @@ type AuditOptions struct {
 // Audit reports profile generations and Nix store size. It writes a
 // sectioned report to out (one section per profile category, then the Nix
 // Store section). Warnings from devboxProjects (missing search dirs) go to
-// errOut. Errors from individual subprocesses are tolerated — a profile that
+// errOut. The Devbox sections run only when `devbox = true` in store.toml
+// (default false); a disabled section prints a note and does no discovery.
+// Flox has no audit section, so the flox toggle has no effect here. Errors from individual subprocesses are tolerated — a profile that
 // errors still prints its header; closure size becomes "unknown". Audit
 // returns nil except on a true programming error.
 func (s *Store) Audit(ctx context.Context, out, errOut io.Writer, opts AuditOptions) error {
@@ -45,8 +47,14 @@ func (s *Store) Audit(ctx context.Context, out, errOut io.Writer, opts AuditOpti
 
 	// ─── Devbox Global ─────────────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== Devbox Global ===")
-	dbg := s.devboxGlobalProfile()
-	if dbg != "" {
+	dbg := ""
+	if cfg.Devbox {
+		dbg = s.devboxGlobalProfile()
+	}
+	if !cfg.Devbox {
+		fmt.Fprintln(out, disabledNote("devbox"))
+		fmt.Fprintln(out)
+	} else if dbg != "" {
 		s.auditProfile(ctx, out, "devbox-global", dbg, false)
 	} else {
 		fmt.Fprintln(out, "  (not installed)")
@@ -55,7 +63,10 @@ func (s *Store) Audit(ctx context.Context, out, errOut io.Writer, opts AuditOpti
 
 	// ─── Devbox Projects ───────────────────────────────────────────────────────
 	fmt.Fprintln(out, "=== Devbox Projects ===")
-	if len(cfg.SearchDirs) == 0 {
+	if !cfg.Devbox {
+		fmt.Fprintln(out, disabledNote("devbox"))
+		fmt.Fprintln(out)
+	} else if len(cfg.SearchDirs) == 0 {
 		fmt.Fprintln(out, "  (no search dirs configured)")
 		fmt.Fprintln(out)
 	} else {

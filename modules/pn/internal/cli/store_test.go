@@ -58,6 +58,26 @@ func TestStoreDeepClean_HelpDocumentsPostGCKeys(t *testing.T) {
 	}
 }
 
+// TestStoreHelp_DocumentsDevboxFloxToggles guards that the devbox and flox
+// store.toml keys are named in the store, audit and deepclean help.
+func TestStoreHelp_DocumentsDevboxFloxToggles(t *testing.T) {
+	for _, args := range [][]string{{"store", "--help"}, {"store", "audit", "--help"}, {"store", "deepclean", "--help"}} {
+		root := newRootCmd("1.0.0")
+		root.SetArgs(args)
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetErr(&buf)
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range []string{"devbox", "flox"} {
+			if !bytes.Contains(buf.Bytes(), []byte(k)) {
+				t.Errorf("%v missing %s", args, k)
+			}
+		}
+	}
+}
+
 // TestConfirmDeepClean exercises the confirmation gate (bead pg2-w0y8u) without
 // touching the real runner: a dry run or --yes proceeds; a non-interactive run
 // without --yes is refused; an interactive run honors the y/N answer.

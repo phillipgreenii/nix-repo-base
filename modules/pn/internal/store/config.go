@@ -23,6 +23,30 @@ type Config struct {
 	// OptimiseMinFreeGB is the free space /nix must have before the optional
 	// optimise step starts (default 10).
 	OptimiseMinFreeGB int
+	// Devbox enables Devbox discovery (global, util and per-project profiles)
+	// in deepclean and audit. Default false.
+	Devbox bool
+	// Flox enables Flox reporting and temp-dir pruning in deepclean. Default
+	// false. Audit has no Flox section, so it has no effect there.
+	Flox bool
+}
+
+// disabledNote is the one line printed under the header of a section whose
+// tool toggle (key is "devbox" or "flox") is off in store.toml.
+func disabledNote(key string) string {
+	return "  (disabled; set " + key + " = true in ~/.config/pn/store.toml to enable)"
+}
+
+// categoryEnabled reports whether a prune-count category is active under the
+// config's tool toggles.
+func categoryEnabled(cat string, cfg Config) bool {
+	switch cat {
+	case "devbox-global", "devbox-util", "devbox-projects":
+		return cfg.Devbox
+	case "flox-temp-dirs":
+		return cfg.Flox
+	}
+	return true
 }
 
 type rawConfig struct {
@@ -32,6 +56,8 @@ type rawConfig struct {
 	PostGCClearDirs   []string   `toml:"post_gc_clear_dirs"`
 	PostGCCommands    [][]string `toml:"post_gc_commands"`
 	OptimiseMinFreeGB *int       `toml:"optimise_min_free_gb"`
+	Devbox            *bool      `toml:"devbox"`
+	Flox              *bool      `toml:"flox"`
 }
 
 // defaultConfig returns the built-in defaults (14d / 3 / no search dirs).
@@ -60,6 +86,12 @@ func parseStoreConfig(data []byte) Config {
 	}
 	if raw.OptimiseMinFreeGB != nil {
 		c.OptimiseMinFreeGB = *raw.OptimiseMinFreeGB
+	}
+	if raw.Devbox != nil {
+		c.Devbox = *raw.Devbox
+	}
+	if raw.Flox != nil {
+		c.Flox = *raw.Flox
 	}
 	return c
 }

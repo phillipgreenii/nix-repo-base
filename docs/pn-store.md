@@ -11,14 +11,16 @@
 
 ## Configuration — `~/.config/pn/store.toml`
 
-| Key                    | Type         | Default | Meaning                                                                                                                                      |
-| ---------------------- | ------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search_dirs`          | `[string]`   | `[]`    | Roots scanned for devbox project profiles and `result` symlinks. Use absolute paths.                                                         |
-| `keep_days`            | `int`        | `14`    | Time-based retention: generations newer than this are protected from pruning.                                                                |
-| `keep_count`           | `int`        | `3`     | Count-based retention: the N most recent generations are protected from pruning.                                                             |
-| `optimise_min_free_gb` | `int`        | `10`    | Free GiB `/nix` must have before `deepclean --optimise` starts its optimise step (`deepclean` only).                                         |
-| `post_gc_clear_dirs`   | `[string]`   | `[]`    | Directories removed (`rm -rf`) right after the GC (`deepclean` only). `~/` expands to `$HOME`; otherwise absolute. A missing dir is skipped. |
-| `post_gc_commands`     | `[[string]]` | `[]`    | Argv-form commands run, in order, after the GC and after `post_gc_clear_dirs`.                                                               |
+| Key                    | Type         | Default | Meaning                                                                                                                                                                         |
+| ---------------------- | ------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_dirs`          | `[string]`   | `[]`    | Roots scanned for `result` symlinks always, devbox project profiles only when `devbox` is on, and per-project `.flox` environments only when `flox` is on. Use absolute paths.  |
+| `devbox`               | `bool`       | `false` | Enable the Devbox sections of `audit` and `deepclean`. Off: no Devbox discovery runs; leftover Devbox state on disk is neither pruned nor reported.                             |
+| `flox`                 | `bool`       | `false` | Enable the Flox sections of `deepclean` (`audit` has none, so it has no effect there). Off: no Flox discovery runs; leftover Flox state on disk is neither pruned nor reported. |
+| `keep_days`            | `int`        | `14`    | Time-based retention: generations newer than this are protected from pruning.                                                                                                   |
+| `keep_count`           | `int`        | `3`     | Count-based retention: the N most recent generations are protected from pruning.                                                                                                |
+| `optimise_min_free_gb` | `int`        | `10`    | Free GiB `/nix` must have before `deepclean --optimise` starts its optimise step (`deepclean` only).                                                                            |
+| `post_gc_clear_dirs`   | `[string]`   | `[]`    | Directories removed (`rm -rf`) right after the GC (`deepclean` only). `~/` expands to `$HOME`; otherwise absolute. A missing dir is skipped.                                    |
+| `post_gc_commands`     | `[[string]]` | `[]`    | Argv-form commands run, in order, after the GC and after `post_gc_clear_dirs`.                                                                                                  |
 
 A missing file or missing key falls back to the defaults above. Example:
 
@@ -26,7 +28,25 @@ A missing file or missing key falls back to the defaults above. Example:
 search_dirs = ["/Users/me/projects"]
 keep_days = 7
 keep_count = 5
+devbox = true
+flox = true
 ```
+
+A wrong-typed value (for example `devbox = "true"`) makes the whole file unparsable, so **every**
+key (`search_dirs`, `keep_days`, `post_gc_clear_dirs`, ...) reverts to its default, not just the bad one.
+
+### Disabled tools (`devbox`, `flox`)
+
+A section of a disabled tool skips all discovery and prints one note line under its header, then the usual blank line:
+
+```
+=== Devbox Projects ===
+  (disabled; set devbox = true in ~/.config/pn/store.toml to enable)
+
+```
+
+The categories `devbox-global`, `devbox-util`, `devbox-projects` (devbox off) and `flox-temp-dirs`
+(flox off) are also left out of the `Would prune:` / `Pruned generations:` summary lists.
 
 ### Post-GC hook (`post_gc_clear_dirs`, `post_gc_commands`)
 
@@ -75,14 +95,16 @@ Emits these sections, in order:
 1. `System Profiles` — generations + closure size for `/nix/var/nix/profiles/system` (uses sudo to list).
 2. `Home Manager` — the HM profile, or `(not installed)`.
 3. `User Profiles` — each profile under `~/.local/state/nix/profiles/` (excluding `home-manager` and generation links).
-4. `Devbox Global` — the devbox global profile, or `(not installed)`.
-5. `Devbox Projects` — devbox profiles discovered under `search_dirs` (follows git worktrees), or `(no search dirs configured)`.
+4. `Devbox Global` — the devbox global profile, or `(not installed)`; only when `devbox = true`.
+5. `Devbox Projects` — devbox profiles discovered under `search_dirs` (follows git worktrees), or `(no search dirs configured)`; only when `devbox = true`.
 6. `Nix Store` — `Volume used: <size>` (the `/nix/store` APFS volume's own used bytes; macOS-only via `df`+`diskutil`).
 
 `--full` adds `Reclaimable (dead paths): <size>` to the `Nix Store` section. This estimate runs
 `sudo nix-store --gc --print-dead` and is slow.
 
-> Audit has no `Devbox Util` section — that profile is only handled by `deepclean`.
+> Audit has no `Devbox Util` section — that profile is only handled by `deepclean`. Audit has no Flox
+> section either, so `flox` does not affect it. With `devbox` off, both Devbox sections print the
+> disabled note instead.
 
 ## `pn store deepclean`
 
@@ -104,10 +126,10 @@ It processes these sections, in order, pruning per the retention rule above:
 2. `Home Manager` — if an orphaned standalone HM profile is detected (the standalone profile coexists
    with a darwin-integrated `current-home`), it removes the profile symlink + generation links; otherwise prunes generations.
 3. `User Profiles`
-4. `Devbox Global`
-5. `Devbox Util`
-6. `Devbox Projects` (from `search_dirs`)
-7. `Flox` — **report-only, prunes nothing.** Shows the combined disk usage of Flox's global data
+4. `Devbox Global` — only when `devbox = true`
+5. `Devbox Util` — only when `devbox = true`
+6. `Devbox Projects` (from `search_dirs`) — only when `devbox = true`
+7. `Flox` (only when `flox = true`) — **report-only, prunes nothing.** Shows the combined disk usage of Flox's global data
    dirs (`~/.local/share/flox` + `~/.cache/flox`) and, per `.flox` environment found directly under
    `search_dirs` (no git-worktree following — see below), its own disk usage. Flox has no local
    generation history analogous to the others: `flox generations` operates only on environments
@@ -119,7 +141,7 @@ It processes these sections, in order, pruning per the retention rule above:
    `/nix/var/nix/gcroots/flox-environments` was investigated and rejected: it targets a path that
    doesn't exist on this machine and Flox already self-registers its own GC roots — see bead
    `pg2-8k05k`.)
-8. `Flox Temp Dirs` — orphaned `.tmpXXXXXX` activation staging directories under
+8. `Flox Temp Dirs` (only when `flox = true`) — orphaned `.tmpXXXXXX` activation staging directories under
    `~/.cache/flox/process/`, pruned once confirmed **both** recursively empty and older
    than `keep_days` (a directory that still has real content, or is too young, is never
    touched — see `flox.go` for how this staging path leaks and why that heuristic is
@@ -193,15 +215,17 @@ Keeps only the most recent + current generation everywhere.
 
 ### First run / no config
 
-Works with built-in defaults (`keep_days=14`, `keep_count=3`, no `search_dirs`).
-`Devbox Projects` / `Result Symlinks` report empty until you add `search_dirs`. `Flox` reports
-`(not installed)` until either Flox has been used on the machine (its global data dirs exist) or
-`search_dirs` are added (so it has somewhere to look for a per-project `.flox`) — either way, it
-never prunes anything.
+Works with built-in defaults (`keep_days=14`, `keep_count=3`, `devbox=false`, `flox=false`, no
+`search_dirs`). The Devbox and Flox sections print the disabled note and do no discovery until you
+set `devbox = true` / `flox = true`. `Result Symlinks` reports empty until you add `search_dirs`.
+Once enabled, `Devbox Projects` reports `(no search dirs configured)` until you add `search_dirs`,
+and `Flox` reports `(not installed)` until either Flox has been used on the machine (its global data
+dirs exist) or `search_dirs` are added (so it has somewhere to look for a per-project `.flox`) —
+either way, it never prunes anything.
 
 ```mermaid
 flowchart TD
-    CFG["store.toml<br/>search_dirs · keep_days(14) · keep_count(3)"] --> AUDIT["pn store audit [--full]"]
+    CFG["store.toml<br/>search_dirs · keep_days(14) · keep_count(3) · devbox(false) · flox(false)"] --> AUDIT["pn store audit [--full]"]
     CFG --> CLEAN["pn store deepclean"]
     AUDIT -->|decide| DRY["deepclean --dry-run<br/>(no delete / no GC)"]
     DRY -->|looks right| LIVE["deepclean (live)"]
@@ -219,10 +243,12 @@ flowchart LR
         SD["search_dirs"]
         KD["keep_days = 14"]
         KC["keep_count = 3"]
+        DB["devbox = false"]
+        FX["flox = false"]
     end
 
     subgraph DISCOVERY["discover.go"]
-        DDP["devboxProjects (walks search_dirs; git worktrees)"]
+        DDP["devboxProjects (walks search_dirs; git worktrees; only if cfg.Devbox)"]
         DRS["resultSymlinks (walks search_dirs)"]
         DSNP["staleNixProfiles (~/.nix-profiles, mtime)"]
         DNH["nhTempRoots (TMPDIR)"]
@@ -234,6 +260,9 @@ flowchart LR
     end
 
     SD --> DDP
+    DB -->|gate| DDP
+    FX -->|gate| DFE
+    FX -->|gate| DFTD
     SD --> DRS
     SD --> DFE
 

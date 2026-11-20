@@ -271,6 +271,7 @@ func TestAudit_GoldenOutput(t *testing.T) {
 
 	scriptStoreSize(f, "/dev/disk9", "Volume Used Space: 10.0 GB (10737418240 Bytes)")
 
+	writeStoreConfigToggles(t, Env{Home: home}, true, false)
 	var buf, errBuf bytes.Buffer
 	s := NewWithEnv(f, Env{Home: home})
 	if err := s.Audit(context.Background(), &buf, &errBuf, AuditOptions{}); err != nil {

@@ -76,7 +76,9 @@ Subcommands:
   optimise   Only dedup the store (hard-link duplicate files); no GC, no sudo.
 
 Configuration lives in ~/.config/pn/store.toml (search_dirs, keep_days, keep_count,
-post_gc_clear_dirs, post_gc_commands).
+post_gc_clear_dirs, post_gc_commands, devbox, flox). devbox and flox are booleans
+(default false): the Devbox and Flox parts of audit and deepclean run only when
+enabled.
 See docs/pn-store.md for user journeys and retention semantics.`,
 	}
 	s.AddCommand(storeAuditCmd())
@@ -94,6 +96,9 @@ func storeAuditCmd() *cobra.Command {
 
 Reports, in order: System Profiles, Home Manager, User Profiles, Devbox Global,
 Devbox Projects, and Nix Store (volume used). Read-only — makes no changes.
+The Devbox sections run only when 'devbox = true' in ~/.config/pn/store.toml
+(default false); otherwise each prints a note and does no discovery. Audit has no
+Flox section, so 'flox' has no effect here.
 
 With --full, also estimates reclaimable space from dead store paths
 (runs 'sudo nix-store --gc --print-dead'; slow).
@@ -130,12 +135,18 @@ func storeDeepCleanCmd() *cobra.Command {
 		Long: `pn-store-deepclean: Clean old Nix profile generations, stale GC roots, and garbage collect the store
 
 Cleans:
-  - System, home-manager, user, devbox profile generations
+  - System, home-manager, user profile generations
+  - Devbox profile generations (only when 'devbox = true' in store.toml)
   - Result symlinks (nix build outputs) in search dirs
   - Stale ~/.nix-profiles/ entries (mtime older than --keep-since)
   - NH temp roots in TMPDIR
 
-Also reports (but never prunes) Flox's on-disk footprint: Flox keeps no local
+The Devbox sections run only when 'devbox = true' and the Flox sections only when
+'flox = true' in ~/.config/pn/store.toml (both default false); a disabled tool's
+sections print a note and do no discovery, and its leftover on-disk state is
+neither pruned nor reported.
+
+When flox is enabled it also reports (but never prunes) Flox's on-disk footprint: Flox keeps no local
 generation history to prune ('flox generations' is FloxHub-only, and each
 environment's current build is already its own GC root). Separately prunes
 orphaned Flox activation staging directories under ~/.cache/flox/process/

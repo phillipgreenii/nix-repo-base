@@ -80,6 +80,27 @@ func writeStoreConfig(t *testing.T, env Env, keepDays, keepCount int, searchDirs
 	}
 }
 
+// writeStoreConfigToggles writes a store.toml with only the devbox / flox
+// toggles and optional search_dirs (retention keys stay at their defaults).
+func writeStoreConfigToggles(t *testing.T, env Env, devbox, flox bool, searchDirs ...string) {
+	t.Helper()
+	dir := filepath.Join(env.configHome(), "pn")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	body := "devbox = " + strconv.FormatBool(devbox) + "\nflox = " + strconv.FormatBool(flox) + "\n"
+	if len(searchDirs) > 0 {
+		quoted := make([]string, len(searchDirs))
+		for i, d := range searchDirs {
+			quoted[i] = strconv.Quote(d)
+		}
+		body += "search_dirs = [" + strings.Join(quoted, ", ") + "]\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, "store.toml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write store.toml: %v", err)
+	}
+}
+
 func itoa(n int) string {
 	return strconv.Itoa(n)
 }
@@ -592,7 +613,7 @@ func TestDeepClean_DevboxProjectLabel(t *testing.T) {
 		t.Fatalf("symlink devbox profile: %v", err)
 	}
 	searchDir := filepath.Join(env.Home, "projects")
-	writeStoreConfig(t, env, 14, 3, []string{searchDir})
+	writeStoreConfigToggles(t, env, true, false, searchDir)
 	// Script the project profile's list-generations (no git → no worktree calls).
 	f.AddResponse("nix-env", []string{"--profile", profile, "--list-generations"},
 		exec.Result{Stdout: []byte("   1   " + daysAgo(1) + " 12:00:00 (current)\n")}, nil)
@@ -656,6 +677,7 @@ func TestDeepClean_RuntimeRootsAfterGC(t *testing.T) {
 
 func TestDeepClean_GoldenDryRunSummary(t *testing.T) {
 	env, f := deepcleanFixture(t, false)
+	writeStoreConfigToggles(t, env, true, true)
 
 	var buf, errBuf bytes.Buffer
 	s := NewWithEnv(f, env)
@@ -709,7 +731,12 @@ func TestDeepClean_GoldenDryRunSummary(t *testing.T) {
 func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 	// goldenSummaryTail builds a FakeRunner scripted for a live run and returns
 	// the output slice starting at "=== Summary ===".
+	var goldenSummaryTailToggles func(t *testing.T, tools bool, printRootsStdout string, extraScript func(*exec.FakeRunner)) string
 	goldenSummaryTail := func(t *testing.T, printRootsStdout string, extraScript func(*exec.FakeRunner)) string {
+		t.Helper()
+		return goldenSummaryTailToggles(t, true, printRootsStdout, extraScript)
+	}
+	goldenSummaryTailToggles = func(t *testing.T, tools bool, printRootsStdout string, extraScript func(*exec.FakeRunner)) string {
 		t.Helper()
 		f := exec.NewFakeRunner()
 		// storeSize BEFORE gc: 12 GB
@@ -726,6 +753,7 @@ func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 
 		home := t.TempDir()
 		env := Env{Home: home}
+		writeStoreConfigToggles(t, env, tools, tools)
 		var buf, errBuf bytes.Buffer
 		s := NewWithEnv(f, env)
 		if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
@@ -767,6 +795,28 @@ func TestDeepClean_GoldenLiveSummary(t *testing.T) {
 
 		if got != want {
 			t.Errorf("live summary (empty roots) mismatch.\nWANT:\n%q\n\nGOT:\n%q", want, got)
+		}
+	})
+
+	t.Run("tools disabled", func(t *testing.T) {
+		noSymlinkResolution(t)
+		got := goldenSummaryTailToggles(t, false, "", nil)
+		want := "" +
+			"=== Summary ===\n" +
+			"Store before: 12.0 GiB\n" +
+			"Store after:  8.0 GiB\n" +
+			"\n" +
+			"Pruned generations:\n" +
+			"  system: 0 generation(s)\n" +
+			"  home-manager: 0 generation(s)\n" +
+			"  user-profiles: 0 generation(s)\n" +
+			"  result-symlinks: 0 generation(s)\n" +
+			"  stale-nix-profiles: 0 generation(s)\n" +
+			"  nh-temp-roots: 0 generation(s)\n" +
+			"\n" +
+			"=== Runtime Roots ===\n"
+		if got != want {
+			t.Errorf("live summary (tools off) mismatch.\nWANT:\n%q\n\nGOT:\n%q", want, got)
 		}
 	})
 
@@ -822,6 +872,7 @@ func floxSection(t *testing.T, out string) string {
 
 func TestDeepClean_FloxNotInstalledNoSearchDirs(t *testing.T) {
 	env, f := deepcleanFixture(t, false) // dry-run: no extra Flox calls needed
+	writeStoreConfigToggles(t, env, false, true)
 	s := NewWithEnv(f, env)
 	var buf, errBuf bytes.Buffer
 	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
@@ -837,6 +888,7 @@ func TestDeepClean_FloxNotInstalledNoSearchDirs(t *testing.T) {
 
 func TestDeepClean_FloxGlobalDataInstalledNoSearchDirs(t *testing.T) {
 	env, f := deepcleanFixture(t, false)
+	writeStoreConfigToggles(t, env, false, true)
 	shareDir := filepath.Join(env.Home, ".local/share/flox")
 	if err := os.MkdirAll(shareDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -871,7 +923,7 @@ func TestDeepClean_FloxEnvironmentUnderSearchDirs(t *testing.T) {
 	if err := os.MkdirAll(floxDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeStoreConfig(t, env, 14, 3, []string{searchDir})
+	writeStoreConfigToggles(t, env, false, true, searchDir)
 	f.AddResponse("du", []string{"-sk", floxDir},
 		exec.Result{Stdout: []byte("464\t" + floxDir + "\n")}, nil)
 
@@ -899,7 +951,7 @@ func TestDeepClean_FloxSearchDirsConfiguredNoEnvironmentsFound(t *testing.T) {
 	if err := os.MkdirAll(searchDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeStoreConfig(t, env, 14, 3, []string{searchDir})
+	writeStoreConfigToggles(t, env, false, true, searchDir)
 
 	s := NewWithEnv(f, env)
 	var buf, errBuf bytes.Buffer
@@ -922,7 +974,7 @@ func TestDeepClean_FloxDuFailureShowsUnknown(t *testing.T) {
 	if err := os.MkdirAll(floxDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeStoreConfig(t, env, 14, 3, []string{searchDir})
+	writeStoreConfigToggles(t, env, false, true, searchDir)
 	f.AddResponse("du", []string{"-sk", floxDir}, exec.Result{ExitCode: 1}, errors.New("du: denied"))
 
 	s := NewWithEnv(f, env)
@@ -959,6 +1011,7 @@ func floxTempDirsSection(t *testing.T, out string) string {
 
 func TestDeepClean_FloxTempDirs_NothingToClean(t *testing.T) {
 	env, f := deepcleanFixture(t, false) // no ~/.cache/flox/process at all
+	writeStoreConfigToggles(t, env, false, true)
 	s := NewWithEnv(f, env)
 	var buf, errBuf bytes.Buffer
 	if err := s.DeepClean(context.Background(), &buf, &errBuf, DeepCleanOptions{
@@ -974,6 +1027,7 @@ func TestDeepClean_FloxTempDirs_NothingToClean(t *testing.T) {
 
 func TestDeepClean_FloxTempDirs_DryRunReportsWithoutDeleting(t *testing.T) {
 	env, f := deepcleanFixture(t, false)
+	writeStoreConfigToggles(t, env, false, true)
 	procDir := filepath.Join(env.Home, ".cache/flox/process")
 	stale := filepath.Join(procDir, ".tmpAbCdEf")
 	if err := os.MkdirAll(stale, 0o755); err != nil {
@@ -1008,6 +1062,7 @@ func TestDeepClean_FloxTempDirs_DryRunReportsWithoutDeleting(t *testing.T) {
 
 func TestDeepClean_FloxTempDirs_LiveRunDeletes(t *testing.T) {
 	env, f := deepcleanFixture(t, true)
+	writeStoreConfigToggles(t, env, false, true)
 	procDir := filepath.Join(env.Home, ".cache/flox/process")
 	stale := filepath.Join(procDir, ".tmpAbCdEf")
 	if err := os.MkdirAll(stale, 0o755); err != nil {
@@ -1037,6 +1092,7 @@ func TestDeepClean_FloxTempDirs_LiveRunDeletes(t *testing.T) {
 
 func TestDeepClean_FloxTempDirs_YoungAndNonEmptyDirsAreProtected(t *testing.T) {
 	env, f := deepcleanFixture(t, true)
+	writeStoreConfigToggles(t, env, false, true)
 	procDir := filepath.Join(env.Home, ".cache/flox/process")
 
 	young := filepath.Join(procDir, ".tmpYoung1")
