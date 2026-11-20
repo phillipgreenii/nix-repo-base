@@ -647,6 +647,10 @@ func countKind(recs []map[string]any, k string) int {
 	return n
 }
 
+// relockFlakeSubject is the commit subject the trailing `nix flake update
+// --refresh` relock commits when an input moved.
+const relockFlakeSubject = "chore(deps): nix flake update"
+
 func assertS32EventsJSONL(t *testing.T, wsRoot string, env []string) {
 	t.Helper()
 
@@ -687,6 +691,22 @@ func assertS32EventsJSONL(t *testing.T, wsRoot string, env []string) {
 	projectResults := countKind(recs, "project_result")
 	if projectResults != 2 {
 		t.Errorf("S32: expected 2 project_result events (one per repo), got %d; events: %v", projectResults, recs)
+	}
+
+	// 4. The trailing flake relock moved consumer's producer input (producer
+	// gained a second commit after consumer's flake.lock was committed), so the
+	// consumer's log gains the relock commit. Without the relock nothing else
+	// in this scenario commits to consumer.
+	if !nixDaemonAvailable() {
+		t.Log("S32: relock assertion skipped: no nix daemon is reachable inside a nix build sandbox")
+	} else {
+		consumerLog, err := gitRead(t, filepath.Join(wsRoot, "consumer"), "log", "--oneline", "-n", "5")
+		if err != nil {
+			t.Fatalf("S32: git log consumer: %v", err)
+		}
+		if !strings.Contains(consumerLog, relockFlakeSubject) {
+			t.Errorf("S32: consumer log missing %q commit from the trailing relock; log:\n%s", relockFlakeSubject, consumerLog)
+		}
 	}
 }
 
@@ -742,6 +762,21 @@ func assertS33WorktreeUpdate(t *testing.T, wsRoot string) {
 	bare := filepath.Join(wsRoot, "remotes", "solo.git")
 
 	assertRelockLandedLocallyOnly(t, "S33", primary, bare)
+
+	// The trailing flake relock moved solo's producer input (producer gained a
+	// second commit after solo's flake.lock was committed), so solo's primary
+	// log gains the relock commit.
+	if !nixDaemonAvailable() {
+		t.Log("S33: relock assertion skipped: no nix daemon is reachable inside a nix build sandbox")
+	} else {
+		primLog, err := gitRead(t, primary, "log", "--oneline", "-n", "6")
+		if err != nil {
+			t.Fatalf("S33: git log primary: %v", err)
+		}
+		if !strings.Contains(primLog, relockFlakeSubject) {
+			t.Errorf("S33: primary main missing %q commit from the trailing relock; log:\n%s", relockFlakeSubject, primLog)
+		}
+	}
 
 	if entries, err := os.ReadDir(filepath.Join(wsRoot, ".workforests", ".pn-update")); err == nil && len(entries) > 0 {
 		t.Errorf("S33: .pn-update worktree left behind: %v", entries)

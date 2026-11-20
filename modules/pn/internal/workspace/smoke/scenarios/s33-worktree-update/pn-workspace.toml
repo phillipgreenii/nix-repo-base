@@ -4,3 +4,6 @@ terminal = "solo"
 
 [repos.solo]
 url = "file:///PLACEHOLDER_solo"
+
+[repos.producer]
+url = "file:///PLACEHOLDER_producer"

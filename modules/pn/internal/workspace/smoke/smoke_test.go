@@ -141,6 +141,15 @@ var networkAvailable = func() bool {
 	return os.Getenv("NIX_BUILD_TOP") == ""
 }
 
+// nixDaemonAvailable reports whether a nix daemon is reachable, which the
+// relock half of S32 and S33 needs (setup's `nix flake lock`). It is a
+// package-level var so tests can stub it. A sandboxed nix builder cannot reach
+// the nix daemon ("Nix daemon disconnected unexpectedly"), so the probe is the
+// same NIX_BUILD_TOP check as networkAvailable: exact, instant, deterministic.
+var nixDaemonAvailable = func() bool {
+	return os.Getenv("NIX_BUILD_TOP") == ""
+}
+
 // requiresNixMarker is the name of the per-scenario marker file that declares
 // the scenario needs a working `nix` (its setup.sh or command invokes
 // `nix build`/`nix fmt`). Scenarios carrying this marker are skipped — not

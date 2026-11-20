@@ -202,3 +202,17 @@ func TestNetworkAvailableProbeUsesNixBuildTop(t *testing.T) {
 		t.Errorf("networkAvailable() = false with NIX_BUILD_TOP unset; want true")
 	}
 }
+
+// TestNixDaemonAvailableProbeUsesNixBuildTop pins the probe: a sandboxed nix
+// builder cannot reach the nix daemon, so NIX_BUILD_TOP set MUST report
+// unavailable; empty (equivalent to unset) MUST report available.
+func TestNixDaemonAvailableProbeUsesNixBuildTop(t *testing.T) {
+	t.Setenv("NIX_BUILD_TOP", "/build")
+	if nixDaemonAvailable() {
+		t.Errorf("nixDaemonAvailable() = true with NIX_BUILD_TOP set; want false")
+	}
+	t.Setenv("NIX_BUILD_TOP", "")
+	if !nixDaemonAvailable() {
+		t.Errorf("nixDaemonAvailable() = false with NIX_BUILD_TOP unset; want true")
+	}
+}

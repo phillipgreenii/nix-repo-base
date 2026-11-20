@@ -2,6 +2,9 @@
 # S32: pn workspace update writes events.jsonl
 # Two bare-remote repos (producer, consumer). consumer is the terminal.
 # Each repo has an update-locks.sh that writes updated.txt and appends to order.log.
+# consumer commits a flake.lock for its git+file:// producer input and producer
+# then gains a second commit, so the trailing flake relock has a real move to
+# make and the consumer gains a `chore(deps): nix flake update` commit.
 # After `workspace update`, the harness asserts that ${XDG_STATE_HOME}/pn/events.jsonl
 # exists and contains the expected event kinds (run_start, project_result, run_end).
 set -euo pipefail
@@ -35,7 +38,7 @@ chmod +x "$PRODUCER_WORK/update-locks.sh"
 git -C "$PRODUCER_WORK" add flake.nix update-locks.sh
 git -C "$PRODUCER_WORK" commit -m "init"
 git -C "$PRODUCER_WORK" push -u origin main
-rm -rf "$PRODUCER_WORK"
+# PRODUCER_WORK is kept until producer commit 2 is pushed below.
 
 # ---- consumer bare remote ----
 CONSUMER_BARE="$REMOTES_DIR/consumer.git"
@@ -63,9 +66,29 @@ echo consumer >> "${WORKSPACE_ROOT}/order.log"
 SH
 chmod +x "$CONSUMER_WORK/update-locks.sh"
 git -C "$CONSUMER_WORK" add flake.nix update-locks.sh
+# Commit a real flake.lock pinned to producer commit 1, so the trailing
+# `nix flake update --refresh` relock of `workspace update` has an input to
+# move once producer commit 2 lands. The only input is the local producer, so
+# locking needs no network.
+# Skipped inside a nix build sandbox (NIX_BUILD_TOP set): a sandboxed builder
+# cannot reach the nix daemon, so the relock half is proven by a host run.
+if [ -z "${NIX_BUILD_TOP:-}" ]; then
+  (cd "$CONSUMER_WORK" && nix flake lock)
+  git -C "$CONSUMER_WORK" add flake.lock
+fi
 git -C "$CONSUMER_WORK" commit -m "init"
 git -C "$CONSUMER_WORK" push -u origin main
 rm -rf "$CONSUMER_WORK"
+
+# Producer commit 2: gives the relock a real move (skipped in a nix build
+# sandbox together with the flake.lock above).
+if [ -z "${NIX_BUILD_TOP:-}" ]; then
+  echo "second" >"$PRODUCER_WORK/second.txt"
+  git -C "$PRODUCER_WORK" add second.txt
+  git -C "$PRODUCER_WORK" commit -m "second"
+  git -C "$PRODUCER_WORK" push origin main
+fi
+rm -rf "$PRODUCER_WORK"
 
 # Write the real pn-workspace.toml with actual file:// URLs.
 cat >"$WSROOT/pn-workspace.toml" <<TOML

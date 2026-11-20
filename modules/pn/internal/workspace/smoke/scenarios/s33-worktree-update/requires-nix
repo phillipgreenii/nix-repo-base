@@ -1,0 +1,4 @@
+# Marker: this scenario requires a working `nix`: setup.sh runs `nix flake lock`
+# on the consumer (outside a nix build sandbox, where a nix daemon is reachable),
+# and the trailing relock runs `nix flake update`. runScenario skips this scenario
+# (rather than hard-failing in setup.sh) when nix is unavailable on the host.
