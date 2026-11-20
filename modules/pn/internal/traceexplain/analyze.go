@@ -130,9 +130,6 @@ func (r Report) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias(r))
 }
 
-// SubstituteSecondsSummed is tagged substitute_seconds_summed; the Go name is
-// short to keep the struct aligned.
-
 func (h Hook) MarshalJSON() ([]byte, error) {
 	type alias Hook
 	h.Seconds = round1(h.Seconds)

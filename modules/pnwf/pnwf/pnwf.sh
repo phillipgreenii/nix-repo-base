@@ -1615,9 +1615,11 @@ HELP
 
 # Mutating WORK-recipe helper (the /pn-workspace-update recipe) -- like
 # cmd_sync_fetch above (and unlike the read-only probes), this one MUTATES
-# each member in place: it shells `pn workspace update --in-place`, which
-# relocks every member's flake inputs (nixpkgs + third-party + workspace
-# siblings). Where sync-fetch fetches+rebases each member, update-relock
+# each member in place: it shells `pn workspace update --in-place --scope
+# <scope>` once, which relocks per scope (default flake): siblings = only the
+# workspace-sibling inputs; flake = every flake input of every repo, per-package
+# locks untouched; full = flake plus each repo's update-locks.sh per-package
+# steps. Where sync-fetch fetches+rebases each member, update-relock
 # relocks each member in place. Like sync-fetch it is deliberately NOT
 # idempotent-safe the way the read-only probes are: re-running it after a
 # stop-and-report resumes the relock where it left off (a partially-relocked
@@ -1657,8 +1659,8 @@ pn runs with PN_TRACE_HINT=1; when pn prints a `trace: <id>` line, update-relock
 prints `update-relock: trace <id>` (success or failure) so the run can be
 explained with `pn workspace explain <id>`. A full-scope relock whose flake
 update failed after one retry prints `update-relock: warning: <repo>: flake
-relock failed (update-locks.sh commits kept)` and does not change the exit
-status.
+relock failed (update-locks.sh commits kept)` (or `(flake inputs not moved)`
+for a repo without update-locks.sh) and does not change the exit status.
 
 Pre-flight, per present member (an absent worktree -- already landed/cleaned
 up elsewhere -- is skipped):
@@ -1843,12 +1845,19 @@ HELP
   fi
 
   # Relay each full-scope relock warning (pn prints it per repo, in place).
+  # pn's line says "update-locks.sh commits kept" only for a repo whose script
+  # ran; a repo without one gets no such clause, and neither does the relay.
   local warn_repo
   while IFS= read -r warn_repo; do
     [[ -n $warn_repo ]] || continue
-    printf 'update-relock: warning: %s: flake relock failed (update-locks.sh commits kept)\n' "$warn_repo"
+    if [[ $warn_repo == kept:* ]]; then
+      printf 'update-relock: warning: %s: flake relock failed (update-locks.sh commits kept)\n' "${warn_repo#kept:}"
+    else
+      printf 'update-relock: warning: %s: flake relock failed (flake inputs not moved)\n' "$warn_repo"
+    fi
   done < <(printf '%s\n' "$relock_out" |
-    sed -nE 's/.*⚠ ([^:]+): nix flake update \(all inputs\) failed after one retry.*/\1/p')
+    sed -nE -e 's/.*⚠ ([^:]+): nix flake update \(all inputs\) failed after one retry — update-locks\.sh commits kept.*/kept:\1/p' \
+      -e '/update-locks\.sh commits kept/!s/.*⚠ ([^:]+): nix flake update \(all inputs\) failed after one retry.*/\1/p')
 
   if [[ $relock_rc -ne 0 ]]; then
     die "update-relock: 'pn workspace update --in-place --scope $scope' failed (rc=$relock_rc) in set $root; inspect the set and re-run 'pnwf update-relock'. Last output:
@@ -1869,7 +1878,7 @@ $(printf '%s\n' "$relock_out" | tail -n 15)" "$relock_rc"
   skipped=$(printf '%s\n' "$relock_out" |
     grep -E '⊘ skipping .*(uncommitted changes|could not check working tree)' || true)
   if [[ -n $skipped ]]; then
-    die "update-relock: 'pn workspace update --in-place' skipped one or more repos, so the relock is INCOMPLETE -- refusing to report success:
+    die "update-relock: 'pn workspace update --in-place --scope $scope' skipped one or more repos, so the relock is INCOMPLETE -- refusing to report success:
 $skipped"
   fi
 }

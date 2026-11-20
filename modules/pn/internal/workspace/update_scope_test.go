@@ -356,15 +356,20 @@ func TestUpdate_ScopeFull_RelockFailureWarnsAndIntegrates(t *testing.T) {
 		name      string
 		ulOut     string
 		transient bool
+		noScript  bool
+		wantWarn  string
 	}{
-		{"relock-failure", "", false},
-		{"with-transient", "UL_RESULT transient=1\n", true},
+		{"relock-failure", "", false, false, "  ⚠ foo: nix flake update (all inputs) failed after one retry — update-locks.sh commits kept, flake inputs not moved:"},
+		{"with-transient", "UL_RESULT transient=1\n", true, false, "  ⚠ foo: nix flake update (all inputs) failed after one retry — update-locks.sh commits kept, flake inputs not moved:"},
+		{"no-script", "", false, true, "  ⚠ foo: nix flake update (all inputs) failed after one retry — flake inputs not moved:"},
 	}
 	for _, fl := range scopeFlows {
 		for _, row := range rows {
 			t.Run(fl.name+"/"+row.name, func(t *testing.T) {
-				e := newScopeEnv(t, fl.inPlace, []string{"foo"}, scopeOpts{})
-				e.ulOK(row.ulOut)
+				e := newScopeEnv(t, fl.inPlace, []string{"foo"}, scopeOpts{noScript: row.noScript})
+				if !row.noScript {
+					e.ulOK(row.ulOut)
+				}
 				e.r.steps = twoFailures()
 				out, err := e.update(context.Background(), ScopeFull)
 				if err != nil {
@@ -380,8 +385,11 @@ func TestUpdate_ScopeFull_RelockFailureWarnsAndIntegrates(t *testing.T) {
 				if end := e.event("run_end", ""); end["status"] != "ok" {
 					t.Errorf("run_end status = %v, want ok", end["status"])
 				}
-				if !strings.Contains(out, "  ⚠ foo: nix flake update (all inputs) failed after one retry — update-locks.sh commits kept, flake inputs not moved:") {
-					t.Errorf("missing the relock warning; got:\n%s", out)
+				if !strings.Contains(out, row.wantWarn) {
+					t.Errorf("missing the relock warning %q; got:\n%s", row.wantWarn, out)
+				}
+				if row.noScript && strings.Contains(out, "update-locks.sh commits kept") {
+					t.Errorf("a repo without update-locks.sh must not claim kept commits; got:\n%s", out)
 				}
 				if fl.inPlace {
 					if !strings.Contains(out, "  [1/1] foo: ok, relock failed (") {

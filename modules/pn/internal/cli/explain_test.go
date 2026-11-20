@@ -265,7 +265,7 @@ func TestExplainCmd_ExplicitIDHeader(t *testing.T) {
 }
 
 func TestExplainCmd_ExitCodes(t *testing.T) {
-	X := explainID(1)
+	X := explainID(0xab)
 	end1m := explainNow.Add(-time.Minute)
 	end8d := explainNow.Add(-8 * 24 * time.Hour)
 	inc := fixture(t, "incomplete.json")
@@ -311,6 +311,19 @@ func TestExplainCmd_ExitCodes(t *testing.T) {
 			msgs: func(string, string, string) []string {
 				return []string{"trace " + X + " has expired from Tempo (it keeps up to 7 days; the run ended " + rfc(end8d) + ")"}
 			},
+		},
+		{
+			name: "ended 1m ago, 404, upper-case id", events: ended(end1m), args: []string{strings.ToUpper(X)}, status: 404, code: 75,
+			msgs: func(string, string, string) []string {
+				return []string{"trace " + X + " is not in Tempo yet (the run ended " + rfc(end1m) + ")"}
+			},
+		},
+		{
+			name: "ended 8d ago, spans without pn.verb", events: ended(end8d), status: 200, body: inc, code: 4,
+			msgs: func(string, string, string) []string {
+				return []string{"trace " + X + " has no pn.verb span in Tempo (the run ended " + rfc(end8d) + "); pass --partial to analyze what was recorded"}
+			},
+			notMsgs: []string{"expired"},
 		},
 		{
 			name: "run_start only, 404", events: started, status: 404, code: 3,

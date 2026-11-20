@@ -41,14 +41,15 @@ func RenderText(w io.Writer, r Report, header string) error {
 		b.WriteString(header + "\n")
 	}
 
-	title := "Trace"
+	title := "Partial trace"
 	if r.Verb != "" {
 		title = "pn " + r.Verb
 		if r.Scope != "" {
 			title += " (scope " + r.Scope + ")"
 		}
+		title += ", trace"
 	}
-	fmt.Fprintf(&b, "%s, trace %s, started %s, wall %s\n", title, r.TraceID, r.Start.UTC().Format(time.RFC3339), fmtDur(r.WallSeconds))
+	fmt.Fprintf(&b, "%s %s, started %s, wall %s\n", title, r.TraceID, r.Start.UTC().Format(time.RFC3339), fmtDur(r.WallSeconds))
 
 	repos := append([]RepoReport(nil), r.Repos...)
 	sort.SliceStable(repos, func(i, j int) bool { return repos[i].WallSeconds > repos[j].WallSeconds })

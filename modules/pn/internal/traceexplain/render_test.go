@@ -78,6 +78,12 @@ func TestRenderText_Incomplete(t *testing.T) {
 	if lines[0] != "INCOMPLETE TRACE: no pn.verb span; figures cover only what was recorded" || lines[1] != "Explaining trace X" {
 		t.Errorf("first lines = %q", lines[:2])
 	}
+	if want := "Partial trace " + testTraceID + ", started "; !strings.Contains(out, "\n"+want) {
+		t.Errorf("missing partial title %q in:\n%s", want, out)
+	}
+	if strings.Contains(out, "Trace, trace") {
+		t.Errorf("old partial title present:\n%s", out)
+	}
 	if n := strings.Count(out, "INCOMPLETE TRACE"); n != 1 {
 		t.Errorf("INCOMPLETE TRACE appears %d times, want 1", n)
 	}

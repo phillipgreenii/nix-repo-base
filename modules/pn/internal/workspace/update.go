@@ -108,10 +108,15 @@ func (ws *Workspace) relockFlakeInputs(ctx context.Context, out io.Writer, name,
 	return changed, err
 }
 
-// relockWarning is the line printed when a full-scope relock fails after
-// update-locks.sh succeeded.
-func relockWarning(name string, err error) string {
-	return fmt.Sprintf("  ⚠ %s: nix flake update (all inputs) failed after one retry — update-locks.sh commits kept, flake inputs not moved: %v\n", name, err)
+// relockWarning is the line printed when a full-scope relock fails. When
+// update-locks.sh ran and succeeded its commits are kept; a repo without the
+// script has none to claim.
+func relockWarning(name string, scriptRan bool, err error) string {
+	kept := ""
+	if scriptRan {
+		kept = "update-locks.sh commits kept, "
+	}
+	return fmt.Sprintf("  ⚠ %s: nix flake update (all inputs) failed after one retry — %sflake inputs not moved: %v\n", name, kept, err)
 }
 
 // UpdateOptions configures Update.
@@ -363,7 +368,7 @@ func (ws *Workspace) updateInPlace(ctx context.Context, out io.Writer, opts Upda
 					switch classifyRelockErr(ctx, scope, err) {
 					case relockWarn:
 						relockWarned = true
-						fmt.Fprint(out, relockWarning(name, err))
+						fmt.Fprint(out, relockWarning(name, scope == ScopeFull && fileExists(filepath.Join(repoDir, "update-locks.sh")), err))
 					case relockAbortRun:
 						aborted, abortedName, abortStep = true, name, "relock-flake"
 						fmt.Fprintf(out, "  ✗ %s: relock-flake failed: %v\n", name, err)

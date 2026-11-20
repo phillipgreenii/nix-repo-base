@@ -137,7 +137,7 @@ Exit codes (a non-zero exit prints nothing on stdout; the message is on stderr):
 			}
 			id := ""
 			if len(args) == 1 {
-				id = args[0]
+				id = strings.ToLower(args[0])
 			}
 			return explainRun(cmd, id, top, asJSON, partial, tempoURL(tempoFlag, os.Getenv("PG_TEMPO_URL")))
 		},
@@ -288,6 +288,9 @@ func noTrace(recs []eventRec, id, path string, hasSpans bool) error {
 		}
 	}
 	switch {
+	case haveEnd && hasSpans && now().Sub(ended) >= tempoRetention:
+		// Tempo still holds spans, so the trace has not expired; --partial works.
+		return exitErr(4, "trace %s has no pn.verb span in Tempo (the run ended %s); pass --partial to analyze what was recorded", id, rfcUTC(ended))
 	case haveEnd && now().Sub(ended) >= tempoRetention:
 		return exitErr(3, "trace %s has expired from Tempo (it keeps up to 7 days; the run ended %s)", id, rfcUTC(ended))
 	case haveEnd:

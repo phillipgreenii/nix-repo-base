@@ -2745,6 +2745,29 @@ _ur_set_upstream() {
   [ "$(printf '%s\n' "$output" | grep -c -F 'update-relock: warning: foo: flake relock failed (update-locks.sh commits kept)')" -eq 1 ]
 }
 
+@test "update-relock relays a no-script relock warning without claiming kept commits" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_OUTPUT="  ⚠ foo: nix flake update (all inputs) failed after one retry — flake inputs not moved: boom
+  [1/1] foo: ok, relock failed (12.0s)"
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set --scope full
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c -F 'update-relock: warning: foo: flake relock failed (flake inputs not moved)')" -eq 1 ]
+  [[ "$output" != *"commits kept)"* ]]
+}
+
+@test "update-relock backstop names the scope when it refuses a skipped repo" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  export MOCK_PN_UPDATE_RC=0
+  export MOCK_PN_UPDATE_OUTPUT="  ⊘ skipping repoA — working tree has uncommitted changes"
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" update-relock --set --scope full
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'pn workspace update --in-place --scope full' skipped one or more repos"* ]]
+}
+
 @test "update-relock backstop ignores the scope banners" {
   _stage_init_member repoA
   _stage_write_lock repoA

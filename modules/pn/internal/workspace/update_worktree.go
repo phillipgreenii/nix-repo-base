@@ -359,7 +359,7 @@ func (ws *Workspace) updateRepoViaWorktree(ctx context.Context, out io.Writer, n
 			switch classifyRelockErr(ctx, scope, err) {
 			case relockWarn:
 				oc.relockFailed = true
-				fmt.Fprint(out, relockWarning(name, err))
+				fmt.Fprint(out, relockWarning(name, scope == ScopeFull && fileExists(filepath.Join(wt, "update-locks.sh")), err))
 			case relockAbortRun:
 				return abort("relock-flake", err)
 			case relockInterrupt:
