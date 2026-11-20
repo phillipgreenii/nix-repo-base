@@ -82,10 +82,12 @@
       phillipgreenii.pre-commit = {
         bundle.enable = true;
         hookKinds.run-unit-tests = "check";
+        hookKinds.trimpath-safe-go = "check";
         stampPaths = [
           "flake-modules/pre-commit.nix"
           "modules/pg-git-check-identity"
           "modules/pg-check-grafana-alert-uids"
+          "scripts/check-trimpath-safe-go.sh"
         ];
         # Drift guard (plan Task 22): fails on a hook-machinery regression outside
         # the explicit, reasoned allowlist.
@@ -150,6 +152,44 @@
           }}";
           pass_filenames = true;
           require_serial = true;
+        };
+
+        # Keep Go code working under -trimpath, which rewrites recorded source
+        # paths to <import path>/<file>.go and leaves the compiled-in GOROOT
+        # empty: a Go file MUST NOT derive a path from runtime.Caller,
+        # runtime.Callers, CallersFrames or a frame's File, nor call
+        # importer.Default (it finds go under GOROOT), unless the line ends with
+        # `// trimpath-ok: <reason>`. Helpers resolve files from the working
+        # directory, go:embed them or build by import path instead. Every Go
+        # file counts, whatever its build tags, because the smoke tier that
+        # would expose a break does not run at commit. The logic lives in
+        # scripts/check-trimpath-safe-go.sh (a whole-tree run with no file
+        # arguments); its regression guard is tests/check-trimpath-safe-go.bats.
+        # A per-repo extraHooks entry, not the base hook set, so it does not run
+        # in consumers (nix-agent-support carries its own copy of the script).
+        # Pure text scan (bash, grep, find, xargs), so it also runs inside the
+        # nix sandbox.
+        trimpath-safe-go = {
+          enable = true;
+          name = "trimpath-safe-go";
+          description = "flag a Go path or GOROOT lookup from compiled-in data (runtime.Caller, CallersFrames, importer.Default) that breaks under -trimpath";
+          entry = "${
+            pkgs.writeShellApplication {
+              name = "trimpath-safe-go-hook";
+              runtimeInputs = [
+                pkgs.coreutils
+                pkgs.findutils
+                pkgs.gnugrep
+                pkgs.gnused
+              ];
+              text = ''
+                exec bash ${./scripts/check-trimpath-safe-go.sh} "$@"
+              '';
+            }
+          }/bin/trimpath-safe-go-hook";
+          language = "system";
+          files = "\\.go$";
+          pass_filenames = true;
         };
       };
 

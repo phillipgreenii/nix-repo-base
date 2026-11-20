@@ -137,6 +137,14 @@ section only states the Go-specific conventions; read the spec for the cross-lan
   `phillipgreenii.pg-test-runner.config` (default registry: `modules/pg-test-runner/config.nix`)
   and rendered to JSON via `pkgs.formats.json`. Registering a new non-unit label — or changing
   either command above — is a **configuration change**, never a `pg-test-runner` code change.
+- **`-trimpath`-safe helpers**: a test helper MUST NOT derive a file path from `runtime.Caller`,
+  `runtime.Callers`, `CallersFrames` or a frame's `File`, nor call `importer.Default()` without
+  first setting `build.Default.GOROOT` from `go env GOROOT`: `-trimpath` rewrites recorded source
+  paths and leaves the compiled-in GOROOT empty. Resolve files from the working directory (the
+  package under test's directory), `//go:embed` them, or build by import path. The
+  `trimpath-safe-go` pre-commit hook (`scripts/check-trimpath-safe-go.sh`, guard
+  `tests/check-trimpath-safe-go.bats`) rejects those forms in every `.go` file unless the line ends
+  with `// trimpath-ok: <reason>`.
 
 ## Python packages (`mkPythonPackage`)
 

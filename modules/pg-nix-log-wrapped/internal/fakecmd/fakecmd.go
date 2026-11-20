@@ -13,13 +13,11 @@ package fakecmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -227,14 +225,17 @@ type Dir struct {
 	mu   sync.Mutex
 }
 
+// fakenixImportPath is the import path of the fakenix helper's main package.
+const fakenixImportPath = "github.com/phillipgreenii/nix-repo-base/modules/pg-nix-log-wrapped/internal/fakecmd/fakenix"
+
 // NewDir builds the small fakenix helper (internal/fakecmd/fakenix) into a
 // fresh temporary directory, without -race. Using the race-instrumented test
 // binary as the child made every wrapped run pay about 1.4 s of exec cost.
+//
+// The helper is built by import path from the inherited working directory (the
+// directory of the package under test, inside this module), not from a
+// directory derived from this file's compiled-in path, which -trimpath rewrites.
 func NewDir() (*Dir, error) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return nil, errors.New("fakecmd: cannot locate source directory")
-	}
 	dir, err := os.MkdirTemp("", "fakecmd-*")
 	if err != nil {
 		return nil, err
@@ -245,8 +246,7 @@ func NewDir() (*Dir, error) {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	cmd := exec.CommandContext(context.Background(), goTool, "build", "-o", d.bin, "./fakenix")
-	cmd.Dir = filepath.Dir(file)
+	cmd := exec.CommandContext(context.Background(), goTool, "build", "-o", d.bin, fakenixImportPath)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.RemoveAll(dir)

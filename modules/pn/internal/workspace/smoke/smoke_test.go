@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -22,9 +21,14 @@ var (
 // getModuleRoot returns the path to modules/pn (where go.mod lives).
 func getModuleRoot() string {
 	moduleRootOnce.Do(func() {
-		// Walk upward from this source file to find go.mod.
-		_, file, _, _ := runtime.Caller(0)
-		dir := filepath.Dir(file)
+		// Walk upward from the working directory to find go.mod: go test runs
+		// this binary in the package directory, and a path from this file's
+		// compiled-in location is not a real path under -trimpath.
+		start, err := os.Getwd()
+		if err != nil {
+			panic("smoke: working directory: " + err.Error())
+		}
+		dir := start
 		for {
 			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 				moduleRoot = dir
@@ -32,7 +36,7 @@ func getModuleRoot() string {
 			}
 			parent := filepath.Dir(dir)
 			if parent == dir {
-				panic("smoke: could not find go.mod walking upward from " + file)
+				panic("smoke: could not find go.mod walking upward from " + start)
 			}
 			dir = parent
 		}
@@ -581,9 +585,12 @@ func runScenarioEnv(t *testing.T, name string, extraEnv []string) {
 
 	pnBin := getPNBin(t)
 
-	// Locate scenario directory.
-	_, thisFile, _, _ := runtime.Caller(0)
-	scenarioDir := filepath.Join(filepath.Dir(thisFile), "scenarios", name)
+	// Locate scenario directory: go test runs this binary in the package
+	// directory, so scenarios/ is relative to the working directory.
+	scenarioDir, err := filepath.Abs(filepath.Join("scenarios", name))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(scenarioDir); os.IsNotExist(err) {
 		t.Fatalf("scenario directory not found: %s", scenarioDir)
 	}
