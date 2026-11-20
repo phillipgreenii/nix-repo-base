@@ -3079,6 +3079,28 @@
                   ''
               );
 
+            # Eval + run check: the pn store.toml is installed when ONLY devbox or
+            # ONLY flox is set (install-condition regression guard), renders both
+            # keys, and is absent when nothing is set. The generated file is read
+            # inside runCommand (no import from derivation).
+            pn-store-toml-toggles =
+              let
+                r = import ./tests/pn-store-toml-toggles.nix { inherit pkgs; };
+              in
+              pkgs.runCommand "pn-store-toml-toggles" { } (
+                if !r.floxInstalled || !r.devboxInstalled || r.noneInstalled then
+                  throw "pn-store-toml-toggles: install condition wrong (flox=${lib.boolToString r.floxInstalled} devbox=${lib.boolToString r.devboxInstalled} none=${lib.boolToString r.noneInstalled})"
+                else
+                  ''
+                    set -eu
+                    grep -x 'flox = true' ${r.floxSource}
+                    grep -x 'devbox = false' ${r.floxSource}
+                    grep -x 'devbox = true' ${r.devboxSource}
+                    grep -x 'flox = false' ${r.devboxSource}
+                    touch $out
+                  ''
+              );
+
             # Eval-level check (bead pg2-y1z3fk): the flox overlay's default
             # (floxPkgs = flox's own cacheable packages output) and its opt-in
             # fallback (floxPkgsNoChecks = the doCheck = false chain) are both

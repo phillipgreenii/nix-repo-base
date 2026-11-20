@@ -101,6 +101,8 @@ let
     keep_count = cfg.store.keepCount;
     post_gc_clear_dirs = cfg.store.postGcClearDirs;
     post_gc_commands = cfg.store.postGcCommands;
+    devbox = cfg.store.devbox;
+    flox = cfg.store.flox;
   };
 in
 {
@@ -113,7 +115,34 @@ in
       searchDirs = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "Directories to search for Nix project roots in pn store-audit and pn store-deepclean. If empty, the tool defaults to $HOME.";
+        description = ''
+          Directories scanned by pn store-audit and pn store-deepclean. They
+          always feed result-symlink scanning, plus Devbox project discovery
+          when `devbox` is on and `.flox` discovery when `flox` is on. If
+          empty, nothing is scanned (the tool does NOT default to $HOME).
+        '';
+      };
+
+      devbox = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Scan for Devbox. Gates Devbox Global, Devbox Util and Devbox Projects
+          in pn store-deepclean, and Devbox Global and Devbox Projects in pn
+          store-audit. Off by default, so a machine without Devbox does not pay
+          for the Devbox Projects walk. Leftover on-disk state of a disabled
+          tool is not pruned.
+        '';
+      };
+
+      flox = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Scan for Flox. Gates the Flox report and Flox Temp Dirs in pn
+          store-deepclean; it gates nothing in pn store-audit. Off by default.
+          Leftover on-disk state of a disabled tool is not pruned.
+        '';
       };
 
       keepDays = mkOption {
@@ -232,7 +261,13 @@ in
       # (keepDays/keepCount default to the tool's prior hardcoded 14/3).
       file =
         lib.optionalAttrs
-          (cfg.store.searchDirs != [ ] || cfg.store.postGcClearDirs != [ ] || cfg.store.postGcCommands != [ ])
+          (
+            cfg.store.searchDirs != [ ]
+            || cfg.store.postGcClearDirs != [ ]
+            || cfg.store.postGcCommands != [ ]
+            || cfg.store.devbox
+            || cfg.store.flox
+          )
           {
             ".config/pn/store.toml".source = storeToml;
           }
