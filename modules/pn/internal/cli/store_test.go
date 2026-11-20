@@ -2,8 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/store"
 )
 
 func TestStoreAudit_HasFullFlag(t *testing.T) {
@@ -173,5 +177,46 @@ func TestStoreDeepClean_HelpDocumentsOptimiseGate(t *testing.T) {
 		if !strings.Contains(buf.String(), k) {
 			t.Errorf("deepclean --help missing %q", k)
 		}
+	}
+}
+
+func TestStoreOptimise_Help(t *testing.T) {
+	root := newRootCmd("1.0.0")
+	root.SetArgs([]string{"store", "optimise", "--help"})
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"--force", "no sudo", "AC power", "75", "optimise_min_free_gb"} {
+		if !strings.Contains(buf.String(), k) {
+			t.Errorf("optimise --help missing %q", k)
+		}
+	}
+}
+
+func TestStoreOptimise_RejectsPositionalArgs(t *testing.T) {
+	root := newRootCmd("1.0.0")
+	root.SetArgs([]string{"store", "optimise", "unexpected"})
+	root.SilenceErrors = true
+	root.SilenceUsage = true
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected error for unexpected positional arg to `store optimise`")
+	}
+}
+
+// A skipped optimise maps to exit 75; a denied sudo in deepclean's GC (a
+// wrapped sudo exit 1) maps to exit 1, never 0 and never 75.
+func TestStoreOptimise_ExitCodes(t *testing.T) {
+	if got := ExitCode(ExitCodeError{Code: store.OptimiseSkippedExitCode}); got != 75 {
+		t.Errorf("skip exit = %d, want 75", got)
+	}
+	denied := fmt.Errorf("nix-store --gc: %w", &exec.CommandError{Name: "sudo", Result: exec.Result{ExitCode: 1}})
+	if got := ExitCode(denied); got != 1 {
+		t.Errorf("denied sudo exit = %d, want 1", got)
 	}
 }

@@ -219,3 +219,111 @@ func TestParseLoadAvg(t *testing.T) {
 }
 
 func osIsDarwin() bool { return runtime.GOOS == "darwin" }
+
+// optimiseOnlyRunner returns a runner scripted for the optimise-only path.
+func optimiseOnlyRunner(t *testing.T, batt, load, df string) (Env, *exec.FakeRunner) {
+	t.Helper()
+	env := Env{Home: t.TempDir(), NixStoreDir: t.TempDir()}
+	f := exec.NewFakeRunner()
+	if batt != "" {
+		f.AddResponse("pmset", []string{"-g", "batt"}, exec.Result{Stdout: []byte(batt)}, nil)
+	}
+	if load != "" {
+		f.AddResponse("sysctl", []string{"-n", "vm.loadavg"}, exec.Result{Stdout: []byte(load)}, nil)
+	}
+	if df != "" {
+		f.AddResponse("df", []string{"-k", "/nix"}, exec.Result{Stdout: []byte(df)}, nil)
+	}
+	name, args := optimiseArgv(runtime.GOOS)
+	f.AddResponse(name, args, exec.Result{}, nil)
+	return env, f
+}
+
+func TestOptimise_NeverInvokesSudoOrGC(t *testing.T) {
+	env, f := optimiseOnlyRunner(t, acBatt, "{ 0.1 0.1 0.1 }", dfRoomy)
+	var out bytes.Buffer
+	if err := NewWithEnv(f, env).Optimise(context.Background(), &out, OptimiseOptions{}); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !optCalled(f) {
+		t.Error("optimise must run when idle")
+	}
+	for _, c := range f.Calls() {
+		if c.Name == "sudo" || c.Name == "nix-store" {
+			t.Errorf("optimise-only path must not call %s %v", c.Name, c.Args)
+		}
+	}
+}
+
+func TestOptimise_IdleGateSkipIsSkippedError(t *testing.T) {
+	env, f := optimiseOnlyRunner(t, batteryBatt, "", "")
+	var out bytes.Buffer
+	err := NewWithEnv(f, env).Optimise(context.Background(), &out, OptimiseOptions{})
+	if !IsOptimiseSkipped(err) || optCalled(f) {
+		t.Fatalf("want skip without running, got %v", err)
+	}
+}
+
+func TestOptimise_FreeSpaceRefusalIsSkippedErrorEvenForced(t *testing.T) {
+	env, f := optimiseOnlyRunner(t, "", "", dfTight)
+	var out bytes.Buffer
+	err := NewWithEnv(f, env).Optimise(context.Background(), &out, OptimiseOptions{Force: true})
+	if !IsOptimiseSkipped(err) || optCalled(f) {
+		t.Fatalf("want refusal without running, got %v", err)
+	}
+}
+
+func TestOptimise_ForceSkipsIdleProbes(t *testing.T) {
+	env, f := optimiseOnlyRunner(t, "", "", dfRoomy)
+	var out bytes.Buffer
+	if err := NewWithEnv(f, env).Optimise(context.Background(), &out, OptimiseOptions{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.Calls() {
+		if c.Name == "pmset" || c.Name == "sysctl" {
+			t.Errorf("--force must not probe %s", c.Name)
+		}
+	}
+}
+
+func TestOptimise_FailureIsPlainError(t *testing.T) {
+	env := Env{Home: t.TempDir(), NixStoreDir: t.TempDir()}
+	f := exec.NewFakeRunner()
+	f.AddResponse("pmset", []string{"-g", "batt"}, exec.Result{Stdout: []byte(acBatt)}, nil)
+	f.AddResponse("sysctl", []string{"-n", "vm.loadavg"}, exec.Result{Stdout: []byte("{ 0.1 0.1 0.1 }")}, nil)
+	f.AddResponse("df", []string{"-k", "/nix"}, exec.Result{Stdout: []byte(dfRoomy)}, nil)
+	name, args := optimiseArgv(runtime.GOOS)
+	f.AddResponse(name, args, exec.Result{}, errors.New("boom"))
+	var out bytes.Buffer
+	err := NewWithEnv(f, env).Optimise(context.Background(), &out, OptimiseOptions{})
+	if err == nil || IsOptimiseSkipped(err) || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("want real failure, got %v", err)
+	}
+}
+
+// A denied sudo (launchd has no terminal to read a password) fails the GC; the
+// run returns a non-skip error (exit code 1) and never reaches the optimise step.
+func TestDeepClean_DeniedSudoIsErrorAndSkipsOptimise(t *testing.T) {
+	noSymlinkResolution(t)
+	env := Env{Home: t.TempDir(), NixStoreDir: t.TempDir()}
+	f := exec.NewFakeRunner()
+	scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 10.0 GB (10737418240 Bytes)")
+	scriptStoreSize(f, "/dev/disk1", "Volume Used Space: 9.0 GB (9663676416 Bytes)")
+	f.AddResponse("nix-store", []string{"--gc", "--print-roots"}, exec.Result{Stdout: []byte("")}, nil)
+	f.AddResponse("pmset", []string{"-g", "batt"}, exec.Result{Stdout: []byte(acBatt)}, nil)
+	f.AddResponse("sysctl", []string{"-n", "vm.loadavg"}, exec.Result{Stdout: []byte("{ 0.1 0.1 0.1 }")}, nil)
+	f.AddResponse("df", []string{"-k", "/nix"}, exec.Result{Stdout: []byte(dfRoomy)}, nil)
+	denied := &exec.CommandError{Name: "sudo", Args: []string{"nix-store", "--gc"}, Result: exec.Result{ExitCode: 1}}
+	f.AddResponse("sudo", []string{"nix-store", "--gc"}, exec.Result{ExitCode: 1}, denied)
+	_, err := runDC(t, env, f, DeepCleanOptions{Optimise: true})
+	if err == nil || IsOptimiseSkipped(err) || !strings.Contains(err.Error(), "nix-store --gc") {
+		t.Fatalf("want GC error, got %v", err)
+	}
+	var ce *exec.CommandError
+	if !errors.As(err, &ce) || ce.Result.ExitCode != 1 {
+		t.Errorf("error must carry the denied sudo's exit status 1, got %v", err)
+	}
+	if optCalled(f) {
+		t.Error("optimise must not run after a failed GC")
+	}
+}

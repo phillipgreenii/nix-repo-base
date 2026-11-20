@@ -1,9 +1,10 @@
 # pn store — Nix store maintenance
 
-`pn store` audits and reclaims space in the local Nix store. It has two commands:
+`pn store` audits and reclaims space in the local Nix store. It has three commands:
 
 - `pn store audit` — read-only report of profile generations, closure sizes, and store volume usage.
 - `pn store deepclean` — prunes old generations and stale GC roots, garbage-collects, then, only with `--optimise`, optimises (hard-links duplicate files in) the store.
+- `pn store optimise [--force]` — only the optimise step (no GC, no profile pruning, no sudo), with the same gates and exit codes.
 
 > Versioning and `--help` are owned by cobra: use `pn --version` and `pn store <cmd> --help`.
 > There are no per-subcommand version flags.
@@ -154,12 +155,22 @@ optimises paths about to be deleted), subject to these rules:
   the end, so a later run can estimate cost. It does not print a percentage: nix cannot report one.
 
 A skipped optimise still lets the GC, post-GC cleanup and summary finish; only the exit status
-(`75`) differs. A post-GC failure takes precedence (exit `1`).
+(`75`) differs. A post-GC failure takes precedence (exit `1`). If the GC itself fails (for example
+`sudo` cannot read a password without a terminal), the optimise step does not run and the exit
+status is `1`.
+
+### `pn store optimise [--force]`
+
+Runs only this step: same `store.toml`, same idle gate, free-space check, priority and progress
+report, same exit `75` on a skip or refusal, but no GC, no profile pruning and no `sudo` (the
+nix-daemon does the privileged hard-linking). It is what a scheduled job should run, because
+`deepclean --optimise` runs `sudo nix-store --gc` first and a scheduler has no terminal for the
+password prompt.
 
 `auto-optimise-store` stays `false` (optimising per fetch stalled `pn workspace update` on
 "copying to the store"), and `nix.optimise.automatic` MUST NOT be used (it creates a raw launchd
 entry that runs at a time pn cannot gate). To schedule the step, register a weekly job running
-`pn store deepclean --yes --optimise` through the workspace launchd-services mechanism.
+`pn store optimise` through the workspace launchd-services mechanism.
 
 ## User journeys
 

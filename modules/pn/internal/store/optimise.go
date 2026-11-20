@@ -170,7 +170,7 @@ func (s *Store) runOptimise(ctx context.Context, out io.Writer, extra ...string)
 
 // optimiseStep applies the gates and runs the optimise step. A skipped step
 // returns an *OptimiseSkippedError; a failed one a plain error.
-func (s *Store) optimiseStep(ctx context.Context, out io.Writer, cfg Config, force bool) error {
+func (s *Store) optimiseStep(ctx context.Context, out io.Writer, cfg Config, force bool, extra ...string) error {
 	if !force {
 		if why := s.idleGate(ctx); why != "" {
 			fmt.Fprintf(out, "Skipping optimise: %s (use --force to override)\n", why)
@@ -181,8 +181,30 @@ func (s *Store) optimiseStep(ctx context.Context, out io.Writer, cfg Config, for
 		fmt.Fprintf(out, "Refusing to optimise: %s\n", why)
 		return &OptimiseSkippedError{Reason: why}
 	}
-	if err := s.runOptimise(ctx, out); err != nil {
+	if err := s.runOptimise(ctx, out, extra...); err != nil {
 		return fmt.Errorf("nix store optimise: %w", err)
 	}
 	return nil
+}
+
+// OptimiseOptions configures Optimise.
+type OptimiseOptions struct {
+	// Force skips the idle gate (AC power, load below MaxIdleLoad). The
+	// free-space prerequisite is never skipped.
+	Force bool
+}
+
+// Optimise runs only the optimise step, with the same gates, store.toml
+// configuration and report as `deepclean --optimise`, but no GC, no profile
+// pruning and no sudo (the nix-daemon does the privileged hard-linking). A
+// gate skip or refusal returns an *OptimiseSkippedError; a failed run a plain
+// error.
+func (s *Store) Optimise(ctx context.Context, out io.Writer, opts OptimiseOptions) error {
+	return s.optimise(ctx, out, opts)
+}
+
+// optimise is Optimise with extra arguments for `nix store optimise` (tests
+// pass --store <throwaway>).
+func (s *Store) optimise(ctx context.Context, out io.Writer, opts OptimiseOptions, extra ...string) error {
+	return s.optimiseStep(ctx, out, LoadConfig(s.env), opts.Force, extra...)
 }

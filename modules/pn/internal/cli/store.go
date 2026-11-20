@@ -73,6 +73,7 @@ func addStoreCmd(parent *cobra.Command) {
 Subcommands:
   audit      Read-only report of profile generations, closure sizes, and store usage.
   deepclean  Prune old generations and stale GC roots, garbage-collect (optionally optimise: --optimise).
+  optimise   Only dedup the store (hard-link duplicate files); no GC, no sudo.
 
 Configuration lives in ~/.config/pn/store.toml (search_dirs, keep_days, keep_count,
 post_gc_clear_dirs, post_gc_commands).
@@ -80,6 +81,7 @@ See docs/pn-store.md for user journeys and retention semantics.`,
 	}
 	s.AddCommand(storeAuditCmd())
 	s.AddCommand(storeDeepCleanCmd())
+	s.AddCommand(storeOptimiseCmd())
 	parent.AddCommand(s)
 }
 
@@ -158,9 +160,13 @@ for caches whose binaries may link to store paths the GC just deleted:
   post_gc_clear_dirs = ["~/.cache/some-binary-cache"]   # dirs removed (rm -rf); "~/" expands to $HOME,
                                                         # otherwise absolute; a missing dir is skipped
   post_gc_commands   = [["some-tool", "--clear"]]       # argv-form commands run after the dirs
-A failing entry is reported and does not stop the others (nor the optimise step),
-but makes deepclean exit non-zero. The step also runs if the GC itself fails, and
---dry-run only lists what would run. Neither key is set by default.
+A failing entry is reported and does not stop the others, but makes deepclean exit
+non-zero. The step also runs if the GC itself fails, and --dry-run only lists what
+would run.
+
+If the GC itself fails (for example sudo cannot prompt for a password), deepclean
+runs the post-GC step, skips the optimise step entirely and exits 1. To dedup the
+store without a GC or sudo, use 'pn store optimise'. Neither key is set by default.
 
 Finally, shows runtime roots summary (store paths held by running processes that
 could be freed by restarting applications).`,
@@ -191,5 +197,38 @@ could be freed by restarting applications).`,
 	cmd.Flags().IntVar(&keep, "keep", -1, "Keep N most recent generations (-1 = config default)")
 	cmd.Flags().BoolVar(&optimise, "optimise", false, "After the GC, also run the idle-gated, niced 'nix store optimise' (slow; off by default)")
 	cmd.Flags().BoolVar(&force, "force", false, "With --optimise: skip the idle gate (AC power, 1-minute load below 4); the free-space check still applies")
+	return cmd
+}
+
+func storeOptimiseCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "optimise",
+		Short: "Dedup the nix store (hard-link duplicate files)",
+		Long: `Run only the optimise step ('nix store optimise', which hard-links duplicate
+files): no garbage collection, no profile pruning and no sudo (the nix-daemon does
+the privileged hard-linking). It is the same gated step as 'pn store deepclean
+--optimise', using the same ~/.config/pn/store.toml:
+  - skips (exit status 75, not a failure) unless the machine is on AC power and
+    the 1-minute load average is below 4; --force skips this idle gate;
+  - refuses (exit status 75) when /nix has less than optimise_min_free_gb
+    (default 10) GiB free, even with --force;
+  - runs under 'nice -n 10' and (macOS) 'taskpolicy -b', printing the start
+    time, elapsed time and .links entry count at start and end.
+The step is not incremental and can take hours on a large store.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			err := store.New(exec.NewRealRunner()).Optimise(
+				cmd.Context(),
+				cmd.OutOrStdout(),
+				store.OptimiseOptions{Force: force},
+			)
+			if store.IsOptimiseSkipped(err) {
+				return ExitCodeError{Code: store.OptimiseSkippedExitCode, Msg: err.Error()}
+			}
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "Skip the idle gate (AC power, 1-minute load below 4); the free-space check still applies")
 	return cmd
 }
