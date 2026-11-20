@@ -3,11 +3,13 @@
 package smoke
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/phillipgreenii/x/gitclient"
 	"github.com/phillipgreenii/x/gitfixture"
 	"github.com/phillipgreenii/x/gittest"
 )
@@ -71,5 +73,47 @@ func TestSmoke_ScrubbedEnvStripsGitDirFamilyAfterTestMain(t *testing.T) {
 	}
 	if got := readFileString(t, filepath.Join(decoyGitDir, "HEAD")); got != headBefore {
 		t.Errorf("decoy HEAD changed: %q -> %q", headBefore, got)
+	}
+}
+
+// TestSmoke_ScrubbedEnvIdentityReachesGitclientCommits proves the identity
+// buildScrubbedEnv writes to $HOME/.gitconfig reaches a commit made through
+// x/gitclient, whose child environment passes only PATH, HOME and
+// SSH_AUTH_SOCK. The clone has no local identity (a gittest repo carries one),
+// so only the throwaway home can supply it.
+func TestSmoke_ScrubbedEnvIdentityReachesGitclientCommits(t *testing.T) {
+	ctx := context.Background()
+	src := gittest.New(t, gitfixture.RepoOptions{Suite: "smoke-env-identity", InitialCommit: true})
+
+	env := buildScrubbedEnv(t, t.TempDir())
+	home := envValue(env, "HOME")
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	client, h, err := gitclient.Clone(ctx, src.Dir, dir, gitclient.CloneOptions{}, gitclient.WithHome(home))
+	if err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if err := h.Wait(); err != nil {
+		t.Fatalf("clone wait: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Add(ctx, "x.txt"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	ch, err := client.Commit(ctx, "chore: identity probe")
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := ch.Wait(); err != nil {
+		t.Fatalf("commit failed (identity did not reach gitclient): %v", err)
+	}
+	commits, err := client.Commits(ctx, gitclient.LogOptions{Limit: 1})
+	if err != nil || len(commits) != 1 {
+		t.Fatalf("log: %v, %d commits", err, len(commits))
+	}
+	if got := commits[0].Author.Email; got != "pn-smoke@test.invalid" {
+		t.Errorf("author email = %q, want pn-smoke@test.invalid", got)
 	}
 }

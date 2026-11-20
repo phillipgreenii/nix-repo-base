@@ -46,6 +46,7 @@ var gitDirEnvVars = []string{
 //   - LC_ALL=C, TZ=UTC
 //   - GIT_SSH_COMMAND (BatchMode, StrictHostKeyChecking=accept-new)
 //   - GIT_AUTHOR_NAME/EMAIL, GIT_COMMITTER_NAME/EMAIL (fixed values)
+//   - <tempHome>/.gitconfig with the same identity (reaches x/gitclient children)
 //   - PN_WORKSPACE_ROOT → wsRoot (the scenario temp dir)
 //   - the GIT_DIR family (gitDirEnvVars) is REMOVED on every call, so a variable
 //     set after TestMain (t.Setenv) still cannot reach a scenario's setup.sh or pn
@@ -77,6 +78,17 @@ func buildScrubbedEnv(t *testing.T, wsRoot string) []string {
 	ulLib := filepath.Join(tempHome, "ullib")
 	if err := os.MkdirAll(ulLib, 0o755); err != nil {
 		t.Fatalf("buildScrubbedEnv: create ullib: %v", err)
+	}
+
+	// pn commits through x/gitclient, whose child environment is an allowlist of
+	// PATH, HOME and SSH_AUTH_SOCK only, so the GIT_AUTHOR_*/GIT_COMMITTER_*
+	// overrides below never reach pn's commits (they still serve setup.sh and
+	// other non-gitclient children). $HOME/.gitconfig is the one identity
+	// channel that does, the same way the operator's identity reaches pn's
+	// commits in production.
+	gitconfig := "[user]\n\tname = pn-smoke-test\n\temail = pn-smoke@test.invalid\n"
+	if err := os.WriteFile(filepath.Join(tempHome, ".gitconfig"), []byte(gitconfig), 0o644); err != nil {
+		t.Fatalf("buildScrubbedEnv: write smoke git identity: %v", err)
 	}
 
 	// The fake store S42 validates against must be spelled the way the scenario's
