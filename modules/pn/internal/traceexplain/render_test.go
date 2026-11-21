@@ -39,12 +39,16 @@ func TestRenderText(t *testing.T) {
 		t, out,
 		"pn workspace update (scope full), trace "+testTraceID+", started 2025-11-18T12:00:00Z, wall 17m30s",
 		"Slowest: a 10m00s (57%) — step update-deps-x 6m40s; top local build slow-drv 5m00s",
-		"  a  wall 10m00s  update-locks 9m40s  relock 10s  git 10s  unattributed 0s",
+		"  a  wall 10m00s  relock 10s  git 10s  unattributed 0s",
+		"    update-locks 9m40s (setup 10s, finalize 1m00s), between steps 10s",
 		"    step update-deps-x 6m40s ok",
 		"    step nix-flake-update 1m40s ok",
+		"    nix develop x1 9m36s",
 		"    nix develop 9m36s (plan: 2 builds, 1 fetch)",
-		"  b  wall 6m40s  update-locks 4m55s  relock 0s  git 5s  unattributed 1m40s",
+		"  b  wall 6m40s  relock 0s  git 5s  unattributed 1m40s",
+		"    update-locks 4m55s (setup 0s, finalize 0s)",
 		"    no step data: update-locks.sh printed no UL_STEP lines (it exited before its first step, or its lib predates UL_STEP)",
+		"    nix develop x1 4m53s",
 		"    nix develop 4m53s (plan: 0 builds, 0 fetches)",
 		"Outside repos: 50s (hooks: post update 40s)",
 		"Nix (summed across parallel work, can exceed wall): substitutes 20s, build-lock wait 40s",
@@ -107,5 +111,39 @@ func TestRenderText_NoBuildsNoAnomalies(t *testing.T) {
 		if strings.Contains(out, h) {
 			t.Errorf("output contains %q heading:\n%s", h, out)
 		}
+	}
+}
+
+func TestRenderText_NixAggregateAndCap(t *testing.T) {
+	var calls []traceexplain.NixCall
+	for i := 1; i <= 7; i++ { // 7 develop calls of 10s..70s, then 1 build of 5s
+		calls = append(calls, traceexplain.NixCall{Subcommand: "develop", Seconds: float64(i * 10)})
+	}
+	calls = append(calls, traceexplain.NixCall{Subcommand: "build", Seconds: 5})
+	rep := traceexplain.Report{
+		TraceID: "t", Verb: "workspace update", WallSeconds: 500,
+		Repos: []traceexplain.RepoReport{{
+			Name: "a", WallSeconds: 400, Nix: calls,
+			UpdateLocks: &traceexplain.ULReport{Seconds: 300, SetupSeconds: 5, FinalizeSeconds: 7},
+		}},
+	}
+	out := render(t, rep, "")
+	inOrder(
+		t, out,
+		"    update-locks 5m00s (setup 5s, finalize 7s)",
+		"    nix develop x7 4m40s",
+		"    nix build x1 5s",
+		"    nix develop 1m10s (plan: 0 builds, 0 fetches)",
+		"    nix develop 1m00s (plan: 0 builds, 0 fetches)",
+		"    nix develop 50s (plan: 0 builds, 0 fetches)",
+		"    nix develop 40s (plan: 0 builds, 0 fetches)",
+		"    nix develop 30s (plan: 0 builds, 0 fetches)",
+		"    (+3 more)",
+	)
+	if strings.Contains(out, "between steps") {
+		t.Errorf("zero between-steps printed:\n%s", out)
+	}
+	if strings.Contains(out, "nix develop 20s") || strings.Contains(out, "nix build 5s") {
+		t.Errorf("lines beyond cap printed:\n%s", out)
 	}
 }

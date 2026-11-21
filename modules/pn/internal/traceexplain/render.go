@@ -127,12 +127,15 @@ func slowestSteps(steps []Step) []Step {
 
 func writeRepo(b *strings.Builder, rr RepoReport) {
 	fmt.Fprintf(b, "  %s  wall %s", rr.Name, fmtDur(rr.WallSeconds))
-	if rr.UpdateLocks != nil {
-		fmt.Fprintf(b, "  update-locks %s", fmtDur(rr.UpdateLocks.Seconds))
-	}
 	fmt.Fprintf(b, "  relock %s  git %s  unattributed %s\n",
 		fmtDur(rr.RelockSeconds), fmtDur(rr.GitSeconds), fmtDur(rr.UnattributedSeconds))
 	if ul := rr.UpdateLocks; ul != nil {
+		fmt.Fprintf(b, "    update-locks %s (setup %s, finalize %s)", fmtDur(ul.Seconds),
+			fmtDur(ul.SetupSeconds), fmtDur(ul.FinalizeSeconds))
+		if ul.BetweenStepsSeconds > 0 {
+			fmt.Fprintf(b, ", between steps %s", fmtDur(ul.BetweenStepsSeconds))
+		}
+		b.WriteString("\n")
 		for _, s := range slowestSteps(ul.Steps) {
 			fmt.Fprintf(b, "    step %s %s %s\n", s.Name, fmtDur(s.Seconds), s.Outcome)
 		}
@@ -140,7 +143,43 @@ func writeRepo(b *strings.Builder, rr RepoReport) {
 			b.WriteString("    no step data: update-locks.sh printed no UL_STEP lines (it exited before its first step, or its lib predates UL_STEP)\n")
 		}
 	}
-	for _, n := range rr.Nix {
+	writeNix(b, rr.Nix)
+}
+
+// maxNixLines caps the individual nix invocation lines printed per repo; the
+// aggregate per-subcommand lines are always printed and --json keeps the full
+// list.
+const maxNixLines = 5
+
+func writeNix(b *strings.Builder, calls []NixCall) {
+	type agg struct {
+		sub   string
+		n     int
+		total float64
+	}
+	var aggs []*agg
+	idx := map[string]*agg{}
+	for _, n := range calls {
+		a := idx[n.Subcommand]
+		if a == nil {
+			a = &agg{sub: n.Subcommand}
+			idx[n.Subcommand] = a
+			aggs = append(aggs, a)
+		}
+		a.n++
+		a.total += n.Seconds
+	}
+	sort.SliceStable(aggs, func(i, j int) bool { return aggs[i].total > aggs[j].total })
+	for _, a := range aggs {
+		fmt.Fprintf(b, "    nix %s x%d %s\n", a.sub, a.n, fmtDur(a.total))
+	}
+	slow := append([]NixCall(nil), calls...)
+	sort.SliceStable(slow, func(i, j int) bool { return slow[i].Seconds > slow[j].Seconds })
+	for i, n := range slow {
+		if i == maxNixLines {
+			fmt.Fprintf(b, "    (+%d more)\n", len(slow)-maxNixLines)
+			break
+		}
 		fmt.Fprintf(b, "    nix %s %s (plan: %s, %s)\n", n.Subcommand, fmtDur(n.Seconds),
 			plural(n.PlanBuilds, "build", "builds"), plural(n.PlanFetches, "fetch", "fetches"))
 	}
