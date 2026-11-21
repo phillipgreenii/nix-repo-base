@@ -13,7 +13,7 @@ Contents: [Scope](#scope), [Architecture](#architecture), [Rule contract](#rule-
 [Alertmanager, Grafana wiring and cutover](#alertmanager-grafana-wiring-and-cutover),
 [Consumers and issue identity](#consumers-and-issue-identity), [Runbooks](#runbooks),
 [Contract checks](#contract-checks), [Per-app port checklist](#per-app-port-checklist),
-[Phases](#phases), [Constraints](#constraints), [Spikes](#spikes), [Related](#related).
+[Phases](#phases), [Constraints](#constraints), [Pilot amendments](#pilot-amendments), [Spikes](#spikes), [Related](#related).
 
 ## Scope
 
@@ -361,14 +361,20 @@ module plus option stubs.
 | C8    | `promtool test rules` (and the shared log-rule harness) actually RUN over every registered file's tests, and every `rule_uid` has at least one non-empty and one empty `exp_alerts` (log rules: a firing and a not-firing fixture), plus the no-data cases where they apply. C1 is syntax only. |
 
 Port record. Each producing repo keeps ONE JSON file, `alerting/port-record.json`, with the keys
-`ported`, `new-rules`, `retired` and `undocumented`. Each is an array whose entries are either a
-`rule_uid` string or a TEMPLATE object `{"template": "<name>"}`; a `retired` entry is an object
-`{"uid": "<uid>", "reason": "<one line>"}` (or a template object) and MUST also have a Grafana
-delete entry, as `ported` does. `undocumented` additionally carries an integer `ceiling`, the
-maximum allowed number of entries: C4 fails when the list is longer than `ceiling` or names a rule
-that already has a runbook, so the list only shrinks and raising `ceiling` shows in review. C6
-finds Grafana delete entries as the `deleteRules[].uid` values of the repo's registered Grafana
-provisioning files.
+`ported`, `new-rules`, `retired` and `undocumented`. `ported`, `new-rules` and `retired` are arrays
+whose entries are either a `rule_uid` string or a TEMPLATE object `{"template": "<name>"}`; a
+`retired` entry is an object `{"uid": "<uid>", "reason": "<one line>"}` (or a template object) and
+MUST also have a Grafana delete entry, as `ported` does. `undocumented` is an OBJECT
+`{"ceiling": <integer>, "entries": [<uid string or template object>, ...]}`: C4 fails when
+`entries` is longer than `ceiling` or names a rule that already has a runbook, so the list only
+shrinks and raising `ceiling` shows in review. C6 finds Grafana delete entries as the
+`deleteRules[].uid` values of the repo's registered Grafana delete files.
+
+Grafana rule YAML of a ported uid. In the SAME change that ports a rule, its definition MUST be
+removed from the registered Grafana rule file (a file left with no rules MUST be deleted and
+dropped from the registration), a `deleteRules` entry for the uid MUST be added to a registered
+delete-only file, and the original definition lives only in the unregistered baseline copy (R7).
+No uid is therefore ever both a registered Grafana rule and a ported rule.
 
 Generated rule sets (launchd-health, logsource-health, mysql-probe, and any template whose uids are
 hashed per instance from machine configuration): `ported`, `new-rules`, `retired`, C7 and C8 MUST
@@ -469,6 +475,14 @@ Order MUST be respected: no app is ported before the pilot has closed.
 - Load, soak and daemon-spanning tests MUST sit behind opt-in checks, not the unit gate (the
   integration-checks rule of [ADR 0024](adr/0024-build-tagged-suites-need-their-own-check.md)).
 - This page uses RFC 2119 language and mermaid diagrams.
+
+## Pilot amendments
+
+Pending: the pilot has not closed. When it closes, this section lists each amendment the pilot
+made to this page, the options module, the checks or the harness as a numbered line
+`N. <section or check id>: <amendment>` (or the single line `None.`), followed by one line
+`Operator confirmed: <date>, "<the operator's words>"`. A consumer repo MUST NOT relock onto this
+repo for the pilot's amendments until that `Operator confirmed:` line is on the primary branch.
 
 ## Spikes
 
