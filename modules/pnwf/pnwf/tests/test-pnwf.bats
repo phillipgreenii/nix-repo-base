@@ -903,6 +903,64 @@ MOCK
   [[ "$stderr" == *"repoA: landed (branch '$BRANCH' absent"* ]]
 }
 
+# Stages what `pg-git-lander land --keep-source-worktree` leaves behind: the
+# feature branch merged and deleted, the worktree parked on a placeholder.
+_stage_placeholder_parked() {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+  command git -C "$SET_DIR/repoA" checkout -q -b pg-git-lander/idle/repoA
+  command git -C "$CANONICAL_DIR/repoA" branch -q -d "$BRANCH"
+}
+
+@test "status: a branch-absent member parked on a merged placeholder is landed, not blocked" {
+  _stage_placeholder_parked
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "repoA"$'\t'"landed"$'\t'* ]]
+  [[ "$output" == *"pending teardown"* ]]
+  [[ "$output" != *"blocked"* ]]
+}
+
+@test "status: a branch-absent member NOT on a placeholder stays blocked" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  command git -C "$SET_DIR/repoA" checkout -q -b some-other-branch
+  command git -C "$CANONICAL_DIR/repoA" branch -q -d "$BRANCH"
+
+  cd "$SET_DIR"
+  run "$SCRIPT_UNDER_TEST" status "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "repoA"$'\t'"blocked"$'\t'* ]]
+}
+
+@test "cleanup: a branch-absent member parked on a merged placeholder has its worktree removed and the placeholder deleted" {
+  _stage_placeholder_parked
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"removed"*"placeholder"* ]]
+  [ ! -e "$SET_DIR" ]
+  run ! command git -C "$CANONICAL_DIR/repoA" rev-parse --verify -q refs/heads/pg-git-lander/idle/repoA
+}
+
+@test "cleanup: a parked placeholder worktree with uncommitted changes is kept with its placeholder" {
+  _stage_placeholder_parked
+  echo dirt >"$SET_DIR/repoA/extra.txt"
+
+  cd "$CANONICAL_DIR"
+  run "$SCRIPT_UNDER_TEST" cleanup "$BRANCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"$'\t'"kept"*"uncommitted"* ]]
+  [ -e "$SET_DIR/repoA" ]
+  command git -C "$CANONICAL_DIR/repoA" rev-parse --verify -q refs/heads/pg-git-lander/idle/repoA
+}
+
 @test "land-plan: subset lock excludes a physically-present member not in the lock" {
   _stage_init_member repoA
   _stage_init_member repoD

@@ -721,7 +721,9 @@ per member, tab-separated. label is one of:
   landed-equivalent  worktree present, clean, branch not an ancestor of
                 primary but patch-equivalent to it (rebased and landed).
   not-started   worktree present, clean, no commits ahead of primary yet.
-  blocked       worktree present, but dirty, or its branch ref is missing.
+  blocked       worktree present, but dirty, or its branch ref is missing
+                (unless parked on a merged pg-git-lander/idle/* placeholder,
+                which reads landed: pending teardown).
   kept          worktree present, clean, ahead of primary, not yet landed.
 Members come from the set's own pn-workspace.lock.json (subset-aware).
 Used by the land and cleanup skills for their operator reports.
@@ -848,6 +850,57 @@ _pnwf_cas_delete_branch() {
     return 0
   fi
   printf '%s\t%s\n' "1" "branch is patch-equivalent to $primary (not an ancestor); $note, branch deleted by compare-and-swap on tip $expected_tip"
+}
+
+# Removes a member whose feature branch is gone but whose worktree remains
+# parked on a merged pg-git-lander/idle/* placeholder (left by
+# `pg-git-lander land --keep-source-worktree`): removes the worktree, then
+# deletes the placeholder with plain `git branch -d` (only when merged).
+# Guarded like _pnwf_cleanup_remove_member; prints "<removed 0|1>\t<reason>"
+# and always returns 0. A worktree on any other branch is kept untouched.
+#
+# Args: setdir member canonical_dir primary force_dirty
+_pnwf_cleanup_remove_parked() {
+  local setdir="$1" member="$2" canonical_dir="$3" primary="$4" force_dirty="$5"
+  local member_setpath="$setdir/$member" placeholder
+  if ! placeholder=$(pnwf_parked_placeholder "$member_setpath" "$canonical_dir" "$primary"); then
+    printf '%s\t%s\n' "0" "branch absent but worktree is not parked on a merged pg-git-lander/idle/* placeholder; left in place"
+    return 0
+  fi
+
+  local dirty_rc=0
+  pnwf_working_tree_dirty "$member_setpath" || dirty_rc=$?
+  case "$dirty_rc" in
+  0)
+    if [[ $force_dirty -ne 1 ]]; then
+      printf '%s\t%s\n' "0" "worktree has uncommitted changes; rerun with --force-dirty-worktree-removal to remove anyway"
+      return 0
+    fi
+    ;;
+  1) : ;;
+  *)
+    printf '%s\t%s\n' "0" "could not check worktree cleanliness (rc=$dirty_rc)"
+    return 0
+    ;;
+  esac
+
+  local wt_flags=() wt_rc=0 wt_out
+  [[ $dirty_rc -eq 0 ]] && wt_flags=(--force)
+  git -C "$member_setpath" fsmonitor--daemon stop >/dev/null 2>&1 || true
+  wt_out=$(git -C "$canonical_dir" worktree remove "${wt_flags[@]}" "$member_setpath" 2>&1) || wt_rc=$?
+  if [[ $wt_rc -ne 0 ]]; then
+    printf '%s\t%s\n' "0" "git worktree remove failed (rc=$wt_rc): $wt_out"
+    return 0
+  fi
+
+  local br_rc=0 br_out
+  br_out=$(git -C "$canonical_dir" branch -d "$placeholder" 2>&1) || br_rc=$?
+  if [[ $br_rc -ne 0 ]]; then
+    printf '%s\t%s\n' "0" "worktree removed, but git branch -d $placeholder failed (rc=$br_rc): $br_out"
+    return 0
+  fi
+  printf '%s\t%s\n' "1" "branch already landed; parked worktree removed and placeholder '$placeholder' deleted"
+  return 0
 }
 
 # Removes one member's worktree + branch as part of `cmd_cleanup`. Guarded
@@ -1148,7 +1201,19 @@ HELP
       fi
       ;;
     absent)
-      report_lines+=("$member	landed	branch '$branch' not found in $member_canonical (already landed/removed)")
+      if pnwf_worktree_present "$setdir" "$member"; then
+        result=$(_pnwf_cleanup_remove_parked "$setdir" "$member" "$member_canonical" "$primary" "$force_dirty")
+        removed="${result%%$'\t'*}"
+        reason="${result#*$'\t'}"
+        if [[ $removed -eq 1 ]]; then
+          report_lines+=("$member	removed	$reason")
+        else
+          any_kept=1
+          report_lines+=("$member	kept	$reason")
+        fi
+      else
+        report_lines+=("$member	landed	branch '$branch' not found in $member_canonical (already landed/removed)")
+      fi
       ;;
     landed)
       result=$(_pnwf_cleanup_remove_member "$setdir" "$member" "$member_canonical" "$branch" "$primary" "$force_dirty" "0")

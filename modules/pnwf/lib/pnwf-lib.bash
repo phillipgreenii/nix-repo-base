@@ -525,6 +525,24 @@ pnwf_topo_order() {
   fi
 }
 
+# Prints the placeholder branch name when the worktree at setpath is parked on
+# a pg-git-lander/idle/* branch (what `pg-git-lander land --keep-source-worktree`
+# leaves after deleting the feature branch) that is an ancestor of primary in
+# canonical_dir, i.e. nothing on it is unmerged. Prints nothing and returns 1
+# otherwise. Never aborts under set -e.
+#
+# Args: setpath canonical_dir primary
+pnwf_parked_placeholder() {
+  local setpath="$1" canonical_dir="$2" primary="$3" head
+  head=$(git -C "$setpath" symbolic-ref -q --short HEAD 2>/dev/null) || return 1
+  case "$head" in
+  pg-git-lander/idle/*) ;;
+  *) return 1 ;;
+  esac
+  git -C "$canonical_dir" merge-base --is-ancestor "refs/heads/$head" "$primary" 2>/dev/null || return 1
+  printf '%s\n' "$head"
+}
+
 # Classifies one workforest member's landing status from git state alone
 # (never aborts under set -e; backs `pnwf status`). Prints ONE line:
 # "<label>\t<reason>", label one of: landed | not-started | blocked | kept.
@@ -586,6 +604,11 @@ pnwf_classify_member() {
     fi
     ;;
   128)
+    local placeholder
+    if placeholder=$(pnwf_parked_placeholder "$setpath" "$canonical_dir" "$primary"); then
+      printf '%s\t%s\n' "landed" "landed (pending teardown): branch '$branch' deleted by the lander, worktree parked on merged placeholder '$placeholder'"
+      return 0
+    fi
     printf '%s\t%s\n' "blocked" "member branch '$branch' not found in $canonical_dir although its worktree is present"
     ;;
   *)

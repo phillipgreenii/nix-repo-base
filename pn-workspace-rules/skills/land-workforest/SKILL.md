@@ -114,6 +114,15 @@ break the ordered-transaction guarantee and cause shared-build contention.
    FF-4; it already keeps the worktree, and `pnwf cleanup`/`cleanup-workforest`
    already knows to keep it too.)
 
+   The interception MAY be carried out with `pg-git-lander land <branch> --repo
+<canonical> --source-worktree <WT> --keep-source-worktree`. That lands the
+   branch, deletes `<FB>` and parks `<WT>` on a `pg-git-lander/idle/*`
+   placeholder branch (clean, an ancestor of primary). Resulting state: branch
+   absent, worktree present on the placeholder. `pnwf land-plan` excludes the
+   member, `pnwf status` reports it `landed` ("pending teardown"), and
+   `pnwf cleanup` removes the parked worktree and deletes the placeholder with
+   `git branch -d`.
+
    Handle the full outcome vocabulary:
    - **`landed`** → add the repo to the pending-teardown set (per the
      interception above), continue to the next repo.
