@@ -76,7 +76,7 @@ func TestOptimise_RealNixDedupsThrowawayStore(t *testing.T) {
 	nixCmd := func(args ...string) string {
 		t.Helper()
 		full := append([]string{"--extra-experimental-features", "nix-command"}, args...)
-		b, err := exec.Command("nix", full...).CombinedOutput()
+		b, err := exec.CommandContext(context.Background(), "nix", full...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("nix %v: %v\n%s", args, err, b)
 		}

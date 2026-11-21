@@ -351,7 +351,7 @@ func spansFromRecorder(ended []sdktrace.ReadOnlySpan) []traceexplain.Span {
 	return out
 }
 
-func attrText(v attribute.Value) string { return v.Emit() }
+func attrText(v attribute.Value) string { return v.String() }
 
 func TestAnalyze_SpansFromTelemetryStarters(t *testing.T) {
 	tel, rec := telemetrytest.New()

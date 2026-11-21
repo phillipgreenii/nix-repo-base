@@ -422,7 +422,9 @@ func TestRelockAll_DisablesFsmonitorForNix(t *testing.T) {
 				t.Setenv("GIT_CONFIG_COUNT", tc.count)
 			} else {
 				t.Setenv("GIT_CONFIG_COUNT", "")
-				os.Unsetenv("GIT_CONFIG_COUNT")
+				if err := os.Unsetenv("GIT_CONFIG_COUNT"); err != nil {
+					t.Fatal(err)
+				}
 			}
 			dir, writeLock := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
 			r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() { writeLock(relockLock(2, map[string]string{"sib": revB})) }}

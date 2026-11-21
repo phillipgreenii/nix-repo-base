@@ -100,7 +100,7 @@
     reason = "fixture: a local relative core.hooksPath is the input that proves status unreachable (exit 15)";
   }
   {
-    path = "modules/pn/internal/workspace/hookbundle_test.go";
+    path = "modules/pn/internal/workspace/hookbundle_integration_test.go";
     categories = [ "githooks-ref" ];
     reason = "fixture: a local relative core.hooksPath is the input that proves the unreachable state";
   }
@@ -118,7 +118,7 @@
     reason = "the smoke scenario asserts that nothing is written into a working tree, naming the removed directory it must not find";
   }
   {
-    path = "modules/pn/internal/workspace/hookbundle_gate_test.go";
+    path = "modules/pn/internal/workspace/hookbundle_gate_integration_test.go";
     categories = [ "config-link" ];
     reason = "test input: an old config symlink proves the install gate ignores it (R4)";
   }
