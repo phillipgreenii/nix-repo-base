@@ -1,3 +1,5 @@
+//go:build realnix
+
 package store
 
 import (
@@ -6,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,6 +17,8 @@ import (
 )
 
 // TestRunOptimise_RealNixThrowawayStore runs the real `nix store optimise`
+// (build tag realnix; run by the pn-realnix-tests integration gate, because the
+// nix build sandbox has no taskpolicy)
 // through the real runner against an empty throwaway store (--store <tmp>), and
 // checks the printed command line carries nice and (on darwin) taskpolicy -b.
 func TestRunOptimise_RealNixThrowawayStore(t *testing.T) {
@@ -119,3 +124,5 @@ func TestOptimise_RealNixDedupsThrowawayStore(t *testing.T) {
 		t.Errorf("end report missing:\n%s", out.String())
 	}
 }
+
+func osIsDarwin() bool { return runtime.GOOS == "darwin" }

@@ -606,7 +606,7 @@
               ];
             };
 
-            # Real-nix gate for pn: the six cmd/pn tests that run the host's real nix
+            # Real-nix gate for pn: the six cmd/pn tests, plus the two internal/store tests in optimise_real_test.go (the sandbox has no taskpolicy), that run the host's real nix
             # (`flake_check_no_build_realnix_test.go`, `//go:build realnix`) are class B
             # (real external binary, seconds each), so they sit outside the unit gate
             # `pn-go-tests` and run here instead (ADR 0024: a build-tagged suite MUST

@@ -218,8 +218,6 @@ func TestParseLoadAvg(t *testing.T) {
 	}
 }
 
-func osIsDarwin() bool { return runtime.GOOS == "darwin" }
-
 // optimiseOnlyRunner returns a runner scripted for the optimise-only path.
 func optimiseOnlyRunner(t *testing.T, batt, load, df string) (Env, *exec.FakeRunner) {
 	t.Helper()
