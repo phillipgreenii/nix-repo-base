@@ -52,6 +52,14 @@ page [`docs/alert-severity.md`](docs/alert-severity.md), decided in ADR
 [0035](docs/adr/0035-grafana-alert-severity-standard.md). It does not cover the desk tool's
 attention severities.
 
+## Alert rules, runbooks and inhibition
+
+Every alert rule an app defines MUST follow the rule contract (Prometheus or Loki rule files with
+`rule_uid`, `runbook_id`, optional `inhibited_by`), carry a runbook, and pass the contract checks.
+The convention is the page [`docs/alert-runbooks.md`](docs/alert-runbooks.md), decided in ADR
+[0046](docs/adr/0046-alert-rules-as-prometheus-files-with-runbooks-and-inhibition.md). The
+`severity` vocabulary stays the one in `docs/alert-severity.md`.
+
 ## SwiftBar title width (`swiftbar-title-width`)
 
 Every SwiftBar menu-bar plugin in the workspace repos MUST offer a wide and a narrow (notch-safe,
