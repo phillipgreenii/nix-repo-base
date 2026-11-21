@@ -16,9 +16,18 @@ func (ws *Workspace) checkTerminal(ctx context.Context, env *doctorEnv) []Findin
 	// terminal_not_sink, missing_flake_path).
 	if _, verrs, err := deriveLock(ctx, ws, env.terminal); err == nil {
 		for _, ve := range verrs {
+			sev := SevError
+			msg := fmt.Sprintf("%s: %s", ve.Code, ve.Message)
+			// A --repos subset set that excludes the canonical terminal has
+			// no resolvable terminal by construction (filterConfig clears
+			// workspace.terminal); relax to a warning there.
+			if ve.Code == "missing_terminal" && env.mode == "worktree" {
+				sev = SevWarning
+				msg += " (worktree set: the canonical terminal may be outside this set)"
+			}
 			fs = append(fs, Finding{
-				CheckID: "terminal-resolvable", Severity: SevError,
-				Message: fmt.Sprintf("%s: %s", ve.Code, ve.Message),
+				CheckID: "terminal-resolvable", Severity: sev,
+				Message: msg,
 				Manual:  terminalWarningMessage,
 			})
 		}

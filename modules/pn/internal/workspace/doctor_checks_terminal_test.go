@@ -22,7 +22,7 @@ func TestCheckTerminal_NoTerminalIsError(t *testing.T) {
 	}
 }
 
-// TestCheckTerminal_SubsetMembersWithNoEdgeIsMissingTerminal reproduces the
+// TestCheckTerminal_SubsetWithoutTerminalIsRelaxedInWorktreeSet reproduces the
 // other half of pg2-jj4ie: a `--repos` subset workforest set whose members
 // have no dependency edge on EACH OTHER (their shared dependency is the
 // workspace terminal, which the subset excludes) cannot auto-detect a
@@ -38,7 +38,7 @@ func TestCheckTerminal_NoTerminalIsError(t *testing.T) {
 // terminal at all -- a structural consequence of the subset excluding the
 // repo that actually ties the two members together, not a misconfiguration
 // bug in resolution itself.
-func TestCheckTerminal_SubsetMembersWithNoEdgeIsMissingTerminal(t *testing.T) {
+func TestCheckTerminal_SubsetWithoutTerminalIsRelaxedInWorktreeSet(t *testing.T) {
 	root := t.TempDir()
 	cfg := &WorkspaceConfig{
 		Repos: map[string]RepoConfig{
@@ -49,8 +49,16 @@ func TestCheckTerminal_SubsetMembersWithNoEdgeIsMissingTerminal(t *testing.T) {
 	ws := &Workspace{root: root, runner: exec.NewFakeRunner(), config: cfg}
 	env := &doctorEnv{ws: ws, mode: "worktree", terminal: "", lock: emptyLock()}
 	fs := ws.checkTerminal(context.Background(), env)
-	if !hasFinding(fs, "terminal-resolvable", SevError) {
-		t.Fatalf("two edge-less subset members should be terminal-resolvable error: %+v", fs)
+	if hasFinding(fs, "terminal-resolvable", SevError) {
+		t.Fatalf("worktree subset set without the terminal must not report terminal-resolvable ERROR: %+v", fs)
+	}
+	if !hasFinding(fs, "terminal-resolvable", SevWarning) {
+		t.Fatalf("expected terminal-resolvable relaxed to a warning: %+v", fs)
+	}
+	// The same shape in a primary workspace stays an error.
+	env.mode = "primary"
+	if !hasFinding(ws.checkTerminal(context.Background(), env), "terminal-resolvable", SevError) {
+		t.Fatal("primary workspace without a terminal must stay an error")
 	}
 }
 
