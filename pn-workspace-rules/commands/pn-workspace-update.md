@@ -296,7 +296,9 @@ flowchart TD
 
 6. **REPORT (main session).** Close with a final report. It lists every
    `update-relock: warning:` line from step 2a (each names a repo whose flake
-   relock failed after one retry, update-locks.sh commits kept), the scope that
+   relock failed after one retry; the line ends either `update-locks.sh commits
+kept` or, for a full-scope failure on a repo with no update-locks.sh, `(flake
+inputs not moved)`), the scope that
    ran, and the trace id when step 2a had one (the line matching
    `^update-relock: trace [0-9a-f]{32}$` in step 2a's background output file).
 

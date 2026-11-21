@@ -117,7 +117,8 @@ Exit codes (a non-zero exit prints nothing on stdout; the message is on stderr):
   3   nothing to explain: no matching run, no trace id recorded, an unknown or
       expired trace, or a run with no run_end and no spans in Tempo
   4   the run has no run_end, or no run recorded it, but Tempo has some of its
-      spans (still running or killed); pass --partial to analyze them
+      spans (still running or killed); or the run ended 7 or more days ago and
+      Tempo still has spans but no pn.verb span; pass --partial to analyze them
   5   Tempo unreachable, answered with an error, or returned an unreadable trace
   75  the run ended under 7 days ago but Tempo has not ingested it yet; retry in
       a minute (75 is EX_TEMPFAIL, pn's "retry later" code)`,
