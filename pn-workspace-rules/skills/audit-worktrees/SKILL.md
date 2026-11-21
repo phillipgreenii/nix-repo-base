@@ -145,10 +145,16 @@ one handling below.
 
 **2a. `keep` — report, never act.** Put the row in the end-of-run table verbatim with its `reason`
 and `evidence` (reasons: `canonical-checkout`, `anchored-process`, `bead-lookup-failed`, `claimed`,
-`worktree-unreadable`, `dirty`, `patch-equivalent-no-bead`, `isolated-not-worked`). A `keep` row of
-reason `claimed` is reported as "claimed by live drain session"; `isolated-not-worked` as
-"isolated, not yet worked"; `dirty` as dirty. MUST NOT remove, relabel, write any bead about it,
-or run `git` or `wtdone` directly to second-guess it.
+`worktree-unreadable`, `dirty`, `patch-equivalent-no-bead`, `isolated-not-worked`,
+`lander-stopped`, `lander-owned`). A `keep` row of reason `claimed` is reported as "claimed by live
+drain session"; `isolated-not-worked` as "isolated, not yet worked"; `dirty` as dirty;
+`lander-stopped` (a worktree or branch held by a stopped `pg-git-lander` operation) with its
+evidence verbatim, which carries the operation id, the stop reason, stage and since, and the
+`pg-git-lander land <branch> --continue --repo <repo>` and `--abort` commands, so the operator can
+resume or give up; `lander-owned` (any other `pg-git-lander/` branch that is not landed) as owned by
+`pg-git-lander`. A `lander-stopped` row MUST NOT be researched, relabeled, landed or removed, and
+MUST NOT get a bead. MUST NOT remove, relabel, write any bead about it, or run `git` or `wtdone`
+directly to second-guess it.
 
 **2b. `remove` and `reclaim` — dispatch `wtaudit remove`.** For each such row, dispatch one action
 subagent per repo (serialized within a repo, concurrent across repos) that runs
@@ -355,12 +361,14 @@ Audit-worktrees — <N> candidates (<sets>, <standalone worktrees>, <dangling br
 | stale-try (personal)             | worktree  | abandoned (reported; worktree and branch left in place) | pg2-old3 closed |
 | rebased-x (personal)             | worktree  | removed (patch-equivalent to main, bead closed) | pg2-old4 closed |
 | drain/pg2-5kq1x (repo-base)      | worktree  | reclaimed (clean, no changes) | pg2-5kq1x noted      |
+| drain/pg2-8m2ab (repo-base)      | worktree  | kept (lander-stopped): resume with `pg-git-lander land drain/pg2-8m2ab --continue --repo <repo_path>` or give up with `--abort` (verbatim from evidence) | —                    |
 | mystery-wt (ziprecruiter)        | worktree  | flagged for review          | pg2-new2 (human)     |
 
 Kept (anchored-process / dirty / other, verbatim reason): 1 (feat-y, anchored-process in ziprecruiter worktree)
 Already pending review: 1 (pg2-oldrev, left untouched)
 Reclaimed (clean, no changes): 1 (drain/pg2-5kq1x, bead pg2-5kq1x unclaimed; worktree removed, bead noted)
 Kept (claimed by live drain session / isolated, not yet worked): 1 (drain/pg2-7c3dd, bead in_progress)
+Kept (lander-stopped, resume commands reported verbatim, never researched or removed) / (lander-owned): 1 / 0 (drain/pg2-8m2ab)
 Remove refused or partial (wtaudit exit 10/11/12/13, reason): 0
 ```
 
