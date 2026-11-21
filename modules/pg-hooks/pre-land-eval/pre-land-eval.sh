@@ -13,18 +13,20 @@
 # clones (so no push, relock or flake.lock write is needed), the system, the
 # tolerance of an absent set, and the experiment log. This script derives no
 # override and runs no nix; it adds only the two things the land step needs and pn
-# must not know: the one-word verdict with its 0/10/2/127 exit codes. It runs
+# must not know: the one-word verdict with its 0/20/2/127 exit codes. It runs
 # whenever it is invoked: a repo opts in to the check by configuring it as a
 # before_move hook of pg-git-lander land (the old per-clone git config key
 # pgii-integrate-branch.preLandEval is retired and never read).
 #
 # There is no retry and no inconclusive class (operator ruling, 2026-10-23): every
 # failure of the check, environmental or not, is eval-failed. pn reports a check
-# that ran and failed as exit 10 (CheckFailedError); pn exit 1 is a generic pn
-# failure and maps to "could not run" (bead pg2-wrujsm).
+# that ran and failed as exit 10 (CheckFailedError); this hook maps that to its
+# own exit 20 (the app range of the shared exit codes, because 10 is the shared
+# ShutdownOverrun code). pn exit 1 is a generic pn failure and maps to "could not
+# run".
 #
 # stdout is exactly ONE word; everything else, pn's output included, is stderr.
-# Exit codes: 0 ok, 10 eval-failed, 2 usage error (including an
+# Exit codes: 0 ok, 20 eval-failed, 2 usage error (including an
 # unresolvable ref or a repo that is no workspace member), 127 pn not installed.
 # BASH 3.2 STYLE (no mapfile, no associative arrays).
 
@@ -61,7 +63,7 @@ stderr: pn's output (the reproduce commands, timings, the first lines of nix's e
 
 Exit codes:
   0   ok
-  10  eval-failed (pn exited 10: a failed evaluation; there is no retry)
+  20  eval-failed (pn exited 10: a failed evaluation; there is no retry)
   2   usage error, including a ref that does not resolve and a repo that is no
       workspace member, and a check that could not run (pn exited 1 or any
       code other than 0, 2 and 10)
@@ -145,7 +147,7 @@ case "$RC" in
 10)
   say "eval failed: pn workspace flake-check --no-build reported a failure (see its output above)"
   printf 'eval-failed\n'
-  exit 10
+  exit 20
   ;;
 2)
   die_usage "pn rejected the invocation (a ref that does not resolve, or a repo that is no workspace member); see its message above"

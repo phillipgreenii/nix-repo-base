@@ -11,7 +11,7 @@ bats_require_minimum_version 1.5.0
 # are pinned by the Go tests there (including a real-nix test of this command line
 # against a real pn). What this file pins is the caller's own contract: the
 # per-clone opt-in key, the exact pn invocation, the one-word verdict with its
-# 0/10/2/127 exit codes, and that it carries no evaluation logic of its own.
+# 0/20/2/127 exit codes, and that it carries no evaluation logic of its own.
 #
 # Every test puts a `pn` SHIM first on PATH. The shim records its argv and working
 # directory and replays stdout, stderr and an exit code from files in $SHIM_DIR.
@@ -112,11 +112,11 @@ _pn_rc() {
 @test "a failed evaluation is eval-failed whether or not the retired key is set" {
   _pn_rc 10
   run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
+  [ "$status" -eq 20 ]
   [ "$output" = "eval-failed" ]
   command git -C "$REPO" config pgii-integrate-branch.preLandEval false
   run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
+  [ "$status" -eq 20 ]
   [ "$output" = "eval-failed" ]
 }
 
@@ -250,12 +250,12 @@ _pn_rc() {
   [[ $stderr == *"pn says hello"* ]]
 }
 
-@test "pn exit 10 (a failed check) is eval-failed, exit 10, with pn's output on stderr" {
+@test "pn exit 10 (a failed check) is eval-failed, exit 20, with pn's output on stderr" {
   _pn_rc 10
   printf '  checks.aarch64-darwin: FAILED\n' >"$SHIM_DIR/pn.out"
   printf 'error: The option `x.dockerState'"'"' does not exist.\n' >"$SHIM_DIR/pn.err"
   run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
+  [ "$status" -eq 20 ]
   [ "$output" = "eval-failed" ]
   [[ $stderr == *"checks.aarch64-darwin: FAILED"* ]]
   [[ $stderr == *"dockerState"* ]]
@@ -294,7 +294,7 @@ _pn_rc() {
 @test "there is no retry: pn runs exactly once, even on failure" {
   _pn_rc 10
   run --separate-stderr sut "$REPO" HEAD
-  [ "$status" -eq 10 ]
+  [ "$status" -eq 20 ]
   [ "$(grep -c '^workspace$' "$SHIM_DIR/argv")" -eq 1 ]
 }
 

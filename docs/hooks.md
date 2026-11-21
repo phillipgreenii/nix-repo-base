@@ -337,7 +337,7 @@ pre-land-eval [--no-ifd] <repo-path> <ref>
 | Stdout (exactly one line) | Exit | Meaning                                                                                              |
 | ------------------------- | ---- | ---------------------------------------------------------------------------------------------------- |
 | `ok`                      | 0    | every evaluated set evaluated cleanly                                                                |
-| `eval-failed`             | 10   | pn exited 10: a failed evaluation (pn exit 1 is a generic pn failure, reported as exit 2 below)      |
+| `eval-failed`             | 20   | pn exited 10: a failed evaluation (pn exit 1 is a generic pn failure, reported as exit 2 below)      |
 | (nothing)                 | 2    | usage error: a repo path, ref or workspace repo that does not resolve, or pn failed to run (exit 1)  |
 | (nothing)                 | 127  | pn is not installed (`pn not installed on this machine; ask the operator to run pn workspace apply`) |
 

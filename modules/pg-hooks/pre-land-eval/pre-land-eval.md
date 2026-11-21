@@ -21,4 +21,4 @@
 
 `pn workspace flake-check --no-build {{repo-or-path}}`
 
-- Exit codes: `0` ok, `10` eval-failed (pn exited 10; there is no retry and no inconclusive class), `2` usage error, an unresolvable ref, a repo that is no workspace member, or a check that could not run (pn exited 1, its generic error, or any code other than 0, 2 and 10), `127` pn is not installed.
+- Exit codes: `0` ok, `20` eval-failed (pn exited 10; there is no retry and no inconclusive class), `2` usage error, an unresolvable ref, a repo that is no workspace member, or a check that could not run (pn exited 1, its generic error, or any code other than 0, 2 and 10), `127` pn is not installed.
