@@ -634,6 +634,33 @@
               ];
             };
 
+            # Heavy real-git gate for pn's internal/workspace: the hook-bundle gate and
+            # state-reader tests, the real-git rebase restore test and the doctor
+            # convergence test (`*_integration_test.go`, `//go:build integration`) each
+            # build real git fixtures and cost about a third of the package's unit time,
+            # so they sit outside the unit gate `pn-go-tests` (ADR 0024: a build-tagged
+            # suite MUST have its own gate, and an integration suite MUST NOT be under
+            # `checks`); run on demand with
+            # `nix build .#integration-checks.pn-workspace-integration-tests`. The
+            # package's other tests still run in `pn-go-tests`.
+            pn-workspace-integration-tests = goBuilders.mkGoTest {
+              pname = "pn-workspace-integration";
+              src = ./modules/pn;
+              gomod2nixToml = ./modules/pn/gomod2nix.toml;
+              testDeps = [
+                pkgs.git
+                pkgs.nix
+                pkgs.bash
+              ];
+              testFlags = [
+                "-tags"
+                "integration"
+                "-count=1"
+                "-run"
+                "TestInstallGate_|TestInstallSetHooks_|TestReadHookBundleState_|TestInstallHookUpToDate|TestRebase_RealGit_|TestDoctor_ConvergesAfterFix"
+              ];
+            };
+
             # Real-bd gate for pg-go-mutate-tui: the internal/beads tests that run a
             # real `bd init` (embedded dolt) in a throwaway git repo plus several bd
             # subprocesses (`realbd_test.go`, `//go:build integration`; about 10 s each

@@ -1,4 +1,8 @@
-// internal/workspace/doctor_convergence_test.go
+//go:build integration
+
+// Heavy real-git tests moved out of the unit gate: each builds real git
+// fixtures. They run in integration-checks.pn-workspace-integration-tests.
+
 package workspace
 
 import (
