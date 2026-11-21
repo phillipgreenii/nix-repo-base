@@ -141,6 +141,18 @@ Sibling repos' evaluation tests MUST import it instead of writing inline stubs, 
 owns the observability stack MUST import the same module rather than declaring the options again
 (two declarations fail the machine build).
 
+The module is exported as the path `darwinModules.alert-contract-options` (a path, not an import,
+so the module system dedupes it). It declares the NEW options for real: `prometheusRuleFiles` and
+`lokiRuleFiles` (list of path, default empty), `alertRunbookDirs` (attribute set of path, default
+empty, keys matching `^[a-z0-9-]+$`), `alertmanager.inhibitionSources` (list of string, each
+matching `^[a-z0-9-]{1,40}$`, default empty) and `runbookBaseUrl` (null or string, default null;
+null means the observability repo falls back to the loopback address of the runbook site). The
+EXISTING options (`alertRuleFiles`, `logSources`, `metricsTargets`) stay declared for real by the
+repo that owns the observability stack, so the shared module MUST NOT declare them. A second
+export, `darwinModules.alert-contract-option-stubs`, imports the first and adds narrow stubs of
+those existing options; it is for standalone evaluation tests of sibling repos only, and a machine
+build MUST NOT import it.
+
 ## Log rules
 
 Log rules are evaluated by Loki's ruler and sent to the standalone Alertmanager. They are NOT
@@ -257,10 +269,18 @@ Cutover, after the consumers can read the standalone Alertmanager:
 - Normalized fingerprint: `<rule_uid>|<sorted k=v of labels minus: __*__, alertname, grafana_folder,
 rule_uid, inhibited_by, escalation, datasource_uid, ref_id, and every Prometheus external_labels
 key>`. (`escalation` is excluded because `pg-router-probe` already strips it while triage keeps
-  it.) `rule_uid` comes from the `rule_uid` label, falling back to `__alert_rule_uid__`. One GOLDEN
-  test-vector file (inputs to expected fingerprint), owned by the repo that owns the connector, MUST
-  be run by every implementation (the Go suite and the deployment repo's triage tests), so the
-  implementations cannot drift.
+  it.) The excluded set also contains the emitter build and instrumentation labels the probe already
+  strips from stored fingerprints (`process_runtime_version`, `process_runtime_name`,
+  `process_runtime_description`, `service_version`, `otel_scope_name`, `otel_scope_version`,
+  `telemetry_sdk_name`, `telemetry_sdk_version`, `telemetry_sdk_language`), so an issue filed by the
+  probe before the cutover still matches. The format is `<rule_uid>|` followed by the kept
+  `k=v` pairs sorted by key and joined with `,`, with no escaping of values (a value containing a
+  comma is handled by the golden vectors). `rule_uid` comes from the `rule_uid` label, falling back
+  to `__alert_rule_uid__`. One GOLDEN test-vector file (inputs to expected fingerprint, and the
+  excluded label set), owned by the repo that owns the connector, MUST be run by every
+  implementation (the Go suite and the deployment repo's triage tests), so the implementations
+  cannot drift. It lives at `packages/pg-connector/testdata/alert-fingerprint-vectors.json` in that
+  repo.
 - Match-time normalization, no migration. Both consumers MUST compare `normalize(stored)` (primary
   and every alias) against `normalize(live)`, and MUST write the normalized form on new issues. An
   issue filed at any point before or after the cutover matches from either source, so there is no
@@ -339,6 +359,16 @@ module plus option stubs.
 | C6    | Port record: every uid on the repo's `ported` list is a Prometheus or Loki `rule_uid` AND has a Grafana delete entry (the launchd-health generator is exempt); every Prometheus or Loki `rule_uid` is on `ported` or `new-rules`; no uid is both a Grafana rule and a ported rule.              |
 | C7    | Baseline equivalence and static field diff (R7).                                                                                                                                                                                                                                                |
 | C8    | `promtool test rules` (and the shared log-rule harness) actually RUN over every registered file's tests, and every `rule_uid` has at least one non-empty and one empty `exp_alerts` (log rules: a firing and a not-firing fixture), plus the no-data cases where they apply. C1 is syntax only. |
+
+Port record. Each producing repo keeps ONE JSON file, `alerting/port-record.json`, with the keys
+`ported`, `new-rules`, `retired` and `undocumented`. Each is an array whose entries are either a
+`rule_uid` string or a TEMPLATE object `{"template": "<name>"}`; a `retired` entry is an object
+`{"uid": "<uid>", "reason": "<one line>"}` (or a template object) and MUST also have a Grafana
+delete entry, as `ported` does. `undocumented` additionally carries an integer `ceiling`, the
+maximum allowed number of entries: C4 fails when the list is longer than `ceiling` or names a rule
+that already has a runbook, so the list only shrinks and raising `ceiling` shows in review. C6
+finds Grafana delete entries as the `deleteRules[].uid` values of the repo's registered Grafana
+provisioning files.
 
 Generated rule sets (launchd-health, logsource-health, mysql-probe, and any template whose uids are
 hashed per instance from machine configuration): `ported`, `new-rules`, `retired`, C7 and C8 MUST
