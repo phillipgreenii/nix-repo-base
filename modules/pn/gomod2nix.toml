@@ -172,8 +172,8 @@ cachePackages = [
     hash = 'sha256-5H8+UOtPOs+Yc+8oVT/3bugCCdbq3jFMH6eOW8dadyg='
 
   [mod.'github.com/phillipgreenii/x']
-    version = 'v0.0.0-20261115093702-f0029ade8234'
-    hash = 'sha256-Zg8MtdUqGCVu1L5O2wXiCH3PH4w1QB7baWy8eg5bSJw='
+    version = 'v0.0.0-20261116135148-eeb0d0a38aa9'
+    hash = 'sha256-SXBRwCYFj4cSm5AATqrnxq6UaO7+VqJc1IXlHPZR5mU='
 
   [mod.'github.com/spf13/cobra']
     version = 'v1.10.2'

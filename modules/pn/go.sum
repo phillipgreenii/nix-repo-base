@@ -33,8 +33,8 @@ github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee h1:W5t00kpgFd
 github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
 github.com/pelletier/go-toml/v2 v2.3.1 h1:MYEvvGnQjeNkRF1qUuGolNtNExTDwct51yp7olPtrEc=
 github.com/pelletier/go-toml/v2 v2.3.1/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
-github.com/phillipgreenii/x v0.0.0-20261115093702-f0029ade8234 h1:N7/wi2KUoaa3MaeYpjVcLx4xip1dA9fRkSr3ZPGgDw4=
-github.com/phillipgreenii/x v0.0.0-20261115093702-f0029ade8234/go.mod h1:G5pSXknsdpB35v2s4dYIsXRgEoXVJVQX4N9J+eHVAiM=
+github.com/phillipgreenii/x v0.0.0-20261116135148-eeb0d0a38aa9 h1:QAXrNIWXUbybpyqYU4x/rSDWXKD4gB3LGnzblmE3gQ8=
+github.com/phillipgreenii/x v0.0.0-20261116135148-eeb0d0a38aa9/go.mod h1:G5pSXknsdpB35v2s4dYIsXRgEoXVJVQX4N9J+eHVAiM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
 github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=

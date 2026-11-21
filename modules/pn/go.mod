@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/pelletier/go-toml/v2 v2.3.1
-	github.com/phillipgreenii/x v0.0.0-20261115093702-f0029ade8234
+	github.com/phillipgreenii/x v0.0.0-20261116135148-eeb0d0a38aa9
 	github.com/spf13/cobra v1.10.2
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/metric v1.46.0

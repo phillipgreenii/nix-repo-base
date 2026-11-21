@@ -83,8 +83,14 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("XDG_STATE_HOME", stateDir); err != nil {
 		panic("realgit_test TestMain: os.Setenv XDG_STATE_HOME: " + err.Error())
 	}
+	tplRoot, err := os.MkdirTemp("", "pn-workspace-test-repotpl-")
+	if err != nil {
+		panic("realgit_test TestMain: MkdirTemp: " + err.Error())
+	}
+	repoTemplatesRoot = tplRoot
 	code := m.Run()
 	_ = os.RemoveAll(stateDir)
+	_ = os.RemoveAll(tplRoot)
 	os.Exit(code)
 }
 
@@ -242,14 +248,11 @@ func initRealRepo(t *testing.T, dir string) {
 	// that already exists, so park the existing entries aside, create the repo,
 	// and restore them so the initial commit still contains them.
 	held := holdExistingEntries(t, dir)
-	r := newFixtureRepo(t, dir)
+	r := newTemplateRepo(t, dir)
 	for _, name := range held.names {
 		if err := os.Rename(filepath.Join(held.dir, name), filepath.Join(r.Dir, name)); err != nil {
 			t.Fatalf("initRealRepo(%s): restoring %s: %v", dir, name, err)
 		}
-	}
-	if _, err := r.Commit(t.Context(), "init", map[string]string{"README.md": "init\n"}); err != nil {
-		t.Fatalf("initRealRepo(%s): %v", dir, err)
 	}
 	if _, err := r.Client.Run(t.Context(), "add", "."); err != nil {
 		t.Fatalf("initRealRepo(%s): staging pre-existing files: %v", dir, err)
@@ -259,6 +262,56 @@ func initRealRepo(t *testing.T, dir string) {
 			t.Fatalf("initRealRepo(%s): committing pre-existing files: %v", dir, err)
 		}
 	}
+}
+
+// repoTemplates holds one prebuilt x/gitfixture template per repository
+// directory name (a template bakes the name into its layout). Each is built at
+// most once per test binary: an unborn fixture repo plus the "init" commit of
+// README.md that initRealRepo promises. newTemplateRepo copies it, so a test
+// pays a directory copy and a couple of git config calls instead of a git init
+// plus config plus commit per repo.
+var (
+	repoTemplatesMu   sync.Mutex
+	repoTemplates     = map[string]*gitfixture.Template{}
+	repoTemplatesRoot string // set by TestMain; removed after the run
+)
+
+// templateFor returns the template for repository name, building it on first use.
+func templateFor(t *testing.T, name string) *gitfixture.Template {
+	t.Helper()
+	repoTemplatesMu.Lock()
+	defer repoTemplatesMu.Unlock()
+	if tpl, ok := repoTemplates[name]; ok {
+		return tpl
+	}
+	tpl, err := gitfixture.NewTemplate(context.Background(),
+		filepath.Join(repoTemplatesRoot, name), gitfixture.RepoOptions{Suite: "template", Name: name},
+		func(ctx context.Context, r *gitfixture.Repo) error {
+			_, err := r.Commit(ctx, "init", map[string]string{"README.md": "init\n"})
+			return err
+		})
+	if err != nil {
+		t.Fatalf("templateFor(%s): %v", name, err)
+	}
+	repoTemplates[name] = tpl
+	return tpl
+}
+
+// newTemplateRepo is newFixtureRepo's cheap twin: it copies the prebuilt
+// template (one "init" commit adding README.md on main) to dir, registers the
+// copy so runGitT resolves dir to its hermetic client, and drops the hooksPath
+// redirect for the same reason newFixtureRepo does. dir MUST NOT exist yet.
+func newTemplateRepo(t *testing.T, dir string) *gitfixture.Repo {
+	t.Helper()
+	r, err := templateFor(t, filepath.Base(dir)).NewRepo(t.Context(), filepath.Dir(dir), t.Name())
+	if err != nil {
+		t.Fatalf("newTemplateRepo(%s): %v", dir, err)
+	}
+	registerFixture(t, r)
+	if _, err := r.Client.Run(t.Context(), "config", "--unset", "core.hooksPath"); err != nil {
+		t.Fatalf("newTemplateRepo(%s): unsetting core.hooksPath: %v", dir, err)
+	}
+	return r
 }
 
 // heldEntries is a directory's top-level entries moved out of the way.
