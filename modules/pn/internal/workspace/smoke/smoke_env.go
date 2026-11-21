@@ -186,3 +186,35 @@ func overrideEnv(env, extra []string) []string {
 	}
 	return append(out, extra...)
 }
+
+// tempDirTB is the slice of testing.TB that preservedTempDir needs; a small
+// interface so the preservation behavior can be unit tested with a fake.
+type tempDirTB interface {
+	Helper()
+	Name() string
+	Failed() bool
+	Cleanup(func())
+	Logf(format string, args ...any)
+	Fatalf(format string, args ...any)
+}
+
+// preservedTempDir returns a fresh scratch directory that is removed when the
+// test passes and left on disk when it fails (its path is logged). t.TempDir
+// cannot do this: it registers its own RemoveAll, which runs after any cleanup
+// the caller adds, so a "preserved" directory was deleted anyway.
+func preservedTempDir(t tempDirTB) string {
+	t.Helper()
+	pattern := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()) + "*"
+	dir, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("preserved temp dir: %s", dir)
+			return
+		}
+		_ = os.RemoveAll(dir)
+	})
+	return dir
+}

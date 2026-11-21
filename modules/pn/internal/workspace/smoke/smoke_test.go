@@ -614,15 +614,8 @@ func runScenarioEnv(t *testing.T, name string, extraEnv []string) {
 	// flake check HAS a working nix but no network.
 	skipScenarioIfNetworkUnavailable(t, scenarioDir)
 
-	// Create a fresh temp workspace for this scenario.
-	wsRoot := t.TempDir()
-
-	// On failure, preserve the temp dir and log its path.
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("preserved temp dir: %s", wsRoot)
-		}
-	})
+	// Create a fresh temp workspace for this scenario; it survives a failure.
+	wsRoot := preservedTempDir(t)
 
 	// Build a scrubbed env for all subprocesses in this scenario.
 	// Using buildScrubbedEnv (not t.Setenv) so t.Parallel() is safe.
@@ -733,6 +726,10 @@ func runScenarioEnv(t *testing.T, name string, extraEnv []string) {
 
 	// Run scenario-specific extra assertions.
 	runExtraAssertions(t, name, scenarioDir, wsRoot, pnBin, env, lastResult, preCommandHashes)
+	if t.Failed() {
+		t.Logf("last command output (extra assertions ran after it)\nstdout: %s\nstderr: %s",
+			lastResult.Stdout, lastResult.Stderr)
+	}
 }
 
 // runExtraAssertions dispatches to per-scenario assertion hooks that cannot be

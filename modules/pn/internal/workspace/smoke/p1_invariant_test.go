@@ -37,12 +37,7 @@ import (
 func TestSmoke_P1Invariant(t *testing.T) {
 	pnBin := getPNBin(t)
 
-	wsRoot := t.TempDir()
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("preserved temp dir: %s", wsRoot)
-		}
-	})
+	wsRoot := preservedTempDir(t)
 
 	// Canonical-root env: PN_WORKSPACE_ROOT = wsRoot.
 	rootEnv := buildScrubbedEnv(t, wsRoot)
