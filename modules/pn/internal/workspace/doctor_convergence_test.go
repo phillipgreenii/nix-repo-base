@@ -12,6 +12,7 @@ import (
 )
 
 func TestDoctor_ConvergesAfterFix(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	// Two repos with bare remotes; "term" is the terminal.

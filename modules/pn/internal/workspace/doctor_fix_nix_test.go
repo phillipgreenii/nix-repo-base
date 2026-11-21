@@ -35,6 +35,7 @@ func consumerFlakeLock(rev string) string {
 // the fresh rev; the fix must run nix flake update --refresh and COMMIT the bump
 // so the consumer's flake.lock now pins the new rev on a clean tree.
 func TestDoctorFix_FlakeLockFreshRelocksViaNix(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	const oldRev = "1111111111111111111111111111111111111111"
 	const newRev = "2222222222222222222222222222222222222222"

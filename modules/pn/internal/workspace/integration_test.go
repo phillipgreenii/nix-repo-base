@@ -145,6 +145,7 @@ url = "github:o/base"
 // Three cloned repos with no pn-workspace.toml → Init writes config
 // → WriteDerivedLock builds full lock → Rebase runs in topo order.
 func TestIntegration_FromDiscovery_InitLockRebase(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	// Create git repos (with .git dirs) for discovery.

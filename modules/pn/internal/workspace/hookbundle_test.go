@@ -119,6 +119,7 @@ func TestReadHookBundleState_NotARepoIsAnError(t *testing.T) {
 }
 
 func TestReadHookBundleState_PresentReadsDirectly(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	pg := writeFakeBundle(t, dir, hbBundleOpts{})
 	info := wantState(t, dir, HookBundlePresent)
@@ -131,6 +132,7 @@ func TestReadHookBundleState_PresentReadsDirectly(t *testing.T) {
 }
 
 func TestReadHookBundleState_MissingWithNoBundle(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	wantState(t, dir, HookBundleMissing)
 }
@@ -138,6 +140,7 @@ func TestReadHookBundleState_MissingWithNoBundle(t *testing.T) {
 // R4: there is no legacy state. A clone that holds only an old
 // .pre-commit-config.yaml reads missing, however usable the file is.
 func TestReadHookBundleState_OldConfigIsNotABundle(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
 	wantState(t, dir, HookBundleMissing)
@@ -153,6 +156,7 @@ func TestReadHookBundleState_OldConfigIsNotABundle(t *testing.T) {
 }
 
 func TestReadHookBundleState_DanglingBundleIsMissing(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	pg := writeFakeBundle(t, dir, hbBundleOpts{})
 	// The GC root's target was collected: bin/pg-hooks-run is gone.
@@ -163,6 +167,7 @@ func TestReadHookBundleState_DanglingBundleIsMissing(t *testing.T) {
 }
 
 func TestReadHookBundleState_Broken(t *testing.T) {
+	t.Parallel()
 	t.Run("prek not executable", func(t *testing.T) {
 		dir := hbRepo(t)
 		pg := writeFakeBundle(t, dir, hbBundleOpts{})
@@ -202,6 +207,7 @@ func TestReadHookBundleState_Broken(t *testing.T) {
 }
 
 func TestReadHookBundleState_StaleStampUsesTheIndex(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFakeBundle(t, dir, hbBundleOpts{})
 
@@ -218,6 +224,7 @@ func TestReadHookBundleState_StaleStampUsesTheIndex(t *testing.T) {
 }
 
 func TestReadHookBundleState_UnrelatedEditOutsideStampInputsIsPresent(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFakeBundle(t, dir, hbBundleOpts{})
 	writeFile(t, filepath.Join(dir, "other.nix"), "{}\n")
@@ -226,6 +233,7 @@ func TestReadHookBundleState_UnrelatedEditOutsideStampInputsIsPresent(t *testing
 }
 
 func TestReadHookBundleState_StampPathsFromMeta(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFile(t, filepath.Join(dir, "hooks.nix"), "{}\n")
 	runGitT(t, dir, "add", "hooks.nix")
@@ -238,6 +246,7 @@ func TestReadHookBundleState_StampPathsFromMeta(t *testing.T) {
 }
 
 func TestReadHookBundleState_NoTrackedStampInputsIsNeverStale(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFakeBundle(t, dir, hbBundleOpts{Stamp: "unknown"})
 	runGitT(t, dir, "rm", "-q", "--cached", "flake.lock", "flake.nix")
@@ -294,12 +303,14 @@ func TestReadHookBundleState_Overrides(t *testing.T) {
 }
 
 func TestReadHookBundleState_Relocated(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFakeBundle(t, dir, hbBundleOpts{ClonePath: "/somewhere/else/.git"})
 	wantState(t, dir, HookBundleRelocated)
 }
 
 func TestReadHookBundleState_RelocatedSurvivesSymlinkedPrefix(t *testing.T) {
+	t.Parallel()
 	// The recorded clone_path names the clone through a symlinked prefix; the
 	// bundle is NOT relocated.
 	dir := hbRepo(t)
@@ -312,6 +323,7 @@ func TestReadHookBundleState_RelocatedSurvivesSymlinkedPrefix(t *testing.T) {
 }
 
 func TestReadHookBundleState_Unreachable(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFakeBundle(t, dir, hbBundleOpts{})
 	runGitT(t, dir, "config", "--local", "core.hooksPath", ".githooks")
@@ -326,12 +338,14 @@ func TestReadHookBundleState_Unreachable(t *testing.T) {
 }
 
 func TestReadHookBundleState_UnreachableWithoutBundle(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	runGitT(t, dir, "config", "--local", "core.hooksPath", ".githooks")
 	wantState(t, dir, HookBundleUnreachable)
 }
 
 func TestReadHookBundleState_PrecedenceRelocatedOverUnreachableOverBroken(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	pg := writeFakeBundle(t, dir, hbBundleOpts{ClonePath: "/moved/.git"})
 	if err := os.Chmod(filepath.Join(pg, "gen-1", "bundle", "bin", "prek"), 0o644); err != nil {
@@ -350,6 +364,7 @@ func TestReadHookBundleState_PrecedenceRelocatedOverUnreachableOverBroken(t *tes
 }
 
 func TestReadHookBundleState_BrokenWinsOverStale(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	pg := writeFakeBundle(t, dir, hbBundleOpts{Stamp: "deadbeef"})
 	wantState(t, dir, HookBundleStale)
@@ -360,6 +375,7 @@ func TestReadHookBundleState_BrokenWinsOverStale(t *testing.T) {
 }
 
 func TestReadHookBundleState_LinkedWorktreeSharedAndPrivate(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	shared := writeFakeBundle(t, dir, hbBundleOpts{})
 	wt := filepath.Join(filepath.Dir(dir), "wt")
@@ -388,6 +404,7 @@ func TestReadHookBundleState_LinkedWorktreeSharedAndPrivate(t *testing.T) {
 }
 
 func TestReadHookBundleState_WorktreeDefinitionsDifferFromSharedBundle(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFakeBundle(t, dir, hbBundleOpts{})
 	wt := filepath.Join(filepath.Dir(dir), "wt")

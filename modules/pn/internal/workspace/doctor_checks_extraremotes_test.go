@@ -32,6 +32,7 @@ func extraRemotesWorkspace(t *testing.T) (ws *Workspace, dir, originURL string) 
 // same silence branch-synced already gives it, since that remote is excluded
 // from "extra" by construction (it canonicalURL-matches the declared URL).
 func TestCheckExtraRemotesSynced_OnlyTomlRemoteProducesNoFindings(t *testing.T) {
+	t.Parallel()
 	ws, _, _ := extraRemotesWorkspace(t)
 
 	fs := ws.checkExtraRemotesSynced(context.Background(), &doctorEnv{ws: ws, mode: "primary"})
@@ -45,6 +46,7 @@ func TestCheckExtraRemotesSynced_OnlyTomlRemoteProducesNoFindings(t *testing.T) 
 // remote whose HEAD matches local HEAD is genuinely fine and must not be
 // flagged.
 func TestCheckExtraRemotesSynced_ExtraRemoteInSyncProducesNoFinding(t *testing.T) {
+	t.Parallel()
 	ws, dir, _ := extraRemotesWorkspace(t)
 	setupLocalBareRemoteNamed(t, dir, "synfra") // pushes current HEAD to synfra too
 
@@ -60,6 +62,7 @@ func TestCheckExtraRemotesSynced_ExtraRemoteInSyncProducesNoFinding(t *testing.T
 // pushes to it via pn's own resolved push remote. Must surface a Skipped
 // (never hard-failing) finding that names the remote.
 func TestCheckExtraRemotesSynced_ExtraRemoteBehindIsSkippedFindingNamingIt(t *testing.T) {
+	t.Parallel()
 	ws, dir, _ := extraRemotesWorkspace(t)
 	setupLocalBareRemoteNamed(t, dir, "synfra") // in sync at this point
 	addCommit(t, dir, "extra.txt", "more\n", "advance past synfra")
@@ -80,6 +83,7 @@ func TestCheckExtraRemotesSynced_ExtraRemoteBehindIsSkippedFindingNamingIt(t *te
 // unreachable mirror) -- must degrade to a Skipped finding, not a crash or a
 // false "in sync".
 func TestCheckExtraRemotesSynced_UnresolvableExtraRemoteIsSkippedFindingNoCrash(t *testing.T) {
+	t.Parallel()
 	ws, dir, _ := extraRemotesWorkspace(t)
 	runGitT(t, dir, "remote", "add", "bitbucket", filepath.Join(t.TempDir(), "does-not-exist.git"))
 
@@ -100,6 +104,7 @@ func TestCheckExtraRemotesSynced_UnresolvableExtraRemoteIsSkippedFindingNoCrash(
 // own offline behavior: no network call (not even a local-path ls-remote) is
 // attempted offline, so a behind extra remote produces nothing while offline.
 func TestCheckExtraRemotesSynced_OfflineSkipsEntirely(t *testing.T) {
+	t.Parallel()
 	ws, dir, _ := extraRemotesWorkspace(t)
 	setupLocalBareRemoteNamed(t, dir, "synfra")
 	addCommit(t, dir, "extra.txt", "more\n", "advance past synfra")
@@ -114,6 +119,7 @@ func TestCheckExtraRemotesSynced_OfflineSkipsEntirely(t *testing.T) {
 // itself, which checkBranches' doc comment says is "dropped" in worktree
 // mode -- this check follows the same primary-only applicability.
 func TestCheckExtraRemotesSynced_WorktreeModeSkipsEntirely(t *testing.T) {
+	t.Parallel()
 	ws, dir, _ := extraRemotesWorkspace(t)
 	setupLocalBareRemoteNamed(t, dir, "synfra")
 	addCommit(t, dir, "extra.txt", "more\n", "advance past synfra")

@@ -11,6 +11,7 @@ import (
 )
 
 func TestCheckBranches_WrongBranchIsError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
@@ -45,6 +46,7 @@ func TestCheckBranches_DirtyIsErrorPrimaryWarningWorktree(t *testing.T) {
 }
 
 func TestCheckBranches_AheadOfRemoteIsError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
@@ -64,6 +66,7 @@ func TestCheckBranches_AheadOfRemoteIsError(t *testing.T) {
 }
 
 func TestCheckBranches_AheadOnlyIsFixableByPush(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
@@ -110,6 +113,7 @@ func TestCheckBranches_AheadOnlyIsFixableByPush(t *testing.T) {
 // Item 2: worktree-mode branch-uniform. When all present members share one
 // branch AND that branch equals the set-dir name, there are no findings.
 func TestCheckBranchUniform_UniformMatchingSetDirIsClean(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "my-feature") // set-dir name is "my-feature"
 	a := filepath.Join(root, "a")
@@ -134,6 +138,7 @@ func TestCheckBranchUniform_UniformMatchingSetDirIsClean(t *testing.T) {
 // A uniform branch that DIFFERS from the set-dir name is a naming-hygiene warning
 // (not an error): the members agree, but the set dir was named differently.
 func TestCheckBranchUniform_UniformDifferingFromSetDirIsWarning(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "set-dir-name")
 	a := filepath.Join(root, "a")
@@ -162,6 +167,7 @@ func TestCheckBranchUniform_UniformDifferingFromSetDirIsWarning(t *testing.T) {
 // Non-uniform members (each on a different branch) are branch-uniform ERRORS,
 // one per member, since worktree-set members must share one branch.
 func TestCheckBranchUniform_NonUniformIsPerMemberError(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "feature")
 	a := filepath.Join(root, "a")
@@ -197,6 +203,7 @@ func findBranchSynced(fs []Finding, repo string) *Finding {
 // still be classified ahead-only and fixable via push, with a manual hint that
 // names the resolved remote — not a hardcoded, nonexistent "origin".
 func TestCheckBranches_AheadOnlyHonorsNonOriginRemote(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
@@ -246,6 +253,7 @@ func TestCheckBranches_AheadOnlyHonorsNonOriginRemote(t *testing.T) {
 // it correctly ahead-only. (Regression guard: the classification must not read
 // origin/<branch>, which a failed/stale fetch could leave inconsistent.)
 func TestCheckBranches_ClassifiesAgainstTriggerRef(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
@@ -281,6 +289,7 @@ func TestCheckBranches_ClassifiesAgainstTriggerRef(t *testing.T) {
 // with a rebase hint. Guards against a regression that adds --force or collapses
 // the switch so a diverged repo is treated as ahead-only (fast-forward push).
 func TestCheckBranches_DivergedStaysManualRebase(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)
@@ -325,6 +334,7 @@ func TestCheckBranches_DivergedStaysManualRebase(t *testing.T) {
 // stale ref) can still lead the fix to attempt a push the server rejects; the
 // safety property is that pushBranch returns an error (no --force).
 func TestCheckBranches_RejectedPushSurfacesAsError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)

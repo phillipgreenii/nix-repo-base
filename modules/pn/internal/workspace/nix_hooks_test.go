@@ -420,6 +420,7 @@ func bundleHookWS(t *testing.T, attr string) (*Workspace, string) {
 // a clone that holds only an old .pre-commit-config.yaml symlink (R4: reads
 // missing), must run the installer.
 func TestInstallHookUpToDate(t *testing.T) {
+	t.Parallel()
 	t.Run("not a git work tree", func(t *testing.T) {
 		if installHookUpToDate(t.Context(), t.TempDir()) {
 			t.Error("a non-repo directory must run the installer")

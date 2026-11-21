@@ -180,6 +180,7 @@ func TestPreCommitCheck_OldConfigRepoRunsPgHooksNotPrek(t *testing.T) {
 }
 
 func TestPreCommitCheck_BundleRepoRunsPgHooks(t *testing.T) {
+	t.Parallel()
 	w, f, foo := preCommitCheckRepo(t)
 	writeFakeBundle(t, foo, hbBundleOpts{})
 	// A leftover old config must not pull a bundle repo back to prek.
@@ -209,6 +210,7 @@ func TestPreCommitCheck_NoBundleNoConfigRunsPgHooks(t *testing.T) {
 }
 
 func TestPreCommitCheck_NeverRunsPreCommit(t *testing.T) {
+	t.Parallel()
 	// Every shape (bundle, old config only, nothing, not a git tree) avoids
 	// `pre-commit` and `prek`.
 	root := t.TempDir()

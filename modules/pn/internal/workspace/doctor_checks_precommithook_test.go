@@ -20,6 +20,7 @@ import (
 // reported as having no hook bundle, as a hard error, not as a Skipped legacy
 // finding.
 func TestCheckPreCommitHookLive_OldConfigOnlyIsNoBundleError(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
 	hbWantError(t, hbRunLive(ws), "no hook bundle", "(cd "+dir+" && nix run .#install-pre-commit-hooks)")
@@ -30,6 +31,7 @@ func TestCheckPreCommitHookLive_OldConfigOnlyIsNoBundleError(t *testing.T) {
 // to having its hooks installed, so nothing is asserted about it, whatever it
 // holds on disk.
 func TestCheckPreCommitHookLive_UndeclaredRepoIsNotAudited(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, false)
 	writeFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos: []\n")
 	if fs := hbRunLive(ws); len(fs) != 0 {

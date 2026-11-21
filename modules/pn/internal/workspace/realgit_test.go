@@ -354,6 +354,7 @@ func dirtyTrackedFile(t *testing.T, dir, file, content string) {
 }
 
 func TestRealGitHelpers(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "repo")
 	initRealRepo(t, dir)
 	if b := currentBranch(t, dir); b != "main" {

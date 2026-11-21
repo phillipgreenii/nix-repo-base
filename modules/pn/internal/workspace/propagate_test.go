@@ -232,6 +232,7 @@ func lockWith(sibRev string, lastModified int) string {
 // read/commit flake.lock from the repo root — not stat <dir>/flake.nix/flake.lock
 // (ENOTDIR).
 func TestPropagate_BumpsAndCommitsOnRevChange(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(lockWith("2222222222222222222222222222222222222222", 2))
@@ -268,6 +269,7 @@ func TestPropagate_BumpsAndCommitsOnRevChange(t *testing.T) {
 // commit AND leave a clean tree (so the subsequent rebase + update-locks
 // clean-tree gate are not tripped).
 func TestPropagate_NoCommitOnLastModifiedChurn(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(lockWith("1111111111111111111111111111111111111111", 99)) // same rev, new lastModified
@@ -288,6 +290,7 @@ func TestPropagate_NoCommitOnLastModifiedChurn(t *testing.T) {
 }
 
 func TestPropagate_NoOpWhenUnchanged(t *testing.T) {
+	t.Parallel()
 	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {}} // nix writes nothing
 	ws := &Workspace{runner: r}
@@ -308,6 +311,7 @@ func TestPropagate_NoOpWhenUnchanged(t *testing.T) {
 // in a subdir, so resolveFlakePath returns "nix/flake.nix" and the function must
 // derive "nix" as the flake dir and read/commit "nix/flake.lock".
 func TestPropagate_FlakeInSubdir(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "nix/flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(lockWith("3333333333333333333333333333333333333333", 2))
@@ -375,6 +379,7 @@ func TestPropagate_FlakeRelViaResolveFlakePath(t *testing.T) {
 }
 
 func TestPropagate_EmptyAliasesIsNoOp(t *testing.T) {
+	t.Parallel()
 	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner()}
 	ws := &Workspace{runner: r}
@@ -392,6 +397,7 @@ func TestPropagate_EmptyAliasesIsNoOp(t *testing.T) {
 }
 
 func TestPropagate_NixFailureErrorsCleanly(t *testing.T) {
+	t.Parallel()
 	dir, _ := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	r := &fsNixRunner{real: exec.NewRealRunner(), nixErr: fmt.Errorf("boom")}
 	ws := &Workspace{runner: r}
@@ -426,6 +432,7 @@ func TestPropagate_NixFailureErrorsCleanly(t *testing.T) {
 // below used to pin the BUG — flake.lock left staged-but-uncommitted after
 // the failed commit — and now pins the fix instead (assertCleanTree).
 func TestPropagate_CommitFailsUnderMissingConfigPreCommitHook(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", lockWith("1111111111111111111111111111111111111111", 1))
 	// Installed AFTER propEnv's init commit so init is not blocked. Mimics
 	// prek's real failure mode: abort whenever no bypass is set — and none

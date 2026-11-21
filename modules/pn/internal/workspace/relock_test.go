@@ -192,6 +192,7 @@ func readFileT(t *testing.T, p string) string {
 }
 
 func TestRelockAll_BumpsAndCommits(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() { writeLock(relockLock(2, map[string]string{"sib": revB})) }}
 	n, _, err := relockRun(t, r, dir, "flake.nix")
@@ -215,6 +216,7 @@ func TestRelockAll_BumpsAndCommits(t *testing.T) {
 }
 
 func TestRelockAll_NoCommitOnLastModifiedChurn(t *testing.T) {
+	t.Parallel()
 	orig := relockLock(1, map[string]string{"sib": revA})
 	dir, writeLock := propEnv(t, "flake.nix", orig)
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() { writeLock(relockLock(99, map[string]string{"sib": revA})) }}
@@ -229,6 +231,7 @@ func TestRelockAll_NoCommitOnLastModifiedChurn(t *testing.T) {
 }
 
 func TestRelockAll_NixWroteNothing(t *testing.T) {
+	t.Parallel()
 	dir, _ := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
 	r := &fsNixRunner{real: exec.NewRealRunner()}
 	n, _, err := relockRun(t, r, dir, "flake.nix")
@@ -242,6 +245,7 @@ func TestRelockAll_NixWroteNothing(t *testing.T) {
 }
 
 func TestRelockAll_StructuralOnlyChangeCommits(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", mkLock(`{"sib":"sib"}`, lockedNode("sib", revA, 1)))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(mkLock(`{"sib":"sib","f":["sib","x"]}`, lockedNode("sib", revA, 1)))
@@ -259,6 +263,7 @@ func TestRelockAll_StructuralOnlyChangeCommits(t *testing.T) {
 }
 
 func TestRelockAll_NewInputCommits(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(relockLock(1, map[string]string{"sib": revA, "newin": revC}))
@@ -276,6 +281,7 @@ func TestRelockAll_NewInputCommits(t *testing.T) {
 }
 
 func TestRelockAll_NoFlakeLockIsNoOp(t *testing.T) {
+	t.Parallel()
 	dir, _ := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
 	if err := os.Remove(filepath.Join(dir, "flake.lock")); err != nil {
 		t.Fatal(err)
@@ -294,6 +300,7 @@ func TestRelockAll_NoFlakeLockIsNoOp(t *testing.T) {
 }
 
 func TestRelockAll_RetriesOnce(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
 	r := &fsNixRunner{real: exec.NewRealRunner(), steps: []nixStep{
 		failStep("unable to download"),
@@ -431,6 +438,7 @@ func TestRelockAll_DisablesFsmonitorForNix(t *testing.T) {
 }
 
 func TestRelockAll_RemovesStaleFsmonitorSocket(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		cfg      *gitAnswer
@@ -522,6 +530,7 @@ func TestRelockAll_NoSpaceAbortsWithoutRetry(t *testing.T) {
 }
 
 func TestRelockAll_CommitFailureRestoresCleanTree(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
 	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'config file not found' >&2\nexit 1\n"), 0o755); err != nil {
@@ -539,6 +548,7 @@ func TestRelockAll_CommitFailureRestoresCleanTree(t *testing.T) {
 }
 
 func TestRelockAll_FlakeInSubdir(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "nix/flake.nix", relockLock(1, map[string]string{"sib": revA}))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() { writeLock(relockLock(2, map[string]string{"sib": revB})) }}
 	n, _, err := relockRun(t, r, dir, "nix/flake.nix")
@@ -578,6 +588,7 @@ func TestRelockAll_GitMutatorFailures(t *testing.T) {
 }
 
 func TestRelockAll_NoSpaceOnRetry(t *testing.T) {
+	t.Parallel()
 	dir, _ := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA}))
 	r := &fsNixRunner{real: exec.NewRealRunner(), steps: []nixStep{failStep("unable to download"), noSpaceStep()}}
 	_, _, err := relockRun(t, r, dir, "flake.nix")
@@ -590,6 +601,7 @@ func TestRelockAll_NoSpaceOnRetry(t *testing.T) {
 }
 
 func TestRelockAll_PrintsSuccessLine(t *testing.T) {
+	t.Parallel()
 	dir, writeLock := propEnv(t, "flake.nix", relockLock(1, map[string]string{"sib": revA, "nixpkgs": revA}))
 	r := &fsNixRunner{real: exec.NewRealRunner(), mutate: func() {
 		writeLock(relockLock(2, map[string]string{"sib": revB, "nixpkgs": revB}))

@@ -1071,6 +1071,7 @@ func depFlakeLockJSON(rev string) string {
 // completely clean (restoreAfterFailedCommit ran, not staged-but-uncommitted),
 // and the returned error names dep as already completed before the abort.
 func TestPush_CommitFailureUnderBrokenHookLeavesRepoCleanAndReportsCompleted(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dep := filepath.Join(root, "dep")
 	consumer := filepath.Join(root, "consumer")

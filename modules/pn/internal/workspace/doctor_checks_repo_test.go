@@ -11,6 +11,7 @@ import (
 )
 
 func TestCheckRepos_MissingNonTerminalIsWarning(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	ws := &Workspace{
 		root: root, runner: exec.NewRealRunner(),
@@ -36,6 +37,7 @@ func TestCheckRepos_MissingNonTerminalIsWarning(t *testing.T) {
 // repos-present finding; the others stay Fixable (so they still render/plan as
 // fixable and clear via the residual re-run) but carry no fix closure.
 func TestCheckRepos_MissingReposShareOneCloneFix(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	ws := &Workspace{
 		root: root, runner: exec.NewRealRunner(),
@@ -106,6 +108,7 @@ func TestCheckRepos_PresentNotGitIsError(t *testing.T) {
 }
 
 func TestCheckRepos_ExtraIsWarning(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	ws := &Workspace{
 		root: root, runner: exec.NewRealRunner(),
@@ -120,6 +123,7 @@ func TestCheckRepos_ExtraIsWarning(t *testing.T) {
 }
 
 func TestCheckRepos_IdentityMismatchIsError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "dep")
 	initRealRepo(t, dir)

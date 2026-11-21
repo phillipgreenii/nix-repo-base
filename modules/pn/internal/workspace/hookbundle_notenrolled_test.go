@@ -29,6 +29,7 @@ func wantHooks(t *testing.T, dir string, state HookBundleState, hooks string) Ho
 }
 
 func TestReadHookBundleState_NoFlakeNoBundleIsNotEnrolled(t *testing.T) {
+	t.Parallel()
 	dir := hbNoFlakeRepo(t)
 	info := wantHooks(t, dir, HookBundleNotEnrolled, HookBundleHooksNA)
 	if info.NotEnrolledReason != "no-flake" {
@@ -37,6 +38,7 @@ func TestReadHookBundleState_NoFlakeNoBundleIsNotEnrolled(t *testing.T) {
 }
 
 func TestReadHookBundleState_FlakeInOneSubdirectoryIsMissing(t *testing.T) {
+	t.Parallel()
 	dir := hbNoFlakeRepo(t)
 	mustMkdir(t, filepath.Join(dir, "nix"))
 	writeFile(t, filepath.Join(dir, "nix", "flake.nix"), "{}\n")
@@ -48,12 +50,14 @@ func TestReadHookBundleState_FlakeInOneSubdirectoryIsMissing(t *testing.T) {
 }
 
 func TestReadHookBundleState_StaleHooksPathOutranksNoFlake(t *testing.T) {
+	t.Parallel()
 	dir := hbNoFlakeRepo(t)
 	runGitT(t, dir, "config", "core.hooksPath", "/nonexistent/old-clone/.git/hooks")
 	wantHooks(t, dir, HookBundleUnreachable, HookBundleHooksSkipped)
 }
 
 func TestReadHookBundleState_OptOutOutranksEveryState(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFakeBundle(t, dir, hbBundleOpts{})
 	runGitT(t, dir, "config", "pg-hooks.enabled", "false")
@@ -66,6 +70,7 @@ func TestReadHookBundleState_OptOutOutranksEveryState(t *testing.T) {
 }
 
 func TestReadHookBundleState_FlagSpellingsAndInvalidValue(t *testing.T) {
+	t.Parallel()
 	dir := hbRepo(t)
 	writeFakeBundle(t, dir, hbBundleOpts{})
 	for _, v := range []string{"False", "0", "no", "off"} {
@@ -101,6 +106,7 @@ func TestReadHookBundleState_HooksKeyPerState(t *testing.T) {
 }
 
 func TestInstallHookUpToDate_NotEnrolledSkipsTheInstaller(t *testing.T) {
+	t.Parallel()
 	t.Run("opted out with no bundle", func(t *testing.T) {
 		dir := hbRepo(t)
 		runGitT(t, dir, "config", "pg-hooks.enabled", "false")

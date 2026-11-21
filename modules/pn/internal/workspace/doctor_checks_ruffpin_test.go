@@ -92,6 +92,7 @@ func writeRuffPackage(t *testing.T, repoDir, pkg, requirement string) {
 // TestCheckRuffPin_MatchingExactPinIsClean is the post-fix steady state
 // (bd pg2-671gg): both packages exact-pinned to the nixpkgs ruff the hooks run.
 func TestCheckRuffPin_MatchingExactPinIsClean(t *testing.T) {
+	t.Parallel()
 	ws, dir := ruffPinWorkspace(t)
 	writeRuffHookConfig(t, dir, ruffHookConfig("0.15.14"))
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff==0.15.14")
@@ -105,6 +106,7 @@ func TestCheckRuffPin_MatchingExactPinIsClean(t *testing.T) {
 // TestCheckRuffPin_StalePinIsError is the regression the check exists for: the
 // next nixpkgs ruff bump moves the hook and leaves the pin behind.
 func TestCheckRuffPin_StalePinIsError(t *testing.T) {
+	t.Parallel()
 	ws, dir := ruffPinWorkspace(t)
 	writeRuffHookConfig(t, dir, ruffHookConfig("0.16.4"))
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff==0.15.14")
@@ -130,6 +132,7 @@ func TestCheckRuffPin_StalePinIsError(t *testing.T) {
 // TestCheckRuffPin_FloatingSpecIsWarning covers the pre-fix state and any
 // regression back to it: an unbounded/`>=` spec a relock can float again.
 func TestCheckRuffPin_FloatingSpecIsWarning(t *testing.T) {
+	t.Parallel()
 	for _, requirement := range []string{"ruff>=0.8.0", "ruff", "ruff~=0.15.0", "ruff==0.15.*"} {
 		t.Run(requirement, func(t *testing.T) {
 			ws, dir := ruffPinWorkspace(t)
@@ -184,6 +187,7 @@ func TestCheckRuffPin_AbsentConfigSkips(t *testing.T) {
 // TestCheckRuffPin_NoRuffDependencyIsSilent — a repo that declares no ruff
 // dependency is outside the invariant, config present or not.
 func TestCheckRuffPin_NoRuffDependencyIsSilent(t *testing.T) {
+	t.Parallel()
 	ws, dir := ruffPinWorkspace(t)
 	writeRuffHookConfig(t, dir, ruffHookConfig("0.15.14"))
 	pkgDir := filepath.Join(dir, "packages", "plain")
@@ -202,6 +206,7 @@ func TestCheckRuffPin_NoRuffDependencyIsSilent(t *testing.T) {
 // check silent on phillipg-nix-repo-base, whose generated config has no ruff
 // hook).
 func TestCheckRuffPin_NoRuffHookIsSilent(t *testing.T) {
+	t.Parallel()
 	ws, dir := ruffPinWorkspace(t)
 	writeRuffHookConfig(t, dir,
 		`{"repos":[{"hooks":[{"entry":"/nix/store/aaaa-treefmt-1.2.3/bin/treefmt","id":"treefmt"}]}]}`)
@@ -215,6 +220,7 @@ func TestCheckRuffPin_NoRuffHookIsSilent(t *testing.T) {
 // TestCheckRuffPin_AmbiguousHookVersionsWarn — two different ruff versions in one
 // config leaves no single pin target, so warn rather than pick one.
 func TestCheckRuffPin_AmbiguousHookVersionsWarn(t *testing.T) {
+	t.Parallel()
 	ws, dir := ruffPinWorkspace(t)
 	writeRuffHookConfig(t, dir,
 		ruffHookConfig("0.15.14")+ruffHookConfig("0.16.4"))
@@ -235,6 +241,7 @@ func TestCheckRuffPin_AmbiguousHookVersionsWarn(t *testing.T) {
 // decoded, not regexed). Both live beside a CORRECT real pin, so a clean result
 // proves the real pin was still read.
 func TestCheckRuffPin_IgnoresPrunedTreesAndComments(t *testing.T) {
+	t.Parallel()
 	ws, dir := ruffPinWorkspace(t)
 	writeRuffHookConfig(t, dir, ruffHookConfig("0.15.14"))
 	writeRuffPackage(t, dir, "pd-schedule-manager", "ruff==0.15.14")

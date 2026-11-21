@@ -18,6 +18,7 @@ func newWS(t *testing.T, root string, repos map[string]RepoConfig) *Workspace {
 }
 
 func TestResolveRefRevs_PrimaryUsesRemote(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "repo-a")
 	initRealRepo(t, dir)
@@ -59,6 +60,7 @@ func TestResolveRefRevs_GithubShorthandResolves(t *testing.T) {
 }
 
 func TestResolveRefRevs_OfflineSkips(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initRealRepo(t, filepath.Join(root, "repo-a"))
 	ws := newWS(t, root, map[string]RepoConfig{"repo-a": {URL: "git@x:o/r.git", Branch: "main"}})
@@ -69,6 +71,7 @@ func TestResolveRefRevs_OfflineSkips(t *testing.T) {
 }
 
 func TestResolveRefRevs_WorktreeUsesLocalHead(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir := filepath.Join(root, "repo-a")
 	initRealRepo(t, dir)

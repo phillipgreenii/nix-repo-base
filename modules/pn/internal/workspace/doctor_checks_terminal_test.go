@@ -85,6 +85,7 @@ func TestCheckTerminal_FollowsViolationIsError(t *testing.T) {
 // this is a fixable error whose fix delegates to WriteDerivedLock (pn workspace
 // lock) and whose manual hint is "pn workspace lock".
 func TestCheckTerminal_FlakePathDriftIsFixableError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dep := filepath.Join(root, "dep")
 	initRealRepo(t, dep) // flake.nix lives at repo root on disk
@@ -122,6 +123,7 @@ func TestCheckTerminal_FlakePathDriftIsFixableError(t *testing.T) {
 
 // No drift: recorded flake_path matches the on-disk resolution → no finding.
 func TestCheckTerminal_FlakePathMatchesIsClean(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dep := filepath.Join(root, "dep")
 	initRealRepo(t, dep)

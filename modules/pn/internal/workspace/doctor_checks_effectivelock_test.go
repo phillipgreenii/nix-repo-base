@@ -42,6 +42,7 @@ func TestEffectiveLockDerivationFinding_ShapeAndMessage(t *testing.T) {
 // effective-lock-derivable Finding for that, distinct from (and in addition
 // to) whatever downstream checks then do with a nil/zero-value lock.
 func TestDoctor_EffectiveLockDerivationFailureIsSurfaced(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	aaa := filepath.Join(root, "aaa")
 	bbb := filepath.Join(root, "bbb")
@@ -104,6 +105,7 @@ func TestDoctor_EffectiveLockDerivationFailureIsSurfaced(t *testing.T) {
 // a workspace whose lock derives cleanly must produce no
 // effective-lock-derivable finding at all.
 func TestDoctor_EffectiveLockDerivationSucceeds_NoFinding(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	term := filepath.Join(root, "term")
 	initRealRepo(t, term)

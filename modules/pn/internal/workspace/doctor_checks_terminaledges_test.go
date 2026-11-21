@@ -10,6 +10,7 @@ import (
 )
 
 func TestCheckTerminalEdges(t *testing.T) {
+	t.Parallel()
 	twoRepos := map[string]RepoConfig{
 		"term": {URL: "github:o/term", Branch: "main"},
 		"dep":  {URL: "github:o/dep", Branch: "main"},

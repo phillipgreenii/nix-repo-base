@@ -33,6 +33,7 @@ func hdWant(t *testing.T, fs []Finding, sev Severity, msg, manual string) {
 }
 
 func TestCheckHookDrift_CleanRepoIsClean(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	hbGoodInstall(t, dir)
 	if fs := hdRun(ws); len(fs) != 0 {
@@ -41,12 +42,14 @@ func TestCheckHookDrift_CleanRepoIsClean(t *testing.T) {
 }
 
 func TestCheckHookDrift_UndeclaredRepoIsStillAudited(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, false)
 	mustMkdir(t, filepath.Join(dir, ".githooks"))
 	hdWant(t, hdRun(ws), SevError, filepath.Join(dir, ".githooks")+" exists", "rm -r "+filepath.Join(dir, ".githooks"))
 }
 
 func TestCheckHookDrift_GithooksDirIsError(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	mustMkdir(t, filepath.Join(dir, ".githooks"))
 	writeFile(t, filepath.Join(dir, ".githooks", "pre-commit"), "#!/bin/sh\n")
@@ -54,6 +57,7 @@ func TestCheckHookDrift_GithooksDirIsError(t *testing.T) {
 }
 
 func TestCheckHookDrift_GithooksFileIsNotADirectory(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	writeFile(t, filepath.Join(dir, ".githooks"), "just a file\n")
 	if fs := hdRun(ws); len(fs) != 0 {
@@ -62,6 +66,7 @@ func TestCheckHookDrift_GithooksFileIsNotADirectory(t *testing.T) {
 }
 
 func TestCheckHookDrift_RelativeLocalHooksPathIsError(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	hbGoodInstall(t, dir)
 	runGitT(t, dir, "config", "--local", "core.hooksPath", ".githooks")
@@ -71,6 +76,7 @@ func TestCheckHookDrift_RelativeLocalHooksPathIsError(t *testing.T) {
 }
 
 func TestCheckHookDrift_AbsoluteHooksPathIsNotDrift(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	hbGoodInstall(t, dir)
 	// The bundle-state check owns an absolute path that bypasses the hooks
@@ -106,6 +112,7 @@ func TestCheckHookDrift_ShadowedRelativeValueStillCounts(t *testing.T) {
 }
 
 func TestCheckHookDrift_HomeRelativeHooksPathIsNotDrift(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	runGitT(t, dir, "config", "--local", "core.hooksPath", "~/hooks")
 	if fs := hdRun(ws); len(fs) != 0 {
@@ -114,6 +121,7 @@ func TestCheckHookDrift_HomeRelativeHooksPathIsNotDrift(t *testing.T) {
 }
 
 func TestCheckHookDrift_HandMadeConfigIsWarning(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	hbGoodInstall(t, dir)
 	p := filepath.Join(dir, ".pre-commit-config.yaml")
@@ -122,6 +130,7 @@ func TestCheckHookDrift_HandMadeConfigIsWarning(t *testing.T) {
 }
 
 func TestCheckHookDrift_HandLinkedConfigIsWarning(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	target := filepath.Join(t.TempDir(), "canonical-config.yaml")
 	writeFile(t, target, "repos: []\n")
@@ -133,6 +142,7 @@ func TestCheckHookDrift_HandLinkedConfigIsWarning(t *testing.T) {
 }
 
 func TestCheckHookDrift_OldGeneratedConfigLinkIsNotDrift(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	// The ADR 0016 symlink into /nix/store (live or dangling) is kept until the
 	// follow-up retires it (ADR 0032, R2).
@@ -146,6 +156,7 @@ func TestCheckHookDrift_OldGeneratedConfigLinkIsNotDrift(t *testing.T) {
 }
 
 func TestCheckHookDrift_LinkedWorktreesAreAudited(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	wt := filepath.Join(filepath.Dir(dir), "wt")
 	runGitT(t, dir, "worktree", "add", "-q", "-b", "feature", wt)
@@ -169,6 +180,7 @@ func TestCheckHookDrift_LinkedWorktreesAreAudited(t *testing.T) {
 }
 
 func TestCheckHookDrift_NonGitRepoDirIsSkipped(t *testing.T) {
+	t.Parallel()
 	ws, dir := hbDoctorWorkspace(t, true)
 	if err := os.RemoveAll(filepath.Join(dir, ".git")); err != nil {
 		t.Fatal(err)

@@ -468,6 +468,7 @@ url = "github:owner/foo"
 // genuinely conflicting ahead-1/behind-1 branch. Rebase must fail, and the
 // repo must be restored (same branch tip, clean tree, no rebase state dir).
 func TestRebase_RealGit_ConflictingDivergedRebaseIsRestored(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pn-workspace.toml"), `
 [repos.foo]

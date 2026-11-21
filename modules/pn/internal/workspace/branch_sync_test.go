@@ -10,6 +10,7 @@ import (
 )
 
 func TestSwitchToDefaultBranch(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "r")
 	initRealRepo(t, dir)
 	runGitT(t, dir, "switch", "-q", "-c", "feature")
@@ -34,6 +35,7 @@ func TestSwitchToDefaultBranch_RefusesDirty(t *testing.T) {
 }
 
 func TestFastForwardIfBehind(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "r")
 	initRealRepo(t, dir)
 	setupLocalBareRemote(t, dir)

@@ -48,6 +48,7 @@ url = "github:owner/c"
 }
 
 func TestResolveRepoKey_ByKey(t *testing.T) {
+	t.Parallel()
 	w, _ := selectFixture(t, true)
 	key, err := w.resolveRepoKey(context.Background(), "b")
 	if err != nil || key != "b" {
@@ -56,6 +57,7 @@ func TestResolveRepoKey_ByKey(t *testing.T) {
 }
 
 func TestResolveRepoKey_AcceptsAPathInsideTheRepoAndItsWorktrees(t *testing.T) {
+	t.Parallel()
 	w, root := selectFixture(t, true)
 	inside := filepath.Join(root, "a", "sub", "dir")
 	if err := os.MkdirAll(inside, 0o755); err != nil {
@@ -74,6 +76,7 @@ func TestResolveRepoKey_AcceptsAPathInsideTheRepoAndItsWorktrees(t *testing.T) {
 }
 
 func TestResolveRepoKey_ResolvesAWorktreeKeptOutsideTheRepoThroughItsCommonDir(t *testing.T) {
+	t.Parallel()
 	w, root := selectFixture(t, true)
 	wt := filepath.Join(t.TempDir(), "elsewhere-wt")
 	runGitT(t, filepath.Join(root, "a"), "worktree", "add", "-q", "-b", "wt-branch", wt)
@@ -84,6 +87,7 @@ func TestResolveRepoKey_ResolvesAWorktreeKeptOutsideTheRepoThroughItsCommonDir(t
 }
 
 func TestResolveRepoKey_RejectsAPathThatIsNoWorkspaceRepo(t *testing.T) {
+	t.Parallel()
 	w, _ := selectFixture(t, true)
 	for _, arg := range []string{"", "nope", t.TempDir()} {
 		_, err := w.resolveRepoKey(context.Background(), arg)

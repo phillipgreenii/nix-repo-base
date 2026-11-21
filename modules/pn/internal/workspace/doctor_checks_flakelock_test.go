@@ -12,6 +12,7 @@ import (
 )
 
 func TestCheckFlakeLockFresh_StaleIsError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	consumer := filepath.Join(root, "consumer")
 	initRealRepo(t, consumer)
@@ -62,6 +63,7 @@ func TestCheckFlakeLockFresh_StaleIsError(t *testing.T) {
 // Skipped=true finding (not a real error and NOT auto-fixable), so the summary
 // reports it as SKIP rather than a spurious stale/fresh verdict.
 func TestCheckFlakeLockFresh_SkippedTargetIsSkippedFinding(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	consumer := filepath.Join(root, "consumer")
 	initRealRepo(t, consumer)

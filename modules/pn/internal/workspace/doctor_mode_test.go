@@ -10,6 +10,7 @@ import (
 )
 
 func TestWorkspaceMode_Primary(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initRealRepo(t, filepath.Join(root, "repo-a"))
 	ws := &Workspace{
@@ -23,6 +24,7 @@ func TestWorkspaceMode_Primary(t *testing.T) {
 }
 
 func TestWorkspaceMode_Worktree(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	canonical := filepath.Join(base, "canonical", "repo-a")
 	initRealRepo(t, canonical)
