@@ -90,7 +90,9 @@ break the ordered-transaction guarantee and cause shared-build contention.
    whose worktree IS present is still only included if its branch is **not**
    an ancestor of its primary (`git merge-base --is-ancestor`) — so a
    landed-but-pending-teardown member (worktree present, already merged) is
-   correctly excluded too, exactly like a fully-torn-down one; subset sets
+   correctly excluded too, exactly like a fully-torn-down one, and so is a
+   member whose branch the lander already deleted while keeping its worktree
+   (`--keep-source-worktree`: branch absent, worktree parked on a placeholder); subset sets
    enumerate from the set's own lock. Any non-zero `pnwf` exit → halt and
    report.
 2. **Land each repo in order (MUST be topological).** For each repo the plan

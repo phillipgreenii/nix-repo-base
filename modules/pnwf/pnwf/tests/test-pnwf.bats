@@ -879,9 +879,28 @@ MOCK
 
   _stage_write_lock repoC
   cd "$SET_DIR"
-  run "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
   [ "$status" -eq 0 ]
-  [ "$output" = "repoC" ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"repoC: landed (branch '$BRANCH' absent"* ]]
+}
+
+@test "land-plan: a worktree parked on a placeholder after the lander deleted the branch is landed" {
+  _stage_init_member repoA
+  _stage_write_lock repoA
+  echo two >"$SET_DIR/repoA/file.txt"
+  command git -C "$SET_DIR/repoA" commit -q -am second
+  command git -C "$CANONICAL_DIR/repoA" merge -q "$BRANCH"
+  # What `pg-git-lander land --keep-source-worktree` leaves behind: the
+  # worktree parked on an idle placeholder, the feature branch deleted.
+  command git -C "$SET_DIR/repoA" checkout -q -b pg-git-lander/idle/repoA
+  command git -C "$CANONICAL_DIR/repoA" branch -q -d "$BRANCH"
+
+  cd "$SET_DIR"
+  run --separate-stderr "$SCRIPT_UNDER_TEST" land-plan "$BRANCH"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"repoA: landed (branch '$BRANCH' absent"* ]]
 }
 
 @test "land-plan: subset lock excludes a physically-present member not in the lock" {

@@ -30,7 +30,9 @@ Subcommands (read-only, implemented):
                      that still need landing (present worktree, neither an
                      ancestor of primary nor patch-equivalent to it), one per
                      line. Absent worktrees (already landed) are skipped; a
-                     landed-equivalent member is skipped and named on stderr.
+                     landed-equivalent member, or one whose branch is absent
+                     (lander deleted it, worktree kept), is skipped and named
+                     on stderr.
   cleanup <branch> [--force-dirty-worktree-removal] [--force-unlanded-branch-removal]
                      Best-effort teardown of <branch>'s set from the
                      canonical clone: removes worktree + branch (via
@@ -648,7 +650,11 @@ worktree is present AND it is neither an ancestor of its primary branch nor
 patch-equivalent to it (git cherry prints no + line and the branch has no
 merge commit: rebased and already landed). An absent worktree is skipped
 (FF-4 already removed it — already landed). A landed-equivalent member is
-skipped from stdout and named on stderr.
+skipped from stdout and named on stderr. A member whose worktree is present
+but whose branch is ABSENT is also treated as landed (the lander deleted the
+branch and kept the worktree, e.g. --keep-source-worktree, parking it on a
+placeholder branch): it is skipped from stdout and named on stderr, matching
+`pnwf cleanup`.
 Never aborts on an absent member branch (guarded).
 HELP
       exit 0
@@ -688,6 +694,11 @@ HELP
     landed) ;;
     landed-equivalent)
       echo "$member: landed-equivalent (patch-equivalent to $primary; nothing to land)" >&2
+      ;;
+    absent)
+      # Same verdict as `pnwf cleanup`: the lander deleted the branch (e.g.
+      # `pg-git-lander land --keep-source-worktree`) and left the worktree.
+      echo "$member: landed (branch '$branch' absent from $member_canonical; worktree awaiting teardown)" >&2
       ;;
     *)
       echo "$member"
