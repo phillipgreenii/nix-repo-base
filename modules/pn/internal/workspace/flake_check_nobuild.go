@@ -53,7 +53,7 @@ const darwinSet = "darwinConfigurations"
 // nixAttrName quotes name for a flake attribute path when it is not a plain identifier.
 func nixAttrName(name string) string {
 	for _, r := range name {
-		if !(r == '-' || r == '_' || r == '\'' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+		if r != '-' && r != '_' && r != '\'' && (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
 			return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name) + `"`
 		}
 	}
