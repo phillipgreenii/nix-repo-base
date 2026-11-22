@@ -626,7 +626,7 @@ func TestPreLandEval_RealNix_ThroughRealPnGivesTheVerdictsTheLandStepReads(t *te
 		t.Errorf("pre-land-eval must log as ff-1c: %v", recs)
 	}
 
-	// A commit that breaks evaluation: eval-failed, exit 10, the error on stderr.
+	// A commit that breaks evaluation: eval-failed, exit 20 (the script's own code; pn itself exited 10), the error on stderr.
 	broken := strings.NewReplacer("@@SIBLING@@", sibling.Dir, "@@SYSTEM@@", e.sys, "@@UNIQ@@", e.uniq).Replace(
 		strings.Replace(fixtureConsumerFlake, `sibling.lib.options ? dockerState`, `sibling.lib.options ? noSuchOption`, 1),
 	)
@@ -634,8 +634,8 @@ func TestPreLandEval_RealNix_ThroughRealPnGivesTheVerdictsTheLandStepReads(t *te
 		t.Fatal(err)
 	}
 	out, se, code = runIn(t, e.scratch, e.env, sut, consumer.Dir, "HEAD")
-	if code != 10 || strings.TrimSpace(out) != "eval-failed" {
-		t.Fatalf("exit %d stdout %q, want exit 10 eval-failed\nstderr:\n%s", code, out, se)
+	if code != 20 || strings.TrimSpace(out) != "eval-failed" {
+		t.Fatalf("exit %d stdout %q, want exit 20 eval-failed\nstderr:\n%s", code, out, se)
 	}
 	if !strings.Contains(se, "dockerState") {
 		t.Errorf("stderr should carry the missing-option error:\n%s", se)
