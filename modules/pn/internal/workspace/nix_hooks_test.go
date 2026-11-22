@@ -426,24 +426,29 @@ func TestInstallHookUpToDate(t *testing.T) {
 			t.Error("a non-repo directory must run the installer")
 		}
 	})
+	// Repos are shared across the subtests that can safely share one (each
+	// repo costs a template copy plus the git calls of writeFakeBundle). The
+	// subtests run sequentially and leave their repo as they found it.
+	noBundle := hbRepo(t) // never gets a bundle
 	t.Run("no bundle", func(t *testing.T) {
-		if installHookUpToDate(t.Context(), hbRepo(t)) {
+		if installHookUpToDate(t.Context(), noBundle) {
 			t.Error("a clone with no bundle must run the installer")
 		}
 	})
 	t.Run("old config symlink only", func(t *testing.T) {
-		dir := hbRepo(t)
-		if err := os.Symlink("/nix/store/deadbeefdeadbeefdeadbeefdeadbeef-gone/config.yaml", filepath.Join(dir, ".pre-commit-config.yaml")); err != nil {
+		link := filepath.Join(noBundle, ".pre-commit-config.yaml")
+		if err := os.Symlink("/nix/store/deadbeefdeadbeefdeadbeefdeadbeef-gone/config.yaml", link); err != nil {
 			t.Fatal(err)
 		}
-		if installHookUpToDate(t.Context(), dir) {
+		t.Cleanup(func() { _ = os.Remove(link) })
+		if installHookUpToDate(t.Context(), noBundle) {
 			t.Error("an old config symlink is not a bundle: the installer must run")
 		}
 	})
+	withBundle := hbRepo(t)
+	writeFakeBundle(t, withBundle, hbBundleOpts{})
 	t.Run("present bundle", func(t *testing.T) {
-		dir := hbRepo(t)
-		writeFakeBundle(t, dir, hbBundleOpts{})
-		if !installHookUpToDate(t.Context(), dir) {
+		if !installHookUpToDate(t.Context(), withBundle) {
 			t.Error("a present bundle must skip the installer")
 		}
 	})
@@ -455,10 +460,8 @@ func TestInstallHookUpToDate(t *testing.T) {
 		}
 	})
 	t.Run("linked worktree with only the shared bundle", func(t *testing.T) {
-		dir := hbRepo(t)
-		writeFakeBundle(t, dir, hbBundleOpts{})
-		wt := filepath.Join(filepath.Dir(dir), "wt")
-		runGitT(t, dir, "worktree", "add", "-q", "-b", "feat", wt)
+		wt := filepath.Join(filepath.Dir(withBundle), "wt")
+		runGitT(t, withBundle, "worktree", "add", "-q", "-b", "feat", wt)
 		if installHookUpToDate(t.Context(), wt) {
 			t.Error("a linked worktree needs its OWN private bundle: the installer must run")
 		}
