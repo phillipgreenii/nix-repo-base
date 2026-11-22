@@ -31,12 +31,18 @@ func (s *scriptRunner) Run(_ context.Context, name string, args []string, opts e
 	return s.fn(name, args)
 }
 
-func (s *scriptRunner) nixCalls() []exec.Call {
+// nixCalls are the nix calls that evaluate a flake output set; the darwin
+// system evaluation is separate (darwinCalls).
+func (s *scriptRunner) nixCalls() []exec.Call { return s.nixCallsWhere(false) }
+
+func (s *scriptRunner) darwinCalls() []exec.Call { return s.nixCallsWhere(true) }
+
+func (s *scriptRunner) nixCallsWhere(darwin bool) []exec.Call {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []exec.Call
 	for _, c := range s.calls {
-		if c.Name == "nix" {
+		if c.Name == "nix" && strings.Contains(strings.Join(c.Args, " "), "#darwinConfigurations.") == darwin {
 			out = append(out, c)
 		}
 	}
@@ -394,4 +400,83 @@ func containsSeq(ss, sub []string) bool {
 		}
 	}
 	return false
+}
+
+func TestFlakeCheckNoBuild_EvaluatesTheHostDarwinSystemSeparatelyAndSkipsWhereAbsent(t *testing.T) {
+	logPath := stateHome(t)
+	w, _ := selectFixture(t, true)
+	w.hostnameFn = func() string { return "fixture-host" }
+	r := withRunner(w, func(name string, args []string) (exec.Result, error) {
+		if strings.Contains(strings.Join(args, " "), "#darwinConfigurations.") {
+			return failNix("error: flake 'git+file:///x' does not provide attribute 'darwinConfigurations.fixture-host.system.drvPath'\n", 1)
+		}
+		return okNix(name, args)
+	})
+	sys, err := nixSystem()
+	if err != nil {
+		t.Skip(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := w.FlakeCheck(context.Background(), &out, &errOut, FlakeCheckOptions{NoBuild: true, Terminal: "a"}); err != nil {
+		t.Fatalf("an absent darwinConfigurations.<host> is a skip, not a failure: %v\n%s", err, out.String())
+	}
+	dc := r.darwinCalls()
+	if !strings.HasSuffix(sys, "-darwin") {
+		if len(dc) != 0 {
+			t.Fatalf("no darwin evaluation off darwin: %v", dc)
+		}
+		return
+	}
+	if len(dc) != 3 {
+		t.Fatalf("want one darwin evaluation per repo (3), got %d", len(dc))
+	}
+	for _, c := range dc {
+		if !hasArg(c.Args, "--raw") || !hasArg(c.Args, "--no-write-lock-file") || !hasArg(c.Args, ".#darwinConfigurations.fixture-host.system.drvPath") {
+			t.Errorf("unexpected darwin evaluation args: %v", c.Args)
+		}
+	}
+	if !strings.Contains(out.String(), "darwinConfigurations.fixture-host: not provided by the flake, skipped") {
+		t.Errorf("skip should be reported:\n%s", out.String())
+	}
+	for _, rec := range readLog(t, logPath) {
+		if rec["outcome"] != "ok" {
+			t.Errorf("a skipped darwin evaluation must not fail the repo: %v", rec)
+		}
+	}
+}
+
+func TestFlakeCheckNoBuild_AFailingHostDarwinSystemFailsTheRepoWithoutRetry(t *testing.T) {
+	logPath := stateHome(t)
+	w, _ := selectFixture(t, true)
+	w.hostnameFn = func() string { return "fixture-host" }
+	r := withRunner(w, func(name string, args []string) (exec.Result, error) {
+		if strings.Contains(strings.Join(args, " "), "#darwinConfigurations.") {
+			return failNix("error: The option `nope' does not exist\n", 1)
+		}
+		return okNix(name, args)
+	})
+	if sys, err := nixSystem(); err != nil || !strings.HasSuffix(sys, "-darwin") {
+		t.Skip("the darwin system evaluation runs on darwin only")
+	}
+	var out, errOut bytes.Buffer
+	err := w.FlakeCheck(context.Background(), &out, &errOut, FlakeCheckOptions{NoBuild: true, Terminal: "a", Repo: "a"})
+	var cf *CheckFailedError
+	if !errors.As(err, &cf) {
+		t.Fatalf("want CheckFailedError, got %v", err)
+	}
+	if n := len(r.darwinCalls()); n != 1 {
+		t.Errorf("no retry: want 1 darwin evaluation, got %d", n)
+	}
+	recs := readLog(t, logPath)
+	if len(recs) != 1 || recs[0]["outcome"] != "failed" || !reflect.DeepEqual(recs[0]["failed_sets"], []any{"darwinConfigurations"}) || !strings.Contains(recs[0]["first_error"].(string), "nope") {
+		t.Errorf("unexpected record: %v", recs)
+	}
+}
+
+func TestNixAttrName(t *testing.T) {
+	for in, want := range map[string]string{"my-host_1": "my-host_1", "a.b": `"a.b"`, `x"y`: `"x\"y"`} {
+		if got := nixAttrName(in); got != want {
+			t.Errorf("nixAttrName(%q) = %s, want %s", in, got, want)
+		}
+	}
 }

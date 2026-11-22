@@ -657,3 +657,64 @@ func TestPreLandEval_RealNix_ThroughRealPnGivesTheVerdictsTheLandStepReads(t *te
 
 // noBuildApply is the expression the flag evaluates; the drift test runs the same one by hand.
 const noBuildApply = `set: builtins.mapAttrs (n: v: v.drvPath or null) set`
+
+// The host's darwin system derivation is evaluated where the flake defines
+// darwinConfigurations.<host>: a broken one fails the check (exit 10) with the
+// darwinConfigurations failed set, a healthy one passes, and a flake without any
+// skips it. The fixture needs no nix-darwin: the attribute the check reads is
+// darwinConfigurations.<host>.system.drvPath, which a plain attrset can provide.
+func TestFlakeCheckNoBuild_RealNix_AFailingHostDarwinSystemFailsTheCheckAndAnAbsentOneIsSkipped(t *testing.T) {
+	e := newNBEnv(t)
+	if !strings.HasSuffix(e.sys, "-darwin") {
+		t.Skip("the host darwin system is evaluated on darwin only")
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := strings.IndexByte(host, '.'); i >= 0 {
+		host = host[:i]
+	}
+	darwin := func(system string) string {
+		return `darwinConfigurations."` + host + `".system = { drvPath = ` + system + `; };`
+	}
+	repo := e.lone(t, "", darwin(`throw "darwin-boom-from-the-fixture"`), nil)
+
+	out, se, code := e.pn(t, repo.Dir, "flake-check", "--no-build", "lone")
+	if code != 10 {
+		t.Fatalf("a broken darwin system exits 10, got %d\nstdout:\n%s\nstderr:\n%s", code, out, se)
+	}
+	if !strings.Contains(out+se, "darwin-boom-from-the-fixture") {
+		t.Errorf("the nix error must be shown:\n%s\n%s", out, se)
+	}
+	rec := e.logLines(t)[0]
+	if rec["outcome"] != "failed" || !reflect.DeepEqual(rec["failed_sets"], []any{"darwinConfigurations"}) {
+		t.Errorf("want failed_sets [darwinConfigurations], got %v", rec)
+	}
+	if fe, _ := rec["first_error"].(string); !strings.Contains(fe, "darwin-boom-from-the-fixture") {
+		t.Errorf("first_error = %q", fe)
+	}
+
+	// Healthy: the system derivation is evaluated and the check passes.
+	if _, err := repo.Commit(context.Background(), "lone: healthy darwin system", map[string]string{
+		"flake.nix": strings.NewReplacer("@@SYSTEM@@", e.sys, "@@UNIQ@@", e.uniq, "@@ARGS@@", "", "@@EXTRA@@",
+			darwin(`(builtins.derivation { name = "sys-`+e.uniq+`"; system = "`+e.sys+`"; builder = "/bin/sh"; }).drvPath`)).Replace(fixtureLoneFlake),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, se, code = e.pn(t, repo.Dir, "flake-check", "--no-build", "lone")
+	if code != 0 || !strings.Contains(out, "darwinConfigurations."+host+": ok") {
+		t.Fatalf("a healthy darwin system passes and is reported: exit %d\nstdout:\n%s\nstderr:\n%s", code, out, se)
+	}
+
+	// Absent: a flake without darwinConfigurations (this host) is skipped, not failed.
+	if _, err := repo.Commit(context.Background(), "lone: no darwin system", map[string]string{
+		"flake.nix": strings.NewReplacer("@@SYSTEM@@", e.sys, "@@UNIQ@@", e.uniq, "@@ARGS@@", "", "@@EXTRA@@", "").Replace(fixtureLoneFlake),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, se, code = e.pn(t, repo.Dir, "flake-check", "--no-build", "lone")
+	if code != 0 || !strings.Contains(out, "darwinConfigurations."+host+": not provided by the flake, skipped") {
+		t.Fatalf("an absent darwin system is skipped: exit %d\nstdout:\n%s\nstderr:\n%s", code, out, se)
+	}
+}

@@ -394,8 +394,7 @@ local sibling overrides, which BUILDS the checks. With `--no-build` it is the la
 - **Failure semantics.** A failure is a real problem to fix before landing. There is no
   `inconclusive` class, no retry and no classifier: an environmental failure (store database busy,
   fetch failure, timeout) fails the check like an evaluation error, a sibling's uncommitted edits can
-  fail it, and a pass proves evaluation only (nothing is built or tested, one system, and
-  `darwinConfigurations` is not evaluated). A failure that is not a flake defect is reported on the
+  fail it, and a pass proves evaluation only (nothing is built or tested, one system). A failure that is not a flake defect is reported on the
   bead, not classified away. `--no-ifd` adds `--option allow-import-from-derivation false`, so a
   needed import from derivation then fails.
 - **Exit codes.** 0 every repo evaluated, 1 a repo failed, 2 a bad invocation (unknown repo, an
@@ -415,7 +414,10 @@ local sibling overrides, which BUILDS the checks. With `--no-build` it is the la
 
 Deliberate gaps:
 
-- `darwinConfigurations` is NOT evaluated. `nix flake check` does not cover it either.
+- On a darwin host only `darwinConfigurations.<host>.system.drvPath` is evaluated (a separate
+  `nix eval --raw`, the shape whose extra cost was measured, median 66 s and p95 174 s on a large
+  repo), and only where the flake defines it; `failed_sets` then holds `darwinConfigurations`. Other
+  hosts' configurations and other systems are not evaluated.
 - Checks that need import from derivation are evaluated through it by default (the evaluation then
   builds the small IFD derivations: fixed source copies and fetches). Evaluation is a store-write
   operation: it writes `.drv` files and source copies to the store.

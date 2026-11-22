@@ -361,8 +361,15 @@ not stop the others; the command exits non-zero if any repo failed.
 
 for checks, packages and devShells for this machine's system, with the same
 sibling overrides, and never writes flake.lock. A set the flake does not provide
-is skipped. darwinConfigurations and other systems are not evaluated, and a pass
-proves evaluation only: nothing is built or tested.
+is skipped. On a darwin host a further, separate
+
+  nix eval --no-write-lock-file --raw <flake>#darwinConfigurations.<host>.system.drvPath
+
+evaluates the host's darwin system derivation (<host> is the short hostname),
+only where the flake defines darwinConfigurations.<host>; it is skipped
+otherwise, and a failure is reported as the failed set darwinConfigurations.
+Other systems are not evaluated, and a pass proves evaluation only: nothing is
+built or tested.
 
 --no-build is NOT nix's own 'nix flake check --no-build'. nix runs that mode
 read-only, so a source tree copied into the store during evaluation reads back

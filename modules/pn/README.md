@@ -461,7 +461,11 @@ pn workspace flake-check --no-build [--rev <rev>] [--caller manual|ff-1c] [--no-
 
 For each repo (or the selected one) it runs, from the repo's directory,
 `nix eval --no-write-lock-file <override args> --json <flake>#<set>.<system> --apply 'set: builtins.mapAttrs (n: v: v.drvPath or null) set'`
-for `checks`, `packages` and `devShells`, so an evaluation error (a missing option, a throw, a bad
+for `checks`, `packages` and `devShells`, plus, on a darwin host, a separate
+`nix eval --no-write-lock-file <override args> --raw <flake>#darwinConfigurations.<host>.system.drvPath`
+for the host's darwin system derivation (skipped where the flake defines no `darwinConfigurations.<host>`;
+a failure is the failed set `darwinConfigurations`; it was measured as a separate `nix eval`, median 66 s
+extra on a large repo, and a shared process was not tried). So an evaluation error (a missing option, a throw, a bad
 import) fails the check while no derivation is built and `flake.lock` is never written. The override
 set is the one `build`, `apply` and the plain `flake-check` use, read from the siblings' working trees,
 so a repo whose locked siblings lag the local clones needs no push and no relock.

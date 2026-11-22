@@ -30,7 +30,9 @@ import (
 // verdict then depends on store warmth. The mechanism here is the drvPath
 // evaluation (`nix eval --json <flake>#<set>.<system> --apply <drvPath of each>`
 // for checks, packages and devShells), which realises nothing but is not
-// read-only, so source copies and import from derivation both work.
+// read-only, so source copies and import from derivation both work. On a darwin
+// host a further, separate `nix eval --raw <flake>#darwinConfigurations.<host>.system.drvPath`
+// evaluates the host's system derivation, where the flake defines one.
 //
 // A failure is a failure: there is no retry and no inconclusive class (operator
 // ruling, 2026-10-23). The one thing the evaluation tolerates is a flake that
@@ -44,6 +46,19 @@ var noBuildSets = []string{"checks", "packages", "devShells"}
 
 // noBuildApply maps every attribute of a set to its derivation path.
 const noBuildApply = `set: builtins.mapAttrs (n: v: v.drvPath or null) set`
+
+// darwinSet is the failed_sets value of the host darwin system evaluation.
+const darwinSet = "darwinConfigurations"
+
+// nixAttrName quotes name for a flake attribute path when it is not a plain identifier.
+func nixAttrName(name string) string {
+	for _, r := range name {
+		if !(r == '-' || r == '_' || r == '\'' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name) + `"`
+		}
+	}
+	return name
+}
 
 // firstErrorMax is the longest first_error the experiment log records.
 const firstErrorMax = 300
@@ -324,27 +339,29 @@ func (ws *Workspace) evalDrvPaths(ctx context.Context, out io.Writer, name, dir,
 		base = append(base, "--option", "allow-import-from-derivation", "false")
 	}
 	base = append(base, overrides...)
-	for _, set := range noBuildSets {
-		attr := ref + "#" + set + "." + system
-		args := append(append([]string{}, base...), "--json", attr, "--apply", noBuildApply)
+	// step runs one nix eval and folds its outcome into rec under name (the
+	// failed_sets value). A failure that only says the flake does not provide the
+	// attribute is a skip, not a failure.
+	step := func(name, label string, tail []string, okLine func(stdout []byte) string) {
+		args := append(append([]string{}, base...), tail...)
 		fmt.Fprintf(out, "  reproduce: (cd %s && nix %s)\n", dir, shellJoin(args))
 		var stderr bytes.Buffer
 		t0 := time.Now()
 		res, err := ws.runner.Run(ctx, "nix", args, exec.RunOptions{Dir: dir, Stderr: io.MultiWriter(out, &stderr), WrapNix: true})
 		dt := time.Since(t0).Round(100 * time.Millisecond)
 		if err == nil {
-			fmt.Fprintf(out, "  %s.%s: ok, %d derivations evaluated (%s)\n", set, system, bytes.Count(res.Stdout, []byte(`.drv"`)), dt)
-			continue
+			fmt.Fprintf(out, "  %s: ok, %s (%s)\n", label, okLine(res.Stdout), dt)
+			return
 		}
 		captured := res.Stderr
 		if len(captured) == 0 {
 			captured = stderr.Bytes()
 		}
 		if setAbsent(captured) {
-			fmt.Fprintf(out, "  %s.%s: not provided by the flake, skipped (%s)\n", set, system, dt)
-			continue
+			fmt.Fprintf(out, "  %s: not provided by the flake, skipped (%s)\n", label, dt)
+			return
 		}
-		fmt.Fprintf(out, "  %s.%s: FAILED (%s)\n", set, system, dt)
+		fmt.Fprintf(out, "  %s: FAILED (%s)\n", label, dt)
 		if rec.Outcome == "ok" {
 			rec.NixExit = res.ExitCode
 			if rec.NixExit == 0 {
@@ -356,7 +373,24 @@ func (ws *Workspace) evalDrvPaths(ctx context.Context, out io.Writer, name, dir,
 			}
 		}
 		rec.Outcome = "failed"
-		rec.FailedSets = append(rec.FailedSets, set)
+		rec.FailedSets = append(rec.FailedSets, name)
+	}
+	for _, set := range noBuildSets {
+		step(set, set+"."+system, []string{"--json", ref + "#" + set + "." + system, "--apply", noBuildApply}, func(so []byte) string {
+			return fmt.Sprintf("%d derivations evaluated", bytes.Count(so, []byte(`.drv"`)))
+		})
+	}
+	// The host's darwin system derivation: the class of failure the sets above miss
+	// (a broken module option only a system closure evaluates). A separate nix eval
+	// rather than a second --apply in the same process: that is the shape whose cost
+	// was measured (median 66 s, p95 174 s on a large repo), and a failure stays
+	// attributable to this step. Only on darwin, only where the flake defines
+	// darwinConfigurations.<host>; no retry.
+	if host := ws.hostname(); host != "" && strings.HasSuffix(system, "-darwin") {
+		attr := ref + "#darwinConfigurations." + nixAttrName(host) + ".system.drvPath"
+		step(darwinSet, darwinSet+"."+host, []string{"--raw", attr}, func(so []byte) string {
+			return "system derivation " + strings.TrimSpace(string(so)) + " evaluated"
+		})
 	}
 	rec.DurationS = float64(time.Since(start).Milliseconds()) / 1000
 	if rec.Outcome != "ok" {
