@@ -3275,11 +3275,12 @@
                   touch $out
                 '';
 
-            # Bead pg2-fvejk acceptance: the rendered pg-test-runner config reports a
-            # 900s cap for the modules/pn project path suffix, while the global
-            # default stays 300s.
-            pg-test-runner-config-pn-timeout =
-              pkgs.runCommand "check-pg-test-runner-config-pn-timeout"
+            # The rendered pg-test-runner config keeps the 300s default and pins the
+            # EXACT projectTimeouts map (empty: no project carries a larger cap), so
+            # re-raising any per-project cap is a visible diff in this check. A cap
+            # may only come back with a documented measurement in config.nix.
+            pg-test-runner-config-project-timeouts =
+              pkgs.runCommand "check-pg-test-runner-config-project-timeouts"
                 {
                   nativeBuildInputs = [ pkgs.jq ];
                 }
@@ -3290,74 +3291,9 @@
                     echo "FAIL: default timeoutSeconds is not 300" >&2
                     exit 1
                   }
-                  jq -e '.projectTimeouts["modules/pn"] == 900' "$cfg" >/dev/null || {
-                    echo "FAIL: projectTimeouts has no 900s cap for modules/pn" >&2
-                    exit 1
-                  }
-                  touch $out
-                '';
-
-            # Bead pg2-3ejv4 acceptance: the rendered pg-test-runner config reports a
-            # 900s cap for the packages/pg-desk project path suffix, while the global
-            # default stays 300s.
-            pg-test-runner-config-pg-desk-timeout =
-              pkgs.runCommand "check-pg-test-runner-config-pg-desk-timeout"
-                {
-                  nativeBuildInputs = [ pkgs.jq ];
-                }
-                ''
-                  set -euo pipefail
-                  cfg=${pgTestRunnerRepoConfigJson}
-                  jq -e '.timeoutSeconds == 300' "$cfg" >/dev/null || {
-                    echo "FAIL: default timeoutSeconds is not 300" >&2
-                    exit 1
-                  }
-                  jq -e '.projectTimeouts["packages/pg-desk"] == 900' "$cfg" >/dev/null || {
-                    echo "FAIL: projectTimeouts has no 900s cap for packages/pg-desk" >&2
-                    exit 1
-                  }
-                  touch $out
-                '';
-
-            # Bead pg2-o2owg acceptance: the rendered pg-test-runner config reports a
-            # 900s cap for the packages/pg-router project path suffix, while the global
-            # default stays 300s.
-            pg-test-runner-config-pg-router-timeout =
-              pkgs.runCommand "check-pg-test-runner-config-pg-router-timeout"
-                {
-                  nativeBuildInputs = [ pkgs.jq ];
-                }
-                ''
-                  set -euo pipefail
-                  cfg=${pgTestRunnerRepoConfigJson}
-                  jq -e '.timeoutSeconds == 300' "$cfg" >/dev/null || {
-                    echo "FAIL: default timeoutSeconds is not 300" >&2
-                    exit 1
-                  }
-                  jq -e '.projectTimeouts["packages/pg-router"] == 900' "$cfg" >/dev/null || {
-                    echo "FAIL: projectTimeouts has no 900s cap for packages/pg-router" >&2
-                    exit 1
-                  }
-                  touch $out
-                '';
-
-            # Bead pg2-uqs4h acceptance: the rendered pg-test-runner config reports a
-            # 900s cap for the packages/pg-connector project path suffix, while the global
-            # default stays 300s.
-            pg-test-runner-config-pg-connector-timeout =
-              pkgs.runCommand "check-pg-test-runner-config-pg-connector-timeout"
-                {
-                  nativeBuildInputs = [ pkgs.jq ];
-                }
-                ''
-                  set -euo pipefail
-                  cfg=${pgTestRunnerRepoConfigJson}
-                  jq -e '.timeoutSeconds == 300' "$cfg" >/dev/null || {
-                    echo "FAIL: default timeoutSeconds is not 300" >&2
-                    exit 1
-                  }
-                  jq -e '.projectTimeouts["packages/pg-connector"] == 900' "$cfg" >/dev/null || {
-                    echo "FAIL: projectTimeouts has no 900s cap for packages/pg-connector" >&2
+                  jq -e '.projectTimeouts == {}' "$cfg" >/dev/null || {
+                    echo "FAIL: projectTimeouts is not the pinned empty map; got:" >&2
+                    jq -c '.projectTimeouts' "$cfg" >&2
                     exit 1
                   }
                   touch $out

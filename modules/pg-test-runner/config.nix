@@ -57,72 +57,31 @@
   # project NOT named here keeps the global timeoutSeconds above — the default
   # is deliberately not raised.
   #
-  # packages/claude-extended-tool-approver (phillipgreenii-nix-agent-support):
-  # its `go test -race ./...` suite is minutes of work on an idle machine
-  # (per-package 8-55s in one measured run) and blew through the 300s cap on
-  # two pre-land runs and one commit-time run under load average 19-85. The
-  # tests are NOT skipped or weakened; the cap is 3x the default so a loaded
-  # machine still passes while a genuinely hung suite is still killed.
-  #
-  # modules/pn (pg2-fvejk): its Go suite (internal/workspace alone is ~250s)
-  # hit the 300s cap on 3 of 4 pre-commit/pre-land runs under load average
-  # 23-187 (observed 2026-10-09 landing pg2-y59kf), every listed package
-  # passing. The tests are NOT skipped or weakened; 900s is a ~2x+ loaded run
-  # so a loaded machine passes while a genuinely hung suite is still killed.
-  # (900 is the orchestrator's default by the pn precedent; the bead
-  # left the value operator-chosen, so it is reversible.)
-  #
-  # packages/pg-desk (phillipgreenii-nix-agent-support, bead tc-fz1vr): its
-  # `go test -race ./...` suite takes ~211s standalone and exceeds the 300s
-  # default under load. Same rationale and 3x cap as above; tests not weakened.
-  #
-  # packages/pg-desk, further evidence (pg2-3ejv4): its
-  # `go test -race ./...` suite timed out the commit-time hook on 3 consecutive
-  # attempts at load average 125-170 (cmd/pg-desk alone took 219s) with every
-  # package printing ok, and passed at load ~78 (observed 2026-10-09, pg2-0n4na).
-  # The tests and -race are NOT skipped or weakened; 900s keeps the same
-  # ~3x-the-loaded-run margin as the entries above while a genuinely hung
-  # suite is still killed. A timeout still reports as a failure (exit 10),
-  # never as a pass. (900 by the pn precedent; the bead left the
-  # value to the orchestrator, so it is reversible.)
-  #
-  # packages/pg-router (phillipgreenii-nix-agent-support, bead pg2-o2owg): its
-  # `go test -race ./...` suite hit the 300s cap on two pre-land runs
-  # (pg2-9nfla: 301s at load average ~31/58/63; pg2-dm6de: internal/eventqueue
-  # alone took 188s at load average ~22-28, whose
-  # TestCompactLiveShapedReplayPerf compacts a 181,900-record log) with every
-  # package printing ok, and passed on a rerun at lower load. The tests are NOT
-  # skipped or weakened; 900s keeps the same ~3x margin as the entries above
-  # while a genuinely hung suite is still killed. (900 by the pn
-  # precedent; the bead left the value operator-chosen, so it is reversible.)
-  #
-  # packages/pg-connector (phillipgreenii-nix-agent-support, bead pg2-uqs4h): its
-  # `go test -race ./...` suite hit the 300s cap on five consecutive pre-land
-  # runs while landing pg2-z5fax.4.13 (301s and 493s caps at load average
-  # ~14/23/20, every printed package ok, no FAIL or panic in the log). Measured
-  # at load ~11-15: `go test` of internal/serve alone took 219s on plain main
-  # and 259s on the branch, before compilation and the other packages. The
-  # tests are NOT skipped or weakened; 900s keeps the same ~3x margin as the
-  # entries above while a genuinely hung suite is still killed. (900 by the
-  # pn/pg-router precedent; the bead left the value operator-chosen,
-  # so it is reversible.)
-  #
-  # packages/pg-router-handlers (phillipgreenii-nix-agent-support, bead
-  # pg2-l7he8o; cap analysis pg2-wclb73): its `go test -race ./...` suite took
-  # 395s at load average 45-75 with every package printing ok, and the 300s
-  # default killed two pre-land runs. The tests are NOT skipped or weakened;
-  # 900s keeps the same ~2x+ margin over the loaded run as the entries above
-  # while a genuinely hung suite is still killed. A timeout still reports as a
-  # failure (exit 10), never as a pass. (900 by the pn/pg-router
-  # precedent; reversible.)
-  projectTimeouts = {
-    "packages/claude-extended-tool-approver" = 900;
-    "modules/pn" = 900;
-    "packages/pg-desk" = 900;
-    "packages/pg-router" = 900;
-    "packages/pg-connector" = 900;
-    "packages/pg-router-handlers" = 900;
-  };
+  # The map is EMPTY on purpose. Six projects once carried a 900s override
+  # (claude-extended-tool-approver, modules/pn, pg-desk, pg-router,
+  # pg-connector, pg-router-handlers) because their unit suites held
+  # multi-process, load and real-git tests. Operator ruling (Phillip,
+  # 2026-11-11): "900s is silly large for unit tests. it should be lower and we
+  # should identify slow tests and resolve them." The slow tests were then
+  # tiered behind build tags or made cheap, and each suite was re-measured on
+  # 2026-11-22 as `nice -n 10 go test -p 4 -race -timeout 900s ./...` (warm
+  # build cache, host 1m load average 6.6-10.1, every package ok). The rule:
+  # remove the override when the loaded run is at most a third of the 300s
+  # default (100s, about 3x headroom); otherwise keep a lowered cap with a
+  # pointer to the open work. All six qualified:
+  #   packages/claude-extended-tool-approver  59s  -> removed
+  #   modules/pn                              35s  -> removed
+  #   packages/pg-desk                        74s  -> removed
+  #   packages/pg-router                      65s  -> removed
+  #   packages/pg-connector                   98s  -> removed (closest to the
+  #       100s limit: if a loaded run ever times out, cut this suite's cost or
+  #       add a documented cap here, never 900s by default)
+  #   packages/pg-router-handlers             n/a  -> removed (a dead key: that
+  #       directory has no go.mod; its tests run inside the pg-router module,
+  #       measured above)
+  # Re-raising any cap MUST be a visible diff: the flake check
+  # `pg-test-runner-config-project-timeouts` pins the exact map.
+  projectTimeouts = { };
   # Per-project extra test inputs (pg2-41fzsf): project path suffix -> globs,
   # relative to the project root, of files that make --files mode (the commit
   # hook) run that project's suite although they are not source/module/testdata
