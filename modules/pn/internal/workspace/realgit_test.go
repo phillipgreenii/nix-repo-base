@@ -248,16 +248,16 @@ func initRealRepo(t *testing.T, dir string) {
 	// that already exists, so park the existing entries aside, create the repo,
 	// and restore them so the initial commit still contains them.
 	held := holdExistingEntries(t, dir)
-	r := newTemplateRepo(t, dir)
+	r := newTemplateRepo(t, dir, false)
 	for _, name := range held.names {
 		if err := os.Rename(filepath.Join(held.dir, name), filepath.Join(r.Dir, name)); err != nil {
 			t.Fatalf("initRealRepo(%s): restoring %s: %v", dir, name, err)
 		}
 	}
-	if _, err := r.Client.Run(t.Context(), "add", "."); err != nil {
-		t.Fatalf("initRealRepo(%s): staging pre-existing files: %v", dir, err)
-	}
 	if len(held.names) > 0 {
+		if _, err := r.Client.Run(t.Context(), "add", "."); err != nil {
+			t.Fatalf("initRealRepo(%s): staging pre-existing files: %v", dir, err)
+		}
 		if _, err := r.Client.Run(t.Context(), "commit", "-q", "-m", "init (pre-existing files)"); err != nil {
 			t.Fatalf("initRealRepo(%s): committing pre-existing files: %v", dir, err)
 		}
@@ -270,30 +270,48 @@ func initRealRepo(t *testing.T, dir string) {
 // README.md that initRealRepo promises. newTemplateRepo copies it, so a test
 // pays a directory copy and a couple of git config calls instead of a git init
 // plus config plus commit per repo.
+type repoTemplateKey struct {
+	name  string
+	flake bool // also commit flake.lock and flake.nix ("{}"), as hbRepo needs
+}
+
 var (
 	repoTemplatesMu   sync.Mutex
-	repoTemplates     = map[string]*gitfixture.Template{}
+	repoTemplates     = map[repoTemplateKey]*gitfixture.Template{}
 	repoTemplatesRoot string // set by TestMain; removed after the run
 )
 
-// templateFor returns the template for repository name, building it on first use.
-func templateFor(t *testing.T, name string) *gitfixture.Template {
+// templateFor returns the template for repository name, building it on first
+// use. With flake, the template's history gains a second commit adding
+// flake.lock and flake.nix.
+func templateFor(t *testing.T, name string, flake bool) *gitfixture.Template {
 	t.Helper()
 	repoTemplatesMu.Lock()
 	defer repoTemplatesMu.Unlock()
-	if tpl, ok := repoTemplates[name]; ok {
+	key := repoTemplateKey{name, flake}
+	if tpl, ok := repoTemplates[key]; ok {
 		return tpl
 	}
+	rootName := name
+	if flake {
+		rootName += ".flake"
+	}
 	tpl, err := gitfixture.NewTemplate(context.Background(),
-		filepath.Join(repoTemplatesRoot, name), gitfixture.RepoOptions{Suite: "template", Name: name},
+		filepath.Join(repoTemplatesRoot, rootName), gitfixture.RepoOptions{Suite: "template", Name: name},
 		func(ctx context.Context, r *gitfixture.Repo) error {
-			_, err := r.Commit(ctx, "init", map[string]string{"README.md": "init\n"})
+			if _, err := r.Commit(ctx, "init", map[string]string{"README.md": "init\n"}); err != nil {
+				return err
+			}
+			if !flake {
+				return nil
+			}
+			_, err := r.Commit(ctx, "flake", map[string]string{"flake.lock": "{}\n", "flake.nix": "{}\n"})
 			return err
 		})
 	if err != nil {
 		t.Fatalf("templateFor(%s): %v", name, err)
 	}
-	repoTemplates[name] = tpl
+	repoTemplates[key] = tpl
 	return tpl
 }
 
@@ -301,9 +319,13 @@ func templateFor(t *testing.T, name string) *gitfixture.Template {
 // template (one "init" commit adding README.md on main) to dir, registers the
 // copy so runGitT resolves dir to its hermetic client, and drops the hooksPath
 // redirect for the same reason newFixtureRepo does. dir MUST NOT exist yet.
-func newTemplateRepo(t *testing.T, dir string) *gitfixture.Repo {
+// With flake the copy also holds the template's "flake" commit (flake.lock and
+// flake.nix). The template's own identity is kept (an empty suite), which
+// saves the two git config calls that re-stamp it per test; runGitT supplies
+// its own author per call.
+func newTemplateRepo(t *testing.T, dir string, flake bool) *gitfixture.Repo {
 	t.Helper()
-	r, err := templateFor(t, filepath.Base(dir)).NewRepo(t.Context(), filepath.Dir(dir), t.Name())
+	r, err := templateFor(t, filepath.Base(dir), flake).NewRepo(t.Context(), filepath.Dir(dir), "")
 	if err != nil {
 		t.Fatalf("newTemplateRepo(%s): %v", dir, err)
 	}

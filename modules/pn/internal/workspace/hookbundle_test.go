@@ -19,11 +19,7 @@ func hbRepo(t *testing.T) string {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(base, "repo")
-	initRealRepo(t, dir)
-	writeFile(t, filepath.Join(dir, "flake.lock"), "{}\n")
-	writeFile(t, filepath.Join(dir, "flake.nix"), "{}\n")
-	runGitT(t, dir, "add", "flake.lock", "flake.nix")
-	runGitT(t, dir, "commit", "-q", "-m", "flake")
+	newTemplateRepo(t, dir, true)
 	return dir
 }
 
