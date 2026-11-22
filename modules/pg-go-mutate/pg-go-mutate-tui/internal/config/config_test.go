@@ -20,7 +20,9 @@ func TestLoadStaticAppliesDefaultsWhenFileAbsent(t *testing.T) {
 
 func TestLoadStaticWarnsOnUnknownKeyWithoutFailing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(`{"concurrency": 3, "totally_unknown_key": true}`), 0o644)
+	if err := os.WriteFile(path, []byte(`{"concurrency": 3, "totally_unknown_key": true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	cfg, err := LoadStatic(path, logger)

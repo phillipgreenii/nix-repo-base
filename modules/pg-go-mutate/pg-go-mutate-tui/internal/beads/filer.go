@@ -233,7 +233,7 @@ func (f *Filer) loadFiled() error {
 		}
 		return err
 	}
-	defer fh.Close()
+	defer func() { _ = fh.Close() }() // read-only: a close error is not actionable
 	sc := bufio.NewScanner(fh)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -259,13 +259,16 @@ func (f *Filer) markFiled(key string, r filedRecord) error {
 	if err != nil {
 		return err
 	}
-	defer fh.Close()
 	line, err := json.Marshal(r)
 	if err != nil {
+		_ = fh.Close()
 		return err
 	}
-	_, err = fh.Write(append(line, '\n'))
-	return err
+	if _, err := fh.Write(append(line, '\n')); err != nil {
+		_ = fh.Close()
+		return err
+	}
+	return fh.Close()
 }
 
 // sourceFiles lists the non-test .go files directly in dir, the same set

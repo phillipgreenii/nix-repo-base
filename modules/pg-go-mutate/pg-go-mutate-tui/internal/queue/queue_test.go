@@ -16,8 +16,12 @@ import (
 func writePkg(t *testing.T, root, name, content string) discover.Package {
 	t.Helper()
 	dir := filepath.Join(root, name)
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "a.go"), []byte(content), 0o644)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return discover.Package{PkgPath: name, AbsPath: dir, Files: []string{filepath.Join(dir, "a.go")}}
 }
 
@@ -34,7 +38,9 @@ func TestRefillStampsTheRealContentHashNotThePackagePath(t *testing.T) {
 	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
 	q := NewQueue(1, 10, time.Minute)
 
-	q.Refill([]discover.Package{pkg}, func(string) time.Time { return time.Now() }, l)
+	if _, err := q.Refill([]discover.Package{pkg}, func(string) time.Time { return time.Now() }, l); err != nil {
+		t.Fatal(err)
+	}
 	_, hash, ok := q.Pop()
 	if !ok {
 		t.Fatal("expected one queued file")
@@ -50,9 +56,13 @@ func TestRefillReQueuesAFileAfterItsPackageIsEdited(t *testing.T) {
 	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
 	q := NewQueue(1, 10, time.Minute)
 
-	q.Refill([]discover.Package{pkg}, func(string) time.Time { return time.Now() }, l)
+	if _, err := q.Refill([]discover.Package{pkg}, func(string) time.Time { return time.Now() }, l); err != nil {
+		t.Fatal(err)
+	}
 	file, hash, _ := q.Pop()
-	l.Append(ledger.Record{FilePath: file, PackageHash: hash, Status: "done"})
+	if err := l.Append(ledger.Record{FilePath: file, PackageHash: hash, Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
 	q.Finish(file) // the worker's post-append step
 
 	// No edit yet: a second refill must NOT re-add the file.
@@ -62,7 +72,9 @@ func TestRefillReQueuesAFileAfterItsPackageIsEdited(t *testing.T) {
 	}
 
 	// Edit the package's only file -- its content hash changes.
-	os.WriteFile(filepath.Join(pkg.AbsPath, "a.go"), []byte("package pkg\nfunc A() { /* changed */ }\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(pkg.AbsPath, "a.go"), []byte("package pkg\nfunc A() { /* changed */ }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	added, err := q.Refill([]discover.Package{pkg}, func(string) time.Time { return time.Now() }, l)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +92,9 @@ func TestRefillOrdersPackagesByRecencyDescending(t *testing.T) {
 	q := NewQueue(1, 10, time.Minute)
 
 	recency := map[string]time.Time{"old": time.Now().Add(-48 * time.Hour), "new": time.Now()}
-	q.Refill([]discover.Package{oldPkg, newPkg}, func(p string) time.Time { return recency[p] }, l)
+	if _, err := q.Refill([]discover.Package{oldPkg, newPkg}, func(p string) time.Time { return recency[p] }, l); err != nil {
+		t.Fatal(err)
+	}
 
 	first, _, _ := q.Pop()
 	if filepath.Base(filepath.Dir(first)) != "new" {
@@ -143,7 +157,9 @@ func TestConcurrentRefillAndPopDoNotRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 5; i++ {
-			q.Refill(pkgs, func(string) time.Time { return time.Now() }, l)
+			if _, err := q.Refill(pkgs, func(string) time.Time { return time.Now() }, l); err != nil {
+				t.Error(err)
+			}
 		}
 	}()
 	go func() {
@@ -206,7 +222,9 @@ func TestRefillDoesNotRequeueAPoppedButUnfinishedFile(t *testing.T) {
 	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
 	q := NewQueue(10, 100, time.Minute)
 
-	q.Refill([]discover.Package{pkg}, now, l)
+	if _, err := q.Refill([]discover.Package{pkg}, now, l); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, ok := q.Pop(); !ok {
 		t.Fatal("expected one queued file")
 	}
@@ -226,9 +244,13 @@ func TestRefillDoesNotRequeueAFinishedFileRecordedAtTheSameHash(t *testing.T) {
 	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
 	q := NewQueue(10, 100, time.Minute)
 
-	q.Refill([]discover.Package{pkg}, now, l)
+	if _, err := q.Refill([]discover.Package{pkg}, now, l); err != nil {
+		t.Fatal(err)
+	}
 	file, hash, _ := q.Pop()
-	l.Append(ledger.Record{FilePath: file, PackageHash: hash, Status: "done"})
+	if err := l.Append(ledger.Record{FilePath: file, PackageHash: hash, Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
 	q.Finish(file)
 
 	added, err := q.Refill([]discover.Package{pkg}, now, l)
@@ -243,7 +265,9 @@ func TestRefillRequeuesAFinishedFileWithNoLedgerRecord(t *testing.T) {
 	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
 	q := NewQueue(10, 100, time.Minute)
 
-	q.Refill([]discover.Package{pkg}, now, l)
+	if _, err := q.Refill([]discover.Package{pkg}, now, l); err != nil {
+		t.Fatal(err)
+	}
 	file, _, _ := q.Pop()
 	q.Finish(file) // a run that recorded nothing: the ledger still says "needs run"
 
@@ -259,17 +283,23 @@ func TestHashChangeWhileInFlightSelfHealsAfterFinish(t *testing.T) {
 	l := ledger.New(filepath.Join(root, "ledger.jsonl"))
 	q := NewQueue(10, 100, time.Minute)
 
-	q.Refill([]discover.Package{pkg}, now, l)
+	if _, err := q.Refill([]discover.Package{pkg}, now, l); err != nil {
+		t.Fatal(err)
+	}
 	file, oldHash, _ := q.Pop()
 
 	// The package is edited while the file is still running.
-	os.WriteFile(filepath.Join(pkg.AbsPath, "a.go"), []byte("package pkg\nfunc A() { /* edited */ }\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(pkg.AbsPath, "a.go"), []byte("package pkg\nfunc A() { /* edited */ }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	added, _ := q.Refill([]discover.Package{pkg}, now, l)
 	if added != 0 {
 		t.Fatalf("Refill while the old entry is outstanding = %d, want 0", added)
 	}
 
-	l.Append(ledger.Record{FilePath: file, PackageHash: oldHash, Status: "done"})
+	if err := l.Append(ledger.Record{FilePath: file, PackageHash: oldHash, Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
 	q.Finish(file)
 
 	added, _ = q.Refill([]discover.Package{pkg}, now, l)
@@ -290,7 +320,9 @@ func TestRefillQueuesOnlyTheFilesTheLedgerLacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l.Append(ledger.Record{FilePath: pkg.Files[0], PackageHash: hash, Status: "done"})
+	if err := l.Append(ledger.Record{FilePath: pkg.Files[0], PackageHash: hash, Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
 	q := NewQueue(10, 100, time.Minute)
 
 	added, err := q.Refill([]discover.Package{pkg}, now, l)

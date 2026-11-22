@@ -82,16 +82,20 @@ func (l *Ledger) Append(r Record) error {
 	if err != nil {
 		return fmt.Errorf("ledger: opening %s: %w", l.path, err)
 	}
-	defer f.Close()
 
 	line, err := json.Marshal(r)
 	if err != nil {
+		_ = f.Close()
 		return fmt.Errorf("ledger: encoding record for %s: %w", r.FilePath, err)
 	}
 	line = append(line, '\n')
 
 	if _, err := f.Write(line); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("ledger: writing %s: %w", l.path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("ledger: closing %s: %w", l.path, err)
 	}
 	return nil
 }
@@ -113,7 +117,7 @@ func (l *Ledger) Replay() (map[string]Record, error) {
 		}
 		return nil, fmt.Errorf("ledger: opening %s: %w", l.path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only: a close error is not actionable
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)

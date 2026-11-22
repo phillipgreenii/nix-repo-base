@@ -12,8 +12,6 @@ import (
 
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/beads"
 	"github.com/phillipgreenii/nix-repo-base/modules/pg-go-mutate/pg-go-mutate-tui/internal/queue"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestWiredProgramDiscoversAndAnalysesAFileEndToEnd(t *testing.T) {
@@ -165,7 +163,9 @@ func TestWaitForFirstRefillReportsWhyItStoppedWaiting(t *testing.T) {
 }
 
 func TestNewTUIModelImplementsTeaModel(t *testing.T) {
-	var _ tea.Model = newTUIModel(&app{q: queue.NewQueue(1, 10, time.Minute)})
+	if newTUIModel(&app{q: queue.NewQueue(1, 10, time.Minute)}) == nil {
+		t.Fatal("newTUIModel returned nil")
+	}
 }
 
 // TestNewAppErrorsWhenNeitherXDGNorHOMEIsSet guards against a silent

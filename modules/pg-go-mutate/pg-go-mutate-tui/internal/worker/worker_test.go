@@ -26,7 +26,9 @@ func fixtureQueue(t *testing.T, n int) *queue.Queue {
 		_ = dir
 		pkgs = append(pkgs, discover.Package{PkgPath: dir, AbsPath: t.TempDir(), Files: []string{dir + "/a.go"}})
 	}
-	q.Refill(pkgs, func(string) time.Time { return time.Now() }, l)
+	if _, err := q.Refill(pkgs, func(string) time.Time { return time.Now() }, l); err != nil {
+		t.Fatal(err)
+	}
 	return q
 }
 
@@ -231,8 +233,11 @@ func TestDispatchedLedgerRecordCarriesTheHashPopReturnedUnchanged(t *testing.T) 
 	if !ok {
 		t.Fatal("expected a queued file")
 	}
-	q.Refill([]discover.Package{{PkgPath: "x", AbsPath: t.TempDir(), Files: []string{"x/a.go"}}},
-		func(string) time.Time { return time.Now() }, l) // re-add one so the pool has something to pop
+	// re-add one so the pool has something to pop
+	if _, err := q.Refill([]discover.Package{{PkgPath: "x", AbsPath: t.TempDir(), Files: []string{"x/a.go"}}},
+		func(string) time.Time { return time.Now() }, l); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	p.Run(ctx, 1)

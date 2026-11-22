@@ -8,6 +8,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -141,12 +142,19 @@ func (p *Pool) Run(ctx context.Context, concurrency int) {
 					p.q.Finish(file)
 					continue
 				}
-				p.ledger.Append(ledger.Record{
+				if err := p.ledger.Append(ledger.Record{
 					FilePath:    file,
 					PackageHash: pkgHash,
 					Status:      status,
 					ReportPath:  reportPath,
-				})
+				}); err != nil {
+					// An unwritable ledger would fail every remaining file the
+					// same way, so abort the pool like ErrFatal instead of
+					// silently losing outcomes.
+					p.setFatal(fmt.Errorf("pg-go-mutate-tui: recording %s in the ledger: %w", file, err))
+					p.q.Finish(file)
+					return
+				}
 				// Only AFTER the ledger append: until then the queue's
 				// outstanding set is what stops Refill re-queuing this file.
 				p.q.Finish(file)

@@ -27,8 +27,14 @@ func TestAppendThenReplayRoundTrips(t *testing.T) {
 func TestReplayKeepsLastRecordPerKey(t *testing.T) {
 	dir := t.TempDir()
 	l := New(filepath.Join(dir, "ledger.jsonl"))
-	l.Append(Record{FilePath: "pkg/a.go", PackageHash: "abc", Status: "failed"})
-	l.Append(Record{FilePath: "pkg/a.go", PackageHash: "def", Status: "done"})
+	for _, r := range []Record{
+		{FilePath: "pkg/a.go", PackageHash: "abc", Status: "failed"},
+		{FilePath: "pkg/a.go", PackageHash: "def", Status: "done"},
+	} {
+		if err := l.Append(r); err != nil {
+			t.Fatal(err)
+		}
+	}
 	records, _ := l.Replay()
 	if records["pkg/a.go"].Status != "done" || records["pkg/a.go"].PackageHash != "def" {
 		t.Fatalf("expected the SECOND record to win, got %+v", records["pkg/a.go"])
@@ -39,12 +45,21 @@ func TestReplayToleratesTruncatedTrailingLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ledger.jsonl")
 	l := New(path)
-	l.Append(Record{FilePath: "pkg/a.go", PackageHash: "abc", Status: "done"})
+	if err := l.Append(Record{FilePath: "pkg/a.go", PackageHash: "abc", Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
 	// Simulate a SIGKILL mid-append: a second, truncated line with no
 	// trailing newline and invalid JSON.
-	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	f.WriteString(`{"file_path":"pkg/b.go","status":"do`)
-	f.Close()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"file_path":"pkg/b.go","status":"do`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 	records, err := l.Replay()
 	if err != nil {
 		t.Fatalf("replay must tolerate a truncated trailing line, got error: %v", err)
@@ -63,7 +78,9 @@ func TestNeedsRun(t *testing.T) {
 	if !l.NeedsRun("pkg/a.go", "abc") {
 		t.Fatal("a file with no record must need a run")
 	}
-	l.Append(Record{FilePath: "pkg/a.go", PackageHash: "abc", Status: "done"})
+	if err := l.Append(Record{FilePath: "pkg/a.go", PackageHash: "abc", Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
 	if l.NeedsRun("pkg/a.go", "abc") {
 		t.Fatal("an unchanged hash must not need a run")
 	}

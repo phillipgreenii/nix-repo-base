@@ -240,7 +240,7 @@ func TestRealBDFilesExactlyOneP3TriageBeadWhenAPackageCompletes(t *testing.T) {
 		if bead.Status != "open" {
 			t.Errorf("status = %q, want open", bead.Status)
 		}
-		if len(bead.Labels) != 2 || !(contains(bead.Labels, "go-test-gaps") && contains(bead.Labels, "base")) {
+		if len(bead.Labels) != 2 || !contains(bead.Labels, "go-test-gaps") || !contains(bead.Labels, "base") {
 			t.Errorf("labels = %v, want exactly go-test-gaps and base", bead.Labels)
 		}
 		for _, want := range []string{
