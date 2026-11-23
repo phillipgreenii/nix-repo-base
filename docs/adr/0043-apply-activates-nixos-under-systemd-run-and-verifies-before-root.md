@@ -133,6 +133,27 @@ apply is an operator step.
   native darwin test run is a soft check on the Mac and does not gate landing.
 - Dated ADRs 0015, 0017 to 0019, 0024 and 0028 remain records and are not rewritten.
 
+## Live verification
+
+Operator-run on monorepod (NixOS 26.05), 2026-11-12 and 2026-11-22. The first apply after the
+workspace toml migration activated the previous release and a passwordless sudo rule for the
+operator; the following applies ran the one-flow build-as-user path from this ADR:
+
+- Both root steps ran. `/run/current-system` and `/nix/var/nix/profiles/system` resolved to the
+  store path the apply printed as built (`apply: built ...`), and `systemctl --failed` was empty.
+- The apply log trailer read `exit_status: 0`, `failed_step: none`, `result: success`.
+- The journal showed the `nixos-rebuild-switch-to-configuration` transient unit started under
+  `systemd-run` and deactivated successfully, with the `switching to` and `finished switching to`
+  lines for the built system.
+- With passwordless sudo in place there was no password prompt: `sudo_auth_seconds: 0.1`, and the
+  `authenticate sudo now` message did not appear.
+
+Finding: the sudo step is the part of the flow a host must prepare. Both root steps run
+`sudo env -i ... <program>` with a caller-chosen store path, and `sudo -v` prompts under the default
+`verifypw = all` unless every matching rule is passwordless. A NixOS host that wants an unattended
+apply needs a NOPASSWD rule for the operator plus `Defaults:<user> verifypw=any`; a narrower rule
+would not reduce the exposure, since both steps run an arbitrary store path as root.
+
 ## Supersedes
 
 ADR 0041 decision 3's NixOS bullet ("a `bin/switch-to-configuration` file check and no process
