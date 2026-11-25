@@ -115,3 +115,22 @@ Rejected: implies pn owns the id, contradicting the parse-and-surface-only desig
 - ADR 0012 — pn applied-state store, workspace info API, and wsid registry.
 - ADR 0014 — activation-output convention for home-manager.
 - See also: phillipg-nix-ziprecruiter docs/adr/0049-nix-enforce-pn-workspace-toml-keys.md
+
+## Amendment: enforcement exists only where a consumer wires it
+
+The `pn-workspace-toml-enforce` binary runs only when something invokes it. `pn` itself MUST NOT
+be assumed to enforce any nix-owned key, and neither this ADR nor ADR 0019 guarantees that a
+post-apply or post-upgrade hook exists in a given workspace.
+
+- The only documented consumer is the `pn-workspace-toml` home-manager module of
+  `phillipg-nix-ziprecruiter`, which invokes the binary at `home.activation`. A workspace without
+  such a consumer (for example the homelab workspace) has no enforcement.
+- `home/pn` in this repo MUST NOT own `pn-workspace.toml`, so it provides none either.
+- A workspace without an enforcing consumer MUST declare the hook by hand in its
+  `pn-workspace.toml`, for example `[[hooks]]` with `when = ['post-apply', 'post-upgrade']` and
+  `run = ['pb gate check']`. Until it does, `pn:applied` gates never resolve on apply.
+- To check, an operator SHOULD look for a `[[hooks]]` entry whose `when` contains `post-apply` in
+  `pn-workspace.toml`, and SHOULD inspect `post_hook` records in
+  `${XDG_STATE_HOME:-$HOME/.local/state}/pn/events.jsonl`, which `pn` writes for every post-phase
+  hook (command, exit code, output tail, scope), including warn-only failures that the terminal
+  shows only transiently.

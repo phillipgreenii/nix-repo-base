@@ -76,7 +76,9 @@ import (
 // The phase lines and `plan:` exist only in the trailer, never in the output
 // section (whose contract is verbatim terminal output), and a phase never entered
 // has no line. Post-HOOKS are not a phase: they run after the trailer is written,
-// and their time is visible only through the pn.hook spans.
+// and their time is visible through the pn.hook spans. Each post-hook result
+// (command, exit code, output tail) is persisted as a `post_hook` record in
+// events.jsonl (recordPostHook), not in this log.
 //
 // A file WITHOUT the `--== pn <verb> end ==--` trailer is a run that was killed
 // before pn could finish (SIGKILL, power loss): it must be read as incomplete,

@@ -8,8 +8,53 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/eventlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 )
+
+// postHookTailBytes bounds the output tail persisted with a post-hook record.
+const postHookTailBytes = 512
+
+// recordPostHook persists one post-phase hook result (command, exit code, short
+// output tail) as a `post_hook` record in events.jsonl, so an operator can see
+// afterwards whether e.g. the post-apply `pb gate check` ran and how it ended.
+// Post-hook failures are warn-only and terminal output is transient, so without
+// this nothing durable shows the hook ran. Best effort: any logging failure is
+// swallowed, never failing the command. The path is eventlog.DefaultPath()
+// (XDG_STATE_HOME-aware).
+func recordPostHook(scope, command, dir string, res exec.Result, runErr error) {
+	lw, err := eventlog.New(eventlog.DefaultPath())
+	if err != nil {
+		return
+	}
+	defer func() { _ = lw.Close() }()
+	level, code := "info", res.ExitCode
+	fields := map[string]any{"scope": scope, "command": command, "dir": dir}
+	if runErr != nil {
+		level = "warn"
+		fields["error"] = runErr.Error()
+		if code == 0 {
+			code = -1
+		}
+	}
+	fields["exit_code"] = code
+	if tail := outputTail(res.Stdout, res.Stderr); tail != "" {
+		fields["output_tail"] = tail
+	}
+	_ = lw.Emit(level, "post_hook", "post-hook "+command, fields)
+}
+
+// outputTail returns the last postHookTailBytes bytes of the concatenated parts.
+func outputTail(parts ...[]byte) string {
+	var b []byte
+	for _, p := range parts {
+		b = append(b, p...)
+	}
+	if len(b) > postHookTailBytes {
+		b = b[len(b)-postHookTailBytes:]
+	}
+	return strings.TrimSpace(string(b))
+}
 
 // HookPhase distinguishes pre- from post-hooks.
 type HookPhase int
@@ -81,6 +126,9 @@ func runHooks(ctx context.Context, runner exec.Runner, entries []string, workspa
 			return fmt.Errorf("hook %q: resolve: %w", raw, err)
 		}
 		res, err := runner.Run(ctx, "sh", []string{"-c", resolved}, exec.RunOptions{Dir: workspaceRoot, PropagateTrace: true})
+		if phase == HookPhasePost {
+			recordPostHook("workspace", raw, workspaceRoot, res, err)
+		}
 		if err == nil {
 			if phase == HookPhasePost {
 				_, _ = fmt.Fprintf(os.Stderr, "ran post-hook: %s\n", raw)

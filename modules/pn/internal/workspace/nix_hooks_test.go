@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/eventlog"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/exec"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry"
 	"github.com/phillipgreenii/nix-repo-base/modules/pn/internal/telemetry/telemetrytest"
@@ -584,5 +586,44 @@ func TestRunEventHooks_NixRunBareWhenWrapperUnavailable(t *testing.T) {
 				t.Errorf("command = %q, want the unwrapped %q", got, want)
 			}
 		})
+	}
+}
+
+// TestRunEventHooks_PostHookResultPersistedToEventLog verifies that post-phase
+// hook results (command, exit code, output tail) land in events.jsonl under the
+// test-controlled XDG_STATE_HOME, for both a success and a warn-only failure.
+func TestRunEventHooks_PostHookResultPersistedToEventLog(t *testing.T) {
+	lk := &Lock{Repos: map[string]LockRepoEntry{"a": {FlakePath: "flake.nix", RemoteURL: "github:o/a"}}}
+	w := openHookWS(t,
+		"[[hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"pb gate check\"]\n[repos.a]\nurl=\"github:o/a\"\n[[repos.a.hooks]]\nwhen=[\"post-rebase\"]\nrun=[\"boom\"]\n",
+		[]string{"a"}, lk)
+	trustWS(t, w.Root()) // sets an isolated XDG_STATE_HOME
+	f := w.runner.(*exec.FakeRunner)
+	f.AddResponse("sh", []string{"-c", "pb gate check"}, exec.Result{Stdout: []byte("gates ok")}, nil)
+	f.AddResponse("sh", []string{"-c", "boom"}, exec.Result{ExitCode: 7, Stderr: []byte("kaboom")}, errBoom)
+
+	if err := w.RunEventHooks(context.Background(), HookPhasePost, "rebase", []string{"a"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(eventlog.DefaultPath())
+	if err != nil {
+		t.Fatalf("events.jsonl not written: %v", err)
+	}
+	var recs []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("bad line %q: %v", line, err)
+		}
+		recs = append(recs, m)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("want 2 post_hook records, got %d: %s", len(recs), data)
+	}
+	if r := recs[0]; r["kind"] != "post_hook" || r["command"] != "pb gate check" || r["exit_code"] != float64(0) || r["output_tail"] != "gates ok" || r["scope"] != "workspace" {
+		t.Errorf("workspace record wrong: %v", r)
+	}
+	if r := recs[1]; r["command"] != "boom" || r["exit_code"] != float64(7) || r["level"] != "warn" || r["output_tail"] != "kaboom" || r["scope"] != "repo:a" {
+		t.Errorf("repo record wrong: %v", r)
 	}
 }

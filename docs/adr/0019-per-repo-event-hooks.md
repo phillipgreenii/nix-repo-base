@@ -218,3 +218,19 @@ through and installs exactly as before this gate.
 **Known limit, so nobody expects too much:** the common `workforest add` case creates a
 FRESH worktree, so the gate's win is on re-materialization and persistent worktrees, not on
 a first fork — a first fork still pays the cost once per repo.
+
+### Amendment: the enforce semantics apply only where a consumer runs the enforcer
+
+The ensure-present behavior in "Amendment to ADR-0017 (enforce semantics)" above, including the
+self-healing of the `post-apply`/`post-upgrade` gate entry, describes what `EnforceKeys` does WHEN
+`pn-workspace-toml-enforce` runs. It does not run on its own: `pn` does not invoke it, and the only
+documented consumer is the `pn-workspace-toml` home-manager module of `phillipg-nix-ziprecruiter`.
+A workspace without such a consumer MUST declare the `post-apply` and `post-upgrade` hook by hand
+(see the amendment in [ADR-0017](0017-pn-workspace-toml-enforce-entrypoint.md)); no gate is
+enforced for it. Wherever the text above says a gate entry "self-heals", read it as "self-heals
+at the next enforcer run".
+
+Post-phase hook results are persisted: every post-hook `pn` runs appends a `post_hook` record
+(`scope`, `command`, `dir`, `exit_code`, `output_tail`, plus `error` on failure, level `warn` on
+failure) to `events.jsonl`, so whether a post-apply `pb gate check` ran, and how it ended, is
+visible after the terminal output is gone. A failing post-hook stays warn-only.
